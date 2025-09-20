@@ -12,6 +12,49 @@
 
 关于其他安装方式，请参考原始项目文档。
 
+## 食用方法 (手动注入)
+
+如果你不想使用 `CustomCssJS` 插件，也可以通过手动修改前端文件的方式来加载此脚本。以下方法参考自 Catcat's Blog。
+
+**脚本地址 (二选一):**
+```html
+<!-- 完整版 -->
+<script src="https://cdn.jsdelivr.net/gh/l429609201/dd-danmaku/ede.js" charset="utf-8"></script>
+
+<!-- 本地版 (需自行下载脚本文件) -->
+<script src="ede.js" charset="utf-8"></script>
+```
+
+### 一、服务器 Web 端
+
+此方法仅对通过浏览器访问 Emby Web 生效。
+
+1.  进入 Emby 服务器的系统目录，找到 `index.html` 文件。
+    *   **Docker:** 通常位于 `/system/dashboard-ui/index.html`。
+    *   **Windows:** 通常位于 `C:\Users\{你的用户名}\AppData\Roaming\Emby-Server\system\dashboard-ui\index.html`。
+2.  用文本编辑器打开 `index.html`。
+3.  在 `</body>` 标签**之前**，粘贴上面提供的 `<script>` 标签。
+4.  保存文件并重启 Emby Server。
+5.  特别说明，如果你的emby服务端使用的是`amilys/embyserver`镜像只需把`ede.js`文件名修改成`ede.user.js`
+    放在宿主机某路径，通过映射的方式，映射到容器`/system/dashboard-ui/ede.user.js`处即可，然后该镜像的启动配置文件把弹幕功能打开即可完成web内嵌弹幕插件
+
+    参考的映射路径   `- /mnt/data/data/emby/ede.user.js:/system/dashboard-ui/ede.user.js`
+
+### 二、官方/小秘 PC 客户端 (Emby Theater)
+
+此方法适用于 Windows 和 macOS 的 Emby Theater 客户端。
+
+1.  找到 Emby Theater 的安装目录。
+    *   **官方PC客户端** 通常位于 `C:\Users\{你的用户名}\AppData\Roaming\Emby-Theater\system\electronapp\www`。
+    *   **小秘PC客户端** 在你的安装路径下  ` ..\Emby Theater\electronapp\www `
+2.  用文本编辑器打开该目录下的 `index.html` 文件。
+3.  在 `</body>` 标签**之前**，粘贴上面提供的 `<script>` 标签。
+4.  保存文件并重启 Emby Theater 客户端。
+
+#### 食用部署教程参考
+
+  - [猫猫Emby服食用指南](https://catcat.blog/catcat-emby.html)
+
 ## Fork & 魔改说明
 
 本项目主要基于 chen3861229/dd-danmaku 项目进行二次开发，并整合了来自 pipi20xx/dd-danmaku 的部分优秀功能和修复。
