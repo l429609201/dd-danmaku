@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Emby danmaku extension - Emby style
 // @description  Emby弹幕插件 - Emby风格
-// @namespace    https://github.com/chen3861229/dd-danmaku
-// @author       chen3861229
-// @version      1.45
-// @copyright    2022, RyoLee (https://github.com/RyoLee)
+// @namespace    https://github.com/l429609201/dd-danmaku
+// @author       misaka10876, chen3861229
+// @version      1.0.1
+// @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
 // @grant        none
@@ -23,7 +23,8 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
+        self: { version: '1.0.1', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
         danmaku: { version: '2.0.8', name: 'Danmaku', license: 'MIT License', url: 'https://github.com/weizhenye/Danmaku' },
@@ -87,6 +88,7 @@
         replay: 'replay',
         reset: 'repeat',
         forward_media: 'forward_media', // electron 中图标不正确,使用 replay 反转
+        drag_indicator: 'drag_indicator',
         forward_5: 'forward_5',
         forward_10: 'forward_10',
         forward_30: 'forward_30',
@@ -266,6 +268,7 @@
         customeGetExtcommentUrl: { id: 'danmakuCustomeGetExtcommentUrl', defaultValue: getApiTl(dandanplayApi.getExtcomment), name: '获取指定第三方url的弹幕' },
         customePosterImgUrl: { id: 'danmakuCustomePosterImgUrl', defaultValue: getApiTl(dandanplayApi.posterImg), name: '媒体海报' },
         customApiPrefix: { id: 'danmakuCustomApiPrefix', defaultValue: '', name: '自定义弹弹play API地址' },
+        apiPriority: { id: 'danmakuApiPriority', defaultValue: ['official', 'custom'], name: 'API 优先级' },
     };
     const lsLocalKeys = {
         animePrefix: '_anime_id_rel_',
@@ -295,6 +298,7 @@
         danmakuEpisodeNumSelect: 'danmakuEpisodeNumSelect',
         searchImgDiv: 'searchImgDiv',
         searchImg: 'searchImg',
+        searchApiSource: 'searchApiSource',
         apiSelectDiv: 'apiSelectDiv',
         extCommentSearchDiv: 'extCommentSearchDiv',
         extUrlsDiv: 'extUrlsDiv',
@@ -516,6 +520,16 @@
     }
     // ------ require end ------
 
+    /*
+     * A JavaScript implementation of the RSA Data Security, Inc. MD5 Message
+     * Digest Algorithm, as defined in RFC 1321.
+     * Version 2.2 Copyright (C) Paul Johnston 1999 - 2009
+     * Other contributors: Greg Holt, Andrew Kepert, Ydnar, Lostinet
+     * Distributed under the BSD License
+     * See http://pajhome.org.uk/crypt/md5 for more info.
+     */
+    var SparkMD5=function(a){!function(a,b){"object"==typeof exports&&"undefined"!=typeof module?module.exports=b():"function"==typeof define&&define.amd?define(b):(a=a||self).SparkMD5=b()}(this,function(){"use strict";function a(a,b){var c=(65535&a)+(65535&b);return(a>>16)+(b>>16)+(c>>16)<<16|65535&c}function b(a,b,c,d,e,f){return a=a+b+(c^d^e)+f,a<<b|a>>>32-b}function c(a,b,c,d,e,f){return a=a+(b&c|~b&d)+e+f,a<<b|a>>>32-b}function d(a,b,c,d,e,f){return a=a+(b&d|c&~d)+e+f,a<<b|a>>>32-b}function e(a,b,c,d,e,f){return a=a+(b^c^d)+e+f,a<<b|a>>>32-b}function f(a,b,c,d,e,f){return a=a+(c^(b|~d))+e+f,a<<b|a>>>32-b}function g(g,h){var i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,$,_,aa,ba,ca,da,ea,fa,ga,ha,ia,ja,ka,la,ma,na,oa,pa,qa,ra,sa,ta,ua,va,wa,xa,ya,za,Aa,Ba,Ca,Da,Ea,Fa,Ga,Ha,Ia,Ja,Ka,La,Ma,Na,Oa,Pa,Qa,Ra,Sa,Ta,Ua,Va,Wa,Xa,Ya,Za,$a,_a,ab,bb,cb,db,eb,fb,gb,hb,ib,jb,kb,lb,mb,nb,ob,pb,qb,rb,sb,tb,ub,vb,wb,xb,yb,zb,Ab,Bb,Cb,Db,Eb,Fb,Gb,Hb,Ib,Jb,Kb,Lb,Mb,Nb,Ob,Pb,Qb,Rb,Sb,Tb,Ub,Vb,Wb,Xb,Yb,Zb,$b,_b,ac,bc,cc,dc,ec,fc,gc,hc,ic,jc,kc,lc,mc,nc,oc,pc,qc,rc,sc,tc,uc,vc,wc,xc,yc,zc,Ac,Bc,Cc,Dc,Ec,Fc,Gc,Hc,Ic,Jc,Kc,Lc,Mc,Nc,Oc,Pc,Qc,Rc,Sc,Tc,Uc,Vc,Wc,Xc,Yc,Zc,$c,_c,ad,bd,cd,dd,ed,fd,gd,hd,id,jd,kd,ld,md,nd,od,pd,qd,rd,sd,td,ud,vd,wd,xd,yd,zd,Ad,Bd,Cd,Dd,Ed,Fd,Gd,Hd,Id,Jd,Kd,Ld,Md,Nd,Od,Pd,Qd,Rd,Sd,Td,Ud,Vd,Wd,Xd,Yd,Zd,$d,_d,ae,be,ce,de,ee,fe,ge,he,ie,je,ke,le,me,ne,oe,pe,qe,re,se,te,ue,ve,we,xe,ye,ze,Ae,Be,Ce,De,Ee,Fe,Ge,He,Ie,Je,Ke,Le,Me,Ne,Oe,Pe,Qe,Re,Se,Te,Ue,Ve,We,Xe,Ye,Ze,$e,_e,af,bf,cf,df,ef,ff,gf,hf,jf,kf,lf,mf,nf,of,pf,qf,rf,sf,tf,uf,vf,wf,xf,yf,zf,Af,Bf,Cf,Df,Ef,Ff,Gf,Hf,If,Jf,Kf,Lf,Mf,Nf,Of,Pf,Qf,Rf,Sf,Tf,Uf,Vf,Wf,Xf,Yf,Zf,$f,_f,ag,bg,cg,dg,eg,fg,gg,hg,ig,jg,kg,lg,mg,ng,og,pg,qg,rg,sg,tg,ug,vg,wg,xg,yg,zg,Ag,Bg,Cg,Dg,Eg,Fg,Gg,Hg,Ig,Jg,Kg,Lg,Mg,Ng,Og,Pg,Qg,Rg,Sg,Tg,Ug,Vg,Wg,Xg,Yg,Zg,$g,_g,ah,bh,ch,dh,eh,fh,gh,hh,ih,jh,kh,lh,mh,nh,oh,ph,qh,rh,sh,th,uh,vh,wh,xh,yh,zh,Ah,Bh,Ch,Dh,Eh,Fh,Gh,Hh,Ih,Jh,Kh,Lh,Mh,Nh,Oh,Ph,Qh,Rh,Sh,Th,Uh,Vh,Wh,Xh,Yh,Zh,$h,_h,ai,bi,ci,di,ei,fi,gi,hi,ii,ji,ki,li,mi,ni,oi,pi,qi,ri,si,ti,ui,vi,wi,xi,yi,zi,Ai,Bi,Ci,Di,Ei,Fi,Gi,Hi,Ii,Ji,Ki,Li,Mi,Ni,Oi,Pi,Qi,Ri,Si,Ti,Ui,Vi,Wi,Xi,Yi,Zi,$i,Ci=1732584193,Di=-271733879,Ei=-1732584194,Fi=271733878;for(i=0;i<g.length;i+=16)j=Ci,k=Di,l=Ei,m=Fi,n=g[i],o=g[i+1],p=g[i+2],q=g[i+3],r=g[i+4],s=g[i+5],t=g[i+6],u=g[i+7],v=g[i+8],w=g[i+9],x=g[i+10],y=g[i+11],z=g[i+12],A=g[i+13],B=g[i+14],C=g[i+15],Ci=c(Ci,Di,Ei,Fi,n,7,-680876936),Fi=c(Fi,Ci,Di,Ei,o,12,-389564586),Ei=c(Ei,Fi,Ci,Di,p,17,606105819),Di=c(Di,Ei,Fi,Ci,q,22,-1044525330),Ci=c(Ci,Di,Ei,Fi,r,7,-176418897),Fi=c(Fi,Ci,Di,Ei,s,12,1200080426),Ei=c(Ei,Fi,Ci,Di,t,17,-1473231341),Di=c(Di,Ei,Fi,Ci,u,22,-45705983),Ci=c(Ci,Di,Ei,Fi,v,7,1770035416),Fi=c(Fi,Ci,Di,Ei,w,12,-1958414417),Ei=c(Ei,Fi,Ci,Di,x,17,-42063),Di=c(Di,Ei,Fi,Ci,y,22,-1990404162),Ci=c(Ci,Di,Ei,Fi,z,7,1804603682),Fi=c(Fi,Ci,Di,Ei,A,12,-40341101),Ei=c(Ei,Fi,Ci,Di,B,17,-1502002290),Di=c(Di,Ei,Fi,Ci,C,22,1236535329),Ci=d(Ci,Di,Ei,Fi,o,5,-165796510),Fi=d(Fi,Ci,Di,Ei,t,9,-1069501632),Ei=d(Ei,Fi,Ci,Di,y,14,643717713),Di=d(Di,Ei,Fi,Ci,n,20,-373897302),Ci=d(Ci,Di,Ei,Fi,s,5,-701558691),Fi=d(Fi,Ci,Di,Ei,x,9,38016083),Ei=d(Ei,Fi,Ci,Di,C,14,-660478335),Di=d(Di,Ei,Fi,Ci,r,20,-405537848),Ci=d(Ci,Di,Ei,Fi,w,5,568446438),Fi=d(Fi,Ci,Di,Ei,p,9,-1019803690),Ei=d(Ei,Fi,Ci,Di,u,14,-187363961),Di=d(Di,Ei,Fi,Ci,z,20,1163531501),Ci=d(Ci,Di,Ei,Fi,A,5,-1444681467),Fi=d(Fi,Ci,Di,Ei,q,9,-51403784),Ei=d(Ei,Fi,Ci,Di,v,14,1735328473),Di=d(Di,Ei,Fi,Ci,B,20,-1926607734),Ci=e(Ci,Di,Ei,Fi,s,4,-378558),Fi=e(Fi,Ci,Di,Ei,v,11,-2022574463),Ei=e(Ei,Fi,Ci,Di,y,16,1839030562),Di=e(Di,Ei,Fi,Ci,C,23,-35309556),Ci=e(Ci,Di,Ei,Fi,o,4,-1530992060),Fi=e(Fi,Ci,Di,Ei,r,11,1272893353),Ei=e(Ei,Fi,Ci,Di,u,16,-155497632),Di=e(Di,Ei,Fi,Ci,x,23,-1094730640),Ci=e(Ci,Di,Ei,Fi,A,4,681279174),Fi=e(Fi,Ci,Di,Ei,n,11,-358537222),Ei=e(Ei,Fi,Ci,Di,p,16,-722521979),Di=e(Di,Ei,Fi,Ci,t,23,76029189),Ci=e(Ci,Di,Ei,Fi,w,4,-640364487),Fi=e(Fi,Ci,Di,Ei,z,11,-421815835),Ei=e(Ei,Fi,Ci,Di,B,16,530742520),Di=e(Di,Ei,Fi,Ci,q,23,-995338651),Ci=f(Ci,Di,Ei,Fi,n,6,-198630844),Fi=f(Fi,Ci,Di,Ei,u,10,1126891415),Ei=f(Ei,Fi,Ci,Di,B,15,-1416354905),Di=f(Di,Ei,Fi,Ci,s,21,-57434055),Ci=f(Ci,Di,Ei,Fi,z,6,1700485571),Fi=f(Fi,Ci,Di,Ei,t,10,-1894986606),Ei=f(Ei,Fi,Ci,Di,q,15,-1051523),Di=f(Di,Ei,Fi,Ci,o,21,-2054922799),Ci=f(Ci,Di,Ei,Fi,r,6,1873313359),Fi=f(Fi,Ci,Di,Ei,y,10,-30611744),Ei=f(Ei,Fi,Ci,Di,v,15,-1560198380),Di=f(Di,Ei,Fi,Ci,C,21,1309151649),Ci=f(Ci,Di,Ei,Fi,p,6,-145523070),Fi=f(Fi,Ci,Di,Ei,w,10,-1120210379),Ei=f(Ei,Fi,Ci,Di,A,15,718787259),Di=f(Di,Ei,Fi,Ci,x,21,-343485551),Ci=a(Ci,j),Di=a(Di,k),Ei=a(Ei,l),Fi=a(Fi,m)}h.prototype.append=function(a){return this.appendBinary(String(a)),this},h.prototype.appendBinary=function(a){this._buff+=a,this._length+=a.length;var b,c,d=this._buff.length;for(b=64;b<=d;b+=64)g(this._hash,function(a,b){var c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,$,_,aa,ba,ca,da,ea,fa,ga,ha,ia,ja,ka,la,ma,na,oa,pa,qa,ra,sa,ta,ua,va,wa,xa,ya,za,Aa,Ba,Ca,Da,Ea,Fa,Ga,Ha,Ia,Ja,Ka,La,Ma,Na,Oa,Pa,Qa,Ra,Sa,Ta,Ua,Va,Wa,Xa,Ya,Za,$a,_a,ab,bb,cb,db,eb,fb,gb,hb,ib,jb,kb,lb,mb,nb,ob,pb,qb,rb,sb,tb,ub,vb,wb,xb,yb,zb,Ab,Bb,Cb,Db,Eb,Fb,Gb,Hb,Ib,Jb,Kb,Lb,Mb,Nb,Ob,Pb,Qb,Rb,Sb,Tb,Ub,Vb,Wb,Xb,Yb,Zb,$b,_b,ac,bc,cc,dc,ec,fc,gc,hc,ic,jc,kc,lc,mc,nc,oc,pc,qc,rc,sc,tc,uc,vc,wc,xc,yc,zc,Ac,Bc,Cc,Dc,Ec,Fc,Gc,Hc,Ic,Jc,Kc,Lc,Mc,Nc,Oc,Pc,Qc,Rc,Sc,Tc,Uc,Vc,Wc,Xc,Yc,Zc,$c,_c,ad,bd,cd,dd,ed,fd,gd,hd,id,jd,kd,ld,md,nd,od,pd,qd,rd,sd,td,ud,vd,wd,xd,yd,zd,Ad,Bd,Cd,Dd,Ed,Fd,Gd,Hd,Id,Jd,Kd,Ld,Md,Nd,Od,Pd,Qd,Rd,Sd,Td,Ud,Vd,Wd,Xd,Yd,Zd,$d,_d,ae,be,ce,de,ee,fe,ge,he,ie,je,ke,le,me,ne,oe,pe,qe,re,se,te,ue,ve,we,xe,ye,ze,Ae,Be,Ce,De,Ee,Fe,Ge,He,Ie,Je,Ke,Le,Me,Ne,Oe,Pe,Qe,Re,Se,Te,Ue,Ve,We,Xe,Ye,Ze,$e,_e,af,bf,cf,df,ef,ff,gf,hf,jf,kf,lf,mf,nf,of,pf,qf,rf,sf,tf,uf,vf,wf,xf,yf,zf,Af,Bf,Cf,Df,Ef,Ff,Gf,Hf,If,Jf,Kf,Lf,Mf,Nf,Of,Pf,Qf,Rf,Sf,Tf,Uf,Vf,Wf,Xf,Yf,Zf,$f,_f,ag,bg,cg,dg,eg,fg,gg,hg,ig,jg,kg,lg,mg,ng,og,pg,qg,rg,sg,tg,ug,vg,wg,xg,yg,zg,Ag,Bg,Cg,Dg,Eg,Fg,Gg,Hg,Ig,Jg,Kg,Lg,Mg,Ng,Og,Pg,Qg,Rg,Sg,Tg,Ug,Vg,Wg,Xg,Yg,Zg,$g,_g,ah,bh,ch,dh,eh,fh,gh,hh,ih,jh,kh,lh,mh,nh,oh,ph,qh,rh,sh,th,uh,vh,wh,xh,yh,zh,Ah,Bh,Ch,Dh,Eh,Fh,Gh,Hh,Ih,Jh,Kh,Lh,Mh,Nh,Oh,Ph,Qh,Rh,Sh,Th,Uh,Vh,Wh,Xh,Yh,Zh,$h,_h,ai,bi,ci,di,ei,fi,gi,hi,ii,ji,ki,li,mi,ni,oi,pi,qi,ri,si,ti,ui,vi,wi,xi,yi,zi,Ai,Bi,Ci,Di,Ei,Fi,Gi,Hi,Ii,Ji,Ki,Li,Mi,Ni,Oi,Pi,Qi,Ri,Si,Ti,Ui,Vi,Wi,Xi,Yi,Zi,$i,Ci=Array(16),Di=0;for(Di=0;Di<64;Di+=4)Ci[Di>>2]=a.charCodeAt(b+Di)+(a.charCodeAt(b+Di+1)<<8)+(a.charCodeAt(b+Di+2)<<16)+(a.charCodeAt(b+Di+3)<<24);return Ci}(this._buff,b-64));return this._buff=this._buff.substring(b),this},h.prototype.end=function(a){var b,c,d=this._buff,e=d.length,f=[128];for(b=0;b<e;b+=1)f.push(255&d.charCodeAt(b));for(g(this._hash,function(a){var b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,$,_,aa,ba,ca,da,ea,fa,ga,ha,ia,ja,ka,la,ma,na,oa,pa,qa,ra,sa,ta,ua,va,wa,xa,ya,za,Aa,Ba,Ca,Da,Ea,Fa,Ga,Ha,Ia,Ja,Ka,La,Ma,Na,Oa,Pa,Qa,Ra,Sa,Ta,Ua,Va,Wa,Xa,Ya,Za,$a,_a,ab,bb,cb,db,eb,fb,gb,hb,ib,jb,kb,lb,mb,nb,ob,pb,qb,rb,sb,tb,ub,vb,wb,xb,yb,zb,Ab,Bb,Cb,Db,Eb,Fb,Gb,Hb,Ib,Jb,Kb,Lb,Mb,Nb,Ob,Pb,Qb,Rb,Sb,Tb,Ub,Vb,Wb,Xb,Yb,Zb,$b,_b,ac,bc,cc,dc,ec,fc,gc,hc,ic,jc,kc,lc,mc,nc,oc,pc,qc,rc,sc,tc,uc,vc,wc,xc,yc,zc,Ac,Bc,Cc,Dc,Ec,Fc,Gc,Hc,Ic,Jc,Kc,Lc,Mc,Nc,Oc,Pc,Qc,Rc,Sc,Tc,Uc,Vc,Wc,Xc,Yc,Zc,$c,_c,ad,bd,cd,dd,ed,fd,gd,hd,id,jd,kd,ld,md,nd,od,pd,qd,rd,sd,td,ud,vd,wd,xd,yd,zd,Ad,Bd,Cd,Dd,Ed,Fd,Gd,Hd,Id,Jd,Kd,Ld,Md,Nd,Od,Pd,Qd,Rd,Sd,Td,Ud,Vd,Wd,Xd,Yd,Zd,$d,_d,ae,be,ce,de,ee,fe,ge,he,ie,je,ke,le,me,ne,oe,pe,qe,re,se,te,ue,ve,we,xe,ye,ze,Ae,Be,Ce,De,Ee,Fe,Ge,He,Ie,Je,Ke,Le,Me,Ne,Oe,Pe,Qe,Re,Se,Te,Ue,Ve,We,Xe,Ye,Ze,$e,_e,af,bf,cf,df,ef,ff,gf,hf,jf,kf,lf,mf,nf,of,pf,qf,rf,sf,tf,uf,vf,wf,xf,yf,zf,Af,Bf,Cf,Df,Ef,Ff,Gf,Hf,If,Jf,Kf,Lf,Mf,Nf,Of,Pf,Qf,Rf,Sf,Tf,Uf,Vf,Wf,Xf,Yf,Zf,$f,_f,ag,bg,cg,dg,eg,fg,gg,hg,ig,jg,kg,lg,mg,ng,og,pg,qg,rg,sg,tg,ug,vg,wg,xg,yg,zg,Ag,Bg,Cg,Dg,Eg,Fg,Gg,Hg,Ig,Jg,Kg,Lg,Mg,Ng,Og,Pg,Qg,Rg,Sg,Tg,Ug,Vg,Wg,Xg,Yg,Zg,Sg,Tg,Ug,Vg,Wg,Xg,Yg,Zg,$g,_g,ah,bh,ch,dh,eh,fh,gh,hh,ih,jh,kh,lh,mh,nh,oh,ph,qh,rh,sh,th,uh,vh,wh,xh,yh,zh,Ah,Bh,Ch,Dh,Eh,Fh,Gh,Hh,Ih,Jh,Kh,Lh,Mh,Nh,Oh,Ph,Qh,Rh,Sh,Th,Uh,Vh,Wh,Xh,Yh,Zh,$h,_h,ai,bi,ci,di,ei,fi,gi,hi,ii,ji,ki,li,mi,ni,oi,pi,qi,ri,si,ti,ui,vi,wi,xi,yi,zi,Ai,Bi,Ci,Di,Ei,Fi,Gi,Hi,Ii,Ji,Ki,Li,Mi,Ni,Oi,Pi,Qi,Ri,Si,Ti,Ui,Vi,Wi,Xi,Yi,Zi,$i,Ci=Array(16),Di=0;for(Di=0;Di<a.length;Di+=1)Ci[Di>>2]|=(255&a[Di])<<Di%4*8;return Ci}(f)),b=56-e%64,b<1&&(b+=64),d=Array(b),d[0]=0,c=8*this._length,c=c.toString(16).match(/(.*?)(.{0,8})$/),d.push(parseInt(c[2],16)),d.push(parseInt(c[1],16)||0),g(this._hash,d),b=this._hash,c=Array(4),d=a?i:j,e=0;e<4;e+=1)c[e]=d(b[e]);return c.join("")},h.prototype.reset=function(){return this._buff="",this._length=0,this._hash=[1732584193,-271733879,-1732584194,271733878],this},h.prototype.getState=function(){return{buff:this._buff,length:this._length,hash:this._hash}},h.prototype.setState=function(a){return this._buff=a.buff,this._length=a.length,this._hash=a.hash,this},h.prototype.destroy=function(){delete this._hash,delete this._buff,delete this._length},h.hash=function(a,b){return h.hashBinary(String(a),b)},h.hashBinary=function(a,b){var c=new h(b);return c.appendBinary(a),c.end()},h.ArrayBuffer=function(){this.reset()};var i=function(a){var b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,$,_,aa,ba,ca,da,ea,fa,ga,ha,ia,ja,ka,la,ma,na,oa,pa,qa,ra,sa,ta,ua,va,wa,xa,ya,za,Aa,Ba,Ca,Da,Ea,Fa,Ga,Ha,Ia,Ja,Ka,La,Ma,Na,Oa,Pa,Qa,Ra,Sa,Ta,Ua,Va,Wa,Xa,Ya,Za,$a,_a,ab,bb,cb,db,eb,fb,gb,hb,ib,jb,kb,lb,mb,nb,ob,pb,qb,rb,sb,tb,ub,vb,wb,xb,yb,zb,Ab,Bb,Cb,Db,Eb,Fb,Gb,Hb,Ib,Jb,Kb,Lb,Mb,Nb,Ob,Pb,Qb,Rb,Sb,Tb,Ub,Vb,Wb,Xb,Yb,Zb,$b,_b,ac,bc,cc,dc,ec,fc,gc,hc,ic,jc,kc,lc,mc,nc,oc,pc,qc,rc,sc,tc,uc,vc,wc,xc,yc,zc,Ac,Bc,Cc,Dc,Ec,Fc,Gc,Hc,Ic,Jc,Kc,Lc,Mc,Nc,Oc,Pc,Qc,Rc,Sc,Tc,Uc,Vc,Wc,Xc,Yc,Zc,$c,_c,ad,bd,cd,dd,ed,fd,gd,hd,id,jd,kd,ld,md,nd,od,pd,qd,rd,sd,td,ud,vd,wd,xd,yd,zd,Ad,Bd,Cd,Dd,Ed,Fd,Gd,Hd,Id,Jd,Kd,Ld,Md,Nd,Od,Pd,Qd,Rd,Sd,Td,Ud,Vd,Wd,Xd,Yd,Zd,$d,_d,ae,be,ce,de,ee,fe,ge,he,ie,je,ke,le,me,ne,oe,pe,qe,re,se,te,ue,ve,we,xe,ye,ze,Ae,Be,Ce,De,Ee,Fe,Ge,He,Ie,Je,Ke,Le,Me,Ne,Oe,Pe,Qe,Re,Se,Te,Ue,Ve,We,Xe,Ye,Ze,$e,_e,af,bf,cf,df,ef,ff,gf,hf,jf,kf,lf,mf,nf,of,pf,qf,rf,sf,tf,uf,vf,wf,xf,yf,zf,Af,Bf,Cf,Df,Ef,Ff,Gf,Hf,If,Jf,Kf,Lf,Mf,Nf,Of,Pf,Qf,Rf,Sf,Tf,Uf,Vf,Wf,Xf,Yf,Zf,$f,_f,ag,bg,cg,dg,eg,fg,gg,hg,ig,jg,kg,lg,mg,ng,og,pg,qg,rg,sg,tg,ug,vg,wg,xg,yg,zg,Ag,Bg,Cg,Dg,Eg,Fg,Gg,Hg,Ig,Jg,Kg,Lg,Mg,Ng,Og,Pg,Qg,Rg,Sg,Tg,Ug,Vg,Wg,Xg,Yg,Zg,$g,_g,ah,bh,ch,dh,eh,fh,gh,hh,ih,jh,kh,lh,mh,nh,oh,ph,qh,rh,sh,th,uh,vh,wh,xh,yh,zh,Ah,Bh,Ch,Dh,Eh,Fh,Gh,Hh,Ih,Jh,Kh,Lh,Mh,Nh,Oh,Ph,Qh,Rh,Sh,Th,Uh,Vh,Wh,Xh,Yh,Zh,$h,_h,ai,bi,ci,di,ei,fi,gi,hi,ii,ji,ki,li,mi,ni,oi,pi,qi,ri,si,ti,ui,vi,wi,xi,yi,zi,Ai,Bi,Ci,Di,Ei,Fi,Gi,Hi,Ii,Ji,Ki,Li,Mi,Ni,Oi,Pi,Qi,Ri,Si,Ti,Ui,Vi,Wi,Xi,Yi,Zi,$i,Ci=a>>>24&255,Di=a>>>16&255,Ei=a>>>8&255,Fi=255&a;return String.fromCharCode(Fi,Ei,Di,Ci)},j=function(a){var b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,$,_,aa,ba,ca,da,ea,fa,ga,ha,ia,ja,ka,la,ma,na,oa,pa,qa,ra,sa,ta,ua,va,wa,xa,ya,za,Aa,Ba,Ca,Da,Ea,Fa,Ga,Ha,Ia,Ja,Ka,La,Ma,Na,Oa,Pa,Qa,Ra,Sa,Ta,Ua,Va,Wa,Xa,Ya,Za,$a,_a,ab,bb,cb,db,eb,fb,gb,hb,ib,jb,kb,lb,mb,nb,ob,pb,qb,rb,sb,tb,ub,vb,wb,xb,yb,zb,Ab,Bb,Cb,Db,Eb,Fb,Gb,Hb,Ib,Jb,Kb,Lb,Mb,Nb,Ob,Pb,Qb,Rb,Sb,Tb,Ub,Vb,Wb,Xb,Yb,Zb,$b,_b,ac,bc,cc,dc,ec,fc,gc,hc,ic,jc,kc,lc,mc,nc,oc,pc,qc,rc,sc,tc,uc,vc,wc,xc,yc,zc,Ac,Bc,Cc,Dc,Ec,Fc,Gc,Hc,Ic,Jc,Kc,Lc,Mc,Nc,Oc,Pc,Qc,Rc,Sc,Tc,Uc,Vc,Wc,Xc,Yc,Zc,$c,_c,ad,bd,cd,dd,ed,fd,gd,hd,id,jd,kd,ld,md,nd,od,pd,qd,rd,sd,td,ud,vd,wd,xd,yd,zd,Ad,Bd,Cd,Dd,Ed,Fd,Gd,Hd,Id,Jd,Kd,Ld,Md,Nd,Od,Pd,Qd,Rd,Sd,Td,Ud,Vd,Wd,Xd,Yd,Zd,$d,_d,ae,be,ce,de,ee,fe,ge,he,ie,je,ke,le,me,ne,oe,pe,qe,re,se,te,ue,ve,we,xe,ye,ze,Ae,Be,Ce,De,Ee,Fe,Ge,He,Ie,Je,Ke,Le,Me,Ne,Oe,Pe,Qe,Re,Se,Te,Ue,Ve,We,Xe,Ye,Ze,$e,_e,af,bf,cf,df,ef,ff,gf,hf,jf,kf,lf,mf,nf,of,pf,qf,rf,sf,tf,uf,vf,wf,xf,yf,zf,Af,Bf,Cf,Df,Ef,Ff,Gf,Hf,If,Jf,Kf,Lf,Mf,Nf,Of,Pf,Qf,Rf,Sf,Tf,Uf,Vf,Wf,Xf,Yf,Zf,$f,_f,ag,bg,cg,dg,eg,fg,gg,hg,ig,jg,kg,lg,mg,ng,og,pg,qg,rg,sg,tg,ug,vg,wg,xg,yg,zg,Ag,Bg,Cg,Dg,Eg,Fg,Gg,Hg,Ig,Jg,Kg,Lg,Mg,Ng,Og,Pg,Qg,Rg,Sg,Tg,Ug,Vg,Wg,Xg,Yg,Zg,$g,_g,ah,bh,ch,dh,eh,fh,gh,hh,ih,jh,kh,lh,mh,nh,oh,ph,qh,rh,sh,th,uh,vh,wh,xh,yh,zh,Ah,Bh,Ch,Dh,Eh,Fh,Gh,Hh,Ih,Jh,Kh,Lh,Mh,Nh,Oh,Ph,Qh,Rh,Sh,Th,Uh,Vh,Wh,Xh,Yh,Zh,$h,_h,ai,bi,ci,di,ei,fi,gi,hi,ii,ji,ki,li,mi,ni,oi,pi,qi,ri,si,ti,ui,vi,wi,xi,yi,zi,Ai,Bi,Ci,Di,Ei,Fi,Gi,Hi,Ii,Ji,Ki,Li,Mi,Ni,Oi,Pi,Qi,Ri,Si,Ti,Ui,Vi,Wi,Xi,Yi,Zi,$i,Ci=a>>>24&255,Di=a>>>16&255,Ei=a>>>8&255,Fi=255&a;return String.fromCharCode(Ci,Di,Ei,Fi)};function k(a){if(a instanceof k)return a;this.reset()}function h(a,b){this.reset(b),a&&this.append(a)}return h.ArrayBuffer.prototype.append=function(a){var b=this._buff.buffer,c=b.byteLength,d=a.byteLength,e=new Uint8Array(c+d);e.set(new Uint8Array(b)),e.set(new Uint8Array(a),c),this._buff=new DataView(e.buffer),this._length+=d;var f,h=this._buff.byteLength;for(f=64;f<=h;f+=64)g(this._hash,function(a,b){var c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,$,_,aa,ba,ca,da,ea,fa,ga,ha,ia,ja,ka,la,ma,na,oa,pa,qa,ra,sa,ta,ua,va,wa,xa,ya,za,Aa,Ba,Ca,Da,Ea,Fa,Ga,Ha,Ia,Ja,Ka,La,Ma,Na,Oa,Pa,Qa,Ra,Sa,Ta,Ua,Va,Wa,Xa,Ya,Za,$a,_a,ab,bb,cb,db,eb,fb,gb,hb,ib,jb,kb,lb,mb,nb,ob,pb,qb,rb,sb,tb,ub,vb,wb,xb,yb,zb,Ab,Bb,Cb,Db,Eb,Fb,Gb,Hb,Ib,Jb,Kb,Lb,Mb,Nb,Ob,Pb,Qb,Rb,Sb,Tb,Ub,Vb,Wb,Xb,Yb,Zb,$b,_b,ac,bc,cc,dc,ec,fc,gc,hc,ic,jc,kc,lc,mc,nc,oc,pc,qc,rc,sc,tc,uc,vc,wc,xc,yc,zc,Ac,Bc,Cc,Dc,Ec,Fc,Gc,Hc,Ic,Jc,Kc,Lc,Mc,Nc,Oc,Pc,Qc,Rc,Sc,Tc,Uc,Vc,Wc,Xc,Yc,Zc,$c,_c,ad,bd,cd,dd,ed,fd,gd,hd,id,jd,kd,ld,md,nd,od,pd,qd,rd,sd,td,ud,vd,wd,xd,yd,zd,Ad,Bd,Cd,Dd,Ed,Fd,Gd,Hd,Id,Jd,Kd,Ld,Md,Nd,Od,Pd,Qd,Rd,Sd,Td,Ud,Vd,Wd,Xd,Yd,Zd,$d,_d,ae,be,ce,de,ee,fe,ge,he,ie,je,ke,le,me,ne,oe,pe,qe,re,se,te,ue,ve,we,xe,ye,ze,Ae,Be,Ce,De,Ee,Fe,Ge,He,Ie,Je,Ke,Le,Me,Ne,Oe,Pe,Qe,Re,Se,Te,Ue,Ve,We,Xe,Ye,Ze,$e,_e,af,bf,cf,df,ef,ff,gf,hf,jf,kf,lf,mf,nf,of,pf,qf,rf,sf,tf,uf,vf,wf,xf,yf,zf,Af,Bf,Cf,Df,Ef,Ff,Gf,Hf,If,Jf,Kf,Lf,Mf,Nf,Of,Pf,Qf,Rf,Sf,Tf,Uf,Vf,Wf,Xf,Yf,Zf,$f,_f,ag,bg,cg,dg,eg,fg,gg,hg,ig,jg,kg,lg,mg,ng,og,pg,qg,rg,sg,tg,ug,vg,wg,xg,yg,zg,Ag,Bg,Cg,Dg,Eg,Fg,Gg,Hg,Ig,Jg,Kg,Lg,Mg,Ng,Og,Pg,Qg,Rg,Sg,Tg,Ug,Vg,Wg,Xg,Yg,Zg,$g,_g,ah,bh,ch,dh,eh,fh,gh,hh,ih,jh,kh,lh,mh,nh,oh,ph,qh,rh,sh,th,uh,vh,wh,xh,yh,zh,Ah,Bh,Ch,Dh,Eh,Fh,Gh,Hh,Ih,Jh,Kh,Lh,Mh,Nh,Oh,Ph,Qh,Rh,Sh,Th,Uh,Vh,Wh,Xh,Yh,Zh,$h,_h,ai,bi,ci,di,ei,fi,gi,hi,ii,ji,ki,li,mi,ni,oi,pi,qi,ri,si,ti,ui,vi,wi,xi,yi,zi,Ai,Bi,Ci,Di,Ei,Fi,Gi,Hi,Ii,Ji,Ki,Li,Mi,Ni,Oi,Pi,Qi,Ri,Si,Ti,Ui,Vi,Wi,Xi,Yi,Zi,$i,Ci=Array(16),Di=0;for(Di=0;Di<64;Di+=4)Ci[Di>>2]=a.getInt32(b+Di,!0);return Ci}(this._buff,f-64));return this._buff=new DataView(this._buff.buffer,f),this},h.ArrayBuffer.prototype.end=function(a){var b,c,d=this._buff,e=d.byteLength,f=[128];for(b=0;b<e;b+=1)f.push(d.getUint8(b));for(g(this._hash,function(a){var b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,$,_,aa,ba,ca,da,ea,fa,ga,ha,ia,ja,ka,la,ma,na,oa,pa,qa,ra,sa,ta,ua,va,wa,xa,ya,za,Aa,Ba,Ca,Da,Ea,Fa,Ga,Ha,Ia,Ja,Ka,La,Ma,Na,Oa,Pa,Qa,Ra,Sa,Ta,Ua,Va,Wa,Xa,Ya,Za,$a,_a,ab,bb,cb,db,eb,fb,gb,hb,ib,jb,kb,lb,mb,nb,ob,pb,qb,rb,sb,tb,ub,vb,wb,xb,yb,zb,Ab,Bb,Cb,Db,Eb,Fb,Gb,Hb,Ib,Jb,Kb,Lb,Mb,Nb,Ob,Pb,Qb,Rb,Sb,Tb,Ub,Vb,Wb,Xb,Yb,Zb,$b,_b,ac,bc,cc,dc,ec,fc,gc,hc,ic,jc,kc,lc,mc,nc,oc,pc,qc,rc,sc,tc,uc,vc,wc,xc,yc,zc,Ac,Bc,Cc,Dc,Ec,Fc,Gc,Hc,Ic,Jc,Kc,Lc,Mc,Nc,Oc,Pc,Qc,Rc,Sc,Tc,Uc,Vc,Wc,Xc,Yc,Zc,$c,_c,ad,bd,cd,dd,ed,fd,gd,hd,id,jd,kd,ld,md,nd,od,pd,qd,rd,sd,td,ud,vd,wd,xd,yd,zd,Ad,Bd,Cd,Dd,Ed,Fd,Gd,Hd,Id,Jd,Kd,Ld,Md,Nd,Od,Pd,Qd,Rd,Sd,Td,Ud,Vd,Wd,Xd,Yd,Zd,$d,_d,ae,be,ce,de,ee,fe,ge,he,ie,je,ke,le,me,ne,oe,pe,qe,re,se,te,ue,ve,we,xe,ye,ze,Ae,Be,Ce,De,Ee,Fe,Ge,He,Ie,Je,Ke,Le,Me,Ne,Oe,Pe,Qe,Re,Se,Te,Ue,Ve,We,Xe,Ye,Ze,$e,_e,af,bf,cf,df,ef,ff,gf,hf,jf,kf,lf,mf,nf,of,pf,qf,rf,sf,tf,uf,vf,wf,xf,yf,zf,Af,Bf,Cf,Df,Ef,Ff,Gf,Hf,If,Jf,Kf,Lf,Mf,Nf,Of,Pf,Qf,Rf,Sf,Tf,Uf,Vf,Wf,Xf,Yf,Zf,$f,_f,ag,bg,cg,dg,eg,fg,gg,hg,ig,jg,kg,lg,mg,ng,og,pg,qg,rg,sg,tg,ug,vg,wg,xg,yg,zg,Ag,Bg,Cg,Dg,Eg,Fg,Gg,Hg,Ig,Jg,Kg,Lg,Mg,Ng,Og,Pg,Qg,Rg,Sg,Tg,Ug,Vg,Wg,Xg,Yg,Zg,Sg,Tg,Ug,Vg,Wg,Xg,Yg,Zg,$g,_g,ah,bh,ch,dh,eh,fh,gh,hh,ih,jh,kh,lh,mh,nh,oh,ph,qh,rh,sh,th,uh,vh,wh,xh,yh,zh,Ah,Bh,Ch,Dh,Eh,Fh,Gh,Hh,Ih,Jh,Kh,Lh,Mh,Nh,Oh,Ph,Qh,Rh,Sh,Th,Uh,Vh,Wh,Xh,Yh,Zh,$h,_h,ai,bi,ci,di,ei,fi,gi,hi,ii,ji,ki,li,mi,ni,oi,pi,qi,ri,si,ti,ui,vi,wi,xi,yi,zi,Ai,Bi,Ci,Di,Ei,Fi,Gi,Hi,Ii,Ji,Ki,Li,Mi,Ni,Oi,Pi,Qi,Ri,Si,Ti,Ui,Vi,Wi,Xi,Yi,Zi,$i,Ci=Array(16),Di=0;for(Di=0;Di<a.length;Di+=1)Ci[Di>>2]|=(255&a[Di])<<Di%4*8;return Ci}(f)),b=56-e%64,b<1&&(b+=64),d=new DataView(new ArrayBuffer(b)),d.setUint8(0,0),c=8*this._length,c=c.toString(16).match(/(.*?)(.{0,8})$/),d.setUint32(b-8,parseInt(c[2],16),!0),d.setUint32(b-4,parseInt(c[1],16)||0,!0),g(this._hash,function(a){var b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,$,_,aa,ba,ca,da,ea,fa,ga,ha,ia,ja,ka,la,ma,na,oa,pa,qa,ra,sa,ta,ua,va,wa,xa,ya,za,Aa,Ba,Ca,Da,Ea,Fa,Ga,Ha,Ia,Ja,Ka,La,Ma,Na,Oa,Pa,Qa,Ra,Sa,Ta,Ua,Va,Wa,Xa,Ya,Za,$a,_a,ab,bb,cb,db,eb,fb,gb,hb,ib,jb,kb,lb,mb,nb,ob,pb,qb,rb,sb,tb,ub,vb,wb,xb,yb,zb,Ab,Bb,Cb,Db,Eb,Fb,Gb,Hb,Ib,Jb,Kb,Lb,Mb,Nb,Ob,Pb,Qb,Rb,Sb,Tb,Ub,Vb,Wb,Xb,Yb,Zb,$b,_b,ac,bc,cc,dc,ec,fc,gc,hc,ic,jc,kc,lc,mc,nc,oc,pc,qc,rc,sc,tc,uc,vc,wc,xc,yc,zc,Ac,Bc,Cc,Dc,Ec,Fc,Gc,Hc,Ic,Jc,Kc,Lc,Mc,Nc,Oc,Pc,Qc,Rc,Sc,Tc,Uc,Vc,Wc,Xc,Yc,Zc,$c,_c,ad,bd,cd,dd,ed,fd,gd,hd,id,jd,kd,ld,md,nd,od,pd,qd,rd,sd,td,ud,vd,wd,xd,yd,zd,Ad,Bd,Cd,Dd,Ed,Fd,Gd,Hd,Id,Jd,Kd,Ld,Md,Nd,Od,Pd,Qd,Rd,Sd,Td,Ud,Vd,Wd,Xd,Yd,Zd,$d,_d,ae,be,ce,de,ee,fe,ge,he,ie,je,ke,le,me,ne,oe,pe,qe,re,se,te,ue,ve,we,xe,ye,ze,Ae,Be,Ce,De,Ee,Fe,Ge,He,Ie,Je,Ke,Le,Me,Ne,Oe,Pe,Qe,Re,Se,Te,Ue,Ve,We,Xe,Ye,Ze,$e,_e,af,bf,cf,df,ef,ff,gf,hf,jf,kf,lf,mf,nf,of,pf,qf,rf,sf,tf,uf,vf,wf,xf,yf,zf,Af,Bf,Cf,Df,Ef,Ff,Gf,Hf,If,Jf,Kf,Lf,Mf,Nf,Of,Pf,Qf,Rf,Sf,Tf,Uf,Vf,Wf,Xf,Yf,Zf,$f,_f,ag,bg,cg,dg,eg,fg,gg,hg,ig,jg,kg,lg,mg,ng,og,pg,qg,rg,sg,tg,ug,vg,wg,xg,yg,zg,Ag,Bg,Cg,Dg,Eg,Fg,Gg,Hg,Ig,Jg,Kg,Lg,Mg,Ng,Og,Pg,Qg,Rg,Sg,Tg,Ug,Vg,Wg,Xg,Yg,Zg,Sg,Tg,Ug,Vg,Wg,Xg,Yg,Zg,$g,_g,ah,bh,ch,dh,eh,fh,gh,hh,ih,jh,kh,lh,mh,nh,oh,ph,qh,rh,sh,th,uh,vh,wh,xh,yh,zh,Ah,Bh,Ch,Dh,Eh,Fh,Gh,Hh,Ih,Jh,Kh,Lh,Mh,Nh,Oh,Ph,Qh,Rh,Sh,Th,Uh,Vh,Wh,Xh,Yh,Zh,$h,_h,ai,bi,ci,di,ei,fi,gi,hi,ii,ji,ki,li,mi,ni,oi,pi,qi,ri,si,ti,ui,vi,wi,xi,yi,zi,Ai,Bi,Ci,Di,Ei,Fi,Gi,Hi,Ii,Ji,Ki,Li,Mi,Ni,Oi,Pi,Qi,Ri,Si,Ti,Ui,Vi,Wi,Xi,Yi,Zi,$i,Ci=Array(16),Di=0;for(Di=0;Di<a.byteLength;Di+=4)Ci[Di>>2]=a.getInt32(Di,!0);return Ci}(d)),b=this._hash,c=Array(4),d=a?i:j,e=0;e<4;e+=1)c[e]=d(b[e]);return c.join("")},h.ArrayBuffer.prototype.reset=function(){return this._buff=new DataView(new ArrayBuffer(0)),this._length=0,this._hash=[1732584193,-271733879,-1732584194,271733878],this},h.ArrayBuffer.prototype.getState=function(){return{buff:this._buff.buffer,length:this._length,hash:this._hash}},h.ArrayBuffer.prototype.setState=function(a){return this._buff=new DataView(a.buff),this._length=a.length,this._hash=a.hash,this},h.ArrayBuffer.prototype.destroy=h.prototype.destroy,h.ArrayBuffer.hash=function(a,b){var c=new h.ArrayBuffer(b);return c.append(a),c.end()},k.prototype.append=function(a){return this.appendBinary(String(a)),this},k.prototype.appendBinary=function(a){this._spark.append(a)},k.prototype.end=function(a){return this._spark.end(a)},k.prototype.reset=function(){return this._spark.reset(),this},k.prototype.getState=function(){return this._spark.getState()},k.prototype.setState=function(a){return this._spark.setState(a),this},k.prototype.destroy=function(){this._spark.destroy()},k.hash=function(a,b){return h.hash(a,b)},k.hashBinary=function(a,b){return h.hashBinary(a,b)},k.ArrayBuffer=function(){this._spark=new h.ArrayBuffer},k.ArrayBuffer.prototype.append=function(a){this._spark.append(a)},k.ArrayBuffer.prototype.end=function(a){return this._spark.end(a)},k.ArrayBuffer.prototype.reset=function(){this._spark.reset()},k.ArrayBuffer.prototype.getState=function(){return this._spark.getState()},k.ArrayBuffer.prototype.setState=function(a){return this._spark.setState(a),this},k.ArrayBuffer.prototype.destroy=function(){this._spark.destroy()},k.ArrayBuffer.hash=function(a,b){return h.ArrayBuffer.hash(a,b)},k})}();
+
     class EDE {
         constructor() {
             this.chConvert = lsGetItem(lsKeys.chConvert.id);
@@ -612,33 +626,33 @@
             return;
         }
         if (_media.getAttribute('ede_listening')) { return; }
-        console.log('正在初始化Listener');
+        console.log('正在初始化事件监听器 (Listener)');
         playbackEventsRefresh({ 'playbackstart': onPlaybackStart });
         playbackEventsRefresh({ 'playbackstop': onPlaybackStop });
         _media.setAttribute('ede_listening', true);
         refreshEventListener({ 'video-osd-show': onVideoOsdShow });
         refreshEventListener({ 'video-osd-hide': onVideoOsdHide });
-        console.log('Listener初始化完成');
+        console.log('事件监听器 (Listener) 初始化完成');
         if (OS.isAndroidEmbyNoisyX()) {
-            console.log('检测为安卓小秘版,首次播放未触发 playbackstart 事件,手动初始化弹幕环境');
+            console.log('检测为安卓魔改版客户端，首次播放可能不触发 playbackstart 事件，在此手动初始化弹幕环境');
             loadDanmaku(LOAD_TYPE.INIT);
         }
     }
 
     function onPlaybackStart(e, state) {
-        console.log(e.type);
+        console.log('监听到事件: 播放开始 (playbackstart)');
         loadDanmaku(LOAD_TYPE.INIT);
     }
 
     function onPlaybackStop(e, state) {
-        console.log(e.type);
+        console.log('监听到事件: 播放停止 (playbackstop)');
         onPlaybackStopPct(e, state);
         removeHeaderClock();
         danmakuAutoFilterCancel();
     }
 
     function onVideoOsdShow(e) {
-        console.log(e.type, e);
+        console.log('监听到事件: OSD显示 (video-osd-show)');
         if (lsGetItem(lsKeys.osdLineChartEnable.id)) {
             buildProgressBarChart(20);
         }
@@ -648,7 +662,7 @@
     }
 
     function onVideoOsdHide(e) {
-        console.log(e.type, e);
+        console.log('监听到事件: OSD隐藏 (video-osd-hide)');
         if (lsGetItem(lsKeys.osdHeaderClockEnable.id)) {
           removeHeaderClock();
         }
@@ -694,7 +708,7 @@
             mediaBtnOpts.forEach(opt => {
                 menubar.appendChild(embyButton(opt, opt.onClick));
             });
-            console.log('UI初始化完成');
+            console.log('播放器弹幕UI初始化完成');
         }, 0);
     }
 
@@ -707,40 +721,44 @@
         return await ApiClient.getItem(ApiClient.getCurrentUserId(), id);
     }
 
-    async function fetchSearchEpisodes(anime, episode) {
+    async function fetchSearchEpisodes(anime, episode, prefix) {
         if (!anime) { throw new Error('anime is required'); }
-        const url = dandanplayApi.getSearchEpisodes(anime, episode);
+        // [修正] 使用传入的 prefix 构造 URL
+        const url = `${prefix}/search/episodes?anime=${anime}${episode ? `&episode=${episode}` : ''}`;
         const searchResult = await fetchJson(url)
-            .catch((error) => { // 捕获网络错误等
-                console.log('查询失败:', error);
+            .catch((error) => {
+                console.error(`[API请求] search/episodes 查询失败: ${error.message}`);
                 return null;
             });
-        console.log('查询成功', searchResult);
+        console.log(`[API请求] search/episodes 查询成功`, searchResult);
         return searchResult;
     }
 
-    async function fetchMatchCustomApi(animeName) {
-        const url = dandanplayApiCustom.getMatchUrl();
-        const matchResult = await fetchJson(url, { method: 'POST', body: { fileName: animeName } });
-
-        // 统一 /match 和 /search/episodes 的返回格式
-        if (matchResult && matchResult.matches) {
-            // 保持 isMatched 标志，并将 matches 字段重命名为 animes 以兼容后续处理
-            matchResult.animes = matchResult.matches;
-            delete matchResult.matches;
+    async function fetchMatchApi(payload, prefix) {
+        const url = `${prefix}/match`;
+        try {
+            const matchResult = await fetchJson(url, { method: 'POST', body: payload });
+            // 统一 /match 和 /search/episodes 的返回格式
+            if (matchResult && matchResult.matches) {
+                matchResult.animes = matchResult.matches;
+                delete matchResult.matches;
+            }
+            return matchResult;
+        } catch (error) {
+            return null; // 匹配失败时返回 null
         }
-        return matchResult;
     }
-
     async function fetchComment(episodeId) {
-        const url = dandanplayApi.getComment(episodeId, window.ede.chConvert);
-        return fetchJson(url)
+        // [修正] 优先使用当前匹配信息中记录的 API 地址
+        const prefix = window.ede.episode_info?.apiPrefix || dandanplayApi.prefix;
+        const url = `${prefix}/comment/${episodeId}?withRelated=true&chConvert=${window.ede.chConvert}`;
+        return fetchJson(url) // 直接使用 fetchJson
             .then((data) => {
-                console.log('弹幕获取成功: ' + data.comments.length);
+                console.log(`[API请求] comment 获取弹幕成功，数量: ${data.comments.length}`);
                 return data.comments;
             })
             .catch((error) => {
-                console.log('弹幕获取失败:', error);
+                console.error(`[API请求] comment 获取弹幕失败: ${error.message}`);
                 return null;
             });
     }
@@ -759,7 +777,7 @@
             window.ede.extCommentCache = { [itemId]: {} };
         }
         if (comments) {
-            console.log(`取差集并覆盖: ${extUrl}`);
+            console.log(`[附加弹幕] 正在为 ${extUrl} 的结果与已有弹幕取差集并覆盖`);
             extComments = extComments.filter(extC => !comments.some(c => c.cid === extC.cid));
         }
         window.ede.extCommentCache[itemId][extUrl] = extComments;
@@ -768,7 +786,7 @@
 
     function onPlaybackStopPct(e, state) {
         if (!state.NowPlayingItem) { return console.log('跳过 Web 端自身错误触发的第二次播放停止事件'); }
-        console.log(e.type);
+        console.log('监听到事件: 播放停止 (playbackstop)');
         const positionTicks = state.PlayState.PositionTicks;
         const runtimeTicks = state.NowPlayingItem.RunTimeTicks;
         if (!runtimeTicks) { return console.log('无可播放时长,跳过处理'); }
@@ -783,10 +801,10 @@
             const { animeTitle, episodeTitle } = window.ede.episode_info;
             const targetName = `${animeTitle} - ${episodeTitle}`;
             putBangumiEpStatus(bangumiToken).then(res => {
-                embyToast({ text: `putBangumiEpStatus 成功, 目标: ${targetName}, 结束播放百分比: ${pct}%, 大于需提交的设定百分比: ${bangumiPostPercent}%`});
-                console.log(`putBangumiEpStatus 成功, 目标: ${targetName}`);
+                embyToast({ text: `Bangumi收藏更新成功, 目标: ${targetName}, 结束播放百分比: ${pct}%, 大于需提交的设定百分比: ${bangumiPostPercent}%`});
+                console.log(`Bangumi收藏更新成功, 目标: ${targetName}`);
             }).catch(error => {
-                embyToast({ text: `putBangumiEpStatus 失败, 目标: ${targetName}, ${error.message}` });
+                embyToast({ text: `Bangumi收藏更新失败, 目标: ${targetName}, ${error.message}` });
                 console.error(`putBangumiEpStatus 失败, 目标: ${targetName}`, error);
             });
         }
@@ -957,7 +975,14 @@
         if (window.localStorage.getItem(_id_key)) {
             animeId = window.localStorage.getItem(_id_key);
         }
-        return {
+        const mediaSource = item.MediaSources && item.MediaSources[0];
+        const streamUrl = mediaSource ? ApiClient.getDirectStreamUrl({
+            ItemId: item.Id,
+            MediaSourceId: mediaSource.Id,
+            Static: true
+        }) : null;
+
+        const map = {
             _id: _id,
             _id_key: _id_key,
             _season_key: _season_key,
@@ -966,7 +991,12 @@
             episode: episode, // this is episode index, not a program index
             animeName: animeName,
             seriesOrMovieId: item.SeriesId || item.Id,
+            // 新增：提取匹配所需的文件信息
+            streamUrl: streamUrl,
+            size: mediaSource?.Size,
+            duration: (mediaSource?.RunTimeTicks || 0) / 10000000, // Ticks to seconds
         };
+        return map;
     }
 
     // 通过缓存中的剧集名称与偏移量进行匹配
@@ -1020,75 +1050,231 @@
         return { animeName, animeOriginalTitle, animaInfo, };
     }
 
-    async function searchEpisodes(itemInfoMap) {
-        const { _season_key, animeName, episode, seriesOrMovieId} = itemInfoMap;
-        let animeOriginalTitle = '';
-        let animaInfo;
-
-        const useOfficial = lsGetItem(lsKeys.useOfficialApi.id);
-        const useCustom = lsGetItem(lsKeys.useCustomApi.id);
-
-        // 仅在自动匹配时，如果启用了自定义API，才调用 /match 接口
-        if (useCustom) {
-            console.log(`[自动匹配][自定义API] 尝试 /match 接口, 标题名: ${animeName}`);
-            const matchResult = await fetchMatchCustomApi(animeName, useCustom);
-            if (matchResult && matchResult.isMatched && matchResult.animes && matchResult.animes.length > 0) {
-                console.log('自定义API /match 接口直接匹配成功，将直接使用返回的 episodeId');
-                const match = matchResult.animes[0];
-                // 直接构造 episodeInfo 结构并返回
-                return { directMatch: true, episodeInfo: { ...match, episodes: [{ episodeId: match.episodeId, episodeTitle: match.episodeTitle }] } };
-            }
-            console.log('自定义API /match 接口未直接匹配成功，将回退到搜索模式。');
+    async function calculateFileHash(streamUrl, fileSize) {
+        if (!streamUrl || !fileSize) {
+            console.warn('缺少 streamUrl 或 fileSize，无法计算哈希。');
+            return null;
         }
 
-        const search = async (useCustomApi) => {
-            // 使用缓存中的剧集标题与集偏移量进行匹配
-            let animaRes = await lsSeasonSearchEpisodes(_season_key, episode);
-            if (animaRes) {
-                animaInfo = animaRes.animaInfo;
-                const bgmEpisodeIndex = animaRes.newEpisode - 1;
-                if (animaInfo && animaInfo.animes.length > 0) {
-                    return { animeOriginalTitle, animaInfo, bgmEpisodeIndex, };
-                }
+        const CHUNK_SIZE = 16 * 1024 * 1024; // 16MB
+        const spark = new SparkMD5.ArrayBuffer();
+
+        try {
+            if (fileSize < CHUNK_SIZE * 2) {
+                // 文件较小，直接下载整个文件
+                console.log(`[Hash] 文件大小 (${(fileSize / 1024 / 1024).toFixed(2)}MB) 小于32MB，将下载整个文件计算哈希。`);
+                const response = await fetch(streamUrl);
+                if (!response.ok) throw new Error(`下载文件失败: ${response.status}`);
+                const arrayBuffer = await response.arrayBuffer();
+                spark.append(arrayBuffer);
+            } else {
+                // 文件较大，分块下载
+                console.log(`[Hash] 文件大小 (${(fileSize / 1024 / 1024).toFixed(2)}MB)，将分块下载计算哈希。`);
+
+                // 下载文件头
+                console.log('[Hash] 正在下载文件头部 16MB...');
+                const headRange = `bytes=0-${CHUNK_SIZE - 1}`;
+                const headResponse = await fetch(streamUrl, { headers: { 'Range': headRange } });
+                if (!headResponse.ok) throw new Error(`下载文件头部失败: ${headResponse.status}`);
+                const headBuffer = await headResponse.arrayBuffer();
+                spark.append(headBuffer);
+                console.log('[Hash] 文件头部下载完成。');
+
+                // 下载文件尾
+                console.log('[Hash] 正在下载文件尾部 16MB...');
+                const tailRange = `bytes=${fileSize - CHUNK_SIZE}-${fileSize - 1}`;
+                const tailResponse = await fetch(streamUrl, { headers: { 'Range': tailRange } });
+                if (!tailResponse.ok) throw new Error(`下载文件尾部失败: ${tailResponse.status}`);
+                const tailBuffer = await tailResponse.arrayBuffer();
+                spark.append(tailBuffer);
+                console.log('[Hash] 文件尾部下载完成。');
             }
-            // 默认匹配方式
-            animaInfo = await fetchSearchEpisodes(animeName, episode);
-            if (animaInfo && animaInfo.animes.length > 0) {
-                return { animeOriginalTitle, animaInfo, };
-            }
-            // 去除集数匹配 与 尝试使用原标题名匹配
-            return await autoFailback(animeName, episode, seriesOrMovieId);
+            return spark.end();
+        } catch (error) {
+            console.error('[Hash] 文件哈希计算过程中发生错误:', error);
+            return null;
+        }
+    }
+
+    /**
+     * 解析 "XXXX SXXEXX" 格式的标题
+     * @param {string} animeName - 完整的动画标题
+     * @returns {{title: string, season: number|null, episode: number|null}}
+     */
+    function parseAnimeName(animeName) {
+        const match = animeName.match(/^(.*?)\s*[Ss](\d{1,2})[Ee](\d{1,4})\b/);
+        if (match) {
+            return {
+                title: match[1].replace(/[\._]/g, ' ').trim(),
+                season: parseInt(match[2], 10),
+                episode: parseInt(match[3], 10)
+            };
+        }
+        // 如果不匹配，返回原始标题和null
+        return {
+            title: animeName,
+            season: null,
+            episode: null
+        };
+    }
+
+    async function searchEpisodes(itemInfoMap) {
+        const { animeName, episode, seriesOrMovieId, streamUrl, size, duration } = itemInfoMap;
+        
+        // 新增：读取用户定义的API优先级
+        const apiPriority = lsGetItem(lsKeys.apiPriority.id);
+        const apiConfigs = {
+            official: { name: '官方API', prefix: corsProxy + 'https://api.dandanplay.net/api/v2', enabled: lsGetItem(lsKeys.useOfficialApi.id) },
+            custom: { name: '自定义API', prefix: lsGetItem(lsKeys.customApiPrefix.id), enabled: lsGetItem(lsKeys.useCustomApi.id) }
         };
 
-        let res = null;
-        if (useOfficial) {
-            console.log(`[自动匹配][官方API] 标题名: ${animeName}` + (episode ? `,章节过滤: ${episode}` : ''));
-            res = await search(false);
+        // 准备 /match 接口的请求体
+        const matchPayload = {
+            fileName: animeName,
+            fileHash: null,
+            fileSize: size || 0,
+            videoDuration: duration || 0,
+            matchMode: "hashAndFileName" // [修正] 始终使用 hashAndFileName 模式
+        };
+
+        // 仅在有文件路径时才计算哈希值
+        if (streamUrl && size > 0) {
+            console.log(`准备通过播放链接计算文件哈希: ${streamUrl}`);
+            matchPayload.fileHash = await calculateFileHash(streamUrl, size);
+            if (matchPayload.fileHash) { 
+                console.log(`文件哈希计算完成: ${matchPayload.fileHash}`);
+            } else {
+                console.warn('[Hash] 文件哈希计算失败，将使用假哈希值进行匹配。');
+                matchPayload.fileHash = 'a1b2c3d4e5f67890abcd1234ef567890';
+            }
+        } else {
+            console.warn('未找到播放链接或文件大小，将使用假哈希值进行匹配。');
+            matchPayload.fileHash = 'a1b2c3d4e5f67890abcd1234ef567890';
         }
 
-        // 如果官方API没找到，并且启用了自定义API（此时 /match 已经失败了，所以这里是用 /search/episodes 模式）
-        if ((!res || !res.animaInfo || res.animaInfo.animes.length === 0) && useCustom) {
-            console.log('官方API或自定义/match未找到匹配, 尝试使用自定义API的搜索模式');
-            res = await search(true);
+        // 1. 严格按照优先级顺序进行匹配
+        for (const apiKey of apiPriority) {
+            const config = apiConfigs[apiKey];
+            if (!config || !config.enabled || !config.prefix) {
+                continue;
+            }
+
+            console.log(`[自动匹配][${config.name}] 开始按优先级进行匹配...`);
+
+            // 1a. 尝试 /match 接口 (对所有API都尝试，有哈希时使用哈希)
+            console.log(`[自动匹配][${config.name}] 尝试 /match 接口, 请求体:`, {...matchPayload, fileHash: matchPayload.fileHash ? '...' : null});
+            const matchResult = await fetchMatchApi(matchPayload, config.prefix);
+            if (matchResult && matchResult.isMatched && matchResult.animes && matchResult.animes.length > 0) {
+                console.log(`[${config.name}] /match 接口直接匹配成功，将直接使用返回的 episodeId`);
+                const match = matchResult.animes[0];
+                return { directMatch: true, apiPrefix: config.prefix, apiName: config.name, episodeInfo: { ...match, episodes: [{ episodeId: match.episodeId, episodeTitle: match.episodeTitle }], imageUrl: match.imageUrl } };
+            }
+
+            // 1b. 尝试 /search/episodes 接口 (带集数)
+            let searchTitle = animeName;
+            let searchEpisode = episode;
+
+            // [新增] 针对官方API的特殊处理逻辑
+            if (apiKey === 'official') {
+                const parsed = parseAnimeName(animeName);
+                if (parsed.season !== null) {
+                    searchTitle = `${parsed.title} 第${parsed.season}季`;
+                    searchEpisode = parsed.episode; // 使用从文件名解析出的集数
+                    console.log(`[自动匹配][官方API优化] 格式化搜索: 标题='${searchTitle}', 集数=${searchEpisode}`);
+                }
+            }
+            console.log(`[自动匹配][${config.name}] 尝试 /search/episodes 接口, 标题名: ${searchTitle}, 集数: ${searchEpisode}`);
+            let animaInfo = await fetchSearchEpisodes(searchTitle, searchEpisode, config.prefix);
+            if (animaInfo && animaInfo.animes.length > 0) {
+                console.log(`[${config.name}] 带集数搜索成功`);
+                return { animaInfo, apiPrefix: config.prefix, apiName: config.name };
+            }
+
+            // 1c. 尝试 /search/episodes 接口 (不带集数)
+            console.log(`[${config.name}] 带集数搜索失败，尝试不带集数...`);
+            animaInfo = await fetchSearchEpisodes(animeName, null, config.prefix);
+            if (animaInfo && animaInfo.animes.length > 0) {
+                console.log(`[${config.name}] 不带集数搜索成功`);
+                return { animaInfo, apiPrefix: config.prefix, apiName: config.name };
+            }
+
+            // 1d. 尝试使用原始标题
+            const seriesOrMovieInfo = await fatchEmbyItemInfo(seriesOrMovieId);
+            if (seriesOrMovieInfo && seriesOrMovieInfo.OriginalTitle) {
+                const originalTitle = seriesOrMovieInfo.OriginalTitle;
+                console.log(`[${config.name}] 尝试使用原始标题搜索: ${originalTitle}`);
+                animaInfo = await fetchSearchEpisodes(originalTitle, episode, config.prefix);
+                if (animaInfo && animaInfo.animes.length > 0) {
+                    console.log(`[${config.name}] 使用原始标题搜索成功`);
+                    return { animaInfo, animeOriginalTitle: originalTitle, apiPrefix: config.prefix, apiName: config.name };
+                }
+            }
         }
 
-        if (res) {
-            return res;
-        }
+        // 2. 如果所有API都失败了
+        return null;
     }
 
     async function getEpisodeInfo(is_auto = true) {
         const itemInfoMap = await getMapByEmbyItemInfo();
         if (!itemInfoMap) { return null; }
-        const { _episode_key, animeId, episode } = itemInfoMap;
-        if (is_auto && window.localStorage.getItem(_episode_key)) {
-            return JSON.parse(window.localStorage.getItem(_episode_key));
+        const { _episode_key, animeId, episode, seriesOrMovieId } = itemInfoMap;
+
+        // [新增] 下一集/上一集推理逻辑
+        const previous_info = window.ede.previous_episode_info;
+        // ... (下一集/上一集推理逻辑保持不变)
+        if (is_auto && previous_info && previous_info.episodeId && previous_info.seriesOrMovieId === seriesOrMovieId) {
+            const previousEpisodeIndex = previous_info.episodeIndex; // 0-based
+            const currentEpisodeNumber = episode; // 1-based
+            const previousEpisodeId = parseInt(previous_info.episodeId, 10);
+
+            let predictedEpisodeId = null;
+            let direction = '';
+
+            // 播放下一集 (e.g., from ep1(index 0) to ep2(number 2))
+            if (currentEpisodeNumber === previousEpisodeIndex + 2) {
+                predictedEpisodeId = previousEpisodeId + 1;
+                direction = '下一集';
+            }
+            // 播放上一集 (e.g., from ep2(index 1) to ep1(number 1))
+            else if (currentEpisodeNumber === previousEpisodeIndex) {
+                predictedEpisodeId = previousEpisodeId - 1;
+                direction = '上一集';
+            }
+
+            if (predictedEpisodeId) {
+                console.log(`[推理匹配] 检测到播放'${direction}'，尝试使用推断的 episodeId: ${predictedEpisodeId}`);
+                const comments = await fetchComment(predictedEpisodeId);
+                if (comments && comments.length > 0) {
+                    console.log(`[推理匹配] 成功！使用 episodeId: ${predictedEpisodeId}`);
+                    const predictedEpisodeInfo = {
+                        ...itemInfoMap,
+                        episodeId: predictedEpisodeId,
+                        episodeTitle: `第 ${currentEpisodeNumber} 集 (推断)`,
+                        animeId: previous_info.animeId,
+                        animeTitle: previous_info.animeTitle,
+                        imageUrl: previous_info.imageUrl,
+                        seriesOrMovieId: seriesOrMovieId, // 确保系列ID更新
+                        episodeIndex: currentEpisodeNumber - 1,
+                    };
+                    // 不写入缓存，因为这只是一个快速的推断
+                    return predictedEpisodeInfo;
+                } else {
+                    console.log(`[推理匹配] 失败，episodeId: ${predictedEpisodeId} 无弹幕，回退到常规匹配。`);
+                }
+            }
         }
 
         // 修正缓存键，区分官方和自定义API
+        const useOfficialApi = lsGetItem(lsKeys.useOfficialApi.id);
         const useCustomApi = lsGetItem(lsKeys.useCustomApi.id);
-        const apiPrefix = useCustomApi ? '_custom_' : '_official_';
-        const unique_episode_key = apiPrefix + _episode_key;
+        const apiPriority = lsGetItem(lsKeys.apiPriority.id);
+        const enabledApis = apiPriority.filter(apiKey => {
+            if (apiKey === 'official') return useOfficialApi;
+            if (apiKey === 'custom') return useCustomApi;
+            return false;
+        });
+        const unique_episode_key = `_api_${enabledApis.join('_')}_` + _episode_key;
         if (is_auto && window.localStorage.getItem(unique_episode_key)) {
             return JSON.parse(window.localStorage.getItem(unique_episode_key));
         }
@@ -1116,13 +1302,18 @@
                 animeId: res.episodeInfo.animeId,
                 animeTitle: res.episodeInfo.animeTitle,
                 animeOriginalTitle: '',
-                imageUrl: res.episodeInfo.imageUrl
+                imageUrl: res.episodeInfo.imageUrl,
+                apiName: res.apiName, // [新增] 保存API名称
+                apiPrefix: res.apiPrefix,
             };
+        // 将系列ID也存入，用于下一集/上一集的判断
+        episodeInfo.seriesOrMovieId = seriesOrMovieId;
             localStorage.setItem(unique_episode_key, JSON.stringify(episodeInfo));
             return episodeInfo;
         }
 
-        const { animeOriginalTitle, animaInfo } = res;
+        // [修正] 从 res 中解构出 apiPrefix 和 apiName
+        const { animeOriginalTitle, animaInfo, apiPrefix, apiName } = res;
         let selectAnime_id = 1;
         if (animeId != -1) {
             for (let index = 0; index < animaInfo.animes.length; index++) {
@@ -1146,7 +1337,10 @@
             animeId: animaInfo.animes[selectAnime_id].animeId,
             animeTitle: animaInfo.animes[selectAnime_id].animeTitle,
             animeOriginalTitle,
-            imageUrl: animaInfo.animes[selectAnime_id].imageUrl
+            imageUrl: animaInfo.animes[selectAnime_id].imageUrl,
+            seriesOrMovieId: seriesOrMovieId,
+            apiPrefix: apiPrefix, // [修正] 保存API前缀
+            apiName: apiName, // [新增] 保存API名称
         };
         localStorage.setItem(unique_episode_key, JSON.stringify(episodeInfo));
         return episodeInfo;
@@ -1223,7 +1417,7 @@
             }
             // 设置弹窗内的弹幕信息
             buildCurrentDanmakuInfo(currentDanmakuInfoContainerId);
-            throw new Error('用户已退出视频播放');
+            throw new Error('创建弹幕失败：用户已退出视频播放页面。');
         }
         if (!isVersionOld) { _media.style.position = 'absolute'; }
         // from https://github.com/Izumiko/jellyfin-danmaku/blob/jellyfin/ede.js#L1104
@@ -1256,7 +1450,7 @@
         }
         window.ede.ob = new ResizeObserver(() => {
             if (window.ede.danmaku) {
-                console.log('Resizing');
+                console.log('检测到播放器尺寸变化 (Resizing)，正在重置弹幕画布...');
                 window.ede.danmaku.resize();
                 if (lsGetItem(lsKeys.osdLineChartEnable.id)) {
                     buildProgressBarChart(20);
@@ -1297,7 +1491,7 @@
             return;
         }
         const progressBarWidth = container.offsetWidth;
-        console.log('progressBarWidth: ' + progressBarWidth);
+        console.log('进度条宽度 (progressBarWidth): ' + progressBarWidth);
         const bulletChartCanvas = document.createElement('canvas');
         bulletChartCanvas.id = eleIds.progressBarLineChart;
         bulletChartCanvas.width = progressBarWidth;
@@ -1338,10 +1532,10 @@
     function loadDanmaku(loadType = LOAD_TYPE.CHECK) {
         const _media = document.querySelector(mediaQueryStr);
         if (!_media) {
-            return console.warn('用户已退出视频播放,停止加载弹幕');
+            return console.warn('用户已退出视频播放，停止加载弹幕');
         }
         if (window.ede.loading) {
-            console.log('正在重新加载');
+            console.log('已有弹幕加载任务正在进行中，请稍后...');
             return;
         }
         window.ede.loading = true;
@@ -1356,7 +1550,7 @@
                 .then((comments) => {
                     if (comments && comments.length > 0) {
                         return createDanmaku(comments).then(() => {
-                            console.log(lsKeys.useFetchPluginXml.name + ':就位');
+                            console.log('服务端Danmu插件弹幕加载就位');
                         }).then(() => {
                             window.ede.loading = false;
                             const danmakuCtrEle = getById(eleIds.danmakuCtr);
@@ -1369,10 +1563,10 @@
                             }
                         }).catch((error) => {
                             console.error(error);
-                            console.error('useFetchPluginXml createDanmaku error');
+                            console.error('使用服务端Danmu插件弹幕创建Danmaku实例时出错');
                         });
                     }
-                    throw new Error(lsKeys.useFetchPluginXml.name + '失败,尝试在线加载');
+                    throw new Error('从服务端Danmu插件获取弹幕失败，尝试在线加载...');
                 })
                 .catch((error) => {
                     console.error(error);
@@ -1417,7 +1611,7 @@
                         if (loadType === LOAD_TYPE.RELOAD && window.ede.danmuCache[episodeId]) {
                             createDanmaku(window.ede.danmuCache[episodeId])
                                 .then(() => {
-                                    console.log('弹幕就位');
+                                    console.log('弹幕已从缓存加载就位');
                                 })
                                 .catch((err) => {
                                     console.log(err);
@@ -1427,7 +1621,7 @@
                                 window.ede.danmuCache[episodeId] = comments;
                                 createDanmaku(comments)
                                     .then(() => {
-                                        console.log('弹幕就位');
+                                        console.log('弹幕已从网络加载就位');
                                         // embyToast({ text: `弹幕就位,已获取 ${comments.length} 条弹幕` });
                                     })
                                     .catch((err) => {
@@ -1498,7 +1692,7 @@
         }
         if (msg.length != initMsgLenth) {
             embyToast({ text: msg });
-            console.log(msg);
+            console.log('[自动过滤] ' + msg);
         }
     }
 
@@ -1506,7 +1700,7 @@
         if (Object.keys(window.ede.tempLsValues).length > 0) {
             objectEntries(window.ede.tempLsValues).forEach(([key, val]) => lsSetItem(key, val));
             window.ede.tempLsValues = {};
-            console.log('从临时值恢复用户值并重置');
+            console.log('[自动过滤] 已从临时值恢复用户设置');
         }
     }
 
@@ -1627,7 +1821,7 @@
         }
     
         const endTime = new Date().getTime();
-        console.log(`danmakuMergeSimilar 耗时: ${endTime - startTime} 毫秒`);
+        console.log(`合并相似弹幕 (danmakuMergeSimilar) 耗时: ${endTime - startTime} 毫秒`);
     
         return mergedComments;
     }
@@ -2169,9 +2363,14 @@
                                 <div id="${eleIds.danmakuEpisodeLoad}"></div>
                             </div>
                         </div>
-                        <img id="${eleIds.searchImg}" style="width: 20%;height: 100%;margin: 2%;"
-                            loading="lazy" decoding="async" draggable="false" class="coveredImage-noScale"></img>
+                        <div style="width: 20%; margin: 0 2%; text-align: center;">
+                            <img id="${eleIds.searchImg}" style="width: 100%; height: auto;"
+                                loading="lazy" decoding="async" draggable="false" class="coveredImage-noScale"></img>
+                            <div id="${eleIds.searchApiSource}" class="${classes.embyFieldDesc}" style="margin-top: 0.5em;">
+                                <!-- API来源将在这里显示 -->
+                            </div>
                         </div>
+                    </div>
                     </div>
                 <div hidden>
                     <label class="${classes.embyLabel}" id="${eleIds.danmakuRemark}"></label>
@@ -2208,7 +2407,7 @@
             <div is="emby-collapse" title="API选择、自定义API配置">
                 <div class="${classes.collapseContentNav}">
                     <div id="${eleIds.apiSelectDiv}" class="${classes.embyCheckboxList}" style="${styles.embyCheckboxList} align-items: center;">
-                        <label class="${classes.embyLabel}">API选择:</label>
+                        <!-- API 优先级列表将在这里创建 -->
                     </div>
                     <div id="customApiContainer" style="margin-top: 1em;">
                         <!-- 自定义API地址输入框将在这里创建 -->
@@ -2281,18 +2480,84 @@
         searchNameDiv.append(embyInput({ id: eleIds.danmakuSearchName, value: window.ede.searchDanmakuOpts.animeName, type: 'search' }
             , doDanmakuSearchEpisode));
         searchNameDiv.append(embyButton({ label: '搜索', iconKey: iconKeys.search}, doDanmakuSearchEpisode));
-
+        
+        // --- 重构API选择为可拖拽列表 ---
         const apiSelectDiv = getById(eleIds.apiSelectDiv);
-        apiSelectDiv.append(embyCheckbox(
-            { label: lsKeys.useOfficialApi.name }, lsGetItem(lsKeys.useOfficialApi.id), (checked) => {
-                lsSetItem(lsKeys.useOfficialApi.id, checked);
-            }
-        ));
-        apiSelectDiv.append(embyCheckbox(
-            { label: lsKeys.useCustomApi.name }, lsGetItem(lsKeys.useCustomApi.id), (checked) => {
-                lsSetItem(lsKeys.useCustomApi.id, checked);
-            }
-        ));
+        apiSelectDiv.innerHTML = ''; // 清空旧内容
+        apiSelectDiv.style.display = 'block'; // 垂直布局
+
+        const apiPriorityLabel = document.createElement('label');
+        apiPriorityLabel.className = classes.embyLabel;
+        apiPriorityLabel.textContent = 'API 优先级 (拖拽调整顺序):';
+        apiSelectDiv.append(apiPriorityLabel);
+
+        const apiListContainer = document.createElement('div');
+        apiListContainer.id = 'apiListContainer';
+        apiListContainer.style.marginTop = '0.5em';
+        apiSelectDiv.append(apiListContainer);
+
+        const apiOptions = {
+            official: { lsKey: lsKeys.useOfficialApi, name: '官方API' },
+            custom: { lsKey: lsKeys.useCustomApi, name: '自定义API' }
+        };
+
+        let currentApiPriority = lsGetItem(lsKeys.apiPriority.id);
+        let draggedItem = null;
+
+        function renderApiList() {
+            apiListContainer.innerHTML = '';
+            currentApiPriority.forEach((apiKey, index) => {
+                const apiConfig = apiOptions[apiKey];
+                if (!apiConfig) return;
+
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'api-priority-item raised emby-button';
+                itemDiv.style.display = 'flex';
+                itemDiv.style.alignItems = 'center';
+                itemDiv.style.padding = '0.5em 1em';
+                itemDiv.style.marginBottom = '0.5em';
+                itemDiv.style.cursor = 'grab';
+                itemDiv.draggable = true;
+                itemDiv.dataset.apiKey = apiKey;
+
+                const handle = embyI(iconKeys.drag_indicator);
+                handle.style.marginRight = '1em';
+                itemDiv.append(handle);
+
+                const label = document.createElement('span');
+                label.textContent = apiConfig.name;
+                label.style.flexGrow = '1';
+                itemDiv.append(label);
+
+                const checkbox = embyCheckbox({ label: '启用' }, lsGetItem(apiConfig.lsKey.id), (checked) => {
+                    lsSetItem(apiConfig.lsKey.id, checked);
+                });
+                itemDiv.append(checkbox);
+
+                itemDiv.addEventListener('dragstart', (e) => { draggedItem = e.currentTarget; e.currentTarget.style.opacity = '0.5'; });
+                itemDiv.addEventListener('dragend', (e) => { e.currentTarget.style.opacity = '1'; draggedItem = null; });
+                itemDiv.addEventListener('dragover', (e) => e.preventDefault());
+                // [修正] 将 drop 事件监听器移出 dragover
+                itemDiv.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    if (draggedItem && draggedItem !== e.currentTarget) {
+                        const fromKey = draggedItem.dataset.apiKey;
+                        const toKey = e.currentTarget.dataset.apiKey;
+                        const fromIndex = currentApiPriority.indexOf(fromKey);
+                        const toIndex = currentApiPriority.indexOf(toKey);
+                        const newPriority = [...currentApiPriority];
+                        const [removed] = newPriority.splice(fromIndex, 1);
+                        newPriority.splice(toIndex, 0, removed);
+                        currentApiPriority = newPriority;
+                        lsSetItem(lsKeys.apiPriority.id, newPriority);
+                        renderApiList();
+                    }
+                });
+                apiListContainer.append(itemDiv);
+            });
+        }
+
+        renderApiList();
 
         searchNameDiv.append(embyButton({ label: '切换[原]标题', iconKey: iconKeys.text_format }, doSearchTitleSwtich));
         getById(eleIds.danmakuEpisodeLoad).append(
@@ -2381,7 +2646,7 @@
     function buildCurrentDanmakuInfo(containerId) {
         const container = getById(containerId);
         if (!container) { return; }
-        const { episodeTitle, animeId, animeTitle, imageUrl } = window.ede.episode_info || {};
+        const { episodeTitle, animeId, animeTitle, imageUrl, apiName } = window.ede.episode_info || {};
         const loadSum = getDanmakuComments(window.ede).length;
         const downloadSum = window.ede.commentsParsed.length;
         let template = `
@@ -2397,6 +2662,10 @@
                         <label class="${classes.embyLabel}">章节名: </label>
                         <div class="${classes.embyFieldDesc}">${episodeTitle}</div>
                     </div>`}
+                    <div>
+                        <label class="${classes.embyLabel}">匹配来源: </label>
+                        <div class="${classes.embyFieldDesc}">${apiName || '未知'}</div>
+                    </div>
                     <div>
                         <label class="${classes.embyLabel}">其它信息: </label>
                         <div class="${classes.embyFieldDesc}">
@@ -3216,7 +3485,7 @@
         console.log('运行时变量检查');
         console.log(lsKeys.customeCorsProxyUrl.name ,corsProxy);
         console.log(lsKeys.customeDanmakuUrl.name, requireDanmakuPath);
-        console.log('弹弹 play API 模板', dandanplayApi);
+        console.log('弹弹play API 模板', dandanplayApi);
         if (exposeGlobalThis) { window.checkRuntimeVars = checkRuntimeVars; }
     }
 
@@ -3246,11 +3515,50 @@
         danmakuRemarkEle.parentNode.hidden = false;
         danmakuRemarkEle.innerText = searchName ? '' : '请填写标题';
         const spinnerEle = getByClass(classes.mdlSpinner);
-        spinnerEle.classList.remove('hide');
+        spinnerEle && spinnerEle.classList.remove('hide');
 
-        const animaInfo = await fetchSearchEpisodes(searchName);
-        spinnerEle.classList.add('hide');
-        if (!animaInfo || animaInfo.animes.length < 1) {
+        // [修正] 手动匹配严格遵循API优先级
+        // [新逻辑] 合并所有启用源的搜索结果，并按优先级排序
+        const apiPriority = lsGetItem(lsKeys.apiPriority.id);
+        const apiConfigs = {
+            official: { name: '官方API', prefix: corsProxy + 'https://api.dandanplay.net/api/v2', enabled: lsGetItem(lsKeys.useOfficialApi.id) },
+            custom: { name: '自定义API', prefix: lsGetItem(lsKeys.customApiPrefix.id), enabled: lsGetItem(lsKeys.useCustomApi.id) }
+        };
+
+        let allAnimes = [];
+        for (const apiKey of apiPriority) {
+            const config = apiConfigs[apiKey];
+            // [修正] 确保自定义API有地址时才使用
+            if (!config || !config.enabled || (apiKey === 'custom' && !config.prefix)) {
+                continue;
+            }
+
+            let manualSearchTitle = searchName;
+            let manualSearchEpisode = null;
+
+            // [新增] 手动搜索时，同样为官方API优化SXXEXX格式
+            if (apiKey === 'official') {
+                const parsed = parseAnimeName(searchName);
+                if (parsed.season !== null) {
+                    manualSearchTitle = parsed.season === 1 ? parsed.title : `${parsed.title} 第${parsed.season}季`;
+                    manualSearchEpisode = parsed.episode; // 使用从文件名解析出的集数
+                    console.log(`[手动匹配][官方API优化] 格式化搜索: 标题='${manualSearchTitle}', 集数=${manualSearchEpisode}`);
+                }
+            }
+            console.log(`[手动匹配][${config.name}] 正在搜索: 标题='${manualSearchTitle}', 集数=${manualSearchEpisode || '无'}`);
+            const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix);
+            if (animaInfo && animaInfo.animes.length > 0) {
+                console.log(`[手动匹配][${config.name}] 搜索成功，找到 ${animaInfo.animes.length} 个结果。`);
+                // 为每个结果打上来源标签
+                animaInfo.animes.forEach(anime => { anime.apiPrefix = config.prefix; anime.apiName = config.name; });
+                allAnimes.push(...animaInfo.animes);
+            } else {
+                console.log(`[手动匹配][${config.name}] 未找到结果。`);
+            }
+        }
+
+        spinnerEle && spinnerEle.classList.add('hide');
+        if (allAnimes.length < 1) {
             danmakuRemarkEle.innerText = '搜索结果为空';
             getById(eleIds.danmakuSwitchEpisode).disabled = true;
             getById(eleIds.danmakuEpisodeFlag).hidden = true;
@@ -3262,33 +3570,26 @@
         const danmakuEpisodeNumDiv = getById(eleIds.danmakuEpisodeNumDiv);
         danmakuAnimeDiv.innerHTML = '';
         danmakuEpisodeNumDiv.innerHTML = '';
-        const animes = animaInfo.animes;
-        window.ede.searchDanmakuOpts.animes = animes;
+        window.ede.searchDanmakuOpts.animes = allAnimes;
 
-        let selectAnimeIdx = animes.findIndex(anime => anime.animeId == window.ede.searchDanmakuOpts.animeId);
+        let selectAnimeIdx = allAnimes.findIndex(anime => anime.animeId == window.ede.searchDanmakuOpts.animeId);
         selectAnimeIdx = selectAnimeIdx !== -1 ? selectAnimeIdx : 0;
         const animeSelect = embySelect({ id: eleIds.danmakuAnimeSelect, label: '剧集: ', style: 'width: auto;max-width: 100%;' }
-            , selectAnimeIdx, animes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription}`, doDanmakuAnimeSelect);
+            , selectAnimeIdx, allAnimes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription} 来源：${opt.apiName}`, doDanmakuAnimeSelect);
         danmakuAnimeDiv.append(animeSelect);
         const episodeNumSelect = embySelect({ id: eleIds.danmakuEpisodeNumSelect, label: '集数: ', style: 'width: auto;max-width: 100%;' }
-            , window.ede.searchDanmakuOpts.episode, animes[selectAnimeIdx].episodes, 'episodeId', (opt, i) => `${i + 1} - ${opt.episodeTitle}`);
+            , window.ede.searchDanmakuOpts.episode, allAnimes[selectAnimeIdx].episodes, 'episodeId', (opt, i) => `${i + 1} - ${opt.episodeTitle}`);
         danmakuEpisodeNumDiv.append(episodeNumSelect);
         getById(eleIds.danmakuEpisodeFlag).hidden = false;
         getById(eleIds.danmakuSwitchEpisode).disabled = false;
 
-        const useOfficialApi = lsGetItem(lsKeys.useOfficialApi.id);
-        const useCustomApi = lsGetItem(lsKeys.useCustomApi.id);
-        const selectedAnime = animes[selectAnimeIdx];
-        let posterSrc = '';
+        const selectedAnime = allAnimes[selectAnimeIdx];
+        // [修正] 始终使用匹配到的海报，如果没有则使用官方API拼接
+        getById(eleIds.searchImg).src = selectedAnime.imageUrl || dandanplayApi.posterImg(selectedAnime.animeId);
 
-        if (useOfficialApi) {
-            posterSrc = dandanplayApi.posterImg(selectedAnime.animeId);
-        } else if (useCustomApi && selectedAnime.imageUrl) {
-            posterSrc = selectedAnime.imageUrl;
-        } else { // Fallback
-            posterSrc = dandanplayApi.posterImg(selectedAnime.animeId);
-        }
-        getById(eleIds.searchImg).src = posterSrc;
+        // [新增] 显示API来源
+        const apiSourceDiv = getById(eleIds.searchApiSource);
+        if (apiSourceDiv) apiSourceDiv.innerText = `来源: ${selectedAnime.apiName}`;
     }
 
     function doSearchTitleSwtich(e) {
@@ -3325,18 +3626,12 @@
         episodeNumSelect.style.maxWidth = '100%';
         numDiv.append(episodeNumSelect);
 
-        const useOfficialApi = lsGetItem(lsKeys.useOfficialApi.id);
-        const useCustomApi = lsGetItem(lsKeys.useCustomApi.id);
-        let posterSrc = '';
+        // [修正] 始终使用匹配到的海报
+        getById(eleIds.searchImg).src = anime.imageUrl || dandanplayApi.posterImg(anime.animeId);
 
-        if (useOfficialApi) {
-            posterSrc = dandanplayApi.posterImg(anime.animeId);
-        } else if (useCustomApi && anime.imageUrl) {
-            posterSrc = anime.imageUrl;
-        } else { // Fallback
-            posterSrc = dandanplayApi.posterImg(anime.animeId);
-        }
-        getById(eleIds.searchImg).src = posterSrc;
+        // [新增] 更新API来源显示
+        const apiSourceDiv = getById(eleIds.searchApiSource);
+        if (apiSourceDiv) apiSourceDiv.innerText = `来源: ${anime.apiName}`;
     }
 
     function doDanmakuSwitchEpisode() {
@@ -3344,20 +3639,41 @@
         const episodeNumSelect = getById(eleIds.danmakuEpisodeNumSelect);
         const anime = window.ede.searchDanmakuOpts.animes[animeSelect.selectedIndex];
 
+        // [修正] 构造一个更完整的 episodeInfo 对象，并使用正确的 unique_episode_key
+        const { _episode_key, seriesOrMovieId } = window.ede.searchDanmakuOpts;
         const episodeInfo = {
             episodeId: episodeNumSelect.value,
             episodeTitle: episodeNumSelect.options[episodeNumSelect.selectedIndex].text,
             episodeIndex: episodeNumSelect.selectedIndex,
+            bgmEpisodeIndex: episodeNumSelect.selectedIndex, // 假设与剧集索引相同
             animeId: anime.animeId,
             animeTitle: anime.animeTitle,
-        }
+            animeOriginalTitle: '', // 手动匹配时通常没有
+            imageUrl: anime.imageUrl,
+            apiPrefix: anime.apiPrefix, // [修正] 携带API前缀
+            apiName: anime.apiName, // [新增] 携带API名称
+            seriesOrMovieId: seriesOrMovieId,
+        };
+
         const seasonInfo = {
             name: anime.animeTitle,
             episodeOffset: episodeNumSelect.selectedIndex - window.ede.searchDanmakuOpts.episode,
         }
         writeLsSeasonInfo(window.ede.searchDanmakuOpts._season_key, seasonInfo);
-        localStorage.setItem(window.ede.searchDanmakuOpts._episode_key, JSON.stringify(episodeInfo));
-        console.log(`手动匹配信息:`, episodeInfo);
+
+        // [修正] 使用与 getEpisodeInfo 中相同的逻辑来构造缓存键
+        const useOfficialApi = lsGetItem(lsKeys.useOfficialApi.id);
+        const useCustomApi = lsGetItem(lsKeys.useCustomApi.id);
+        const apiPriority = lsGetItem(lsKeys.apiPriority.id);
+        const enabledApis = apiPriority.filter(apiKey => {
+            if (apiKey === 'official') return useOfficialApi;
+            if (apiKey === 'custom') return useCustomApi;
+            return false;
+        });
+        const unique_episode_key = `_api_${enabledApis.join('_')}_` + _episode_key;
+        localStorage.setItem(unique_episode_key, JSON.stringify(episodeInfo));
+
+        console.log(`手动匹配成功，已加载新弹幕信息:`, episodeInfo);
         loadDanmaku(LOAD_TYPE.RELOAD);
         closeEmbyDialog();
     }
@@ -3391,7 +3707,7 @@
         window.ede.chConvert = value.id;
         lsSetItem(lsKeys.chConvert.id, window.ede.chConvert);
         loadDanmaku(LOAD_TYPE.REFRESH);
-        console.log(value.name);
+        console.log(`简繁转换已切换为: ${value.name}`);
     }
 
     function doDanmuListOptsChange(value, index) {
@@ -3438,7 +3754,7 @@
     function onSliderChange(val, opts) {
         onSliderChangeLabel(val, opts);
         if (opts.key && lsCheckSet(opts.key, val)) {
-            let needReload = opts.needReload === undefined ? true : opts.needReload;
+            let needReload = opts.needReload !== false;
             if (opts.isManual) {
                 needReload = false;
             }
@@ -3453,10 +3769,13 @@
     function onSliderChangeLabel(val, opts) {
         if (opts.labelId) {
             const labelEle = getById(opts.labelId);
-            if (labelEle) labelEle.innerText = val;
+            if (labelEle) {
+                labelEle.innerText = val;
+            }
         }
-        if (opts.labelEle && opts.labelEle instanceof HTMLElement) {
-            opts.labelEle.innerText = val;
+        const nextEle = opts.labelEle?.parentNode;
+        if (nextEle && nextEle.children) {
+            (nextEle.children.length > 0 ? nextEle.children[0] : nextEle).innerText = val;
         }
     }
 
@@ -3938,7 +4257,7 @@
     function lsBatchRemove(prefixes) {
         return Object.keys(localStorage)
         .filter(key => prefixes.some(prefix => key.startsWith(prefix)))
-            .map(key => localStorage.removeItem(key))
+            .map(key => { console.log('Removing cache key:', key); localStorage.removeItem(key); })
             .length > 0;
     }
 
@@ -3993,7 +4312,7 @@
             if (timeout > 0) {
                 timeoutId = setTimeout(() => {
                     clearInterval(intervalId);
-                    console.log(`waitForElement: unable to find element[${elementMark}], timeout: ${timeout}`);
+                    console.warn(`[waitForElement] 查找元素 [${elementMark}] 超时 (${timeout}ms)`);
                     reject(new Error(`Element [${elementMark}] not found within ${timeout}ms`));
                 }, timeout);
             }
@@ -4133,7 +4452,7 @@
         if (OS.isApple()) { _media.src = ''; }
         _media.style.display = 'none';
         _media.id = eleIds.h5VideoAdapter;
-        _media.classList.add('htmlvideoplayer', 'moveUpSubtitles');
+        _media.classList.add('htmlvideoplayer', 'moveUpSubtitles'); // 沿用 Emby class
         document.body.prepend(_media);
 
         _media.play();
@@ -4153,22 +4472,22 @@
                     // 当前时间与上次记录时间差值大于2秒,则判定为用户操作进度,seeking 事件必须在 currentTime 更改后触发,否则回退后弹幕将消失
                     if (Math.abs(mediaTime - realCurrentTime) > 2) {
                         _media.dispatchEvent(new Event('seeking'));
-                        console.warn('seeking', realCurrentTime, mediaTime);
+                        console.warn(`[虚拟播放器] 检测到拖动进度条 (seeking), Emby时间: ${realCurrentTime}, 虚拟播放器时间: ${mediaTime}`);
                     }
                     if (lsGetItem(lsKeys.debugH5VideoAdapterEnable.id)) {
-                        console.warn(`${eleIds.h5VideoAdapter}, currentTime: ${_media.currentTime}, playbackRate: ${_media.playbackRate}`);
+                        console.log(`[虚拟播放器] 时间更新: currentTime=${_media.currentTime}, playbackRate=${_media.playbackRate}`);
                     }
                 },
             });
         });
         playbackEventsRefresh({
             'pause': (e) => {
-                console.warn(e.type);
+                console.warn('[虚拟播放器] 监听到暂停事件 (pause)');
                 _media.dispatchEvent(new Event('pause'));
                 videoTimeUpdateInterval(_media, false);
             },
             'unpause': (e) => {
-                console.warn(e.type);
+                console.warn('[虚拟播放器] 监听到取消暂停/播放事件 (unpause)');
                 _media.dispatchEvent(new Event('play'));
                 videoTimeUpdateInterval(_media, true);
             },
@@ -4215,7 +4534,7 @@
     }
 
     function onViewShow(e) {
-        console.log(e.type, e);
+        console.log(`监听到视图切换事件 (viewshow), 类型: ${e.detail.type}`);
         customeUrl.init();
         lsGetItem(lsKeys.quickDebugOn.id) && !getById(eleIds.danmakuSettingBtnDebug) && quickDebug();
         addEasterEggListener();
