@@ -1,12 +1,16 @@
 {
-  "singleQuote": true,
-  "requirePragma": false,
-  "insertPragma": false,
-  "useTabs": false,
-  "tabWidth": 4,
-  "semi": true,
-  "proseWrap": "preserve",
-  "endOfLine": "lf",
-  "printWidth": 180,
-  "trailingComma": "all"
+  "name": "misaka-danmu-proxy",
+  "version": "1.0.0",
+  "description": "Misaka弹幕代理系统",
+  "main": "cf_worker.js",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "keywords": ["danmaku", "emby", "cloudflare", "worker"],
+  "author": "misaka10876",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
 }
