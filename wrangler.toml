@@ -1,3 +1,7 @@
 name = "misaka-danmu-proxy"
 main = "cf_worker.js"
 compatibility_date = "2025-09-22"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "3f2e505906b04bbf85d47b9194706d1d"
