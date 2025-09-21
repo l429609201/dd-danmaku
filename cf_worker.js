@@ -7,7 +7,6 @@ const appId = APP_ID;
 const appSecret = APP_SECRET;
 
 // 功能开关配置（从环境变量获取）
-const ENABLE_RATE_LIMIT = (typeof ENABLE_RATE_LIMIT_ENV !== 'undefined') ? ENABLE_RATE_LIMIT_ENV === 'true' : true; // 是否启用频率限制，默认启用
 const ENABLE_ASYMMETRIC_AUTH = (typeof ENABLE_ASYMMETRIC_AUTH_ENV !== 'undefined') ? ENABLE_ASYMMETRIC_AUTH_ENV === 'true' : false; // 是否启用非对称认证，默认禁用
 
 // 允许访问的主机名列表
@@ -21,13 +20,13 @@ const hostlist = { 'api.dandanplay.net': null };
 const DEFAULT_USER_AGENT_LIMITS = {
     // 专属客户端 - 最高优先级
     "MisakaDanmaku": {
-        enabled: true, // 是否启用此客户端
+        enabled: true, 
         name: "misaka-dd-danmaku",
         version: "1.0.0",
         pattern: "misaka-dd-danmaku",
         maxRequestsPerHour: 100,
         maxRequestsPerDay: 1000,
-        description: "Misaka弹幕专用客户端"
+        description: "Misaka弹幕专用插件"
     }
 };
 
@@ -91,15 +90,13 @@ async function handleRequest(request) {
         return handleAuthChallenge(request);
     }
 
-    // 新增：访问控制检查（如果启用）
-    if (ENABLE_RATE_LIMIT) {
-        const accessCheck = await checkAccess(request);
-        if (!accessCheck.allowed) {
-            return new Response(accessCheck.reason, {
-                status: accessCheck.status,
-                headers: { 'Access-Control-Allow-Origin': '*' }
-            });
-        }
+    // 新增：访问控制检查
+    const accessCheck = await checkAccess(request);
+    if (!accessCheck.allowed) {
+        return new Response(accessCheck.reason, {
+            status: accessCheck.status,
+            headers: { 'Access-Control-Allow-Origin': '*' }
+        });
     }
 
     let url = urlObj.href.replace(urlObj.origin + '/cors/', '').trim();
@@ -169,12 +166,10 @@ async function checkAccess(request) {
         return { allowed: false, reason: '未识别的用户代理', status: 403 };
     }
 
-    // 2. 基于UA类型的频率限制检查（如果启用）
-    if (ENABLE_RATE_LIMIT) {
-        const rateLimitCheck = await checkRateLimitByUA(clientIP, uaConfig);
-        if (!rateLimitCheck.allowed) {
-            return { allowed: false, reason: rateLimitCheck.reason, status: 429 };
-        }
+    // 2. 基于UA类型的频率限制检查
+    const rateLimitCheck = await checkRateLimitByUA(clientIP, uaConfig);
+    if (!rateLimitCheck.allowed) {
+        return { allowed: false, reason: rateLimitCheck.reason, status: 429 };
     }
 
     // 3. 非对称密钥验证（如果启用）
