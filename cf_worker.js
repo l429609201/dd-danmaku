@@ -2,13 +2,6 @@
 // 🔧 配置区域 - 请根据需要修改以下参数
 // ========================================
 
-// 弹弹play API 配置（从 Workers 环境变量获取）
-const appId = APP_ID;
-const appSecret = APP_SECRET;
-
-// 功能开关配置（从环境变量获取）
-const ENABLE_ASYMMETRIC_AUTH = (typeof ENABLE_ASYMMETRIC_AUTH_ENV !== 'undefined') ? ENABLE_ASYMMETRIC_AUTH_ENV === 'true' : false; // 是否启用非对称认证，默认禁用
-
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
 
@@ -31,13 +24,13 @@ const DEFAULT_USER_AGENT_LIMITS = {
 };
 
 // 从环境变量获取 User-Agent 限制配置
-function getUserAgentLimits() {
+function getUserAgentLimits(env) {
     let limits = DEFAULT_USER_AGENT_LIMITS;
 
     // 尝试从环境变量获取自定义配置
-    if (typeof USER_AGENT_LIMITS_CONFIG !== 'undefined' && USER_AGENT_LIMITS_CONFIG) {
+    if (env.USER_AGENT_LIMITS_CONFIG) {
         try {
-            limits = JSON.parse(USER_AGENT_LIMITS_CONFIG);
+            limits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
         } catch (error) {
             console.error('解析 USER_AGENT_LIMITS_CONFIG 失败，使用默认配置:', error);
         }
@@ -55,23 +48,34 @@ function getUserAgentLimits() {
     return enabledLimits;
 }
 
-const ACCESS_CONFIG = {
-    // 基于User-Agent的分级限制配置（从环境变量动态获取）
-    get userAgentLimits() {
-        return getUserAgentLimits();
-    },
+// 获取访问控制配置
+function getAccessConfig(env) {
+    const ENABLE_ASYMMETRIC_AUTH = env.ENABLE_ASYMMETRIC_AUTH_ENV === 'true';
 
-    // 非对称密钥验证配置
-    asymmetricAuth: {
-        enabled: ENABLE_ASYMMETRIC_AUTH, // 从环境变量控制是否启用
-        privateKeyHex: (typeof PRIVATE_KEY_HEX !== 'undefined') ? PRIVATE_KEY_HEX : null, // Worker端私钥（十六进制格式，从环境变量获取）
-        challengeEndpoint: '/auth/challenge' // 挑战端点
+    return {
+        // 基于User-Agent的分级限制配置（从环境变量动态获取）
+        get userAgentLimits() {
+            return getUserAgentLimits(env);
+        },
+
+        // 非对称密钥验证配置
+        asymmetricAuth: {
+            enabled: ENABLE_ASYMMETRIC_AUTH, // 从环境变量控制是否启用
+            privateKeyHex: env.PRIVATE_KEY_HEX || null, // Worker端私钥（十六进制格式，从环境变量获取）
+            challengeEndpoint: '/auth/challenge' // 挑战端点
+        }
+    };
+}
+
+
+
+export default {
+    async fetch(request, env, ctx) {
+        return await handleRequest(request, env);
     }
 };
 
-
-
-async function handleRequest(request) {
+async function handleRequest(request, env) {
     if (request.method === 'OPTIONS') {
         return new Response(null, {
             status: 204,
@@ -84,14 +88,15 @@ async function handleRequest(request) {
     }
 
     const urlObj = new URL(request.url);
+    const ACCESS_CONFIG = getAccessConfig(env);
 
     // 新增：处理挑战端点
     if (ACCESS_CONFIG.asymmetricAuth.enabled && urlObj.pathname === ACCESS_CONFIG.asymmetricAuth.challengeEndpoint) {
-        return handleAuthChallenge(request);
+        return handleAuthChallenge(request, env);
     }
 
     // 新增：访问控制检查
-    const accessCheck = await checkAccess(request);
+    const accessCheck = await checkAccess(request, env);
     if (!accessCheck.allowed) {
         return new Response(accessCheck.reason, {
             status: accessCheck.status,
@@ -109,6 +114,9 @@ async function handleRequest(request) {
     if (!(tUrlObj.hostname in hostlist)) {
         return Forbidden(tUrlObj);
     }
+
+    const appId = env.APP_ID;
+    const appSecret = env.APP_SECRET;
 
     const timestamp = Math.floor(Date.now() / 1000);
     const apiPath = tUrlObj.pathname;
@@ -133,7 +141,7 @@ async function handleRequest(request) {
     response.headers.set('Access-Control-Allow-Origin', '*');
 
     // 新增：记录请求到KV存储
-    await recordRequest(request);
+    await recordRequest(request, env);
 
     return response;
 }
@@ -156,18 +164,19 @@ async function generateSignature(appId, timestamp, path, appSecret) {
 }
 
 // 新增：访问控制检查函数
-async function checkAccess(request) {
+async function checkAccess(request, env) {
     const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
     const userAgent = request.headers.get('User-Agent') || '';
+    const ACCESS_CONFIG = getAccessConfig(env);
 
     // 1. 识别User-Agent类型并获取对应限制
-    const uaConfig = identifyUserAgent(userAgent);
+    const uaConfig = identifyUserAgent(userAgent, ACCESS_CONFIG);
     if (!uaConfig) {
         return { allowed: false, reason: '未识别的用户代理', status: 403 };
     }
 
     // 2. 基于UA类型的频率限制检查
-    const rateLimitCheck = await checkRateLimitByUA(clientIP, uaConfig);
+    const rateLimitCheck = await checkRateLimitByUA(clientIP, uaConfig, env);
     if (!rateLimitCheck.allowed) {
         return { allowed: false, reason: rateLimitCheck.reason, status: 429 };
     }
@@ -184,7 +193,7 @@ async function checkAccess(request) {
 }
 
 // 新增：识别User-Agent类型
-function identifyUserAgent(userAgent) {
+function identifyUserAgent(userAgent, ACCESS_CONFIG) {
     for (const [key, config] of Object.entries(ACCESS_CONFIG.userAgentLimits)) {
         if (key === 'default') continue;
 
@@ -194,11 +203,11 @@ function identifyUserAgent(userAgent) {
     }
 
     // 如果没有匹配到，使用默认配置
-    return { ...ACCESS_CONFIG.userAgentLimits.default, type: 'default' };
+    return ACCESS_CONFIG.userAgentLimits.default ? { ...ACCESS_CONFIG.userAgentLimits.default, type: 'default' } : null;
 }
 
 // 新增：基于UA类型的频率限制检查
-async function checkRateLimitByUA(clientIP, uaConfig) {
+async function checkRateLimitByUA(clientIP, uaConfig, env) {
     const now = Date.now();
     const uaType = uaConfig.type;
     const hourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}`;
@@ -206,7 +215,7 @@ async function checkRateLimitByUA(clientIP, uaConfig) {
 
     try {
         // 检查小时限制
-        const hourCount = parseInt(await RATE_LIMIT_KV.get(hourKey) || '0');
+        const hourCount = parseInt(await env.RATE_LIMIT_KV.get(hourKey) || '0');
         if (hourCount >= uaConfig.maxRequestsPerHour) {
             return {
                 allowed: false,
@@ -215,7 +224,7 @@ async function checkRateLimitByUA(clientIP, uaConfig) {
         }
 
         // 检查日限制
-        const dayCount = parseInt(await RATE_LIMIT_KV.get(dayKey) || '0');
+        const dayCount = parseInt(await env.RATE_LIMIT_KV.get(dayKey) || '0');
         if (dayCount >= uaConfig.maxRequestsPerDay) {
             return {
                 allowed: false,
@@ -232,10 +241,11 @@ async function checkRateLimitByUA(clientIP, uaConfig) {
 }
 
 // 新增：记录请求（基于UA类型）
-async function recordRequest(request) {
+async function recordRequest(request, env) {
     const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
     const userAgent = request.headers.get('User-Agent') || '';
-    const uaConfig = identifyUserAgent(userAgent);
+    const ACCESS_CONFIG = getAccessConfig(env);
+    const uaConfig = identifyUserAgent(userAgent, ACCESS_CONFIG);
     const uaType = uaConfig.type;
 
     const now = Date.now();
@@ -244,11 +254,11 @@ async function recordRequest(request) {
 
     try {
         // 更新计数器
-        const hourCount = parseInt(await RATE_LIMIT_KV.get(hourKey) || '0') + 1;
-        const dayCount = parseInt(await RATE_LIMIT_KV.get(dayKey) || '0') + 1;
+        const hourCount = parseInt(await env.RATE_LIMIT_KV.get(hourKey) || '0') + 1;
+        const dayCount = parseInt(await env.RATE_LIMIT_KV.get(dayKey) || '0') + 1;
 
-        await RATE_LIMIT_KV.put(hourKey, hourCount.toString(), { expirationTtl: 3600 }); // 1小时过期
-        await RATE_LIMIT_KV.put(dayKey, dayCount.toString(), { expirationTtl: 86400 }); // 1天过期
+        await env.RATE_LIMIT_KV.put(hourKey, hourCount.toString(), { expirationTtl: 3600 }); // 1小时过期
+        await env.RATE_LIMIT_KV.put(dayKey, dayCount.toString(), { expirationTtl: 86400 }); // 1天过期
 
         // 记录访问日志（可选）
         console.log(`请求已记录: IP=${clientIP}, 用户代理=${uaType}, 小时=${hourCount}/${uaConfig.maxRequestsPerHour}, 每日=${dayCount}/${uaConfig.maxRequestsPerDay}`);
@@ -258,7 +268,7 @@ async function recordRequest(request) {
 }
 
 // 新增：处理挑战-响应认证
-async function handleAuthChallenge(request) {
+async function handleAuthChallenge(request, env) {
     if (request.method !== 'POST') {
         return new Response('请求方法不被允许', { status: 405 });
     }
@@ -269,6 +279,7 @@ async function handleAuthChallenge(request) {
             return new Response('缺少挑战参数', { status: 400 });
         }
 
+        const ACCESS_CONFIG = getAccessConfig(env);
         // 使用私钥对挑战进行签名
         const signature = await signChallenge(challenge, ACCESS_CONFIG.asymmetricAuth.privateKeyHex);
 
