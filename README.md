@@ -7,12 +7,6 @@
 <img width="1847" height="995" alt="image" src="https://github.com/user-attachments/assets/6995d4d2-7bb4-433b-90a1-a3a1921f9a30" />
 
 
-## 安装
-
-推荐使用第三方用户脚本加载器（如 **CustomCssJS**）来安装和管理此插件。此方式在不同客户端上具有最佳的兼容性和最便捷的管理体验。
-
-关于其他安装方式，请参考原始项目文档。
-
 ## 食用方法 (手动注入)
 
 如果你不想使用 `CustomCssJS` 插件，也可以通过手动修改前端文件的方式来加载此脚本。以下方法参考自 Catcat's Blog。
