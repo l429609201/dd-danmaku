@@ -1,4 +1,4 @@
-name = "misaka-danmu-proxy"
+name = "danmu-api"
 main = "cf_worker.js"
 compatibility_date = "2025-09-22"
 

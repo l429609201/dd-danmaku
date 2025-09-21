@@ -16,28 +16,50 @@ const hostlist = { 'api.dandanplay.net': null };
 // ========================================
 // 🛡️ 访问控制配置 - 基于UA的分级限制
 // ========================================
+
+// 默认的 User-Agent 限制配置
+const DEFAULT_USER_AGENT_LIMITS = {
+    // 专属客户端 - 最高优先级
+    "MisakaDanmaku": {
+        enabled: true, // 是否启用此客户端
+        name: "misaka-dd-danmaku",
+        version: "1.0.0",
+        pattern: "misaka-dd-danmaku",
+        maxRequestsPerHour: 100,
+        maxRequestsPerDay: 1000,
+        description: "Misaka弹幕专用客户端"
+    }
+};
+
+// 从环境变量获取 User-Agent 限制配置
+function getUserAgentLimits() {
+    let limits = DEFAULT_USER_AGENT_LIMITS;
+
+    // 尝试从环境变量获取自定义配置
+    if (typeof USER_AGENT_LIMITS_CONFIG !== 'undefined' && USER_AGENT_LIMITS_CONFIG) {
+        try {
+            limits = JSON.parse(USER_AGENT_LIMITS_CONFIG);
+        } catch (error) {
+            console.error('解析 USER_AGENT_LIMITS_CONFIG 失败，使用默认配置:', error);
+        }
+    }
+
+    // 过滤出启用的客户端
+    const enabledLimits = {};
+    Object.keys(limits).forEach(key => {
+        const config = limits[key];
+        if (config && config.enabled !== false) { // 默认启用，除非明确设置为 false
+            enabledLimits[key] = config;
+        }
+    });
+
+    return enabledLimits;
+}
+
 const ACCESS_CONFIG = {
-    // 基于User-Agent的分级限制配置
-    userAgentLimits: {
-        // 专属客户端 - 最高优先级
-        "MisakaDanmaku": {
-            name: "misaka-dd-danmaku",
-            version: "1.0.0",
-            pattern: "misaka-dd-danmaku",
-            maxRequestsPerHour: 100,
-            maxRequestsPerDay: 1000,
-            description: "Misaka弹幕专用客户端"
-        },
-
-        // Emby客户端 - 较高限制
-        "EmbyTheater": {
-            pattern: "EmbyTheater",
-            maxRequestsPerHour: 200,
-            maxRequestsPerDay: 2000,
-            description: "Emby Theater客户端"
-        },
-
-
+    // 基于User-Agent的分级限制配置（从环境变量动态获取）
+    get userAgentLimits() {
+        return getUserAgentLimits();
     },
 
     // 非对称密钥验证配置
