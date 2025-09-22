@@ -7,9 +7,11 @@ compatibility_date = "2024-09-21"
 [vars]
 ENABLE_ASYMMETRIC_AUTH_ENV = "false"
 ENABLE_DETAILED_LOGGING = "true"
-APP_ID = "PLACEHOLDER"
-APP_SECRET = "PLACEHOLDER"
-USER_AGENT_LIMITS_CONFIG = "PLACEHOLDER"
+
+# 敏感配置请在 Cloudflare Pages 项目的环境变量中设置：
+# APP_ID = "你的应用ID"
+# APP_SECRET = "你的应用密钥"
+# USER_AGENT_LIMITS_CONFIG = "你的JSON配置"
 
 
 # KV 绑定配置

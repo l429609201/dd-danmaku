@@ -13,7 +13,7 @@ const hostlist = { 'api.dandanplay.net': null };
 
 // 从环境变量获取 User-Agent 限制配置
 function getUserAgentLimits(env) {
-    // 必须从环境变量获取配置，没有默认配置
+    // 必须从环境变量获取配置
     if (!env.USER_AGENT_LIMITS_CONFIG) {
         console.error('USER_AGENT_LIMITS_CONFIG 环境变量未配置，拒绝所有请求');
         return {};
@@ -21,6 +21,7 @@ function getUserAgentLimits(env) {
 
     try {
         const limits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
+        console.log('使用环境变量配置');
 
         // 过滤出启用的客户端
         const enabledLimits = {};
