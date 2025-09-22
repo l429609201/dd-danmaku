@@ -98,14 +98,20 @@ async function handleRequest(request, env) {
     // 新增：访问控制检查
     const accessCheck = await checkAccess(request, env);
     if (!accessCheck.allowed) {
+        // 获取客户端信息
+        const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+        const userAgent = request.headers.get('User-Agent') || '';
+
+        // 格式化错误消息
+        const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
+
         // 详细日志记录
         const ACCESS_CONFIG = getAccessConfig(env);
         if (ACCESS_CONFIG.logging.enabled) {
-            const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
-            const userAgent = request.headers.get('User-Agent') || '';
-            console.log(`访问被拒绝: IP=${clientIP}, UA=${userAgent}, 原因=${accessCheck.reason}, 路径=${urlObj.pathname}`);
+            console.log(`访问被拒绝: ${errorMessage}, 路径=${urlObj.pathname}`);
         }
-        return new Response(accessCheck.reason, {
+
+        return new Response(errorMessage, {
             status: accessCheck.status,
             headers: { 'Access-Control-Allow-Origin': '*' }
         });
@@ -181,13 +187,13 @@ async function checkAccess(request, env) {
     // 1. 识别User-Agent类型并获取对应限制
     const uaConfig = identifyUserAgent(userAgent, ACCESS_CONFIG);
     if (!uaConfig) {
-        return { allowed: false, reason: '禁止访问的代理', status: 403 };
+        return { allowed: false, reason: '禁止访问的UA', status: 403 };
     }
 
     // 2. 基于UA类型和路径的频率限制检查
     const rateLimitCheck = await checkRateLimitByUA(clientIP, uaConfig, env, apiPath);
     if (!rateLimitCheck.allowed) {
-        return { allowed: false, reason: rateLimitCheck.reason, status: 429 };
+        return { allowed: false, reason: `频率限制：${rateLimitCheck.reason}`, status: 429 };
     }
 
     // 3. 非对称密钥验证（如果启用）
