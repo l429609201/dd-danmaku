@@ -140,14 +140,28 @@ async function handleRequest(request, env) {
     console.log('时间戳: ' + timestamp);
     console.log('API路径: ' + apiPath);
     
+    // 构建转发请求的头部，排除自定义头
+    const forwardHeaders = {};
+    for (const [key, value] of request.headers.entries()) {
+        // 排除自定义头，只转发标准头
+        if (key !== 'X-User-Agent' && key !== 'X-Challenge-Response') {
+            forwardHeaders[key] = value;
+        }
+    }
+
+    const finalHeaders = {
+        ...forwardHeaders,
+        "X-AppId": appId,
+        "X-Signature": signature,
+        "X-Timestamp": timestamp,
+        "X-Auth": "1",
+    };
+
+    // 调试日志：显示最终的请求头
+    console.log('转发请求头:', JSON.stringify(finalHeaders, null, 2));
+
     let response = await fetch(url, {
-        headers: {
-            ...request.headers,
-            "X-AppId": appId,
-            "X-Signature": signature,
-            "X-Timestamp": timestamp,
-            "X-Auth": "1",
-        },
+        headers: finalHeaders,
         body: request.body,
         method: request.method,
     });
@@ -235,7 +249,7 @@ async function checkRateLimitByUA(clientIP, uaConfig, env, apiPath = '') {
 
     // 检查UA配置中的pathLimits数组
     if (apiPath && uaConfig.pathLimits && Array.isArray(uaConfig.pathLimits)) {
-        const pathLimit = uaConfig.pathLimits.find(limit => limit.path === apiPath);
+        const pathLimit = uaConfig.pathLimits.find(limit => apiPath.startsWith(limit.path));
         if (pathLimit) {
             if (pathLimit.maxRequestsPerHour === -1) {
                 // -1 表示不限制
@@ -306,7 +320,7 @@ async function recordRequest(request, env, apiPath = '') {
     let pathSpecific = false;
     let pathLimitValue = null;
     if (apiPath && uaConfig.pathLimits && Array.isArray(uaConfig.pathLimits)) {
-        const pathLimit = uaConfig.pathLimits.find(limit => limit.path === apiPath);
+        const pathLimit = uaConfig.pathLimits.find(limit => apiPath.startsWith(limit.path));
         if (pathLimit) {
             pathSpecific = true;
             pathLimitValue = pathLimit.maxRequestsPerHour;
