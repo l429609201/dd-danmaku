@@ -15,3 +15,9 @@ USER_AGENT_LIMITS_CONFIG = '''{{USER_AGENT_LIMITS_CONFIG}}'''
 binding = "RATE_LIMIT_KV"
 id = "3f2e505906b04bbf85d47b9194706d1d"
 
+# wrangler.toml (wrangler v3.88.0^)
+[observability.logs]
+enabled = true
+
+
+
