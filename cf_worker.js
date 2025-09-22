@@ -13,13 +13,13 @@ const hostlist = { 'api.dandanplay.net': null };
 const DEFAULT_USER_AGENT_LIMITS = {
     // 专属客户端 - 最高优先级
     "MisakaDanmaku": {
-        enabled: true, 
+        enabled: true,
         name: "misaka-dd-danmaku",
         version: "1.0.0",
         pattern: "misaka-dd-danmaku",
         maxRequestsPerHour: 100,
         maxRequestsPerDay: 1000,
-        description: "Misaka弹幕专用插件"
+        description: "Misaka弹幕专用客户端"
     }
 };
 
@@ -394,6 +394,3 @@ function Forbidden(url) {
     });
 }
 
-addEventListener('fetch', (event) => {
-    return event.respondWith(handleRequest(event.request));
-});
