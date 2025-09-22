@@ -8,6 +8,7 @@ try {
     // 检查关键环境变量（不打印值）
     console.log('\n🔑 关键变量状态:');
     console.log('- USER_AGENT_LIMITS_CONFIG:', process.env.USER_AGENT_LIMITS_CONFIG ? '已设置 (已隐藏)' : '未设置，使用默认值');
+    console.log('- IP_BLACKLIST_CONFIG:', process.env.IP_BLACKLIST_CONFIG ? '已设置 (已隐藏)' : '未设置，使用默认值');
 
     // 读取 wrangler.toml 文件
     console.log('\n📝 读取 wrangler.toml...');
@@ -16,6 +17,7 @@ try {
     // 替换占位符
     console.log('🔄 替换占位符...');
     config = config.replace('{{USER_AGENT_LIMITS_CONFIG}}', process.env.USER_AGENT_LIMITS_CONFIG || '{}');
+    config = config.replace('{{IP_BLACKLIST_CONFIG}}', process.env.IP_BLACKLIST_CONFIG || '[]');
 
     // 写回文件
     console.log('💾 写入配置文件...');

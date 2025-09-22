@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.0.2
+// @version      1.1.0
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -25,7 +25,7 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.0.2', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.1.0', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -218,9 +218,9 @@
         switch: { id: 'danmakuSwitch', defaultValue: true, name: '弹幕开关' },
         filterLevel: { id: 'danmakuFilterLevel', defaultValue: 0, name: '过滤强度', min: 0, max: 3, step: 1 },
         heightPercent: { id: 'danmakuHeightPercent', defaultValue: 100, name: '显示区域', min: 3, max: 100, step: 1 },
-        fontSizeRate: { id: 'danmakuFontSizeRate', defaultValue: 1, name: '弹幕大小', min: 0.1, max: 3, step: 0.1 },
-        fontOpacity: { id: 'danmakuFontOpacity', defaultValue: 1, name: '透明度', min: 0.1, max: 1, step: 0.1 },
-        speed: { id: 'danmakuBaseSpeed', defaultValue: 1, name: '速度', min: 0.1, max: 3, step: 0.1 },
+        fontSizeRate: { id: 'danmakuFontSizeRate', defaultValue: 100, name: '弹幕大小', min: 10, max: 300, step: 10 },
+        fontOpacity: { id: 'danmakuFontOpacity', defaultValue: 100, name: '透明度', min: 10, max: 100, step: 10 },
+        speed: { id: 'danmakuBaseSpeed', defaultValue: 100, name: '速度', min: 10, max: 300, step: 10 },
         timelineOffset: { id: 'danmakuTimelineOffset', defaultValue: 0, name: '轴偏秒' },
         fontWeight: { id: 'danmakuFontWeight', defaultValue: 400, name: '弹幕粗细', min: 100, max: 1000, step: 100 },
         fontStyle: { id: 'danmakuFontStyle', defaultValue: 0, name: '弹幕斜体', min: 0, max: 2, step: 1 },
@@ -757,6 +757,241 @@
             });
         console.log(`[API请求] search/episodes 查询成功`, searchResult);
         return searchResult;
+    }
+
+    // 智能匹配函数：从候选列表中选择最佳匹配
+    function selectBestMatch(searchTitle, candidates) {
+        if (!candidates || candidates.length === 0) return null;
+
+        console.log(`[智能匹配] 搜索标题: "${searchTitle}", 候选数量: ${candidates.length}`);
+
+        // 解析搜索标题
+        const parsedSearch = parseSearchKeyword(searchTitle);
+        console.log(`[智能匹配] 解析搜索标题: ${JSON.stringify(parsedSearch)}`);
+
+        // 计算相似度得分
+        const scoredCandidates = candidates.map(candidate => {
+            const score = calculateMatchScore(parsedSearch.title, candidate);
+
+            // 季度和集数匹配加分
+            if (parsedSearch.season && candidate.animeTitle) {
+                const candidateParsed = parseSearchKeyword(candidate.animeTitle);
+                if (candidateParsed.season === parsedSearch.season) {
+                    score.total += 0.15; // 季度匹配加分
+                    console.log(`[智能匹配] 季度匹配加分: ${candidate.animeTitle}`);
+                }
+            }
+
+            // 集数匹配加分 (多种方式检测)
+            if (parsedSearch.episode) {
+                let episodeMatched = false;
+
+                // 方式1: 从episodeId末尾提取集数 (如181180001 -> 1)
+                if (candidate.episodeId) {
+                    const episodeFromId = parseInt(candidate.episodeId.toString().slice(-3));
+                    if (episodeFromId === parsedSearch.episode) {
+                        score.total += 0.25; // episodeId匹配加分更高
+                        episodeMatched = true;
+                        console.log(`[智能匹配] episodeId集数匹配加分: ${candidate.animeTitle} (${episodeFromId})`);
+                    }
+                }
+
+                // 方式2: 从episodeTitle提取集数
+                if (!episodeMatched && candidate.episodeTitle) {
+                    const episodeMatch = candidate.episodeTitle.match(/第?(\d+)[话集]/);
+                    if (episodeMatch && parseInt(episodeMatch[1]) === parsedSearch.episode) {
+                        score.total += 0.2; // episodeTitle匹配加分
+                        console.log(`[智能匹配] episodeTitle集数匹配加分: ${candidate.animeTitle} - ${candidate.episodeTitle}`);
+                    }
+                }
+            }
+
+            console.log(`[智能匹配] "${candidate.animeTitle}" (${candidate.typeDescription}) - 得分: ${score.total.toFixed(2)}`);
+            return { ...candidate, score: score.total, scoreDetails: score };
+        });
+
+        // 按得分排序
+        scoredCandidates.sort((a, b) => b.score - a.score);
+
+        // 选择得分最高的候选
+        const bestMatch = scoredCandidates[0];
+        if (bestMatch.score > 0.15) { // 进一步降低阈值，提高匹配成功率
+            console.log(`[智能匹配] 选择最佳匹配: "${bestMatch.animeTitle}" (得分: ${bestMatch.score.toFixed(2)})`);
+            return bestMatch;
+        }
+
+        console.log(`[智能匹配] 没有找到足够好的匹配 (最高得分: ${bestMatch.score.toFixed(2)})`);
+        return null;
+    }
+
+    // 计算匹配得分
+    function calculateMatchScore(searchTitle, candidate) {
+        const score = {
+            titleSimilarity: 0,
+            typeBonus: 0,
+            keywordMatch: 0,
+            exactMatch: 0,
+            total: 0
+        };
+
+        // 0. 精确匹配检查 (权重: 0.4)
+        const normalizedSearch = normalizeTitle(searchTitle);
+        const normalizedCandidate = normalizeTitle(candidate.animeTitle);
+        if (normalizedSearch === normalizedCandidate) {
+            score.exactMatch = 0.4;
+        } else if (normalizedCandidate.includes(normalizedSearch) || normalizedSearch.includes(normalizedCandidate)) {
+            score.exactMatch = 0.3;
+        }
+
+        // 1. 标题相似度 (权重: 0.5)
+        score.titleSimilarity = calculateStringSimilarity(searchTitle, candidate.animeTitle) * 0.5;
+
+        // 2. 类型加分 (权重: 0.1)
+        if (candidate.type === 'tvseries') {
+            score.typeBonus = 0.1; // TV动画优先
+        } else if (candidate.type === 'tvspecial') {
+            score.typeBonus = 0.08; // TV特别版次优先
+        } else if (candidate.type === 'web') {
+            score.typeBonus = 0.06; // 网络放送
+        } else if (candidate.type === 'ova') {
+            score.typeBonus = 0.04; // OVA
+        } else if (candidate.type === 'movie') {
+            score.typeBonus = 0.02; // 剧场版权重降低
+        }
+
+        // 3. 关键词匹配 (权重: 0.1)
+        const searchKeywords = extractKeywords(searchTitle);
+        const candidateKeywords = extractKeywords(candidate.animeTitle);
+        const keywordMatches = searchKeywords.filter(keyword =>
+            candidateKeywords.some(ck => ck.includes(keyword) || keyword.includes(ck))
+        ).length;
+        score.keywordMatch = (keywordMatches / Math.max(searchKeywords.length, 1)) * 0.1;
+
+        score.total = score.exactMatch + score.titleSimilarity + score.typeBonus + score.keywordMatch;
+        return score;
+    }
+
+    // 标题标准化函数
+    function normalizeTitle(title) {
+        return title
+            .toLowerCase()
+            .replace(/[：:]/g, '')
+            .replace(/\s+/g, ' ')
+            .replace(/[^\w\s\u4e00-\u9fff]/g, '') // 保留中文、英文、数字和空格
+            // 处理常见的同义词替换
+            .replace(/柜台/g, '前台')
+            .replace(/讨伐/g, '讨伐')
+            .replace(/头目/g, 'boss')
+            .replace(/迷宫/g, '迷宫')
+            .trim();
+    }
+
+    // 解析搜索关键词，提取标题、季数和集数
+    function parseSearchKeyword(keyword) {
+        keyword = keyword.trim();
+
+        // 1. 优先匹配 SXXEXX 格式
+        const sePattern = /^(.+?)\s*S(\d{1,2})E(\d{1,4})$/i;
+        const seMatch = sePattern.exec(keyword);
+        if (seMatch) {
+            return {
+                title: seMatch[1].trim(),
+                season: parseInt(seMatch[2]),
+                episode: parseInt(seMatch[3])
+            };
+        }
+
+        // 2. 匹配季度信息
+        const seasonPatterns = [
+            // S01, Season 1
+            { pattern: /^(.*?)\s*(?:S|Season)\s*(\d{1,2})$/i, handler: (m) => parseInt(m[2]) },
+            // 第一季, 第二部
+            { pattern: /^(.*?)\s*第\s*([一二三四五六七八九十\d]+)\s*[季部]$/i,
+              handler: (m) => {
+                  const seasonMap = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10};
+                  return seasonMap[m[2]] || parseInt(m[2]);
+              }
+            },
+            // 罗马数字 Ⅰ-Ⅻ
+            { pattern: /^(.*?)\s*([Ⅰ-Ⅻ])$/,
+              handler: (m) => {
+                  const romanMap = {'Ⅰ': 1, 'Ⅱ': 2, 'Ⅲ': 3, 'Ⅳ': 4, 'Ⅴ': 5, 'Ⅵ': 6, 'Ⅶ': 7, 'Ⅷ': 8, 'Ⅸ': 9, 'Ⅹ': 10, 'Ⅺ': 11, 'Ⅻ': 12};
+                  return romanMap[m[2].toUpperCase()];
+              }
+            },
+            // 普通数字
+            { pattern: /^(.*?)\s+(\d{1,2})$/, handler: (m) => parseInt(m[2]) }
+        ];
+
+        for (const {pattern, handler} of seasonPatterns) {
+            const match = pattern.exec(keyword);
+            if (match) {
+                try {
+                    const title = match[1].trim();
+                    const season = handler(match);
+                    // 避免将年份误认为季度
+                    if (season && !(title.length > 4 && /\d{4}$/.test(title))) {
+                        return { title, season, episode: null };
+                    }
+                } catch (e) {
+                    continue;
+                }
+            }
+        }
+
+        // 3. 如果没有匹配到特定格式，则返回原始标题
+        return { title: keyword, season: null, episode: null };
+    }
+
+    // 计算字符串相似度 (简化版编辑距离)
+    function calculateStringSimilarity(str1, str2) {
+        const s1 = str1.toLowerCase().replace(/[：:]/g, '');
+        const s2 = str2.toLowerCase().replace(/[：:]/g, '');
+
+        if (s1 === s2) return 1.0;
+        if (s1.includes(s2) || s2.includes(s1)) return 0.8;
+
+        // 计算编辑距离
+        const matrix = [];
+        for (let i = 0; i <= s1.length; i++) {
+            matrix[i] = [i];
+        }
+        for (let j = 0; j <= s2.length; j++) {
+            matrix[0][j] = j;
+        }
+
+        for (let i = 1; i <= s1.length; i++) {
+            for (let j = 1; j <= s2.length; j++) {
+                if (s1.charAt(i - 1) === s2.charAt(j - 1)) {
+                    matrix[i][j] = matrix[i - 1][j - 1];
+                } else {
+                    matrix[i][j] = Math.min(
+                        matrix[i - 1][j - 1] + 1,
+                        matrix[i][j - 1] + 1,
+                        matrix[i - 1][j] + 1
+                    );
+                }
+            }
+        }
+
+        const maxLength = Math.max(s1.length, s2.length);
+        return maxLength === 0 ? 1 : (maxLength - matrix[s1.length][s2.length]) / maxLength;
+    }
+
+    // 提取关键词
+    function extractKeywords(title) {
+        // 移除常见的无意义词汇
+        const stopWords = ['第', '季', '部', '篇', '章', '话', '集', '期', 'season', 'episode', 'ep', 'ova', 'tv', 'movie', 'special', 'the', 'of', 'and', 'in', 'to', 'a', 'an'];
+
+        return title
+            .toLowerCase()
+            .replace(/[：:]/g, ' ')
+            .replace(/[^\w\s\u4e00-\u9fff]/g, ' ') // 保留中文、英文、数字和空格
+            .split(/[\s\u3000]+/)
+            .filter(word => word.length > 1) // 过滤单字符
+            .filter(word => !stopWords.includes(word)) // 过滤停用词
+            .filter(word => !/^\d+$/.test(word)) // 过滤纯数字
+            .map(word => word.trim());
     }
 
     async function fetchMatchApi(payload, prefix) {
@@ -1337,6 +1572,16 @@
                 return { directMatch: true, apiPrefix: config.prefix, apiName: config.name, episodeInfo: { ...match, episodes: [{ episodeId: match.episodeId, episodeTitle: match.episodeTitle }], imageUrl: match.imageUrl } };
             }
 
+            // 1a.1. 如果 /match 接口返回了候选列表但没有直接匹配，尝试智能选择
+            if (matchResult && !matchResult.isMatched && matchResult.animes && matchResult.animes.length > 0) {
+                console.log(`[${config.name}] /match 接口返回候选列表，尝试智能匹配...`);
+                const bestMatch = selectBestMatch(animeName, matchResult.animes);
+                if (bestMatch) {
+                    console.log(`[${config.name}] 智能匹配选择:`, bestMatch.animeTitle);
+                    return { directMatch: true, apiPrefix: config.prefix, apiName: config.name, episodeInfo: { ...bestMatch, episodes: [{ episodeId: bestMatch.episodeId, episodeTitle: bestMatch.episodeTitle }], imageUrl: bestMatch.imageUrl } };
+                }
+            }
+
             // 1b. 尝试 /search/episodes 接口 (带集数)
             let searchTitle = animeName;
             let searchEpisode = episode;
@@ -1603,7 +1848,7 @@
         // const _container = document.querySelector(mediaContainerQueryStr);
         const _container = await waitForElement(mediaContainerQueryStr);
         _container.prepend(wrapper);
-        let _speed = 144 * lsGetItem(lsKeys.speed.id);
+        let _speed = 144 * (lsGetItem(lsKeys.speed.id) / 100);
         window.ede.danmaku = new Danmaku({
             container: wrapper,
             media: _media,
@@ -2058,7 +2303,7 @@
     function danmakuParser($obj) {
         //const fontSize = Number(values[2]) || 25
         // 弹幕大小
-        const fontSizeRate = lsGetItem(lsKeys.fontSizeRate.id);
+        const fontSizeRate = lsGetItem(lsKeys.fontSizeRate.id) / 100;
         let fontSize = 25;
         // 播放页媒体次级标题 h3 元素
         const fontSizeReferent = getByClass(classes.videoOsdTitle);
@@ -2075,7 +2320,7 @@
         const fontStyle = styles.fontStyles[lsGetItem(lsKeys.fontStyle.id)].id;
         const fontFamily = lsGetItem(lsKeys.fontFamily.id);
         // 弹幕透明度
-        const fontOpacity = Math.round(lsGetItem(lsKeys.fontOpacity.id) * 255).toString(16).padStart(2, '0');
+        const fontOpacity = Math.round(lsGetItem(lsKeys.fontOpacity.id) / 100 * 255).toString(16).padStart(2, '0');
         // 时间轴偏移秒数
         const timelineOffset = lsGetItem(lsKeys.timelineOffset.id);
         const sourceUidReg = /\[(.*)\](.*)/;
@@ -2227,7 +2472,10 @@
                     <div style="${styles.embySlider}">
                         <label class="${classes.embyLabel}" style="width: 5em;">${lsKeys.filterLevel.name}: </label>
                         <div id="${eleIds.filterLevelDiv}" style="width: 15.5em; text-align: center;"></div>
-                        <label style="${styles.embySliderLabel}">0</label>
+                        <label>
+                            <label style="${styles.embySliderLabel}"></label>
+                            <label></label>
+                        </label>
                     </div>
                     <div style="${styles.embySlider}">
                         <label class="${classes.embyLabel}" style="width: 5em;">${lsKeys.heightPercent.name}: </label>
@@ -2242,20 +2490,23 @@
                         <div id="${eleIds.danmakuSizeDiv}" style="width: 15.5em; text-align: center;"></div>
                         <label>
                             <label style="${styles.embySliderLabel}"></label>
-                            <label>倍</label>
+                            <label>%倍</label>
                         </label>
                     </div>
                     <div style="${styles.embySlider}">
                         <label class="${classes.embyLabel}" style="width: 5em;">${lsKeys.fontOpacity.name}: </label>
                         <div id="${eleIds.danmakuOpacityDiv}" style="width: 15.5em; text-align: center;"></div>
-                        <label style="${styles.embySliderLabel}"></label>
+                        <label>
+                            <label style="${styles.embySliderLabel}"></label>
+                            <label>%</label>
+                        </label>
                     </div>
                     <div style="${styles.embySlider}">
                         <label class="${classes.embyLabel}" style="width: 5em;">${lsKeys.speed.name}: </label>
                         <div id="${eleIds.danmakuSpeedDiv}" style="width: 15.5em; text-align: center;"></div>
                         <label>
                             <label style="${styles.embySliderLabel}"></label>
-                            <label>倍</label>
+                            <label>%倍</label>
                         </label>
                     </div>
                     <div style="${styles.embySlider}">
@@ -2513,7 +2764,7 @@
         const fontWeight = lsGetItem(lsKeys.fontWeight.id);
         const fontStyle = styles.fontStyles[lsGetItem(lsKeys.fontStyle.id)].id;
         const fontFamily = lsGetItem(lsKeys.fontFamily.id);
-        const fontOpacity = Math.round(lsGetItem(lsKeys.fontOpacity.id) * 255).toString(16).padStart(2, '0');
+        const fontOpacity = Math.round(lsGetItem(lsKeys.fontOpacity.id) / 100 * 255).toString(16).padStart(2, '0');
         const baseColor = Number(styles.colors.info).toString(16).padStart(6, '0');
         const color = `${baseColor}${fontOpacity}`;
         const shadowColor = baseColor === '000000' ? `#ffffff${fontOpacity}` : `#000000${fontOpacity}`;
@@ -4292,7 +4543,7 @@
     */
     function embySlider(opts = {}, onChange, onSliding) {
         const defaultOpts = {
-            min: 0.1, max: 3, step: 0.1, orient: 'horizontal',
+            orient: 'horizontal',
             'data-bubble': false, 'data-hoverthumb': true , style: '',
         };
         const options = { ...defaultOpts, ...opts };
@@ -4305,9 +4556,9 @@
                 opts.key = value.id;
                 const optsKeys = Object.keys(opts);
                 if (!optsKeys.includes('value')) { options.value = lsGetItem(value.id); }
-                if (!optsKeys.includes('min')) { slider.setAttribute('min', value.min); }
-                if (!optsKeys.includes('max')) { slider.setAttribute('max', value.max); }
-                if (!optsKeys.includes('step')) { slider.setAttribute('step', value.step); }
+                if (!optsKeys.includes('min') && value.min !== undefined) { slider.setAttribute('min', value.min); }
+                if (!optsKeys.includes('max') && value.max !== undefined) { slider.setAttribute('max', value.max); }
+                if (!optsKeys.includes('step') && value.step !== undefined) { slider.setAttribute('step', value.step); }
             } else {
                 slider.setAttribute(key, value);
             }

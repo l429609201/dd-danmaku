@@ -5,11 +5,78 @@
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
 
+// AppSecret轮换配置
+const SECRET_ROTATION_LIMIT = 500; // 每个secret使用500次后切换
+
 // ========================================
 // 🛡️ 访问控制配置 - 基于UA的分级限制
 // ========================================
 
 
+
+// 从环境变量获取IP黑名单配置
+function getIpBlacklist(env) {
+    if (!env.IP_BLACKLIST_CONFIG) {
+        console.log('IP_BLACKLIST_CONFIG 环境变量未配置，不启用IP黑名单');
+        return [];
+    }
+
+    try {
+        const blacklist = JSON.parse(env.IP_BLACKLIST_CONFIG);
+        console.log('IP黑名单配置加载成功，包含', blacklist.length, '个规则');
+        return blacklist;
+    } catch (error) {
+        console.error('解析IP黑名单配置失败:', error);
+        return [];
+    }
+}
+
+// 检查IP是否在黑名单中
+function isIpBlacklisted(clientIp, blacklist) {
+    if (!blacklist || blacklist.length === 0) {
+        return false;
+    }
+
+    for (const rule of blacklist) {
+        if (rule.includes('/')) {
+            // CIDR格式
+            if (isIpInCidr(clientIp, rule)) {
+                return true;
+            }
+        } else {
+            // 单个IP
+            if (clientIp === rule) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// 检查IP是否在CIDR范围内
+function isIpInCidr(ip, cidr) {
+    try {
+        const [network, prefixLength] = cidr.split('/');
+        const prefix = parseInt(prefixLength, 10);
+
+        // 简单的IPv4 CIDR检查
+        const ipParts = ip.split('.').map(Number);
+        const networkParts = network.split('.').map(Number);
+
+        if (ipParts.length !== 4 || networkParts.length !== 4) {
+            return false;
+        }
+
+        const ipInt = (ipParts[0] << 24) + (ipParts[1] << 16) + (ipParts[2] << 8) + ipParts[3];
+        const networkInt = (networkParts[0] << 24) + (networkParts[1] << 16) + (networkParts[2] << 8) + networkParts[3];
+        const mask = (-1 << (32 - prefix)) >>> 0;
+
+        return (ipInt & mask) === (networkInt & mask);
+    } catch (error) {
+        console.error('CIDR检查失败:', error);
+        return false;
+    }
+}
 
 // 从环境变量获取 User-Agent 限制配置
 function getUserAgentLimits(env) {
@@ -91,6 +158,14 @@ async function handleRequest(request, env) {
     const urlObj = new URL(request.url);
     const ACCESS_CONFIG = getAccessConfig(env);
 
+    // IP黑名单检查
+    const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+    const ipBlacklist = getIpBlacklist(env);
+    if (isIpBlacklisted(clientIP, ipBlacklist)) {
+        console.log(`IP ${clientIP} 在黑名单中，拒绝访问`);
+        return new Response('Access denied', { status: 403 });
+    }
+
     // 新增：处理挑战端点
     if (ACCESS_CONFIG.asymmetricAuth.enabled && urlObj.pathname === ACCESS_CONFIG.asymmetricAuth.challengeEndpoint) {
         return handleAuthChallenge(request, env);
@@ -130,11 +205,14 @@ async function handleRequest(request, env) {
     }
 
     const appId = env.APP_ID;
-    const appSecret = env.APP_SECRET;
+    const appSecret = await getCurrentAppSecret(env);
 
     const timestamp = Math.floor(Date.now() / 1000);
     const apiPath = tUrlObj.pathname;
     const signature = await generateSignature(appId, timestamp, apiPath, appSecret);
+
+    // 记录AppSecret使用次数
+    await recordAppSecretUsage(env);
     console.log('应用ID: ' + appId);
     console.log('签名: ' + signature);
     console.log('时间戳: ' + timestamp);
@@ -174,12 +252,75 @@ async function handleRequest(request, env) {
     return response;
 }
 
+// AppSecret轮换管理
+async function getCurrentAppSecret(env) {
+    const appSecret1 = env.APP_SECRET;
+    const appSecret2 = env.APP_SECRET_2;
+
+    if (!appSecret1) {
+        throw new Error('APP_SECRET 环境变量未配置');
+    }
+
+    if (!appSecret2) {
+        console.log('APP_SECRET_2 未配置，使用单一密钥');
+        return appSecret1;
+    }
+
+    try {
+        // 获取当前使用计数
+        const secret1Count = await env.RATE_LIMIT_KV.get('app_secret_1_count') || '0';
+        const secret2Count = await env.RATE_LIMIT_KV.get('app_secret_2_count') || '0';
+        const currentSecret = await env.RATE_LIMIT_KV.get('current_app_secret') || '1';
+
+        const count1 = parseInt(secret1Count, 10);
+        const count2 = parseInt(secret2Count, 10);
+
+        console.log(`Secret1使用次数: ${count1}, Secret2使用次数: ${count2}, 当前使用: Secret${currentSecret}`);
+
+        // 检查是否需要切换
+        if (currentSecret === '1' && count1 >= SECRET_ROTATION_LIMIT) {
+            // 切换到Secret2
+            await env.RATE_LIMIT_KV.put('current_app_secret', '2');
+            await env.RATE_LIMIT_KV.put('app_secret_1_count', '0'); // 重置计数
+            console.log('切换到APP_SECRET_2');
+            return appSecret2;
+        } else if (currentSecret === '2' && count2 >= SECRET_ROTATION_LIMIT) {
+            // 切换到Secret1
+            await env.RATE_LIMIT_KV.put('current_app_secret', '1');
+            await env.RATE_LIMIT_KV.put('app_secret_2_count', '0'); // 重置计数
+            console.log('切换到APP_SECRET');
+            return appSecret1;
+        }
+
+        // 返回当前密钥
+        return currentSecret === '1' ? appSecret1 : appSecret2;
+    } catch (error) {
+        console.error('AppSecret轮换失败，使用默认密钥:', error);
+        return appSecret1;
+    }
+}
+
+// 记录AppSecret使用次数
+async function recordAppSecretUsage(env) {
+    try {
+        const currentSecret = await env.RATE_LIMIT_KV.get('current_app_secret') || '1';
+        const countKey = currentSecret === '1' ? 'app_secret_1_count' : 'app_secret_2_count';
+        const currentCount = await env.RATE_LIMIT_KV.get(countKey) || '0';
+        const newCount = parseInt(currentCount, 10) + 1;
+
+        await env.RATE_LIMIT_KV.put(countKey, newCount.toString());
+        console.log(`AppSecret${currentSecret}使用次数: ${newCount}`);
+    } catch (error) {
+        console.error('记录AppSecret使用次数失败:', error);
+    }
+}
+
 /**
- * 
- * @param {String} appId 
+ *
+ * @param {String} appId
  * @param {Number} timestamp 使用当前的 UTC 时间生成 Unix 时间戳，单位为秒
  * @param {String} path 此处的 API 路径是指 API 地址后的路径部分，以/开头，不包括前面的协议、域名和?后面的查询参数
- * @param {String} appSecret 
+ * @param {String} appSecret
  * @returns signature String
  */
 async function generateSignature(appId, timestamp, path, appSecret) {
@@ -246,6 +387,7 @@ async function checkRateLimitByUA(clientIP, uaConfig, env, apiPath = '') {
     let hourLimit = uaConfig.maxRequestsPerHour;
     let dayLimit = uaConfig.maxRequestsPerDay;
     let pathSpecific = false;
+    let matchedPath = '';
 
     // 检查UA配置中的pathLimits数组
     if (apiPath && uaConfig.pathLimits && Array.isArray(uaConfig.pathLimits)) {
@@ -260,17 +402,18 @@ async function checkRateLimitByUA(clientIP, uaConfig, env, apiPath = '') {
             } else {
                 hourLimit = pathLimit.maxRequestsPerHour;
                 pathSpecific = true;
+                matchedPath = pathLimit.path; // 使用匹配到的路径前缀
             }
         }
     }
 
-    const hourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}${pathSpecific ? '_' + apiPath.replace(/\//g, '_') : ''}`;
-    const dayKey = `rate_day_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60 * 24))}${pathSpecific ? '_' + apiPath.replace(/\//g, '_') : ''}`;
+    const hourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}${pathSpecific ? '_' + matchedPath.replace(/\//g, '_') : ''}`;
+    const dayKey = `rate_day_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60 * 24))}${pathSpecific ? '_' + matchedPath.replace(/\//g, '_') : ''}`;
 
     try {
         // 检查小时限制
         const hourCount = parseInt(await env.RATE_LIMIT_KV.get(hourKey) || '0');
-        if (hourCount >= hourLimit) {
+        if (hourLimit !== -1 && hourCount >= hourLimit) {
             const limitType = pathSpecific ? `路径 ${apiPath} 的` : '';
             return {
                 allowed: false,
@@ -281,7 +424,7 @@ async function checkRateLimitByUA(clientIP, uaConfig, env, apiPath = '') {
         // 检查日限制（只有非路径特定限制才检查日限制）
         if (!pathSpecific) {
             const dayCount = parseInt(await env.RATE_LIMIT_KV.get(dayKey) || '0');
-            if (dayCount >= dayLimit) {
+            if (dayLimit !== -1 && dayCount >= dayLimit) {
                 return {
                     allowed: false,
                     reason: `${uaConfig.description} 每日请求限制已超出 (${dayCount}/${dayLimit})`
@@ -292,9 +435,12 @@ async function checkRateLimitByUA(clientIP, uaConfig, env, apiPath = '') {
         // 详细日志记录
         if (ACCESS_CONFIG.logging.enabled) {
             if (pathSpecific) {
-                console.log(`频率检查通过: IP=${clientIP}, UA=${uaType}, 路径特定限制(${apiPath}): ${hourCount}/${hourLimit}/小时`);
+                const limitDisplay = hourLimit === -1 ? '∞' : hourLimit;
+                console.log(`频率检查通过: IP=${clientIP}, UA=${uaType}, 路径特定限制(${apiPath}): ${hourCount}/${limitDisplay}/小时`);
             } else {
-                console.log(`频率检查通过: IP=${clientIP}, UA=${uaType}, 全局限制: ${hourLimit}/小时, ${dayLimit}/天, 当前: ${hourCount}次/小时`);
+                const hourDisplay = hourLimit === -1 ? '∞' : hourLimit;
+                const dayDisplay = dayLimit === -1 ? '∞' : dayLimit;
+                console.log(`频率检查通过: IP=${clientIP}, UA=${uaType}, 全局限制: ${hourDisplay}/小时, ${dayDisplay}/天, 当前: ${hourCount}次/小时`);
             }
         }
 
@@ -319,16 +465,18 @@ async function recordRequest(request, env, apiPath = '') {
     // 检查是否有路径特定限制
     let pathSpecific = false;
     let pathLimitValue = null;
+    let matchedPath = '';
     if (apiPath && uaConfig.pathLimits && Array.isArray(uaConfig.pathLimits)) {
         const pathLimit = uaConfig.pathLimits.find(limit => apiPath.startsWith(limit.path));
         if (pathLimit) {
             pathSpecific = true;
             pathLimitValue = pathLimit.maxRequestsPerHour;
+            matchedPath = pathLimit.path; // 使用匹配到的路径前缀
         }
     }
 
-    const hourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}${pathSpecific ? '_' + apiPath.replace(/\//g, '_') : ''}`;
-    const dayKey = `rate_day_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60 * 24))}${pathSpecific ? '_' + apiPath.replace(/\//g, '_') : ''}`;
+    const hourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}${pathSpecific ? '_' + matchedPath.replace(/\//g, '_') : ''}`;
+    const dayKey = `rate_day_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60 * 24))}${pathSpecific ? '_' + matchedPath.replace(/\//g, '_') : ''}`;
 
     try {
         // 更新计数器
@@ -351,9 +499,14 @@ async function recordRequest(request, env, apiPath = '') {
                 const globalHourCount = parseInt(await env.RATE_LIMIT_KV.get(globalHourKey) || '0');
                 const globalDayCount = parseInt(await env.RATE_LIMIT_KV.get(globalDayKey) || '0');
 
-                console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 路径限制=${hourCount}/${pathLimitValue || '∞'}/小时, 全局限制=${globalHourCount}/${uaConfig.maxRequestsPerHour}/小时, 每日=${globalDayCount}/${uaConfig.maxRequestsPerDay}, 时间=${new Date().toISOString()}`);
+                const pathDisplay = pathLimitValue === -1 ? '∞' : (pathLimitValue || '∞');
+                const globalHourDisplay = uaConfig.maxRequestsPerHour === -1 ? '∞' : uaConfig.maxRequestsPerHour;
+                const globalDayDisplay = uaConfig.maxRequestsPerDay === -1 ? '∞' : uaConfig.maxRequestsPerDay;
+                console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 路径限制=${hourCount}/${pathDisplay}/小时, 全局限制=${globalHourCount}/${globalHourDisplay}/小时, 每日=${globalDayCount}/${globalDayDisplay}, 时间=${new Date().toISOString()}`);
             } else {
-                console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 全局限制: 小时=${hourCount}/${uaConfig.maxRequestsPerHour}, 每日=${dayCount}/${uaConfig.maxRequestsPerDay}, 时间=${new Date().toISOString()}`);
+                const hourDisplay = uaConfig.maxRequestsPerHour === -1 ? '∞' : uaConfig.maxRequestsPerHour;
+                const dayDisplay = uaConfig.maxRequestsPerDay === -1 ? '∞' : uaConfig.maxRequestsPerDay;
+                console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 全局限制: 小时=${hourCount}/${hourDisplay}, 每日=${dayCount}/${dayDisplay}, 时间=${new Date().toISOString()}`);
             }
         }
     } catch (error) {
