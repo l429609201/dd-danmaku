@@ -17,7 +17,9 @@
     // ------ 用户配置 start ------
     let requireDanmakuPath = 'https://danmaku.7o7o.cc/danmaku.min.js';
     // 跨域代理 cf_worker
-    let corsProxy = 'https://ddplay-api.7o7o.cc/cors/';
+    let corsProxy = 'https://danmu-api.misaka10876.top/cors/';
+    // 用户代理标识
+    let userAgent = 'misaka10876/v1.0.0';
     // ------ 用户配置 end ------
     // note01: 部分 AndroidTV 仅支持最高 ES9 (支持 webview 内核版本 60 以上)
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
@@ -768,7 +770,7 @@
                 'Accept-Encoding': 'gzip',
                 'Accept': 'application/json',
                 'Content-Type': 'application/json',
-                'User-Agent': 'misaka-dd-danmaku/1.0.0 (' + navigator.userAgent + ')',
+                'X-User-Agent': userAgent,
             };
 
             // [新增] 如果启用了非对称验证，添加挑战响应头
@@ -969,11 +971,12 @@
         if (method === 'GET' && body) {
             method = 'POST';
         }
+        console.log(`[DEBUG] fetchJson 使用的 X-User-Agent: ${userAgent}`);
         const requestHeaders = {
             'Accept-Encoding': 'gzip',
             Accept: 'application/json',
             'Content-Type': 'application/json',
-            'User-Agent': navigator.userAgent,
+            'X-User-Agent': userAgent,
         };
         if (token) {
             requestHeaders.Authorization = `Bearer ${token}`;

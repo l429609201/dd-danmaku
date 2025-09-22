@@ -83,7 +83,7 @@ async function handleRequest(request, env) {
             headers: {
                 'Access-Control-Allow-Origin': '*',
                 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Agent, X-Challenge-Response',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Agent, X-User-Agent, X-Challenge-Response',
             },
         });
     }
@@ -101,7 +101,7 @@ async function handleRequest(request, env) {
     if (!accessCheck.allowed) {
         // 获取客户端信息
         const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
-        const userAgent = request.headers.get('User-Agent') || '';
+        const userAgent = request.headers.get('X-User-Agent') || '';
 
         // 格式化错误消息
         const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
@@ -180,7 +180,7 @@ async function generateSignature(appId, timestamp, path, appSecret) {
 // 新增：访问控制检查函数
 async function checkAccess(request, env) {
     const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
-    const userAgent = request.headers.get('User-Agent') || '';
+    const userAgent = request.headers.get('X-User-Agent') || '';
     const urlObj = new URL(request.url);
     const apiPath = urlObj.pathname.replace('/cors', ''); // 提取实际的API路径
     const ACCESS_CONFIG = getAccessConfig(env);
@@ -292,7 +292,7 @@ async function checkRateLimitByUA(clientIP, uaConfig, env, apiPath = '') {
 // 新增：记录请求（基于UA类型和路径）
 async function recordRequest(request, env, apiPath = '') {
     const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
-    const userAgent = request.headers.get('User-Agent') || '';
+    const userAgent = request.headers.get('X-User-Agent') || '';
     const ACCESS_CONFIG = getAccessConfig(env);
     const uaConfig = identifyUserAgent(userAgent, ACCESS_CONFIG);
     const uaType = uaConfig.type;
