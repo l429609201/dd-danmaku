@@ -277,8 +277,11 @@ async function checkRateLimitByUA(clientIP, uaConfig, env, apiPath = '') {
 
         // 详细日志记录
         if (ACCESS_CONFIG.logging.enabled) {
-            const limitInfo = pathSpecific ? `路径特定限制(${apiPath}): ${hourLimit}/小时` : `全局限制: ${hourLimit}/小时, ${dayLimit}/天`;
-            console.log(`频率检查通过: IP=${clientIP}, UA=${uaType}, ${limitInfo}, 当前: ${hourCount}次/小时`);
+            if (pathSpecific) {
+                console.log(`频率检查通过: IP=${clientIP}, UA=${uaType}, 路径特定限制(${apiPath}): ${hourCount}/${hourLimit}/小时`);
+            } else {
+                console.log(`频率检查通过: IP=${clientIP}, UA=${uaType}, 全局限制: ${hourLimit}/小时, ${dayLimit}/天, 当前: ${hourCount}次/小时`);
+            }
         }
 
         return { allowed: true };
@@ -327,11 +330,17 @@ async function recordRequest(request, env, apiPath = '') {
 
         // 详细日志记录
         if (ACCESS_CONFIG.logging.enabled) {
-            const pathInfo = pathSpecific ? ` 路径=${apiPath}` : '';
-            const limitInfo = pathSpecific ?
-                `${hourCount}/${pathLimitValue || '∞'}/小时` :
-                `小时=${hourCount}/${uaConfig.maxRequestsPerHour}, 每日=${dayCount}/${uaConfig.maxRequestsPerDay}`;
-            console.log(`请求已记录: IP=${clientIP}, UA=${uaType}${pathInfo}, ${limitInfo}, 时间=${new Date().toISOString()}`);
+            if (pathSpecific) {
+                // 获取全局计数器
+                const globalHourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}`;
+                const globalDayKey = `rate_day_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60 * 24))}`;
+                const globalHourCount = parseInt(await env.RATE_LIMIT_KV.get(globalHourKey) || '0');
+                const globalDayCount = parseInt(await env.RATE_LIMIT_KV.get(globalDayKey) || '0');
+
+                console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 路径限制=${hourCount}/${pathLimitValue || '∞'}/小时, 全局限制=${globalHourCount}/${uaConfig.maxRequestsPerHour}/小时, 每日=${globalDayCount}/${uaConfig.maxRequestsPerDay}, 时间=${new Date().toISOString()}`);
+            } else {
+                console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 全局限制: 小时=${hourCount}/${uaConfig.maxRequestsPerHour}, 每日=${dayCount}/${uaConfig.maxRequestsPerDay}, 时间=${new Date().toISOString()}`);
+            }
         }
     } catch (error) {
         console.error('记录请求失败:', error);
