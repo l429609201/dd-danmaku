@@ -9,53 +9,53 @@ const hostlist = { 'api.dandanplay.net': null };
 // 🛡️ 访问控制配置 - 基于UA的分级限制
 // ========================================
 
-// 默认的 User-Agent 限制配置
-const DEFAULT_USER_AGENT_LIMITS = {
-    // 专属客户端 - 最高优先级
-    "MisakaDanmaku": {
-        enabled: true,
-        name: "misaka-dd-danmaku",
-        version: "1.0.0",
-        pattern: "misaka-dd-danmaku",
-        maxRequestsPerHour: 100,
-        maxRequestsPerDay: 1000,
-        description: "Misaka弹幕专用客户端"
-    }
-};
+
 
 // 从环境变量获取 User-Agent 限制配置
 function getUserAgentLimits(env) {
-    let limits = DEFAULT_USER_AGENT_LIMITS;
-
-    // 尝试从环境变量获取自定义配置
-    if (env.USER_AGENT_LIMITS_CONFIG) {
-        try {
-            limits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
-        } catch (error) {
-            console.error('解析 USER_AGENT_LIMITS_CONFIG 失败，使用默认配置:', error);
-        }
+    // 必须从环境变量获取配置，没有默认配置
+    if (!env.USER_AGENT_LIMITS_CONFIG) {
+        console.error('USER_AGENT_LIMITS_CONFIG 环境变量未配置，拒绝所有请求');
+        return {};
     }
 
-    // 过滤出启用的客户端
-    const enabledLimits = {};
-    Object.keys(limits).forEach(key => {
-        const config = limits[key];
-        if (config && config.enabled !== false) { // 默认启用，除非明确设置为 false
-            enabledLimits[key] = config;
-        }
-    });
+    try {
+        const limits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
 
-    return enabledLimits;
+        // 过滤出启用的客户端
+        const enabledLimits = {};
+        Object.keys(limits).forEach(key => {
+            const config = limits[key];
+            if (config && config.enabled !== false) { // 默认启用，除非明确设置为 false
+                enabledLimits[key] = config;
+            }
+        });
+
+        return enabledLimits;
+    } catch (error) {
+        console.error('解析 USER_AGENT_LIMITS_CONFIG 失败，拒绝所有请求:', error);
+        return {};
+    }
 }
+
+
 
 // 获取访问控制配置
 function getAccessConfig(env) {
     const ENABLE_ASYMMETRIC_AUTH = env.ENABLE_ASYMMETRIC_AUTH_ENV === 'true';
+    const ENABLE_DETAILED_LOGGING = env.ENABLE_DETAILED_LOGGING !== 'false'; // 默认开启日志
 
     return {
         // 基于User-Agent的分级限制配置（从环境变量动态获取）
         get userAgentLimits() {
             return getUserAgentLimits(env);
+        },
+
+
+
+        // 日志配置
+        logging: {
+            enabled: ENABLE_DETAILED_LOGGING
         },
 
         // 非对称密钥验证配置
@@ -98,6 +98,13 @@ async function handleRequest(request, env) {
     // 新增：访问控制检查
     const accessCheck = await checkAccess(request, env);
     if (!accessCheck.allowed) {
+        // 详细日志记录
+        const ACCESS_CONFIG = getAccessConfig(env);
+        if (ACCESS_CONFIG.logging.enabled) {
+            const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+            const userAgent = request.headers.get('User-Agent') || '';
+            console.log(`访问被拒绝: IP=${clientIP}, UA=${userAgent}, 原因=${accessCheck.reason}, 路径=${urlObj.pathname}`);
+        }
         return new Response(accessCheck.reason, {
             status: accessCheck.status,
             headers: { 'Access-Control-Allow-Origin': '*' }
@@ -141,7 +148,7 @@ async function handleRequest(request, env) {
     response.headers.set('Access-Control-Allow-Origin', '*');
 
     // 新增：记录请求到KV存储
-    await recordRequest(request, env);
+    await recordRequest(request, env, apiPath);
 
     return response;
 }
@@ -167,16 +174,18 @@ async function generateSignature(appId, timestamp, path, appSecret) {
 async function checkAccess(request, env) {
     const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
     const userAgent = request.headers.get('User-Agent') || '';
+    const urlObj = new URL(request.url);
+    const apiPath = urlObj.pathname.replace('/cors', ''); // 提取实际的API路径
     const ACCESS_CONFIG = getAccessConfig(env);
 
     // 1. 识别User-Agent类型并获取对应限制
     const uaConfig = identifyUserAgent(userAgent, ACCESS_CONFIG);
     if (!uaConfig) {
-        return { allowed: false, reason: '未识别的用户代理', status: 403 };
+        return { allowed: false, reason: '禁止访问的代理', status: 403 };
     }
 
-    // 2. 基于UA类型的频率限制检查
-    const rateLimitCheck = await checkRateLimitByUA(clientIP, uaConfig, env);
+    // 2. 基于UA类型和路径的频率限制检查
+    const rateLimitCheck = await checkRateLimitByUA(clientIP, uaConfig, env, apiPath);
     if (!rateLimitCheck.allowed) {
         return { allowed: false, reason: rateLimitCheck.reason, status: 429 };
     }
@@ -197,39 +206,72 @@ function identifyUserAgent(userAgent, ACCESS_CONFIG) {
     for (const [key, config] of Object.entries(ACCESS_CONFIG.userAgentLimits)) {
         if (key === 'default') continue;
 
-        if (config.pattern && userAgent.includes(config.pattern)) {
+        if (config.userAgent && userAgent.includes(config.userAgent)) {
             return { ...config, type: key };
         }
     }
 
-    // 如果没有匹配到，使用默认配置
-    return ACCESS_CONFIG.userAgentLimits.default ? { ...ACCESS_CONFIG.userAgentLimits.default, type: 'default' } : null;
+    // 如果没有匹配到，返回 null（禁止访问）
+    return null;
 }
 
-// 新增：基于UA类型的频率限制检查
-async function checkRateLimitByUA(clientIP, uaConfig, env) {
+// 新增：基于UA类型和路径的频率限制检查
+async function checkRateLimitByUA(clientIP, uaConfig, env, apiPath = '') {
     const now = Date.now();
     const uaType = uaConfig.type;
-    const hourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}`;
-    const dayKey = `rate_day_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60 * 24))}`;
+    const ACCESS_CONFIG = getAccessConfig(env);
+
+    // 检查是否有路径特定限制
+    let hourLimit = uaConfig.maxRequestsPerHour;
+    let dayLimit = uaConfig.maxRequestsPerDay;
+    let pathSpecific = false;
+
+    // 检查UA配置中的pathLimits数组
+    if (apiPath && uaConfig.pathLimits && Array.isArray(uaConfig.pathLimits)) {
+        const pathLimit = uaConfig.pathLimits.find(limit => limit.path === apiPath);
+        if (pathLimit) {
+            if (pathLimit.maxRequestsPerHour === -1) {
+                // -1 表示不限制
+                if (ACCESS_CONFIG.logging.enabled) {
+                    console.log(`路径特定限制: ${apiPath} 对 ${uaType} 不限制访问`);
+                }
+                return { allowed: true };
+            } else {
+                hourLimit = pathLimit.maxRequestsPerHour;
+                pathSpecific = true;
+            }
+        }
+    }
+
+    const hourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}${pathSpecific ? '_' + apiPath.replace(/\//g, '_') : ''}`;
+    const dayKey = `rate_day_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60 * 24))}${pathSpecific ? '_' + apiPath.replace(/\//g, '_') : ''}`;
 
     try {
         // 检查小时限制
         const hourCount = parseInt(await env.RATE_LIMIT_KV.get(hourKey) || '0');
-        if (hourCount >= uaConfig.maxRequestsPerHour) {
+        if (hourCount >= hourLimit) {
+            const limitType = pathSpecific ? `路径 ${apiPath} 的` : '';
             return {
                 allowed: false,
-                reason: `${uaConfig.description} 小时请求限制已超出 (${hourCount}/${uaConfig.maxRequestsPerHour})`
+                reason: `${uaConfig.description} ${limitType}小时请求限制已超出 (${hourCount}/${hourLimit})`
             };
         }
 
-        // 检查日限制
-        const dayCount = parseInt(await env.RATE_LIMIT_KV.get(dayKey) || '0');
-        if (dayCount >= uaConfig.maxRequestsPerDay) {
-            return {
-                allowed: false,
-                reason: `${uaConfig.description} 每日请求限制已超出 (${dayCount}/${uaConfig.maxRequestsPerDay})`
-            };
+        // 检查日限制（只有非路径特定限制才检查日限制）
+        if (!pathSpecific) {
+            const dayCount = parseInt(await env.RATE_LIMIT_KV.get(dayKey) || '0');
+            if (dayCount >= dayLimit) {
+                return {
+                    allowed: false,
+                    reason: `${uaConfig.description} 每日请求限制已超出 (${dayCount}/${dayLimit})`
+                };
+            }
+        }
+
+        // 详细日志记录
+        if (ACCESS_CONFIG.logging.enabled) {
+            const limitInfo = pathSpecific ? `路径特定限制(${apiPath}): ${hourLimit}/小时` : `全局限制: ${hourLimit}/小时, ${dayLimit}/天`;
+            console.log(`频率检查通过: IP=${clientIP}, UA=${uaType}, ${limitInfo}, 当前: ${hourCount}次/小时`);
         }
 
         return { allowed: true };
@@ -240,8 +282,8 @@ async function checkRateLimitByUA(clientIP, uaConfig, env) {
     }
 }
 
-// 新增：记录请求（基于UA类型）
-async function recordRequest(request, env) {
+// 新增：记录请求（基于UA类型和路径）
+async function recordRequest(request, env, apiPath = '') {
     const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
     const userAgent = request.headers.get('User-Agent') || '';
     const ACCESS_CONFIG = getAccessConfig(env);
@@ -249,8 +291,20 @@ async function recordRequest(request, env) {
     const uaType = uaConfig.type;
 
     const now = Date.now();
-    const hourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}`;
-    const dayKey = `rate_day_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60 * 24))}`;
+
+    // 检查是否有路径特定限制
+    let pathSpecific = false;
+    let pathLimitValue = null;
+    if (apiPath && uaConfig.pathLimits && Array.isArray(uaConfig.pathLimits)) {
+        const pathLimit = uaConfig.pathLimits.find(limit => limit.path === apiPath);
+        if (pathLimit) {
+            pathSpecific = true;
+            pathLimitValue = pathLimit.maxRequestsPerHour;
+        }
+    }
+
+    const hourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}${pathSpecific ? '_' + apiPath.replace(/\//g, '_') : ''}`;
+    const dayKey = `rate_day_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60 * 24))}${pathSpecific ? '_' + apiPath.replace(/\//g, '_') : ''}`;
 
     try {
         // 更新计数器
@@ -258,10 +312,20 @@ async function recordRequest(request, env) {
         const dayCount = parseInt(await env.RATE_LIMIT_KV.get(dayKey) || '0') + 1;
 
         await env.RATE_LIMIT_KV.put(hourKey, hourCount.toString(), { expirationTtl: 3600 }); // 1小时过期
-        await env.RATE_LIMIT_KV.put(dayKey, dayCount.toString(), { expirationTtl: 86400 }); // 1天过期
 
-        // 记录访问日志（可选）
-        console.log(`请求已记录: IP=${clientIP}, 用户代理=${uaType}, 小时=${hourCount}/${uaConfig.maxRequestsPerHour}, 每日=${dayCount}/${uaConfig.maxRequestsPerDay}`);
+        // 只有非路径特定限制才记录日计数
+        if (!pathSpecific) {
+            await env.RATE_LIMIT_KV.put(dayKey, dayCount.toString(), { expirationTtl: 86400 }); // 1天过期
+        }
+
+        // 详细日志记录
+        if (ACCESS_CONFIG.logging.enabled) {
+            const pathInfo = pathSpecific ? ` 路径=${apiPath}` : '';
+            const limitInfo = pathSpecific ?
+                `${hourCount}/${pathLimitValue || '∞'}/小时` :
+                `小时=${hourCount}/${uaConfig.maxRequestsPerHour}, 每日=${dayCount}/${uaConfig.maxRequestsPerDay}`;
+            console.log(`请求已记录: IP=${clientIP}, UA=${uaType}${pathInfo}, ${limitInfo}, 时间=${new Date().toISOString()}`);
+        }
     } catch (error) {
         console.error('记录请求失败:', error);
     }
