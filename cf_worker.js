@@ -574,7 +574,7 @@ export class RateLimiter {
         const globalHourCount = (this.data.ghts === currentHour) ? (this.data.ghc || 0) : 0;
         if (this.uaConfig.maxRequestsPerHour !== -1 && globalHourCount >= this.uaConfig.maxRequestsPerHour) {
             if (loggingEnabled) {
-                const [uaType, clientIP] = this.state.id.name().split('-', 2);
+                const [uaType, clientIP] = this.state.id.name.split('-', 2);
                 console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: 全局小时限制已超出 (${globalHourCount}/${this.uaConfig.maxRequestsPerHour})`);
             }
             const reason = `${this.uaConfig.description} 全局小时请求限制已超出 (${globalHourCount}/${this.uaConfig.maxRequestsPerHour})`;
@@ -583,7 +583,7 @@ export class RateLimiter {
 
         const globalDayCount = (this.data.gdts === currentDay) ? (this.data.gdc || 0) : 0;
         if (this.uaConfig.maxRequestsPerDay !== -1 && globalDayCount >= this.uaConfig.maxRequestsPerDay) {
-            const [uaType, clientIP] = this.state.id.name().split('-', 2);
+            const [uaType, clientIP] = this.state.id.name.split('-', 2);
             console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: 全局每日限制已超出 (${globalDayCount}/${this.uaConfig.maxRequestsPerDay})`);
             const reason = `${this.uaConfig.description} 全局每日请求限制已超出 (${globalDayCount}/${this.uaConfig.maxRequestsPerDay})`;
             return new Response(JSON.stringify({ allowed: false, reason }), { headers: { 'Content-Type': 'application/json' } });
@@ -596,7 +596,7 @@ export class RateLimiter {
                 const pathData = this.data.paths && this.data.paths[pathLimit.path] ? this.data.paths[pathLimit.path] : {};
                 const pathHourCount = (pathData.phts === currentHour) ? (pathData.phc || 0) : 0;
                 if (pathHourCount >= pathLimit.maxRequestsPerHour) {
-                    const [uaType, clientIP] = this.state.id.name().split('-', 2);
+                    const [uaType, clientIP] = this.state.id.name.split('-', 2);
                     console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: 路径小时限制已超出 (${pathHourCount}/${pathLimit.maxRequestsPerHour})`);
                     const reason = `${this.uaConfig.description} 路径 ${apiPath} 小时请求限制已超出 (${pathHourCount}/${pathLimit.maxRequestsPerHour})`;
                     return new Response(JSON.stringify({ allowed: false, reason }), { headers: { 'Content-Type': 'application/json' } });
@@ -637,7 +637,7 @@ export class RateLimiter {
 
         // 日志记录
         if (loggingEnabled) {
-            const [uaType, clientIP] = this.state.id.name().split('-', 2);
+            const [uaType, clientIP] = this.state.id.name.split('-', 2);
             const uaConfig = this.uaConfig;
 
             if (matchedPathRule) {
