@@ -219,11 +219,13 @@ async function handleRequest(request, env, ctx) {
     const signature = await generateSignature(appId, timestamp, apiPath, appSecret);
 
     // 记录AppSecret使用次数
-    ctx.waitUntil(recordAppSecretUsage(env));
-    console.log('应用ID: ' + appId);
-    console.log('签名: ' + signature);
-    console.log('时间戳: ' + timestamp);
-    console.log('API路径: ' + apiPath);
+    ctx.waitUntil(recordAppSecretUsage(env, ACCESS_CONFIG.logging.enabled));
+    if (ACCESS_CONFIG.logging.enabled) {
+        console.log('应用ID: ' + appId);
+        console.log('签名: ' + signature);
+        console.log('时间戳: ' + timestamp);
+        console.log('API路径: ' + apiPath);
+    }
     
     // 构建转发请求的头部，排除自定义头
     const forwardHeaders = {};
@@ -243,7 +245,9 @@ async function handleRequest(request, env, ctx) {
     };
 
     // 调试日志：显示最终的请求头
-    console.log('转发请求头:', JSON.stringify(finalHeaders, null, 2));
+    if (ACCESS_CONFIG.logging.enabled) {
+        console.log('转发请求头:', JSON.stringify(finalHeaders, null, 2));
+    }
 
     let response = await fetch(url, {
         headers: finalHeaders,
@@ -282,7 +286,7 @@ async function handleRequest(request, env, ctx) {
     response.headers.set('Access-Control-Allow-Origin', '*');
 
     // 新增：记录请求到KV存储
-    ctx.waitUntil(accessCheck.doStub.fetch(new Request('https://do.internal/increment', { method: 'POST', body: JSON.stringify({ apiPath: accessCheck.apiPath }) })));
+    ctx.waitUntil(accessCheck.doStub.fetch(new Request('https://do.internal/increment', { method: 'POST', body: JSON.stringify({ apiPath: accessCheck.apiPath, loggingEnabled: ACCESS_CONFIG.logging.enabled }) })));
 
     return response;
 }
@@ -295,9 +299,9 @@ async function getCurrentAppSecret(env) { // 此函数现在仅作为备份，�
 }
 
 // 记录AppSecret使用次数
-async function recordAppSecretUsage(env) {
+async function recordAppSecretUsage(env, loggingEnabled) {
     const appStateStub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
-    await appStateStub.fetch(new Request('https://do.internal/recordUsage'));
+    await appStateStub.fetch(new Request('https://do.internal/recordUsage', { method: 'POST', body: JSON.stringify({ loggingEnabled }) }));
 }
 
 /**
@@ -353,6 +357,7 @@ async function checkAccess(request, env) {
             action: 'check',
             uaConfig: uaConfig,
             apiPath: apiPath,
+            loggingEnabled: ACCESS_CONFIG.logging.enabled,
         }),
     });
 
@@ -526,7 +531,7 @@ export class RateLimiter {
         }
 
         if (action === 'check') {
-            return this.check(apiPath); // 确保将 apiPath 传递给 check 方法
+            return this.check(apiPath, loggingEnabled); // 确保将 apiPath 和 loggingEnabled 传递给 check 方法
         }
 
         if (action === 'increment') {
@@ -536,7 +541,7 @@ export class RateLimiter {
         return new Response('无效的操作', { status: 400 });
     }
 
-    check(apiPath) {
+    check(apiPath, loggingEnabled) {
         if (!this.uaConfig) {
             return new Response(JSON.stringify({ allowed: true }));
         }
@@ -548,12 +553,18 @@ export class RateLimiter {
         // 检查全局限制
         const globalHourCount = (this.data.ghts === currentHour) ? (this.data.ghc || 0) : 0;
         if (this.uaConfig.maxRequestsPerHour !== -1 && globalHourCount >= this.uaConfig.maxRequestsPerHour) {
+            if (loggingEnabled) {
+                const [uaType, clientIP] = this.state.id.name().split('-', 2);
+                console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: 全局小时限制已超出 (${globalHourCount}/${this.uaConfig.maxRequestsPerHour})`);
+            }
             const reason = `${this.uaConfig.description} 全局小时请求限制已超出 (${globalHourCount}/${this.uaConfig.maxRequestsPerHour})`;
             return new Response(JSON.stringify({ allowed: false, reason }), { headers: { 'Content-Type': 'application/json' } });
         }
 
         const globalDayCount = (this.data.gdts === currentDay) ? (this.data.gdc || 0) : 0;
         if (this.uaConfig.maxRequestsPerDay !== -1 && globalDayCount >= this.uaConfig.maxRequestsPerDay) {
+            const [uaType, clientIP] = this.state.id.name().split('-', 2);
+            console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: 全局每日限制已超出 (${globalDayCount}/${this.uaConfig.maxRequestsPerDay})`);
             const reason = `${this.uaConfig.description} 全局每日请求限制已超出 (${globalDayCount}/${this.uaConfig.maxRequestsPerDay})`;
             return new Response(JSON.stringify({ allowed: false, reason }), { headers: { 'Content-Type': 'application/json' } });
         }
@@ -565,6 +576,8 @@ export class RateLimiter {
                 const pathData = this.data.paths && this.data.paths[pathLimit.path] ? this.data.paths[pathLimit.path] : {};
                 const pathHourCount = (pathData.phts === currentHour) ? (pathData.phc || 0) : 0;
                 if (pathHourCount >= pathLimit.maxRequestsPerHour) {
+                    const [uaType, clientIP] = this.state.id.name().split('-', 2);
+                    console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: 路径小时限制已超出 (${pathHourCount}/${pathLimit.maxRequestsPerHour})`);
                     const reason = `${this.uaConfig.description} 路径 ${apiPath} 小时请求限制已超出 (${pathHourCount}/${pathLimit.maxRequestsPerHour})`;
                     return new Response(JSON.stringify({ allowed: false, reason }), { headers: { 'Content-Type': 'application/json' } });
                 }
@@ -574,7 +587,7 @@ export class RateLimiter {
         return new Response(JSON.stringify({ allowed: true }), { headers: { 'Content-Type': 'application/json' } });
     }
 
-    async increment(apiPath) {
+    async increment(apiPath, loggingEnabled) {
         const now = Date.now();
         const currentHour = Math.floor(now / (1000 * 60 * 60));
         const currentDay = Math.floor(now / (1000 * 60 * 60 * 24));
@@ -585,15 +598,37 @@ export class RateLimiter {
         this.data.gdc = (this.data.gdts === currentDay) ? (this.data.gdc || 0) + 1 : 1;
         this.data.gdts = currentDay;
 
+        let pathHourCount = 0;
+        let matchedPathRule = null;
+
         // 更新路径特定计数器
         if (this.uaConfig && this.uaConfig.pathLimits && Array.isArray(this.uaConfig.pathLimits)) {
             const pathLimit = this.uaConfig.pathLimits.find(limit => apiPath.startsWith(limit.path));
             if (pathLimit) {
+                matchedPathRule = pathLimit;
                 const pathKey = pathLimit.path;
                 if (!this.data.paths) this.data.paths = {};
                 if (!this.data.paths[pathKey]) this.data.paths[pathKey] = {};
                 this.data.paths[pathKey].phc = (this.data.paths[pathKey].phts === currentHour) ? (this.data.paths[pathKey].phc || 0) + 1 : 1;
                 this.data.paths[pathKey].phts = currentHour;
+                pathHourCount = this.data.paths[pathKey].phc;
+            }
+        }
+
+        // 日志记录
+        if (loggingEnabled) {
+            const [uaType, clientIP] = this.state.id.name().split('-', 2);
+            const uaConfig = this.uaConfig;
+
+            if (matchedPathRule) {
+                const pathDisplay = matchedPathRule.maxRequestsPerHour === -1 ? '∞' : matchedPathRule.maxRequestsPerHour;
+                const globalHourDisplay = uaConfig.maxRequestsPerHour === -1 ? '∞' : uaConfig.maxRequestsPerHour;
+                const globalDayDisplay = uaConfig.maxRequestsPerDay === -1 ? '∞' : uaConfig.maxRequestsPerDay;
+                console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 路径限制=${pathHourCount}/${pathDisplay}/小时, 全局限制=${this.data.ghc}/${globalHourDisplay}/小时, 每日=${this.data.gdc}/${globalDayDisplay}/天, 时间=${new Date().toISOString()}`);
+            } else {
+                const hourDisplay = uaConfig.maxRequestsPerHour === -1 ? '∞' : uaConfig.maxRequestsPerHour;
+                const dayDisplay = uaConfig.maxRequestsPerDay === -1 ? '∞' : uaConfig.maxRequestsPerDay;
+                console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 全局限制=${this.data.ghc}/${hourDisplay}/小时, 每日=${this.data.gdc}/${dayDisplay}/天, 时间=${new Date().toISOString()}`);
             }
         }
 
@@ -631,25 +666,30 @@ export class AppState {
     async fetch(request) {
         await this.initialize();
         const url = new URL(request.url);
+        let body = {};
+        if (request.method === 'POST' && request.headers.get('content-type')?.includes('application/json')) {
+            body = await request.json();
+        }
 
         if (url.pathname === '/getSecret') {
-            return this.getSecret();
+            return this.getSecret(body.loggingEnabled);
         }
 
         if (url.pathname === '/recordUsage') {
-            return this.recordUsage();
+            return this.recordUsage(body.loggingEnabled);
         }
 
         return new Response('无效的操作', { status: 400 });
     }
 
-    async getSecret() {
+    async getSecret(loggingEnabled) {
         const appSecret1 = this.env.APP_SECRET;
         const appSecret2 = this.env.APP_SECRET_2;
 
         if (!appSecret2) return new Response(appSecret1);
-
-        console.log(`Secret1使用次数: ${this.appState.count1}, Secret2使用次数: ${this.appState.count2}, 当前使用: Secret${this.appState.current}`);
+        if (loggingEnabled) {
+            console.log(`Secret1使用次数: ${this.appState.count1}, Secret2使用次数: ${this.appState.count2}, 当前使用: Secret${this.appState.current}`);
+        }
 
         if (this.appState.current === '1' && this.appState.count1 >= SECRET_ROTATION_LIMIT) {
             this.appState.current = '2';
@@ -669,7 +709,7 @@ export class AppState {
         return new Response(this.appState.current === '1' ? appSecret1 : appSecret2);
     }
 
-    async recordUsage() {
+    async recordUsage(loggingEnabled) {
         if (Math.random() > SECRET_USAGE_SAMPLING_RATE) {
             return new Response('OK');
         }
