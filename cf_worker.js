@@ -244,13 +244,13 @@ async function handleRequest(request, env) {
         method: request.method,
     });
 
-    // 调试日志：显示响应头
-    const responseHeaders = {};
+    // 调试日志：显示来自dandanplay API的响应头
+    const dandanplayResponseHeaders = {};
     response.headers.forEach((value, key) => {
-        responseHeaders[key] = value;
+        dandanplayResponseHeaders[key] = value;
     });
-    console.log('接收响应头:', JSON.stringify(responseHeaders, null, 2));
-    console.log('响应状态:', response.status, response.statusText);
+    console.log('dandanplay API响应头:', JSON.stringify(dandanplayResponseHeaders, null, 2));
+    console.log('dandanplay API响应状态:', response.status, response.statusText);
 
     response = new Response(response.body, response);
     response.headers.set('Access-Control-Allow-Origin', '*');
