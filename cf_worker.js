@@ -374,6 +374,8 @@ async function checkAccess(request, env) {
             action: 'check',
             uaConfig: uaConfig,
             apiPath: apiPath,
+            clientIP: clientIP, // 将IP和UA类型直接传递给DO
+            uaType: uaConfig.type,
             loggingEnabled: ACCESS_CONFIG.logging.enabled,
         }),
     });
@@ -543,7 +545,7 @@ export class RateLimiter {
         if (request.method !== 'POST') {
             return new Response('无效的方法', { status: 405 });
         }
-        const { action, uaConfig, apiPath, loggingEnabled } = await request.json();
+        const { action, uaConfig, apiPath, loggingEnabled, clientIP, uaType } = await request.json();
 
         // 首次请求时，存储uaConfig
         if (uaConfig && !this.uaConfig) {
@@ -551,17 +553,17 @@ export class RateLimiter {
         }
 
         if (action === 'check') {
-            return this.check(apiPath, loggingEnabled); // 确保将 apiPath 和 loggingEnabled 传递给 check 方法
+            return this.check(apiPath, loggingEnabled, clientIP, uaType);
         }
 
         if (action === 'increment') {
-            return this.increment(apiPath, loggingEnabled);
+            return this.increment(apiPath, loggingEnabled, clientIP, uaType);
         }
 
         return new Response('无效的操作', { status: 400 });
     }
 
-    check(apiPath, loggingEnabled) {
+    check(apiPath, loggingEnabled, clientIP, uaType) {
         if (!this.uaConfig) {
             return new Response(JSON.stringify({ allowed: true }));
         }
@@ -573,8 +575,7 @@ export class RateLimiter {
         // 检查全局限制
         const globalHourCount = (this.data.ghts === currentHour) ? (this.data.ghc || 0) : 0;
         if (this.uaConfig.maxRequestsPerHour !== -1 && globalHourCount >= this.uaConfig.maxRequestsPerHour) {
-            if (loggingEnabled) {
-                const [uaType, clientIP] = this.state.id.name.split('-', 2);
+            if (loggingEnabled && clientIP && uaType) {
                 console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: 全局小时限制已超出 (${globalHourCount}/${this.uaConfig.maxRequestsPerHour})`);
             }
             const reason = `${this.uaConfig.description} 全局小时请求限制已超出 (${globalHourCount}/${this.uaConfig.maxRequestsPerHour})`;
@@ -583,8 +584,9 @@ export class RateLimiter {
 
         const globalDayCount = (this.data.gdts === currentDay) ? (this.data.gdc || 0) : 0;
         if (this.uaConfig.maxRequestsPerDay !== -1 && globalDayCount >= this.uaConfig.maxRequestsPerDay) {
-            const [uaType, clientIP] = this.state.id.name.split('-', 2);
-            console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: 全局每日限制已超出 (${globalDayCount}/${this.uaConfig.maxRequestsPerDay})`);
+            if (loggingEnabled && clientIP && uaType) {
+                console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: 全局每日限制已超出 (${globalDayCount}/${this.uaConfig.maxRequestsPerDay})`);
+            }
             const reason = `${this.uaConfig.description} 全局每日请求限制已超出 (${globalDayCount}/${this.uaConfig.maxRequestsPerDay})`;
             return new Response(JSON.stringify({ allowed: false, reason }), { headers: { 'Content-Type': 'application/json' } });
         }
@@ -596,8 +598,9 @@ export class RateLimiter {
                 const pathData = this.data.paths && this.data.paths[pathLimit.path] ? this.data.paths[pathLimit.path] : {};
                 const pathHourCount = (pathData.phts === currentHour) ? (pathData.phc || 0) : 0;
                 if (pathHourCount >= pathLimit.maxRequestsPerHour) {
-                    const [uaType, clientIP] = this.state.id.name.split('-', 2);
-                    console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: 路径小时限制已超出 (${pathHourCount}/${pathLimit.maxRequestsPerHour})`);
+                    if (loggingEnabled && clientIP && uaType) {
+                        console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: 路径小时限制已超出 (${pathHourCount}/${pathLimit.maxRequestsPerHour})`);
+                    }
                     const reason = `${this.uaConfig.description} 路径 ${apiPath} 小时请求限制已超出 (${pathHourCount}/${pathLimit.maxRequestsPerHour})`;
                     return new Response(JSON.stringify({ allowed: false, reason }), { headers: { 'Content-Type': 'application/json' } });
                 }
@@ -607,7 +610,7 @@ export class RateLimiter {
         return new Response(JSON.stringify({ allowed: true }), { headers: { 'Content-Type': 'application/json' } });
     }
 
-    async increment(apiPath, loggingEnabled) {
+    async increment(apiPath, loggingEnabled, clientIP, uaType) {
         const now = Date.now();
         const currentHour = Math.floor(now / (1000 * 60 * 60));
         const currentDay = Math.floor(now / (1000 * 60 * 60 * 24));
@@ -636,8 +639,7 @@ export class RateLimiter {
         }
 
         // 日志记录
-        if (loggingEnabled) {
-            const [uaType, clientIP] = this.state.id.name.split('-', 2);
+        if (loggingEnabled && clientIP && uaType) {
             const uaConfig = this.uaConfig;
 
             if (matchedPathRule) {
