@@ -249,7 +249,22 @@ async function handleRequest(request, env) {
 
     // 读取响应内容用于日志记录
     const responseText = await response.text();
-    console.log('dandanplay API响应内容:', responseText);
+    // 新增：根据API路径选择性地记录响应内容，避免日志超限
+    if (apiPath.startsWith('/api/v2/comment/')) {
+        try {
+            const jsonResponse = JSON.parse(responseText);
+            if (jsonResponse && Array.isArray(jsonResponse.comments)) {
+                console.log(`dandanplay API响应内容: (路径=${apiPath}) 弹幕数量=${jsonResponse.comments.length}, comments数组内容已省略`);
+            } else {
+                console.log('dandanplay API响应内容:', responseText);
+            }
+        } catch (e) {
+            // 如果不是有效的JSON，则记录原始文本
+            console.log('dandanplay API响应内容 (非JSON):', responseText);
+        }
+    } else {
+        console.log('dandanplay API响应内容:', responseText);
+    }
 
     // 重新创建Response对象（因为body已经被读取）
     response = new Response(responseText, {
@@ -403,52 +418,49 @@ async function checkRateLimitByUA(clientIP, uaConfig, env, apiPath = '') {
 
         const globalHourCount = parseInt(await env.RATE_LIMIT_KV.get(globalHourKey) || '0');
         if (uaConfig.maxRequestsPerHour !== -1 && globalHourCount >= uaConfig.maxRequestsPerHour) {
-            return { allowed: false, reason: `${uaConfig.description} 全局小时请求限制已超出 (${globalHourCount}/${uaConfig.maxRequestsPerHour})` };
+            const reason = `${uaConfig.description} 全局小时请求限制已超出 (${globalHourCount}/${uaConfig.maxRequestsPerHour})`;
+            console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: ${reason}`);
+            return { allowed: false, reason: reason };
         }
 
         const globalDayCount = parseInt(await env.RATE_LIMIT_KV.get(globalDayKey) || '0');
         if (uaConfig.maxRequestsPerDay !== -1 && globalDayCount >= uaConfig.maxRequestsPerDay) {
-            return { allowed: false, reason: `${uaConfig.description} 全局每日请求限制已超出 (${globalDayCount}/${uaConfig.maxRequestsPerDay})` };
+            const reason = `${uaConfig.description} 全局每日请求限制已超出 (${globalDayCount}/${uaConfig.maxRequestsPerDay})`;
+            console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: ${reason}`);
+            return { allowed: false, reason: reason };
         }
 
         // 2. 检查路径特定限制
         if (apiPath && uaConfig.pathLimits && Array.isArray(uaConfig.pathLimits)) {
             const pathLimit = uaConfig.pathLimits.find(limit => apiPath.startsWith(limit.path));
             if (pathLimit) {
-                if (pathLimit.maxRequestsPerHour === -1) {
-                    // -1 表示不限制，直接通过
-                    if (ACCESS_CONFIG.logging.enabled) {
-                        console.log(`频率检查通过: IP=${clientIP}, UA=${uaType}, 路径(${apiPath})无限制, 全局: ${globalHourCount}/${uaConfig.maxRequestsPerHour}/小时, ${globalDayCount}/${uaConfig.maxRequestsPerDay}/天`);
-                    }
-                    return { allowed: true };
-                }
+                // -1 表示不限制，直接通过，无需日志
+                if (pathLimit.maxRequestsPerHour === -1) return { allowed: true };
 
                 const matchedPath = pathLimit.path.replace(/\//g, '_');
                 const pathHourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}_${matchedPath}`;
                 const pathHourCount = parseInt(await env.RATE_LIMIT_KV.get(pathHourKey) || '0');
 
                 if (pathHourCount >= pathLimit.maxRequestsPerHour) {
-                    return { allowed: false, reason: `${uaConfig.description} 路径 ${apiPath} 小时请求限制已超出 (${pathHourCount}/${pathLimit.maxRequestsPerHour})` };
+                    const reason = `${uaConfig.description} 路径 ${apiPath} 小时请求限制已超出 (${pathHourCount}/${pathLimit.maxRequestsPerHour})`;
+                    console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: ${reason}`);
+                    return { allowed: false, reason: reason };
                 }
-
-                if (ACCESS_CONFIG.logging.enabled) {
-                    console.log(`频率检查通过: IP=${clientIP}, UA=${uaType}, 路径(${apiPath}): ${pathHourCount}/${pathLimit.maxRequestsPerHour}/小时, 全局: ${globalHourCount}/${uaConfig.maxRequestsPerHour}/小时, ${globalDayCount}/${uaConfig.maxRequestsPerDay}/天`);
-                }
+                // 路径检查通过，无需日志
                 return { allowed: true };
             }
         }
 
-        // 如果没有匹配到路径特定限制，只记录全局检查结果
-        if (ACCESS_CONFIG.logging.enabled) {
-            const hourDisplay = uaConfig.maxRequestsPerHour === -1 ? '∞' : uaConfig.maxRequestsPerHour;
-            const dayDisplay = uaConfig.maxRequestsPerDay === -1 ? '∞' : uaConfig.maxRequestsPerDay;
-            console.log(`频率检查通过: IP=${clientIP}, UA=${uaType}, 全局限制: ${globalHourCount}/${hourDisplay}/小时, ${globalDayCount}/${dayDisplay}/天`);
-        }
+        // 全局检查通过，且无特定路径匹配，无需日志
         return { allowed: true };
     } catch (error) {
-        // KV存储不可用时允许通过
+        // 捕获到错误，打印错误信息
         console.error('频率限制检查失败:', error);
-        return { allowed: true };
+        // 只有当错误明确是KV存储问题时才放行，其他错误（如日志超限）则拒绝
+        if (error.message && (error.message.includes('KV') || error.message.includes('binding'))) {
+            return { allowed: true }; // KV 故障，临时放行
+        }
+        return { allowed: false, reason: '内部错误导致频率检查失败' }; // 其他错误，安全起见，拒绝
     }
 }
 
@@ -487,7 +499,7 @@ async function recordRequest(request, env, apiPath = '') {
                     const pathDisplay = pathLimit.maxRequestsPerHour === -1 ? '∞' : pathLimit.maxRequestsPerHour;
                     const globalHourDisplay = uaConfig.maxRequestsPerHour === -1 ? '∞' : uaConfig.maxRequestsPerHour;
                     const globalDayDisplay = uaConfig.maxRequestsPerDay === -1 ? '∞' : uaConfig.maxRequestsPerDay;
-                    console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 路径限制=${newPathHourCount}/${pathDisplay}/小时, 全局限制=${newGlobalHourCount}/${globalHourDisplay}/小时, 每日=${newGlobalDayCount}/${globalDayDisplay}, 时间=${new Date().toISOString()}`);
+                    console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 路径限制=${newPathHourCount}/${pathDisplay}/小时, 全局限制=${newGlobalHourCount}/${globalHourDisplay}/小时, 每日=${newGlobalDayCount}/${globalDayDisplay}/天, 时间=${new Date().toISOString()}`);
                 }
                 return; // 记录完毕，退出函数
             }
@@ -497,7 +509,7 @@ async function recordRequest(request, env, apiPath = '') {
         if (ACCESS_CONFIG.logging.enabled) {
             const hourDisplay = uaConfig.maxRequestsPerHour === -1 ? '∞' : uaConfig.maxRequestsPerHour;
             const dayDisplay = uaConfig.maxRequestsPerDay === -1 ? '∞' : uaConfig.maxRequestsPerDay;
-            console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 全局限制: 小时=${newGlobalHourCount}/${hourDisplay}, 每日=${newGlobalDayCount}/${dayDisplay}, 时间=${new Date().toISOString()}`);
+            console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 全局限制=${newGlobalHourCount}/${hourDisplay}/小时, 每日=${newGlobalDayCount}/${dayDisplay}/天, 时间=${new Date().toISOString()}`);
         }
 
     } catch (error) {
