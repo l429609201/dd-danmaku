@@ -244,15 +244,19 @@ async function handleRequest(request, env) {
         method: request.method,
     });
 
-    // 调试日志：显示来自dandanplay API的响应头
-    const dandanplayResponseHeaders = {};
-    response.headers.forEach((value, key) => {
-        dandanplayResponseHeaders[key] = value;
-    });
-    console.log('dandanplay API响应头:', JSON.stringify(dandanplayResponseHeaders, null, 2));
+    // 调试日志：显示dandanplay API响应内容
     console.log('dandanplay API响应状态:', response.status, response.statusText);
 
-    response = new Response(response.body, response);
+    // 读取响应内容用于日志记录
+    const responseText = await response.text();
+    console.log('dandanplay API响应内容:', responseText);
+
+    // 重新创建Response对象（因为body已经被读取）
+    response = new Response(responseText, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers
+    });
     response.headers.set('Access-Control-Allow-Origin', '*');
 
     // 新增：记录请求到KV存储
