@@ -243,6 +243,15 @@ async function handleRequest(request, env) {
         body: request.body,
         method: request.method,
     });
+
+    // 调试日志：显示响应头
+    const responseHeaders = {};
+    response.headers.forEach((value, key) => {
+        responseHeaders[key] = value;
+    });
+    console.log('接收响应头:', JSON.stringify(responseHeaders, null, 2));
+    console.log('响应状态:', response.status, response.statusText);
+
     response = new Response(response.body, response);
     response.headers.set('Access-Control-Allow-Origin', '*');
 
