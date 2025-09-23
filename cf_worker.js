@@ -190,9 +190,14 @@ async function handleRequest(request, env, ctx) {
             console.log(`访问被拒绝: ${errorMessage}, 路径=${urlObj.pathname}`);
         }
 
-        return new Response(errorMessage, {
+        // 统一错误响应为JSON格式
+        const errorResponse = {
             status: accessCheck.status,
-            headers: { 'Access-Control-Allow-Origin': '*' }
+            message: errorMessage
+        };
+        return new Response(JSON.stringify(errorResponse), {
+            status: accessCheck.status,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
     }
 
@@ -210,7 +215,11 @@ async function handleRequest(request, env, ctx) {
     const appId = env.APP_ID;
     // 优化：从 AppState DO 获取密钥
     const appStateStub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
-    const secretResponse = await appStateStub.fetch(new Request('https://do.internal/getSecret'));
+    const secretResponse = await appStateStub.fetch(new Request('https://do.internal/getSecret', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'getSecret', loggingEnabled: ACCESS_CONFIG.logging.enabled })
+    }));
     const appSecret = await secretResponse.text();
 
 
@@ -286,7 +295,11 @@ async function handleRequest(request, env, ctx) {
     response.headers.set('Access-Control-Allow-Origin', '*');
 
     // 新增：记录请求到KV存储
-    ctx.waitUntil(accessCheck.doStub.fetch(new Request('https://do.internal/increment', { method: 'POST', body: JSON.stringify({ apiPath: accessCheck.apiPath, loggingEnabled: ACCESS_CONFIG.logging.enabled }) })));
+    ctx.waitUntil(accessCheck.doStub.fetch(new Request('https://do.internal/increment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'increment', apiPath: accessCheck.apiPath, loggingEnabled: ACCESS_CONFIG.logging.enabled })
+    })));
 
     return response;
 }
@@ -301,7 +314,11 @@ async function getCurrentAppSecret(env) { // 此函数现在仅作为备份，�
 // 记录AppSecret使用次数
 async function recordAppSecretUsage(env, loggingEnabled) {
     const appStateStub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
-    await appStateStub.fetch(new Request('https://do.internal/recordUsage', { method: 'POST', body: JSON.stringify({ loggingEnabled }) }));
+    await appStateStub.fetch(new Request('https://do.internal/recordUsage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'recordUsage', loggingEnabled: loggingEnabled })
+    }));
 }
 
 /**
@@ -523,6 +540,9 @@ export class RateLimiter {
 
     async fetch(request) {
         await this.initialize();
+        if (request.method !== 'POST') {
+            return new Response('无效的方法', { status: 405 });
+        }
         const { action, uaConfig, apiPath, loggingEnabled } = await request.json();
 
         // 首次请求时，存储uaConfig
@@ -665,15 +685,17 @@ export class AppState {
 
     async fetch(request) {
         await this.initialize();
-        const url = new URL(request.url);
-        const body = request.method === 'POST' ? await request.json() : {};
+        if (request.method !== 'POST') {
+            return new Response('无效的方法', { status: 405 });
+        }
+        const { action, loggingEnabled } = await request.json();
 
-        if (url.pathname === '/getSecret') {
-            return this.getSecret(body.loggingEnabled);
+        if (action === 'getSecret') {
+            return this.getSecret(loggingEnabled);
         }
 
-        if (url.pathname === '/recordUsage') {
-            return this.recordUsage(body.loggingEnabled);
+        if (action === 'recordUsage') {
+            return this.recordUsage(loggingEnabled);
         }
 
         return new Response('无效的操作', { status: 400 });
