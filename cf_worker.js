@@ -523,7 +523,7 @@ export class RateLimiter {
 
     async fetch(request) {
         await this.initialize();
-        const { action, uaConfig, apiPath } = await request.json();
+        const { action, uaConfig, apiPath, loggingEnabled } = await request.json();
 
         // 首次请求时，存储uaConfig
         if (uaConfig && !this.uaConfig) {
@@ -535,7 +535,7 @@ export class RateLimiter {
         }
 
         if (action === 'increment') {
-            return this.increment(apiPath);
+            return this.increment(apiPath, loggingEnabled);
         }
 
         return new Response('无效的操作', { status: 400 });
@@ -666,10 +666,7 @@ export class AppState {
     async fetch(request) {
         await this.initialize();
         const url = new URL(request.url);
-        let body = {};
-        if (request.method === 'POST' && request.headers.get('content-type')?.includes('application/json')) {
-            body = await request.json();
-        }
+        const body = request.method === 'POST' ? await request.json() : {};
 
         if (url.pathname === '/getSecret') {
             return this.getSecret(body.loggingEnabled);
