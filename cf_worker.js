@@ -8,11 +8,13 @@ const hostlist = { 'api.dandanplay.net': null };
 // AppSecret轮换配置
 const SECRET_ROTATION_LIMIT = 500; // 每个secret使用500次后切换
 
-// ========================================
-// 🛡️ 访问控制配置 - 基于UA的分级限制
-// ========================================
+// AppSecret使用次数记录采样率，用于减少Durable Object的计算负载
+const SECRET_USAGE_SAMPLING_RATE = 0.1; // 10%的请求会记录使用次数
 
-
+// ========================================
+// ⚙️ Durable Object 配置
+// ========================================
+const ALARM_INTERVAL_SECONDS = 60; // 每60秒强制将内存中的计数写入存储，以确保在免费额度内
 
 // 从环境变量获取IP黑名单配置
 function getIpBlacklist(env) {
@@ -138,12 +140,13 @@ function getAccessConfig(env) {
 
 
 export default {
-    async fetch(request, env, ctx) {
-        return await handleRequest(request, env);
-    }
+  async fetch(request, env, ctx) {
+    return await handleRequest(request, env, ctx);
+  },
 };
 
-async function handleRequest(request, env) {
+
+async function handleRequest(request, env, ctx) {
     if (request.method === 'OPTIONS') {
         return new Response(null, {
             status: 204,
@@ -205,14 +208,18 @@ async function handleRequest(request, env) {
     }
 
     const appId = env.APP_ID;
-    const appSecret = await getCurrentAppSecret(env);
+    // 优化：从 AppState DO 获取密钥
+    const appStateStub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
+    const secretResponse = await appStateStub.fetch(new Request('https://do.internal/getSecret'));
+    const appSecret = await secretResponse.text();
+
 
     const timestamp = Math.floor(Date.now() / 1000);
     const apiPath = tUrlObj.pathname;
     const signature = await generateSignature(appId, timestamp, apiPath, appSecret);
 
     // 记录AppSecret使用次数
-    await recordAppSecretUsage(env);
+    ctx.waitUntil(recordAppSecretUsage(env));
     console.log('应用ID: ' + appId);
     console.log('签名: ' + signature);
     console.log('时间戳: ' + timestamp);
@@ -275,72 +282,22 @@ async function handleRequest(request, env) {
     response.headers.set('Access-Control-Allow-Origin', '*');
 
     // 新增：记录请求到KV存储
-    await recordRequest(request, env, apiPath);
+    ctx.waitUntil(accessCheck.doStub.fetch(new Request('https://do.internal/increment', { method: 'POST', body: JSON.stringify({ apiPath: accessCheck.apiPath }) })));
 
     return response;
 }
 
 // AppSecret轮换管理
-async function getCurrentAppSecret(env) {
-    const appSecret1 = env.APP_SECRET;
-    const appSecret2 = env.APP_SECRET_2;
-
-    if (!appSecret1) {
-        throw new Error('APP_SECRET 环境变量未配置');
-    }
-
-    if (!appSecret2) {
-        console.log('APP_SECRET_2 未配置，使用单一密钥');
-        return appSecret1;
-    }
-
-    try {
-        // 获取当前使用计数
-        const secret1Count = await env.RATE_LIMIT_KV.get('app_secret_1_count') || '0';
-        const secret2Count = await env.RATE_LIMIT_KV.get('app_secret_2_count') || '0';
-        const currentSecret = await env.RATE_LIMIT_KV.get('current_app_secret') || '1';
-
-        const count1 = parseInt(secret1Count, 10);
-        const count2 = parseInt(secret2Count, 10);
-
-        console.log(`Secret1使用次数: ${count1}, Secret2使用次数: ${count2}, 当前使用: Secret${currentSecret}`);
-
-        // 检查是否需要切换
-        if (currentSecret === '1' && count1 >= SECRET_ROTATION_LIMIT) {
-            // 切换到Secret2
-            await env.RATE_LIMIT_KV.put('current_app_secret', '2');
-            await env.RATE_LIMIT_KV.put('app_secret_1_count', '0'); // 重置计数
-            console.log('切换到APP_SECRET_2');
-            return appSecret2;
-        } else if (currentSecret === '2' && count2 >= SECRET_ROTATION_LIMIT) {
-            // 切换到Secret1
-            await env.RATE_LIMIT_KV.put('current_app_secret', '1');
-            await env.RATE_LIMIT_KV.put('app_secret_2_count', '0'); // 重置计数
-            console.log('切换到APP_SECRET');
-            return appSecret1;
-        }
-
-        // 返回当前密钥
-        return currentSecret === '1' ? appSecret1 : appSecret2;
-    } catch (error) {
-        console.error('AppSecret轮换失败，使用默认密钥:', error);
-        return appSecret1;
-    }
+async function getCurrentAppSecret(env) { // 此函数现在仅作为备份，主要逻辑在DO中
+    const appStateStub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
+    const response = await appStateStub.fetch(new Request('https://do.internal/getSecret'));
+    return await response.text();
 }
 
 // 记录AppSecret使用次数
 async function recordAppSecretUsage(env) {
-    try {
-        const currentSecret = await env.RATE_LIMIT_KV.get('current_app_secret') || '1';
-        const countKey = currentSecret === '1' ? 'app_secret_1_count' : 'app_secret_2_count';
-        const currentCount = await env.RATE_LIMIT_KV.get(countKey) || '0';
-        const newCount = parseInt(currentCount, 10) + 1;
-
-        await env.RATE_LIMIT_KV.put(countKey, newCount.toString());
-        console.log(`AppSecret${currentSecret}使用次数: ${newCount}`);
-    } catch (error) {
-        console.error('记录AppSecret使用次数失败:', error);
-    }
+    const appStateStub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
+    await appStateStub.fetch(new Request('https://do.internal/recordUsage'));
 }
 
 /**
@@ -359,9 +316,18 @@ async function generateSignature(appId, timestamp, path, appSecret) {
     const hashBase64 = btoa(hashArray.map(byte => String.fromCharCode(byte)).join(''));
     return hashBase64;
 }
-
 // 新增：访问控制检查函数
 async function checkAccess(request, env) {
+    // 内部函数：识别User-Agent类型
+    function identifyUserAgent(userAgent, ACCESS_CONFIG) {
+        for (const [key, config] of Object.entries(ACCESS_CONFIG.userAgentLimits)) {
+            if (key !== 'default' && config.userAgent && userAgent.includes(config.userAgent)) {
+                return { ...config, type: key };
+            }
+        }
+        return null;
+    }
+
     const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
     const userAgent = request.headers.get('X-User-Agent') || '';
     const urlObj = new URL(request.url);
@@ -374,8 +340,25 @@ async function checkAccess(request, env) {
         return { allowed: false, reason: '禁止访问的UA', status: 403 };
     }
 
-    // 2. 基于UA类型和路径的频率限制检查
-    const rateLimitCheck = await checkRateLimitByUA(clientIP, uaConfig, env, apiPath);
+    // 2. 基于Durable Object的频率限制
+    const doKey = `${uaConfig.type}-${clientIP}`;
+    const doId = env.RATE_LIMITER.idFromName(doKey);
+    const doStub = env.RATE_LIMITER.get(doId);
+
+    // 将配置和请求信息传递给Durable Object
+    const doRequest = new Request('https://do.internal/check', { // 使用内部URL，避免与外部请求混淆
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            action: 'check',
+            uaConfig: uaConfig,
+            apiPath: apiPath,
+        }),
+    });
+
+    const doResponse = await doStub.fetch(doRequest);
+    const rateLimitCheck = await doResponse.json();
+
     if (!rateLimitCheck.allowed) {
         return { allowed: false, reason: `频率限制：${rateLimitCheck.reason}`, status: 429 };
     }
@@ -388,133 +371,7 @@ async function checkAccess(request, env) {
         }
     }
 
-    return { allowed: true, uaConfig: uaConfig };
-}
-
-// 新增：识别User-Agent类型
-function identifyUserAgent(userAgent, ACCESS_CONFIG) {
-    for (const [key, config] of Object.entries(ACCESS_CONFIG.userAgentLimits)) {
-        if (key === 'default') continue;
-
-        if (config.userAgent && userAgent.includes(config.userAgent)) {
-            return { ...config, type: key };
-        }
-    }
-
-    // 如果没有匹配到，返回 null（禁止访问）
-    return null;
-}
-
-// 新增：基于UA类型和路径的频率限制检查
-async function checkRateLimitByUA(clientIP, uaConfig, env, apiPath = '') {
-    const ACCESS_CONFIG = getAccessConfig(env);
-    const uaType = uaConfig.type;
-    const now = Date.now();
-
-    try {
-        // 1. 检查全局限制
-        const globalHourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}`;
-        const globalDayKey = `rate_day_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60 * 24))}`;
-
-        const globalHourCount = parseInt(await env.RATE_LIMIT_KV.get(globalHourKey) || '0');
-        if (uaConfig.maxRequestsPerHour !== -1 && globalHourCount >= uaConfig.maxRequestsPerHour) {
-            const reason = `${uaConfig.description} 全局小时请求限制已超出 (${globalHourCount}/${uaConfig.maxRequestsPerHour})`;
-            console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: ${reason}`);
-            return { allowed: false, reason: reason };
-        }
-
-        const globalDayCount = parseInt(await env.RATE_LIMIT_KV.get(globalDayKey) || '0');
-        if (uaConfig.maxRequestsPerDay !== -1 && globalDayCount >= uaConfig.maxRequestsPerDay) {
-            const reason = `${uaConfig.description} 全局每日请求限制已超出 (${globalDayCount}/${uaConfig.maxRequestsPerDay})`;
-            console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: ${reason}`);
-            return { allowed: false, reason: reason };
-        }
-
-        // 2. 检查路径特定限制
-        if (apiPath && uaConfig.pathLimits && Array.isArray(uaConfig.pathLimits)) {
-            const pathLimit = uaConfig.pathLimits.find(limit => apiPath.startsWith(limit.path));
-            if (pathLimit) {
-                // -1 表示不限制，直接通过，无需日志
-                if (pathLimit.maxRequestsPerHour === -1) return { allowed: true };
-
-                const matchedPath = pathLimit.path.replace(/\//g, '_');
-                const pathHourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}_${matchedPath}`;
-                const pathHourCount = parseInt(await env.RATE_LIMIT_KV.get(pathHourKey) || '0');
-
-                if (pathHourCount >= pathLimit.maxRequestsPerHour) {
-                    const reason = `${uaConfig.description} 路径 ${apiPath} 小时请求限制已超出 (${pathHourCount}/${pathLimit.maxRequestsPerHour})`;
-                    console.log(`频率限制拒绝: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 原因: ${reason}`);
-                    return { allowed: false, reason: reason };
-                }
-                // 路径检查通过，无需日志
-                return { allowed: true };
-            }
-        }
-
-        // 全局检查通过，且无特定路径匹配，无需日志
-        return { allowed: true };
-    } catch (error) {
-        // 捕获到错误，打印错误信息
-        console.error('频率限制检查失败:', error);
-        // 只有当错误明确是KV存储问题时才放行，其他错误（如日志超限）则拒绝
-        if (error.message && (error.message.includes('KV') || error.message.includes('binding'))) {
-            return { allowed: true }; // KV 故障，临时放行
-        }
-        return { allowed: false, reason: '内部错误导致频率检查失败' }; // 其他错误，安全起见，拒绝
-    }
-}
-
-// 新增：记录请求（基于UA类型和路径）
-async function recordRequest(request, env, apiPath = '') {
-    const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
-    const userAgent = request.headers.get('X-User-Agent') || '';
-    const ACCESS_CONFIG = getAccessConfig(env);
-    const uaConfig = identifyUserAgent(userAgent, ACCESS_CONFIG);
-    if (!uaConfig) return; // 如果UA不被允许，则不记录
-    const uaType = uaConfig.type;
-    const now = Date.now();
-
-    try {
-        // 1. 始终更新全局计数器
-        const globalHourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}`;
-        const globalDayKey = `rate_day_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60 * 24))}`;
-
-        const newGlobalHourCount = (parseInt(await env.RATE_LIMIT_KV.get(globalHourKey) || '0')) + 1;
-        const newGlobalDayCount = (parseInt(await env.RATE_LIMIT_KV.get(globalDayKey) || '0')) + 1;
-
-        await env.RATE_LIMIT_KV.put(globalHourKey, newGlobalHourCount.toString(), { expirationTtl: 3600 });
-        await env.RATE_LIMIT_KV.put(globalDayKey, newGlobalDayCount.toString(), { expirationTtl: 86400 });
-
-        // 2. 如果匹配，则额外更新路径特定计数器
-        if (apiPath && uaConfig.pathLimits && Array.isArray(uaConfig.pathLimits)) {
-            const pathLimit = uaConfig.pathLimits.find(limit => apiPath.startsWith(limit.path));
-            if (pathLimit) {
-                const matchedPath = pathLimit.path.replace(/\//g, '_');
-                const pathHourKey = `rate_hour_${uaType}_${clientIP}_${Math.floor(now / (1000 * 60 * 60))}_${matchedPath}`;
-                const newPathHourCount = (parseInt(await env.RATE_LIMIT_KV.get(pathHourKey) || '0')) + 1;
-                await env.RATE_LIMIT_KV.put(pathHourKey, newPathHourCount.toString(), { expirationTtl: 3600 });
-
-                // 详细日志
-                if (ACCESS_CONFIG.logging.enabled) {
-                    const pathDisplay = pathLimit.maxRequestsPerHour === -1 ? '∞' : pathLimit.maxRequestsPerHour;
-                    const globalHourDisplay = uaConfig.maxRequestsPerHour === -1 ? '∞' : uaConfig.maxRequestsPerHour;
-                    const globalDayDisplay = uaConfig.maxRequestsPerDay === -1 ? '∞' : uaConfig.maxRequestsPerDay;
-                    console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 路径限制=${newPathHourCount}/${pathDisplay}/小时, 全局限制=${newGlobalHourCount}/${globalHourDisplay}/小时, 每日=${newGlobalDayCount}/${globalDayDisplay}/天, 时间=${new Date().toISOString()}`);
-                }
-                return; // 记录完毕，退出函数
-            }
-        }
-
-        // 如果没有匹配到路径特定限制，只记录全局日志
-        if (ACCESS_CONFIG.logging.enabled) {
-            const hourDisplay = uaConfig.maxRequestsPerHour === -1 ? '∞' : uaConfig.maxRequestsPerHour;
-            const dayDisplay = uaConfig.maxRequestsPerDay === -1 ? '∞' : uaConfig.maxRequestsPerDay;
-            console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 全局限制=${newGlobalHourCount}/${hourDisplay}/小时, 每日=${newGlobalDayCount}/${dayDisplay}/天, 时间=${new Date().toISOString()}`);
-        }
-
-    } catch (error) {
-        console.error('记录请求失败:', error);
-    }
+    return { allowed: true, uaConfig: uaConfig, doStub: doStub, apiPath: apiPath };
 }
 
 // 新增：处理挑战-响应认证
@@ -642,4 +499,198 @@ function Forbidden(url) {
     return new Response(`主机名 ${url.hostname} 不被允许访问`, {
         status: 403,
     });
+}
+
+export class RateLimiter {
+    constructor(state, env) {
+        this.state = state;
+        this.env = env;
+        this.data = {};
+        this.initialized = false;
+        this.uaConfig = null; // 将在首次请求时设置
+    }
+
+    async initialize() {
+        if (this.initialized) return;
+        this.data = await this.state.storage.get('data') || {};
+        this.initialized = true;
+    }
+
+    async fetch(request) {
+        await this.initialize();
+        const { action, uaConfig, apiPath } = await request.json();
+
+        // 首次请求时，存储uaConfig
+        if (uaConfig && !this.uaConfig) {
+            this.uaConfig = uaConfig;
+        }
+
+        if (action === 'check') {
+            return this.check(apiPath);
+        }
+
+        if (action === 'increment') {
+            return this.increment(apiPath);
+        }
+
+        return new Response('无效的操作', { status: 400 });
+    }
+
+    check(apiPath) {
+        if (!this.uaConfig) {
+            return new Response(JSON.stringify({ allowed: true }));
+        }
+
+        const now = Date.now();
+        const currentHour = Math.floor(now / (1000 * 60 * 60));
+        const currentDay = Math.floor(now / (1000 * 60 * 60 * 24));
+
+        // 检查全局限制
+        const globalHourCount = (this.data.ghts === currentHour) ? (this.data.ghc || 0) : 0;
+        if (this.uaConfig.maxRequestsPerHour !== -1 && globalHourCount >= this.uaConfig.maxRequestsPerHour) {
+            const reason = `${this.uaConfig.description} 全局小时请求限制已超出 (${globalHourCount}/${this.uaConfig.maxRequestsPerHour})`;
+            return new Response(JSON.stringify({ allowed: false, reason }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        const globalDayCount = (this.data.gdts === currentDay) ? (this.data.gdc || 0) : 0;
+        if (this.uaConfig.maxRequestsPerDay !== -1 && globalDayCount >= this.uaConfig.maxRequestsPerDay) {
+            const reason = `${this.uaConfig.description} 全局每日请求限制已超出 (${globalDayCount}/${this.uaConfig.maxRequestsPerDay})`;
+            return new Response(JSON.stringify({ allowed: false, reason }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        // 检查路径特定限制
+        if (apiPath && this.uaConfig.pathLimits && Array.isArray(this.uaConfig.pathLimits)) {
+            const pathLimit = this.uaConfig.pathLimits.find(limit => apiPath.startsWith(limit.path));
+            if (pathLimit && pathLimit.maxRequestsPerHour !== -1) {
+                const pathData = this.data.paths && this.data.paths[pathLimit.path] ? this.data.paths[pathLimit.path] : {};
+                const pathHourCount = (pathData.phts === currentHour) ? (pathData.phc || 0) : 0;
+                if (pathHourCount >= pathLimit.maxRequestsPerHour) {
+                    const reason = `${this.uaConfig.description} 路径 ${apiPath} 小时请求限制已超出 (${pathHourCount}/${pathLimit.maxRequestsPerHour})`;
+                    return new Response(JSON.stringify({ allowed: false, reason }), { headers: { 'Content-Type': 'application/json' } });
+                }
+            }
+        }
+
+        return new Response(JSON.stringify({ allowed: true }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    async increment(apiPath) {
+        const now = Date.now();
+        const currentHour = Math.floor(now / (1000 * 60 * 60));
+        const currentDay = Math.floor(now / (1000 * 60 * 60 * 24));
+
+        // 更新全局计数器
+        this.data.ghc = (this.data.ghts === currentHour) ? (this.data.ghc || 0) + 1 : 1;
+        this.data.ghts = currentHour;
+        this.data.gdc = (this.data.gdts === currentDay) ? (this.data.gdc || 0) + 1 : 1;
+        this.data.gdts = currentDay;
+
+        // 更新路径特定计数器
+        if (this.uaConfig && this.uaConfig.pathLimits && Array.isArray(this.uaConfig.pathLimits)) {
+            const pathLimit = this.uaConfig.pathLimits.find(limit => apiPath.startsWith(limit.path));
+            if (pathLimit) {
+                const pathKey = pathLimit.path;
+                if (!this.data.paths) this.data.paths = {};
+                if (!this.data.paths[pathKey]) this.data.paths[pathKey] = {};
+                this.data.paths[pathKey].phc = (this.data.paths[pathKey].phts === currentHour) ? (this.data.paths[pathKey].phc || 0) + 1 : 1;
+                this.data.paths[pathKey].phts = currentHour;
+            }
+        }
+
+        // 设置一个定时器，在10秒后将内存中的数据写入持久化存储
+        // 这可以避免每次请求都写入，从而大幅降低写入成本
+        const currentAlarm = await this.state.storage.getAlarm();
+        if (currentAlarm === null) {
+            const alarmTime = Date.now() + ALARM_INTERVAL_SECONDS * 1000;
+            await this.state.storage.setAlarm(alarmTime);
+        }
+
+        return new Response('OK');
+    }
+
+    async alarm() {
+        // 定时器触发，将内存数据写入持久化存储
+        await this.state.storage.put('data', this.data);
+    }
+}
+
+export class AppState {
+    constructor(state, env) {
+        this.state = state;
+        this.env = env;
+        this.appState = {};
+        this.initialized = false;
+    }
+
+    async initialize() {
+        if (this.initialized) return;
+        this.appState = await this.state.storage.get('app_secret_state') || { current: '1', count1: 0, count2: 0 };
+        this.initialized = true;
+    }
+
+    async fetch(request) {
+        await this.initialize();
+        const url = new URL(request.url);
+
+        if (url.pathname === '/getSecret') {
+            return this.getSecret();
+        }
+
+        if (url.pathname === '/recordUsage') {
+            return this.recordUsage();
+        }
+
+        return new Response('无效的操作', { status: 400 });
+    }
+
+    async getSecret() {
+        const appSecret1 = this.env.APP_SECRET;
+        const appSecret2 = this.env.APP_SECRET_2;
+
+        if (!appSecret2) return new Response(appSecret1);
+
+        console.log(`Secret1使用次数: ${this.appState.count1}, Secret2使用次数: ${this.appState.count2}, 当前使用: Secret${this.appState.current}`);
+
+        if (this.appState.current === '1' && this.appState.count1 >= SECRET_ROTATION_LIMIT) {
+            this.appState.current = '2';
+            this.appState.count1 = 0;
+            console.log('切换到APP_SECRET_2');
+            // 立即写入状态，因为这是一个重要变更
+            await this.state.storage.put('app_secret_state', this.appState);
+            return new Response(appSecret2);
+        } else if (this.appState.current === '2' && this.appState.count2 >= SECRET_ROTATION_LIMIT) {
+            this.appState.current = '1';
+            this.appState.count2 = 0;
+            console.log('切换到APP_SECRET');
+            await this.state.storage.put('app_secret_state', this.appState);
+            return new Response(appSecret1);
+        }
+
+        return new Response(this.appState.current === '1' ? appSecret1 : appSecret2);
+    }
+
+    async recordUsage() {
+        if (Math.random() > SECRET_USAGE_SAMPLING_RATE) {
+            return new Response('OK');
+        }
+
+        const increment = Math.round(1 / SECRET_USAGE_SAMPLING_RATE);
+        if (this.appState.current === '1') {
+            this.appState.count1 += increment;
+        } else {
+            this.appState.count2 += increment;
+        }
+
+        const currentAlarm = await this.state.storage.getAlarm();
+        if (currentAlarm === null) {
+            await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_SECONDS * 1000);
+        }
+
+        return new Response('OK');
+    }
+
+    async alarm() {
+        await this.state.storage.put('app_secret_state', this.appState);
+        console.log('AppState 已持久化存储');
+    }
 }

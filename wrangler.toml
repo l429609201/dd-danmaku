@@ -11,14 +11,17 @@ USER_AGENT_LIMITS_CONFIG = '''{{USER_AGENT_LIMITS_CONFIG}}'''
 IP_BLACKLIST_CONFIG = '''{{IP_BLACKLIST_CONFIG}}'''
 
 
-# KV 绑定配置
-[[kv_namespaces]]
-binding = "RATE_LIMIT_KV"
-id = "3f2e505906b04bbf85d47b9194706d1d"
-
 # wrangler.toml (wrangler v3.88.0^)
 [observability.logs]
 enabled = true
 
+# Durable Object 绑定配置
+[durable_objects]
+bindings = [
+  { name = "RATE_LIMITER", class_name = "RateLimiter" },
+  { name = "APP_STATE", class_name = "AppState" }
+]
 
-
+[[migrations]]
+tag = "v2" # 版本升级
+new_classes = ["RateLimiter", "AppState"]
