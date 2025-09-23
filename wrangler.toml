@@ -23,5 +23,5 @@ bindings = [
 ]
 
 [[migrations]]
-tag = "v2" # 版本升级
-new_classes = ["RateLimiter", "AppState"]
+tag = "v3" # 升级到 SQLite 后端
+new_sqlite_classes = ["RateLimiter", "AppState"]
