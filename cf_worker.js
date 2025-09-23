@@ -526,7 +526,7 @@ export class RateLimiter {
         }
 
         if (action === 'check') {
-            return this.check(apiPath);
+            return this.check(apiPath); // 确保将 apiPath 传递给 check 方法
         }
 
         if (action === 'increment') {
@@ -559,7 +559,7 @@ export class RateLimiter {
         }
 
         // 检查路径特定限制
-        if (apiPath && this.uaConfig.pathLimits && Array.isArray(this.uaConfig.pathLimits)) {
+        if (apiPath && this.uaConfig.pathLimits && Array.isArray(this.uaConfig.pathLimits)) { // 确保 apiPath 存在
             const pathLimit = this.uaConfig.pathLimits.find(limit => apiPath.startsWith(limit.path));
             if (pathLimit && pathLimit.maxRequestsPerHour !== -1) {
                 const pathData = this.data.paths && this.data.paths[pathLimit.path] ? this.data.paths[pathLimit.path] : {};
