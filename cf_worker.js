@@ -152,10 +152,19 @@ function getAccessConfig(env) {
 
 
 
+// 全局变量，标记是否已经设置过Webhook
+let webhookInitialized = false;
+
 export default {
   async fetch(request, env, ctx) {
+    // 只在第一次请求时设置Webhook
+    if (!webhookInitialized && env.TG_BOT_TOKEN && env.WORKER_DOMAIN) {
+      webhookInitialized = true;
+      ctx.waitUntil(setupWebhookOnce(env));
+    }
+
     return await handleRequest(request, env, ctx);
-  },
+  }
 };
 
 
@@ -759,6 +768,36 @@ function pemToArrayBuffer(pem) {
                    .replace(/\s/g, '');
     return base64ToArrayBuffer(b64);
 }
+
+// 部署时一次性设置Telegram Webhook
+async function setupWebhookOnce(env) {
+    try {
+        const webhookUrl = `${env.WORKER_DOMAIN}/telegram-webhook`;
+        console.log('🚀 部署时自动设置TG Webhook:', webhookUrl);
+
+        const response = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/setWebhook`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                url: webhookUrl,
+                allowed_updates: ['message']
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.ok) {
+            console.log('✅ TG Webhook设置成功! 机器人现在可以使用了');
+        } else {
+            console.log('❌ TG Webhook设置失败:', result.description);
+        }
+
+    } catch (error) {
+        console.log('❌ 设置TG Webhook异常:', error.message);
+    }
+}
+
+
 
 // 工具函数：ArrayBuffer转Base64
 function arrayBufferToBase64(buffer) {
