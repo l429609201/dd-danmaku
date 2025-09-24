@@ -677,18 +677,19 @@ export class AppState {
     constructor(state, env) {
         this.state = state;
         this.env = env;
-        this.appState = {};
-        this.initialized = false;
+        // 关键修复：将初始化逻辑移入一个Promise中，以防止竞争条件
+        this.initialized = this.initialize();
     }
 
     async initialize() {
-        if (this.initialized) return;
-        this.appState = await this.state.storage.get('app_secret_state') || { current: '1', count1: 0, count2: 0 };
-        this.initialized = true;
+        if (!this.appState) {
+            this.appState = await this.state.storage.get('app_secret_state') || { current: '1', count1: 0, count2: 0 };
+        }
     }
 
     async fetch(request) {
-        await this.initialize();
+        // 等待初始化完成
+        await this.initialized;
         if (request.method !== 'POST') {
             return new Response('无效的方法', { status: 405 });
         }
