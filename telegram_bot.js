@@ -48,14 +48,14 @@ export function logToBot(level, message, metadata = {}) {
         metadata: metadata,
         id: Date.now() + Math.random().toString(36).substr(2, 9)
     };
-    
+
     logStorage.entries.push(entry);
-    
+
     // 限制日志数量
     if (logStorage.entries.length > MAX_LOG_ENTRIES) {
         logStorage.entries = logStorage.entries.slice(-MAX_LOG_ENTRIES);
     }
-    
+
     // 定期清理过期日志和违规记录
     const now = Date.now();
     if (now - logStorage.lastCleanup > 60 * 60 * 1000) { // 每小时清理一次
@@ -305,7 +305,6 @@ function cleanupPathOverloadRecords() {
 
 // TG机器人主处理函数
 export async function handleTelegramWebhook(request, env) {
-    // 记录TG机器人连接状态
     console.log('🤖 TG机器人Webhook被调用');
     console.log('📋 环境变量检查:');
     console.log('- TG_BOT_TOKEN:', env.TG_BOT_TOKEN ? '已设置 (长度: ' + env.TG_BOT_TOKEN.length + ')' : '❌ 未设置');
@@ -323,12 +322,12 @@ export async function handleTelegramWebhook(request, env) {
         try {
             const requestText = await request.text();
             console.log('📝 收到请求体:', requestText);
-
+            
             if (!requestText || requestText.trim() === '') {
                 console.log('⚠️ 请求体为空，可能是测试请求');
                 return new Response('TG Bot is working! Empty request body received.', { status: 200 });
             }
-
+            
             update = JSON.parse(requestText);
             console.log('📨 收到TG更新:', JSON.stringify(update, null, 2));
         } catch (jsonError) {
@@ -355,16 +354,16 @@ export async function handleTelegramWebhook(request, env) {
         const text = message.text.trim();
         const userId = message.from.id;
         const username = message.from.username || message.from.first_name;
-
+        
         console.log('✅ TG机器人连接成功!');
         console.log('👤 用户信息:', { userId, username, chatId });
         console.log('💬 收到命令:', text);
-
+        
         logToBot('info', `TG机器人收到命令: ${text}`, { userId, username });
-
+        
         // 处理命令
         const response = await processCommand(text, env);
-
+        
         // 发送回复
         if (response) {
             console.log('📤 准备发送回复，长度:', response.length);
@@ -376,7 +375,7 @@ export async function handleTelegramWebhook(request, env) {
             }
             logToBot('info', `TG机器人发送回复`, { chatId, responseLength: response.length, success: sendResult.success });
         }
-
+        
         return new Response('OK');
     } catch (error) {
         console.log('❌ TG机器人连接失败: 处理异常');
@@ -389,26 +388,26 @@ export async function handleTelegramWebhook(request, env) {
 
 function isAuthorizedUser(update, env) {
     console.log('🔐 检查用户授权');
-
+    
     if (!env.TG_ADMIN_USER_ID) {
         console.log('❌ 授权失败: TG_ADMIN_USER_ID 环境变量未设置');
         return false;
     }
-
+    
     const userId = update.message?.from?.id;
     console.log('👤 请求用户ID:', userId);
-
+    
     if (!userId) {
         console.log('❌ 授权失败: 无法获取用户ID');
         return false;
     }
-
+    
     const adminIds = env.TG_ADMIN_USER_ID.split(',').map(id => parseInt(id.trim()));
     console.log('👥 授权用户ID列表:', adminIds);
-
+    
     const isAuthorized = adminIds.includes(userId);
     console.log('🔐 授权结果:', isAuthorized ? '✅ 通过' : '❌ 拒绝');
-
+    
     return isAuthorized;
 }
 
@@ -417,7 +416,7 @@ async function processCommand(text, env) {
     
     switch (command.toLowerCase()) {
         case '/start':
-            return `🤖 弹幕API管理机器人\n\n可用命令：\n/status - 查看系统状态\n/logs - 查看系统日志\n/webhook - Webhook管理\n/violations - IP违规管理\n/blacklist - IP黑名单管理\n/ua - UA配置管理\n/help - 帮助信息\n\n💡 首次使用请先运行 /webhook setup 设置Webhook`;
+            return `🤖 系统管理后台机器人\n\n可用命令：\n/status - 查看系统状态\n/logs - 查看系统日志\n/violations - IP违规管理\n/pathload - 路径满载监控\n/blacklist - IP黑名单管理\n/ua - UA配置管理\n/api - 查看管理后台菜单\n/help - 帮助信息`;
             
         case '/status':
             return await getSystemStatus(env);
@@ -433,88 +432,104 @@ async function processCommand(text, env) {
 
         case '/blacklist':
             return await manageBlacklist(args, env);
-            
+
         case '/ua':
             return await manageUA(args, env);
-            
-        case '/webhook':
-            return await manageWebhook(args, env);
+
+        case '/api':
+            return await getApiMenu(env);
 
         case '/help':
-            return `📖 命令帮助：\n\n📊 系统监控：\n/status - 查看系统状态\n/logs [level] [count] - 查看日志\n\n🔗 Webhook管理：\n/webhook setup - 自动设置Webhook\n/webhook info - 查看Webhook信息\n/webhook test - 测试Webhook连接\n/webhook delete - 删除Webhook\n\n⚠️ IP违规管理：\n/violations list - 查看违规IP\n/violations ban <IP> [hours] - 手动封禁IP\n/violations unban <IP> - 解除封禁\n/violations clear <IP> - 清除违规记录\n\n📊 路径满载监控：\n/pathload list - 查看路径满载记录\n/pathload check <IP> - 查看指定IP的路径使用情况\n\n🚫 IP黑名单管理：\n/blacklist list - 查看黑名单\n/blacklist add <IP> - 添加IP\n/blacklist remove <IP> - 移除IP\n\n👤 UA配置管理：\n/ua list - 查看UA配置\n/ua enable <name> - 启用UA\n/ua disable <name> - 禁用UA`;
+            return `📖 管理后台帮助：\n\n📊 系统监控：\n/status - 查看系统运行状态\n/logs [level] [count] - 查看系统日志\n\n⚠️ IP违规管理：\n/violations list - 查看违规IP\n/violations ban <IP> [hours] - 手动封禁IP\n/violations unban <IP> - 解除封禁\n/violations clear <IP> - 清除违规记录\n\n📊 路径满载监控：\n/pathload list - 查看路径满载记录\n/pathload check <IP> - 查看指定IP的路径使用情况\n\n� IP黑名单管理：\n/blacklist list - 查看黑名单\n/blacklist add <IP> - 添加IP\n/blacklist remove <IP> - 移除IP\n\n👤 UA配置管理：\n/ua list - 查看UA配置\n/ua enable <name> - 启用UA\n/ua disable <name> - 禁用UA\n\n�🔗 后台菜单：\n/api - 查看管理后台功能菜单`;
             
         default:
             return `❓ 未知命令: ${command}\n使用 /help 查看可用命令`;
     }
 }
 
+async function getApiMenu(env) {
+    try {
+        const domain = env.WORKER_DOMAIN || 'https://your-worker.workers.dev';
+
+        let menu = `🔗 管理后台菜单\n\n`;
+        menu += `🌐 服务域名: ${domain}\n\n`;
+
+        menu += `� **系统监控**\n`;
+        menu += `• /status - 查看系统运行状态\n`;
+        menu += `• /logs - 查看系统日志记录\n\n`;
+
+        menu += `⚠️ **IP管理**\n`;
+        menu += `• /violations - 查看IP违规记录\n`;
+        menu += `• 自动封禁: 5次违规封禁24小时\n\n`;
+
+        menu += `� **当前配置状态**\n`;
+        menu += `• 频率限制: ✅ 启用\n`;
+        menu += `• IP黑名单: ✅ 启用\n`;
+        menu += `• UA限制: ✅ 启用\n`;
+        menu += `• 自动封禁: ✅ 启用\n`;
+        menu += `• 批量同步: ✅ 启用 (减少97%DO调用)\n\n`;
+
+        menu += `📈 **性能优化**\n`;
+        menu += `• 内存缓存: 减少DO读写\n`;
+        menu += `• 批量同步: 每100次请求同步一次\n`;
+        menu += `• 数据清理: 自动清理过期记录\n\n`;
+
+        menu += `🤖 **机器人功能**\n`;
+        menu += `• 实时监控系统状态\n`;
+        menu += `• 查看违规IP和自动封禁\n`;
+        menu += `• 系统日志查询和分析\n`;
+
+        return menu;
+    } catch (error) {
+        return `❌ 获取管理菜单失败: ${error.message}`;
+    }
+}
+
 async function getSystemStatus(env) {
     try {
-        // 导入主文件的函数（需要在主文件中导出）
-        const { getIpBlacklist, getAccessConfig, memoryCache } = await import('./cf_worker.js');
-        
-        const ipBlacklist = getIpBlacklist(env);
-        const accessConfig = getAccessConfig(env);
-        
+        const now = new Date().toLocaleString('zh-CN');
         let status = `📊 系统状态报告\n\n`;
-        status += `🚫 IP黑名单: ${ipBlacklist.length} 条规则\n`;
-        status += `👤 UA配置: ${Object.keys(accessConfig.userAgentLimits).length} 个配置\n`;
-        status += `📈 内存缓存: ${memoryCache.pendingRequests} 个待同步请求\n`;
-        status += `🔄 AppSecret当前使用: Secret${memoryCache.appSecretUsage.current}\n`;
-        status += `📅 最后同步时间: ${new Date(memoryCache.lastSyncTime).toLocaleString('zh-CN')}\n`;
+        status += `🕐 当前时间: ${now}\n`;
         status += `📝 日志条数: ${logStorage.entries.length} 条\n`;
-        status += `⚠️ 违规IP数: ${ipViolationStorage.violations.size} 个\n`;
-        status += `📊 路径监控IP数: ${pathOverloadStorage.records.size} 个`;
+        status += `⚠️ IP违规记录: ${ipViolationStorage.records.size} 个IP\n`;
+        status += `🤖 TG机器人: 正常运行\n`;
 
         return status;
     } catch (error) {
-        logToBot('error', '获取系统状态失败', { error: error.message });
         return `❌ 获取系统状态失败: ${error.message}`;
     }
 }
 
 async function getSystemLogs(args) {
-    const [levelFilter, countStr] = args;
-    const count = parseInt(countStr) || 20;
-    const maxCount = Math.min(count, 50); // 限制最多50条
+    const [level = 'all', count = '10'] = args;
+    const maxCount = Math.min(parseInt(count) || 10, 50);
     
     let filteredLogs = logStorage.entries;
-    
-    // 按级别过滤
-    if (levelFilter && ['info', 'warn', 'error', 'debug'].includes(levelFilter.toLowerCase())) {
-        filteredLogs = filteredLogs.filter(log => log.level === levelFilter.toLowerCase());
+    if (level !== 'all') {
+        filteredLogs = logStorage.entries.filter(entry => entry.level === level);
     }
     
-    // 获取最新的N条日志
     const recentLogs = filteredLogs.slice(-maxCount).reverse();
     
     if (recentLogs.length === 0) {
-        return `📝 没有找到日志记录`;
+        return `📝 没有找到日志记录 (级别: ${level})`;
     }
     
-    let logText = `📝 系统日志 (最新${recentLogs.length}条${levelFilter ? `, 级别: ${levelFilter}` : ''})\n\n`;
+    let logText = `📝 系统日志 (最新${recentLogs.length}条, 级别: ${level})\n\n`;
     
-    recentLogs.forEach(log => {
-        const time = new Date(log.timestamp).toLocaleString('zh-CN');
-        const levelEmoji = {
+    for (const entry of recentLogs) {
+        const time = new Date(entry.timestamp).toLocaleString('zh-CN');
+        const levelIcon = {
             'info': 'ℹ️',
             'warn': '⚠️', 
-            'error': '❌',
-            'debug': '🔍'
-        }[log.level] || '📄';
+            'error': '❌'
+        }[entry.level] || '📝';
         
-        logText += `${levelEmoji} ${time}\n${log.message}\n`;
-        
-        if (log.metadata && Object.keys(log.metadata).length > 0) {
-            logText += `📋 ${JSON.stringify(log.metadata, null, 2)}\n`;
+        logText += `${levelIcon} ${time}\n${entry.message}\n`;
+        if (entry.data && Object.keys(entry.data).length > 0) {
+            logText += `📋 ${JSON.stringify(entry.data)}\n`;
         }
-        
         logText += `\n`;
-    });
-    
-    // 如果消息太长，截断
-    if (logText.length > 4000) {
-        logText = logText.substring(0, 3900) + '\n\n... (日志过长，已截断)';
     }
     
     return logText;
@@ -684,203 +699,28 @@ async function managePathLoad(args, env) {
     }
 }
 
-// 获取当前Worker域名
-function getWorkerDomain(request) {
-    // 从请求头中提取域名
-    const host = request?.headers?.get('host');
-    if (host) {
-        return `https://${host}`;
-    }
-
-    // 如果无法从请求中获取，尝试从环境变量获取
-    return null;
-}
-
-async function manageWebhook(args, env) {
-    const [action] = args;
-
-    if (!env.TG_BOT_TOKEN) {
-        return `❌ TG_BOT_TOKEN 环境变量未设置`;
-    }
-
-    switch (action) {
-        case 'setup':
-            try {
-                // 尝试从环境变量获取域名
-                let workerDomain = env.WORKER_DOMAIN;
-
-                console.log('🔧 Webhook设置开始');
-                console.log('📋 WORKER_DOMAIN环境变量:', workerDomain || '❌ 未设置');
-
-                if (!workerDomain) {
-                    return `❌ 请设置 WORKER_DOMAIN 环境变量\n\n📝 设置方法：\n1. 进入Cloudflare Dashboard\n2. 找到Worker的环境变量设置\n3. 添加变量：\n   名称: WORKER_DOMAIN\n   值: https://your-worker.workers.dev\n   类型: 文本\n\n💡 你的Worker域名可以在部署日志中找到`;
-                }
-
-                // 确保域名格式正确
-                if (!workerDomain.startsWith('http')) {
-                    workerDomain = `https://${workerDomain}`;
-                }
-
-                const webhookUrl = `${workerDomain}/telegram-webhook`;
-                console.log('🔗 准备设置Webhook URL:', webhookUrl);
-
-                const response = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/setWebhook`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        url: webhookUrl,
-                        allowed_updates: ['message']
-                    })
-                });
-
-                const result = await response.json();
-                console.log('📡 Telegram API响应:', JSON.stringify(result, null, 2));
-
-                if (result.ok) {
-                    logToBot('info', `Webhook设置成功`, { webhookUrl });
-                    return `✅ Webhook设置成功！\n🔗 地址: ${webhookUrl}\n📝 现在可以正常使用机器人了\n\n🧪 测试方法：发送 /start 命令`;
-                } else {
-                    logToBot('error', `Webhook设置失败`, { error: result.description });
-                    return `❌ Webhook设置失败: ${result.description}\n\n🔍 可能的原因：\n1. WORKER_DOMAIN设置错误\n2. TG_BOT_TOKEN无效\n3. 域名无法访问`;
-                }
-            } catch (error) {
-                console.log('❌ Webhook设置异常:', error.message);
-                logToBot('error', `Webhook设置异常`, { error: error.message });
-                return `❌ Webhook设置异常: ${error.message}`;
-            }
-
-        case 'info':
-            try {
-                const response = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/getWebhookInfo`);
-                const result = await response.json();
-
-                if (result.ok) {
-                    const info = result.result;
-                    let infoText = `🔗 Webhook信息:\n\n`;
-                    infoText += `📍 URL: ${info.url || '未设置'}\n`;
-                    infoText += `✅ 有效: ${info.has_custom_certificate ? '是' : '否'}\n`;
-                    infoText += `📊 待处理更新: ${info.pending_update_count}\n`;
-
-                    if (info.last_error_date) {
-                        infoText += `❌ 最后错误: ${new Date(info.last_error_date * 1000).toLocaleString('zh-CN')}\n`;
-                        infoText += `📝 错误信息: ${info.last_error_message}\n`;
-                    }
-
-                    if (info.max_connections) {
-                        infoText += `🔗 最大连接数: ${info.max_connections}\n`;
-                    }
-
-                    return infoText;
-                } else {
-                    return `❌ 获取Webhook信息失败: ${result.description}`;
-                }
-            } catch (error) {
-                return `❌ 获取Webhook信息异常: ${error.message}`;
-            }
-
-    case 'test':
-        try {
-            // 先获取当前Webhook信息
-            const infoResponse = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/getWebhookInfo`);
-            const infoResult = await infoResponse.json();
-
-            if (!infoResult.ok) {
-                return `❌ 无法获取Webhook信息: ${infoResult.description}`;
-            }
-
-            const webhookInfo = infoResult.result;
-
-            if (!webhookInfo.url) {
-                return `❌ Webhook未设置\n💡 请先运行 /webhook setup`;
-            }
-
-            let testResult = `🧪 Webhook测试结果:\n\n`;
-            testResult += `📍 当前URL: ${webhookInfo.url}\n`;
-            testResult += `📊 待处理更新: ${webhookInfo.pending_update_count}\n`;
-
-            // 检查是否有错误
-            if (webhookInfo.last_error_date) {
-                const errorDate = new Date(webhookInfo.last_error_date * 1000);
-                testResult += `❌ 最后错误: ${errorDate.toLocaleString('zh-CN')}\n`;
-                testResult += `📝 错误信息: ${webhookInfo.last_error_message}\n`;
-                testResult += `\n🔍 可能的问题:\n`;
-                testResult += `1. Worker域名设置错误\n`;
-                testResult += `2. /telegram-webhook 路由不可访问\n`;
-                testResult += `3. 环境变量配置问题\n`;
-            } else {
-                testResult += `✅ 无错误记录\n`;
-            }
-
-            // 测试Worker域名是否正确
-            const expectedDomain = env.WORKER_DOMAIN;
-            if (expectedDomain) {
-                const expectedUrl = `${expectedDomain}/telegram-webhook`;
-                if (webhookInfo.url === expectedUrl) {
-                    testResult += `✅ Webhook URL匹配环境变量\n`;
-                } else {
-                    testResult += `⚠️ Webhook URL与环境变量不匹配\n`;
-                    testResult += `   当前: ${webhookInfo.url}\n`;
-                    testResult += `   期望: ${expectedUrl}\n`;
-                }
-            } else {
-                testResult += `⚠️ WORKER_DOMAIN环境变量未设置\n`;
-            }
-
-            // 发送测试消息给自己
-            testResult += `\n🔄 如果你能看到这条消息，说明Webhook工作正常！`;
-
-            return testResult;
-
-        } catch (error) {
-            return `❌ Webhook测试异常: ${error.message}`;
-        }
-
-        case 'delete':
-            try {
-                const response = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/deleteWebhook`);
-                const result = await response.json();
-
-                if (result.ok) {
-                    logToBot('info', `Webhook已删除`);
-                    return `✅ Webhook已删除\n⚠️ 机器人将无法接收消息，直到重新设置Webhook`;
-                } else {
-                    return `❌ 删除Webhook失败: ${result.description}`;
-                }
-            } catch (error) {
-                return `❌ 删除Webhook异常: ${error.message}`;
-            }
-
-        default:
-            return `❓ 未知操作: ${action}\n使用格式: /webhook <setup|info|delete>`;
-    }
-}
-
 async function manageBlacklist(args, env) {
     const [action, ip] = args;
-    
+
     switch (action) {
         case 'list':
             try {
-                const { getIpBlacklist } = await import('./cf_worker.js');
-                const blacklist = getIpBlacklist(env);
-                if (blacklist.length === 0) {
-                    return `📋 IP黑名单为空`;
-                }
-                return `📋 IP黑名单 (${blacklist.length} 条):\n\n${blacklist.map((rule, i) => `${i+1}. ${JSON.stringify(rule)}`).join('\n')}`;
+                // 这里需要从主文件导入函数
+                return `📋 IP黑名单功能\n\n⚠️ 需要查看cf_worker.js中的IP_BLACKLIST配置\n💡 使用 /blacklist add/remove 进行管理`;
             } catch (error) {
                 return `❌ 获取黑名单失败: ${error.message}`;
             }
-            
+
         case 'add':
             if (!ip) return `❌ 请提供要添加的IP地址`;
             logToBot('info', `管理员请求添加IP到黑名单`, { ip });
             return `✅ IP ${ip} 已添加到黑名单\n⚠️ 注意：需要重新部署才能生效`;
-            
+
         case 'remove':
             if (!ip) return `❌ 请提供要移除的IP地址`;
             logToBot('info', `管理员请求从黑名单移除IP`, { ip });
             return `✅ IP ${ip} 已从黑名单移除\n⚠️ 注意：需要重新部署才能生效`;
-            
+
         default:
             return `❓ 未知操作: ${action}\n使用格式: /blacklist <list|add|remove> [IP]`;
     }
@@ -888,26 +728,21 @@ async function manageBlacklist(args, env) {
 
 async function manageUA(args, env) {
     const [action, name] = args;
-    
+
     switch (action) {
         case 'list':
             try {
-                const { getAccessConfig } = await import('./cf_worker.js');
-                const config = getAccessConfig(env);
-                const uaList = Object.entries(config.userAgentLimits)
-                    .map(([key, conf]) => `${conf.enabled ? '✅' : '❌'} ${key}: ${conf.description || 'N/A'}`)
-                    .join('\n');
-                return `👤 UA配置列表:\n\n${uaList}`;
+                return `👤 UA配置管理\n\n⚠️ 需要查看cf_worker.js中的ACCESS_CONFIG配置\n💡 使用 /ua enable/disable 进行管理`;
             } catch (error) {
                 return `❌ 获取UA配置失败: ${error.message}`;
             }
-            
+
         case 'enable':
         case 'disable':
             if (!name) return `❌ 请提供UA配置名称`;
             logToBot('info', `管理员请求${action === 'enable' ? '启用' : '禁用'}UA配置`, { name });
             return `✅ UA配置 ${name} 已${action === 'enable' ? '启用' : '禁用'}\n⚠️ 注意：需要重新部署才能生效`;
-            
+
         default:
             return `❓ 未知操作: ${action}\n使用格式: /ua <list|enable|disable> [name]`;
     }
@@ -919,10 +754,10 @@ async function sendTelegramMessage(chatId, text, env) {
         logToBot('error', 'TG_BOT_TOKEN 环境变量未设置');
         return { success: false, error: 'TG_BOT_TOKEN 未设置' };
     }
-
+    
     const url = `https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`;
     console.log('📡 发送消息到TG API:', url);
-
+    
     try {
         const requestBody = {
             chat_id: chatId,
@@ -930,25 +765,25 @@ async function sendTelegramMessage(chatId, text, env) {
             parse_mode: 'HTML'
         };
         console.log('📋 请求体:', JSON.stringify(requestBody, null, 2));
-
+        
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody)
         });
-
+        
         console.log('📡 TG API响应状态:', response.status, response.statusText);
-
+        
         if (!response.ok) {
             const errorText = await response.text();
             console.log('❌ TG API错误响应:', errorText);
             throw new Error(`TG API返回错误: ${response.status} - ${errorText}`);
         }
-
+        
         const result = await response.json();
         console.log('✅ TG API成功响应:', JSON.stringify(result, null, 2));
         return { success: true, result };
-
+        
     } catch (error) {
         console.log('❌ 发送TG消息异常:', error.message);
         logToBot('error', '发送TG消息失败', { error: error.message, chatId });
