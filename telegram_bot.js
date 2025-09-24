@@ -305,21 +305,34 @@ function cleanupPathOverloadRecords() {
 
 // TG机器人主处理函数
 export async function handleTelegramWebhook(request, env) {
+    // 记录TG机器人连接状态
+    console.log('🤖 TG机器人Webhook被调用');
+    console.log('📋 环境变量检查:');
+    console.log('- TG_BOT_TOKEN:', env.TG_BOT_TOKEN ? '已设置 (长度: ' + env.TG_BOT_TOKEN.length + ')' : '❌ 未设置');
+    console.log('- TG_ADMIN_USER_ID:', env.TG_ADMIN_USER_ID ? '已设置: ' + env.TG_ADMIN_USER_ID : '❌ 未设置');
+    console.log('- WORKER_DOMAIN:', env.WORKER_DOMAIN ? '已设置: ' + env.WORKER_DOMAIN : '❌ 未设置');
+
     if (request.method !== 'POST') {
+        console.log('❌ TG机器人连接失败: 请求方法不是POST');
         return new Response('Method not allowed', { status: 405 });
     }
 
     try {
         const update = await request.json();
-        
+        console.log('📨 收到TG更新:', JSON.stringify(update, null, 2));
+
         // 验证是否来自授权用户
         if (!isAuthorizedUser(update, env)) {
+            console.log('❌ TG机器人连接失败: 用户未授权');
+            console.log('- 发送用户ID:', update.message?.from?.id);
+            console.log('- 授权用户ID:', env.TG_ADMIN_USER_ID);
             logToBot('warn', 'TG机器人收到未授权访问', { userId: update.message?.from?.id });
             return new Response('Unauthorized', { status: 403 });
         }
 
         const message = update.message;
         if (!message || !message.text) {
+            console.log('📝 TG更新无消息内容，忽略');
             return new Response('OK');
         }
 
@@ -327,32 +340,61 @@ export async function handleTelegramWebhook(request, env) {
         const text = message.text.trim();
         const userId = message.from.id;
         const username = message.from.username || message.from.first_name;
-        
+
+        console.log('✅ TG机器人连接成功!');
+        console.log('👤 用户信息:', { userId, username, chatId });
+        console.log('💬 收到命令:', text);
+
         logToBot('info', `TG机器人收到命令: ${text}`, { userId, username });
-        
+
         // 处理命令
         const response = await processCommand(text, env);
-        
+
         // 发送回复
         if (response) {
-            await sendTelegramMessage(chatId, response, env);
-            logToBot('info', `TG机器人发送回复`, { chatId, responseLength: response.length });
+            console.log('📤 准备发送回复，长度:', response.length);
+            const sendResult = await sendTelegramMessage(chatId, response, env);
+            if (sendResult.success) {
+                console.log('✅ 回复发送成功');
+            } else {
+                console.log('❌ 回复发送失败:', sendResult.error);
+            }
+            logToBot('info', `TG机器人发送回复`, { chatId, responseLength: response.length, success: sendResult.success });
         }
-        
+
         return new Response('OK');
     } catch (error) {
+        console.log('❌ TG机器人连接失败: 处理异常');
+        console.log('错误详情:', error.message);
+        console.log('错误堆栈:', error.stack);
         logToBot('error', 'TG webhook处理失败', { error: error.message, stack: error.stack });
         return new Response('Error', { status: 500 });
     }
 }
 
 function isAuthorizedUser(update, env) {
-    if (!env.TG_ADMIN_USER_ID) return false;
-    
+    console.log('🔐 检查用户授权');
+
+    if (!env.TG_ADMIN_USER_ID) {
+        console.log('❌ 授权失败: TG_ADMIN_USER_ID 环境变量未设置');
+        return false;
+    }
+
     const userId = update.message?.from?.id;
+    console.log('👤 请求用户ID:', userId);
+
+    if (!userId) {
+        console.log('❌ 授权失败: 无法获取用户ID');
+        return false;
+    }
+
     const adminIds = env.TG_ADMIN_USER_ID.split(',').map(id => parseInt(id.trim()));
-    
-    return adminIds.includes(userId);
+    console.log('👥 授权用户ID列表:', adminIds);
+
+    const isAuthorized = adminIds.includes(userId);
+    console.log('🔐 授权结果:', isAuthorized ? '✅ 通过' : '❌ 拒绝');
+
+    return isAuthorized;
 }
 
 async function processCommand(text, env) {
@@ -795,27 +837,43 @@ async function manageUA(args, env) {
 
 async function sendTelegramMessage(chatId, text, env) {
     if (!env.TG_BOT_TOKEN) {
+        console.log('❌ 发送消息失败: TG_BOT_TOKEN 环境变量未设置');
         logToBot('error', 'TG_BOT_TOKEN 环境变量未设置');
-        return;
+        return { success: false, error: 'TG_BOT_TOKEN 未设置' };
     }
-    
+
     const url = `https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`;
-    
+    console.log('📡 发送消息到TG API:', url);
+
     try {
+        const requestBody = {
+            chat_id: chatId,
+            text: text,
+            parse_mode: 'HTML'
+        };
+        console.log('📋 请求体:', JSON.stringify(requestBody, null, 2));
+
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                chat_id: chatId,
-                text: text,
-                parse_mode: 'HTML'
-            })
+            body: JSON.stringify(requestBody)
         });
-        
+
+        console.log('📡 TG API响应状态:', response.status, response.statusText);
+
         if (!response.ok) {
-            throw new Error(`TG API返回错误: ${response.status}`);
+            const errorText = await response.text();
+            console.log('❌ TG API错误响应:', errorText);
+            throw new Error(`TG API返回错误: ${response.status} - ${errorText}`);
         }
+
+        const result = await response.json();
+        console.log('✅ TG API成功响应:', JSON.stringify(result, null, 2));
+        return { success: true, result };
+
     } catch (error) {
+        console.log('❌ 发送TG消息异常:', error.message);
         logToBot('error', '发送TG消息失败', { error: error.message, chatId });
+        return { success: false, error: error.message };
     }
 }
