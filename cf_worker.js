@@ -1131,7 +1131,8 @@ export class AppState {
                 headers: { 'Content-Type': 'application/json' }
             });
         }
-        const { action, loggingEnabled } = await request.json();
+        const requestData = await request.json();
+        const { action, loggingEnabled } = requestData;
 
         if (action === 'getSecretId') {
             return this.getSecretId(loggingEnabled);
@@ -1142,7 +1143,7 @@ export class AppState {
         }
 
         if (action === 'batchRecordUsage') {
-            return this.batchRecordUsage(await request.json());
+            return this.batchRecordUsage(requestData);
         }
 
         if (action === 'getState') {
