@@ -623,7 +623,7 @@ export class RateLimiter {
 
         let pathHourCount = 0;
         let matchedPathRule = null;
-
+ 
         // 更新路径特定计数器
         if (this.uaConfig && this.uaConfig.pathLimits && Array.isArray(this.uaConfig.pathLimits)) {
             const pathLimit = this.uaConfig.pathLimits.find(limit => apiPath.startsWith(limit.path));
@@ -637,7 +637,7 @@ export class RateLimiter {
                 pathHourCount = this.data.paths[pathKey].phc;
             }
         }
-
+ 
         // 日志记录
         if (loggingEnabled && clientIP && uaType) {
             const uaConfig = this.uaConfig;
@@ -653,21 +653,11 @@ export class RateLimiter {
                 console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 全局限制=${this.data.ghc}/${hourDisplay}/小时, 每日=${this.data.gdc}/${dayDisplay}/天, 时间=${new Date().toISOString()}`);
             }
         }
-
-        // 设置一个定时器，在10秒后将内存中的数据写入持久化存储
-        // 这可以避免每次请求都写入，从而大幅降低写入成本
-        const currentAlarm = await this.state.storage.getAlarm();
-        if (currentAlarm === null) {
-            const alarmTime = Date.now() + ALARM_INTERVAL_SECONDS * 1000;
-            await this.state.storage.setAlarm(alarmTime);
-        }
-
-        return new Response('OK');
-    }
-
-    async alarm() {
-        // 定时器触发，将内存数据写入持久化存储
+ 
+        // 直接将更新后的内存状态写入存储
         await this.state.storage.put('data', this.data);
+ 
+        return new Response('OK');
     }
 }
 
@@ -730,28 +720,27 @@ export class AppState {
         return new Response(this.appState.current === '1' ? appSecret1 : appSecret2);
     }
 
-    async recordUsage(loggingEnabled) {
-        if (Math.random() > SECRET_USAGE_SAMPLING_RATE) {
-            return new Response('OK');
-        }
+    async recordUsage() {
+        // 使用事务来安全地读取和更新状态
+        await this.state.storage.transaction(async (txn) => {
+            if (Math.random() > SECRET_USAGE_SAMPLING_RATE) {
+                return; // 90%的请求直接跳过，不执行任何存储操作
+            }
 
-        const increment = Math.round(1 / SECRET_USAGE_SAMPLING_RATE);
-        if (this.appState.current === '1') {
-            this.appState.count1 += increment;
-        } else {
-            this.appState.count2 += increment;
-        }
+            let state = await txn.get('app_secret_state') || { current: '1', count1: 0, count2: 0 };
 
-        const currentAlarm = await this.state.storage.getAlarm();
-        if (currentAlarm === null) {
-            await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_SECONDS * 1000);
-        }
+            const increment = Math.round(1 / SECRET_USAGE_SAMPLING_RATE);
+            if (state.current === '1') {
+                state.count1 += increment;
+            } else {
+                state.count2 += increment;
+            }
 
+            await txn.put('app_secret_state', state);
+        });
         return new Response('OK');
     }
 
-    async alarm() {
-        await this.state.storage.put('app_secret_state', this.appState);
-        console.log('AppState 已持久化存储');
-    }
+    // alarm() 方法不再需要，可以安全移除
+    async alarm() {}
 }
