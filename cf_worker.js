@@ -654,10 +654,20 @@ export class RateLimiter {
             }
         }
  
-        // 直接将更新后的内存状态写入存储
-        await this.state.storage.put('data', this.data);
+        // 恢复 alarm 机制，以确保日志可以被及时打印
+        // alarm 会在后台将内存状态写入存储
+        const currentAlarm = await this.state.storage.getAlarm();
+        if (currentAlarm === null) {
+            const alarmTime = Date.now() + ALARM_INTERVAL_SECONDS * 1000;
+            await this.state.storage.setAlarm(alarmTime);
+        }
  
         return new Response('OK');
+    }
+
+    async alarm() {
+        // 定时器触发，将内存数据写入持久化存储
+        await this.state.storage.put('data', this.data);
     }
 }
 
@@ -720,27 +730,30 @@ export class AppState {
         return new Response(this.appState.current === '1' ? appSecret1 : appSecret2);
     }
 
-    async recordUsage() {
+    async recordUsage(loggingEnabled) {
         // 使用事务来安全地读取和更新状态
         await this.state.storage.transaction(async (txn) => {
             if (Math.random() > SECRET_USAGE_SAMPLING_RATE) {
                 return; // 90%的请求直接跳过，不执行任何存储操作
             }
 
-            let state = await txn.get('app_secret_state') || { current: '1', count1: 0, count2: 0 };
+            // 从存储中读取最新状态
+            this.appState = await txn.get('app_secret_state') || { current: '1', count1: 0, count2: 0 };
 
             const increment = Math.round(1 / SECRET_USAGE_SAMPLING_RATE);
-            if (state.current === '1') {
-                state.count1 += increment;
+            if (this.appState.current === '1') {
+                this.appState.count1 += increment;
             } else {
-                state.count2 += increment;
+                this.appState.count2 += increment;
             }
 
-            await txn.put('app_secret_state', state);
+            // 将更新后的状态写回存储
+            await txn.put('app_secret_state', this.appState);
         });
         return new Response('OK');
     }
 
-    // alarm() 方法不再需要，可以安全移除
-    async alarm() {}
+    async alarm() {
+        // alarm() 方法不再用于写入，但保留以防未来需要
+    }
 }
