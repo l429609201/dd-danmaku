@@ -589,6 +589,10 @@ async function getSystemLogs(args) {
 async function manageViolations(args, env) {
     const [action, ip, hours] = args;
 
+    if (!action) {
+        return `⚠️ IP违规管理\n\n当前违规记录: ${ipViolationStorage.violations.size} 个IP\n\n📋 可用操作：\n• /violations list - 查看违规IP列表\n• /violations ban [IP] [hours] - 手动封禁IP\n• /violations unban [IP] - 解除IP封禁\n• /violations clear [IP] - 清除违规记录`;
+    }
+
     switch (action) {
         case 'list':
             if (ipViolationStorage.violations.size === 0) {
@@ -668,6 +672,10 @@ async function manageViolations(args, env) {
 
 async function managePathLoad(args, env) {
     const [action, ip] = args;
+
+    if (!action) {
+        return `📊 路径满载监控\n\n当前监控IP数: ${pathOverloadStorage.records.size} 个\n\n📋 可用操作：\n• /pathload list - 查看路径满载记录\n• /pathload check [IP] - 查看指定IP的路径使用情况\n\n💡 系统会自动监控API路径使用情况，连续6小时满载将自动封禁3天`;
+    }
 
     switch (action) {
         case 'list':
@@ -753,24 +761,51 @@ async function managePathLoad(args, env) {
 async function manageBlacklist(args, env) {
     const [action, ip] = args;
 
+    if (!action) {
+        return `🚫 IP黑名单管理\n\n📋 可用操作：\n• /blacklist list - 查看当前黑名单\n• /blacklist add [IP] - 添加IP到黑名单\n• /blacklist remove [IP] - 从黑名单移除IP\n\n⚠️ 注意：黑名单修改需要重新部署才能生效\n💡 黑名单配置存储在cf_worker.js的IP_BLACKLIST中`;
+    }
+
     switch (action) {
         case 'list':
             try {
-                // 这里需要从主文件导入函数
-                return `📋 IP黑名单功能\n\n⚠️ 需要查看cf_worker.js中的IP_BLACKLIST配置\n💡 使用 /blacklist add/remove 进行管理`;
+                const blacklist = getIpBlacklistFromEnv(env);
+                if (blacklist.length === 0) {
+                    return `� IP黑名单列表：\n\n暂无黑名单记录\n\n💡 使用 /blacklist add [IP] 添加IP到黑名单`;
+                }
+
+                let result = `🚫 IP黑名单列表 (${blacklist.length}个)：\n\n`;
+                blacklist.forEach((ip, index) => {
+                    result += `${index + 1}. ${ip}\n`;
+                });
+                result += `\n💡 使用 /blacklist add [IP] 添加新IP\n💡 使用 /blacklist remove [IP] 移除IP`;
+                return result;
             } catch (error) {
                 return `❌ 获取黑名单失败: ${error.message}`;
             }
 
         case 'add':
             if (!ip) return `❌ 请提供要添加的IP地址`;
-            logToBot('info', `管理员请求添加IP到黑名单`, { ip });
-            return `✅ IP ${ip} 已添加到黑名单\n⚠️ 注意：需要重新部署才能生效`;
+            try {
+                const result = await addIpToBlacklist(ip, env);
+                logToBot('info', `管理员添加IP到黑名单`, { ip, success: result.success });
+                return result.success ?
+                    `✅ IP ${ip} 已添加到黑名单\n⚠️ 注意：需要重新部署才能生效\n\n当前黑名单: ${result.blacklist.join(', ')}` :
+                    `❌ 添加失败: ${result.error}`;
+            } catch (error) {
+                return `❌ 添加IP到黑名单失败: ${error.message}`;
+            }
 
         case 'remove':
             if (!ip) return `❌ 请提供要移除的IP地址`;
-            logToBot('info', `管理员请求从黑名单移除IP`, { ip });
-            return `✅ IP ${ip} 已从黑名单移除\n⚠️ 注意：需要重新部署才能生效`;
+            try {
+                const result = await removeIpFromBlacklist(ip, env);
+                logToBot('info', `管理员从黑名单移除IP`, { ip, success: result.success });
+                return result.success ?
+                    `✅ IP ${ip} 已从黑名单移除\n⚠️ 注意：需要重新部署才能生效\n\n当前黑名单: ${result.blacklist.join(', ') || '(空)'}` :
+                    `❌ 移除失败: ${result.error}`;
+            } catch (error) {
+                return `❌ 从黑名单移除IP失败: ${error.message}`;
+            }
 
         default:
             return `❓ 未知操作: ${action}\n使用格式: /blacklist [list|add|remove] [IP]`;
@@ -780,19 +815,54 @@ async function manageBlacklist(args, env) {
 async function manageUA(args, env) {
     const [action, name] = args;
 
+    if (!action) {
+        return `👤 UA配置管理\n\n📋 可用操作：\n• /ua list - 查看当前UA配置\n• /ua enable [name] - 启用指定UA配置\n• /ua disable [name] - 禁用指定UA配置\n\n⚠️ 注意：UA配置修改需要重新部署才能生效\n💡 UA配置存储在cf_worker.js的ACCESS_CONFIG中`;
+    }
+
     switch (action) {
         case 'list':
             try {
-                return `👤 UA配置管理\n\n⚠️ 需要查看cf_worker.js中的ACCESS_CONFIG配置\n💡 使用 /ua enable/disable 进行管理`;
+                const uaLimits = getUserAgentLimitsFromEnv(env);
+                const uaKeys = Object.keys(uaLimits);
+
+                if (uaKeys.length === 0) {
+                    return `👤 UA配置列表：\n\n暂无UA配置记录\n\n💡 使用 /ua enable/disable [name] 管理UA配置`;
+                }
+
+                let result = `👤 UA配置列表 (${uaKeys.length}个)：\n\n`;
+                uaKeys.forEach((key, index) => {
+                    const config = uaLimits[key];
+                    const status = config.enabled !== false ? '✅' : '❌';
+                    const userAgent = config.userAgent || 'N/A';
+                    result += `${index + 1}. ${status} ${key}: ${userAgent}\n`;
+                });
+                result += `\n💡 使用 /ua enable [name] 启用配置\n💡 使用 /ua disable [name] 禁用配置`;
+                return result;
             } catch (error) {
                 return `❌ 获取UA配置失败: ${error.message}`;
             }
 
         case 'enable':
+            if (!name) return `❌ 请提供要启用的UA配置名称`;
+            try {
+                const result = await enableUAConfig(name, env);
+                return result.success ?
+                    `✅ UA配置 ${name} 已启用\n⚠️ 注意：需要重新部署才能生效\n\n💡 请查看日志获取具体的环境变量更新指令` :
+                    `❌ 启用失败: ${result.error}`;
+            } catch (error) {
+                return `❌ 启用UA配置失败: ${error.message}`;
+            }
+
         case 'disable':
-            if (!name) return `❌ 请提供UA配置名称`;
-            logToBot('info', `管理员请求${action === 'enable' ? '启用' : '禁用'}UA配置`, { name });
-            return `✅ UA配置 ${name} 已${action === 'enable' ? '启用' : '禁用'}\n⚠️ 注意：需要重新部署才能生效`;
+            if (!name) return `❌ 请提供要禁用的UA配置名称`;
+            try {
+                const result = await disableUAConfig(name, env);
+                return result.success ?
+                    `✅ UA配置 ${name} 已禁用\n⚠️ 注意：需要重新部署才能生效\n\n💡 请查看日志获取具体的环境变量更新指令` :
+                    `❌ 禁用失败: ${result.error}`;
+            } catch (error) {
+                return `❌ 禁用UA配置失败: ${error.message}`;
+            }
 
         default:
             return `❓ 未知操作: ${action}\n使用格式: /ua [list|enable|disable] [name]`;
@@ -897,5 +967,253 @@ async function sendTelegramMessage(chatId, text, env, options = {}) {
         console.log('❌ 发送TG消息异常:', error.message);
         logToBot('error', '发送TG消息失败', { error: error.message, chatId });
         return { success: false, error: error.message };
+    }
+}
+
+// 配置管理辅助函数
+function getIpBlacklistFromEnv(env) {
+    if (!env.IP_BLACKLIST_CONFIG) {
+        return [];
+    }
+
+    try {
+        return JSON.parse(env.IP_BLACKLIST_CONFIG);
+    } catch (error) {
+        console.error('解析IP黑名单配置失败:', error);
+        return [];
+    }
+}
+
+function getUserAgentLimitsFromEnv(env) {
+    if (!env.USER_AGENT_LIMITS_CONFIG) {
+        return {};
+    }
+
+    try {
+        const limits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
+        // 过滤出启用的客户端
+        const enabledLimits = {};
+        Object.keys(limits).forEach(key => {
+            const config = limits[key];
+            if (config && config.enabled !== false) {
+                enabledLimits[key] = config;
+            }
+        });
+        return enabledLimits;
+    } catch (error) {
+        console.error('解析UA配置失败:', error);
+        return {};
+    }
+}
+
+async function addIpToBlacklist(ip, env) {
+    try {
+        const currentBlacklist = getIpBlacklistFromEnv(env);
+
+        if (currentBlacklist.includes(ip)) {
+            return { success: false, error: 'IP已在黑名单中' };
+        }
+
+        const newBlacklist = [...currentBlacklist, ip];
+
+        // 调用Cloudflare API更新环境变量
+        const updateResult = await updateCloudflareEnvVar(env, 'IP_BLACKLIST_CONFIG', JSON.stringify(newBlacklist));
+
+        logToBot('info', 'IP黑名单添加请求', {
+            ip,
+            action: 'add',
+            cloudflareResult: updateResult,
+            newConfig: JSON.stringify(newBlacklist)
+        });
+
+        return {
+            success: updateResult.success,
+            blacklist: newBlacklist,
+            message: updateResult.success ? '已通过Cloudflare API更新' : updateResult.error
+        };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+async function removeIpFromBlacklist(ip, env) {
+    try {
+        const currentBlacklist = getIpBlacklistFromEnv(env);
+
+        if (!currentBlacklist.includes(ip)) {
+            return { success: false, error: 'IP不在黑名单中' };
+        }
+
+        const newBlacklist = currentBlacklist.filter(item => item !== ip);
+
+        // 调用Cloudflare API更新环境变量
+        const updateResult = await updateCloudflareEnvVar(env, 'IP_BLACKLIST_CONFIG', JSON.stringify(newBlacklist));
+
+        logToBot('info', 'IP黑名单移除请求', {
+            ip,
+            action: 'remove',
+            cloudflareResult: updateResult,
+            newConfig: JSON.stringify(newBlacklist)
+        });
+
+        return {
+            success: updateResult.success,
+            blacklist: newBlacklist,
+            message: updateResult.success ? '已通过Cloudflare API更新' : updateResult.error
+        };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+async function enableUAConfig(name, env) {
+    try {
+        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
+
+        if (!currentLimits[name]) {
+            return { success: false, error: 'UA配置不存在' };
+        }
+
+        currentLimits[name].enabled = true;
+
+        // 调用Cloudflare API更新环境变量
+        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+
+        logToBot('info', 'UA配置启用请求', {
+            name,
+            action: 'enable',
+            cloudflareResult: updateResult,
+            newConfig: JSON.stringify(currentLimits)
+        });
+
+        return {
+            success: updateResult.success,
+            message: updateResult.success ? '已通过Cloudflare API更新' : updateResult.error
+        };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+async function disableUAConfig(name, env) {
+    try {
+        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
+
+        if (!currentLimits[name]) {
+            return { success: false, error: 'UA配置不存在' };
+        }
+
+        currentLimits[name].enabled = false;
+
+        // 调用Cloudflare API更新环境变量
+        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+
+        logToBot('info', 'UA配置禁用请求', {
+            name,
+            action: 'disable',
+            cloudflareResult: updateResult,
+            newConfig: JSON.stringify(currentLimits)
+        });
+
+        return {
+            success: updateResult.success,
+            message: updateResult.success ? '已通过Cloudflare API更新' : updateResult.error
+        };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+// Cloudflare API调用函数
+async function updateCloudflareEnvVar(env, varName, varValue) {
+    try {
+        // 需要的环境变量
+        if (!env.CLOUDFLARE_API_TOKEN) {
+            return { success: false, error: 'CLOUDFLARE_API_TOKEN 环境变量未设置' };
+        }
+
+        if (!env.CLOUDFLARE_ACCOUNT_ID) {
+            return { success: false, error: 'CLOUDFLARE_ACCOUNT_ID 环境变量未设置' };
+        }
+
+        if (!env.CLOUDFLARE_WORKER_NAME) {
+            return { success: false, error: 'CLOUDFLARE_WORKER_NAME 环境变量未设置' };
+        }
+
+        const accountId = env.CLOUDFLARE_ACCOUNT_ID;
+        const workerName = env.CLOUDFLARE_WORKER_NAME;
+        const apiToken = env.CLOUDFLARE_API_TOKEN;
+
+        // 1. 首先获取当前的环境变量
+        const getUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${workerName}/settings`;
+
+        const getResponse = await fetch(getUrl, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${apiToken}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!getResponse.ok) {
+            const errorText = await getResponse.text();
+            return { success: false, error: `获取当前环境变量失败: ${getResponse.status} - ${errorText}` };
+        }
+
+        const currentSettings = await getResponse.json();
+        const currentEnvVars = currentSettings.result?.bindings?.filter(b => b.type === 'plain_text') || [];
+
+        // 2. 更新或添加指定的环境变量
+        const updatedEnvVars = currentEnvVars.filter(v => v.name !== varName);
+        updatedEnvVars.push({
+            type: 'plain_text',
+            name: varName,
+            text: varValue
+        });
+
+        // 3. 保留其他类型的绑定（如DO绑定）
+        const otherBindings = currentSettings.result?.bindings?.filter(b => b.type !== 'plain_text') || [];
+        const allBindings = [...updatedEnvVars, ...otherBindings];
+
+        // 4. 更新环境变量
+        const updateUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${workerName}/settings`;
+
+        const updateResponse = await fetch(updateUrl, {
+            method: 'PATCH',
+            headers: {
+                'Authorization': `Bearer ${apiToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                bindings: allBindings
+            })
+        });
+
+        if (!updateResponse.ok) {
+            const errorText = await updateResponse.text();
+            return { success: false, error: `更新环境变量失败: ${updateResponse.status} - ${errorText}` };
+        }
+
+        const updateResult = await updateResponse.json();
+
+        logToBot('info', 'Cloudflare API环境变量更新成功', {
+            varName,
+            accountId,
+            workerName,
+            result: updateResult.success
+        });
+
+        return {
+            success: true,
+            message: `环境变量 ${varName} 已通过Cloudflare API更新`,
+            result: updateResult
+        };
+
+    } catch (error) {
+        logToBot('error', 'Cloudflare API调用异常', {
+            varName,
+            error: error.message
+        });
+        return { success: false, error: `Cloudflare API调用失败: ${error.message}` };
     }
 }
