@@ -643,6 +643,9 @@ export class RateLimiter {
  
         // 更新路径特定计数器
         if (this.uaConfig && this.uaConfig.pathLimits && Array.isArray(this.uaConfig.pathLimits)) {
+            if (loggingEnabled) {
+                console.log(`调试: 检查路径限制, API路径=${apiPath}, 配置的路径限制=${JSON.stringify(this.uaConfig.pathLimits)}`);
+            }
             const pathLimit = this.uaConfig.pathLimits.find(limit => apiPath.startsWith(limit.path));
             if (pathLimit) {
                 matchedPathRule = pathLimit;
@@ -652,6 +655,11 @@ export class RateLimiter {
                 this.data.paths[pathKey].phc = (this.data.paths[pathKey].phts === currentHour) ? (this.data.paths[pathKey].phc || 0) + 1 : 1;
                 this.data.paths[pathKey].phts = currentHour;
                 pathHourCount = this.data.paths[pathKey].phc;
+                if (loggingEnabled) {
+                    console.log(`调试: 匹配到路径限制 ${pathKey}, 当前计数=${pathHourCount}, 限制=${pathLimit.maxRequestsPerHour}`);
+                }
+            } else if (loggingEnabled) {
+                console.log(`调试: 没有匹配到路径限制`);
             }
         }
  
