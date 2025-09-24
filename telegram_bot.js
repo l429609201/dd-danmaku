@@ -303,6 +303,9 @@ function cleanupPathOverloadRecords() {
     }
 }
 
+// 全局变量用于跟踪是否已设置命令菜单
+let commandsInitialized = false;
+
 // TG机器人主处理函数
 export async function handleTelegramWebhook(request, env) {
     console.log('🤖 TG机器人Webhook被调用');
@@ -310,6 +313,18 @@ export async function handleTelegramWebhook(request, env) {
     console.log('- TG_BOT_TOKEN:', env.TG_BOT_TOKEN ? '已设置 (长度: ' + env.TG_BOT_TOKEN.length + ')' : '❌ 未设置');
     console.log('- TG_ADMIN_USER_ID:', env.TG_ADMIN_USER_ID ? '已设置: ' + env.TG_ADMIN_USER_ID : '❌ 未设置');
     console.log('- WORKER_DOMAIN:', env.WORKER_DOMAIN ? '已设置: ' + env.WORKER_DOMAIN : '❌ 未设置');
+
+    // 首次启动时设置机器人命令菜单
+    if (!commandsInitialized && env.TG_BOT_TOKEN) {
+        console.log('🔧 首次启动，设置机器人命令菜单...');
+        const setupResult = await setupBotCommands(env);
+        if (setupResult.success) {
+            console.log('✅ 机器人命令菜单设置成功');
+            commandsInitialized = true;
+        } else {
+            console.log('❌ 机器人命令菜单设置失败:', setupResult.error);
+        }
+    }
 
     if (request.method !== 'POST') {
         console.log('❌ TG机器人连接失败: 请求方法不是POST');
@@ -416,7 +431,7 @@ async function processCommand(text, env) {
     
     switch (command.toLowerCase()) {
         case '/start':
-            return `🤖 系统管理后台机器人\n\n可用命令：\n/status - 查看系统状态\n/logs - 查看系统日志\n/violations - IP违规管理\n/pathload - 路径满载监控\n/blacklist - IP黑名单管理\n/ua - UA配置管理\n/api - 查看管理后台菜单\n/help - 帮助信息`;
+            return await getStartMessage(env);
             
         case '/status':
             return await getSystemStatus(env);
@@ -436,14 +451,49 @@ async function processCommand(text, env) {
         case '/ua':
             return await manageUA(args, env);
 
+        case '/menu':
+            return await getMainMenu(env);
+
         case '/api':
             return await getApiMenu(env);
 
         case '/help':
-            return `📖 管理后台帮助：\n\n📊 系统监控：\n/status - 查看系统运行状态\n/logs [level] [count] - 查看系统日志\n\n⚠️ IP违规管理：\n/violations list - 查看违规IP\n/violations ban <IP> [hours] - 手动封禁IP\n/violations unban <IP> - 解除封禁\n/violations clear <IP> - 清除违规记录\n\n📊 路径满载监控：\n/pathload list - 查看路径满载记录\n/pathload check <IP> - 查看指定IP的路径使用情况\n\n� IP黑名单管理：\n/blacklist list - 查看黑名单\n/blacklist add <IP> - 添加IP\n/blacklist remove <IP> - 移除IP\n\n👤 UA配置管理：\n/ua list - 查看UA配置\n/ua enable <name> - 启用UA\n/ua disable <name> - 禁用UA\n\n�🔗 后台菜单：\n/api - 查看管理后台功能菜单`;
+            return `📖 管理后台帮助：\n\n📊 系统监控：\n/status - 查看系统运行状态\n/logs [level] [count] - 查看系统日志\n\n⚠️ IP违规管理：\n/violations list - 查看违规IP\n/violations ban [IP] [hours] - 手动封禁IP\n/violations unban [IP] - 解除封禁\n/violations clear [IP] - 清除违规记录\n\n📊 路径满载监控：\n/pathload list - 查看路径满载记录\n/pathload check [IP] - 查看指定IP的路径使用情况\n\n� IP黑名单管理：\n/blacklist list - 查看黑名单\n/blacklist add [IP] - 添加IP\n/blacklist remove [IP] - 移除IP\n\n👤 UA配置管理：\n/ua list - 查看UA配置\n/ua enable [name] - 启用UA\n/ua disable [name] - 禁用UA\n\n�🔗 后台菜单：\n/api - 查看管理后台功能菜单`;
             
         default:
             return `❓ 未知命令: ${command}\n使用 /help 查看可用命令`;
+    }
+}
+
+async function getMainMenu(env) {
+    try {
+        const domain = env.WORKER_DOMAIN || 'https://your-worker.workers.dev';
+
+        let menu = `🎛️ 系统管理控制台\n\n`;
+        menu += `🌐 服务域名: ${domain}\n\n`;
+        menu += `请选择要执行的操作：\n\n`;
+
+        menu += `📊 **系统监控**\n`;
+        menu += `• /status - 查看系统运行状态\n`;
+        menu += `• /logs - 查看系统日志记录\n\n`;
+
+        menu += `⚠️ **安全管理**\n`;
+        menu += `• /violations - IP违规记录管理\n`;
+        menu += `• /blacklist - IP黑名单管理\n`;
+        menu += `• /ua - UA配置管理\n\n`;
+
+        menu += `📈 **性能监控**\n`;
+        menu += `• /pathload - 路径满载监控\n\n`;
+
+        menu += `🔧 **系统信息**\n`;
+        menu += `• /api - 查看详细配置信息\n`;
+        menu += `• /help - 查看命令帮助\n\n`;
+
+        menu += `💡 点击命令或直接输入命令使用`;
+
+        return menu;
+    } catch (error) {
+        return `❌ 获取主菜单失败: ${error.message}`;
     }
 }
 
@@ -491,7 +541,8 @@ async function getSystemStatus(env) {
         let status = `📊 系统状态报告\n\n`;
         status += `🕐 当前时间: ${now}\n`;
         status += `📝 日志条数: ${logStorage.entries.length} 条\n`;
-        status += `⚠️ IP违规记录: ${ipViolationStorage.records.size} 个IP\n`;
+        status += `⚠️ IP违规记录: ${ipViolationStorage.violations.size} 个IP\n`;
+        status += `📊 路径监控IP数: ${pathOverloadStorage.records.size} 个\n`;
         status += `🤖 TG机器人: 正常运行\n`;
 
         return status;
@@ -611,7 +662,7 @@ async function manageViolations(args, env) {
             }
 
         default:
-            return `❓ 未知操作: ${action}\n使用格式: /violations <list|ban|unban|clear> [IP] [hours]`;
+            return `❓ 未知操作: ${action}\n使用格式: /violations [list|ban|unban|clear] [IP] [hours]`;
     }
 }
 
@@ -695,7 +746,7 @@ async function managePathLoad(args, env) {
             return ipDetail;
 
         default:
-            return `❓ 未知操作: ${action}\n使用格式: /pathload <list|check> [IP]`;
+            return `❓ 未知操作: ${action}\n使用格式: /pathload [list|check] [IP]`;
     }
 }
 
@@ -722,7 +773,7 @@ async function manageBlacklist(args, env) {
             return `✅ IP ${ip} 已从黑名单移除\n⚠️ 注意：需要重新部署才能生效`;
 
         default:
-            return `❓ 未知操作: ${action}\n使用格式: /blacklist <list|add|remove> [IP]`;
+            return `❓ 未知操作: ${action}\n使用格式: /blacklist [list|add|remove] [IP]`;
     }
 }
 
@@ -744,46 +795,104 @@ async function manageUA(args, env) {
             return `✅ UA配置 ${name} 已${action === 'enable' ? '启用' : '禁用'}\n⚠️ 注意：需要重新部署才能生效`;
 
         default:
-            return `❓ 未知操作: ${action}\n使用格式: /ua <list|enable|disable> [name]`;
+            return `❓ 未知操作: ${action}\n使用格式: /ua [list|enable|disable] [name]`;
     }
 }
 
-async function sendTelegramMessage(chatId, text, env) {
+async function getStartMessage(env) {
+    const domain = env.WORKER_DOMAIN || 'https://your-worker.workers.dev';
+
+    let message = `🤖 dandanplay跨域代理管理机器人\n\n`;
+    message += `🌐 服务域名: ${domain}\n\n`;
+    message += `📋 **主要功能**\n`;
+    message += `📊 系统监控 - 实时查看系统状态和日志\n`;
+    message += `⚠️ IP管理 - 违规记录和自动封禁管理\n`;
+    message += `📈 性能监控 - 路径满载检测和优化\n`;
+    message += `🛡️ 安全配置 - 黑名单和UA限制管理\n\n`;
+    message += `💡 **快速开始**\n`;
+    message += `• 使用 /menu 查看功能菜单\n`;
+    message += `• 使用 /status 查看系统状态\n`;
+    message += `• 使用 /help 查看详细帮助\n\n`;
+    message += `🔧 专业的系统管理和监控工具`;
+
+    return message;
+}
+
+async function setupBotCommands(env) {
+    if (!env.TG_BOT_TOKEN) {
+        return { success: false, error: 'TG_BOT_TOKEN 未设置' };
+    }
+
+    const commands = [
+        { command: 'start', description: '🏠 开始使用机器人' },
+        { command: 'menu', description: '📋 显示功能菜单' },
+        { command: 'status', description: '📊 查看系统状态' },
+        { command: 'logs', description: '📝 查看系统日志' },
+        { command: 'violations', description: '⚠️ IP违规管理' },
+        { command: 'pathload', description: '📈 路径满载监控' },
+        { command: 'blacklist', description: '🚫 IP黑名单管理' },
+        { command: 'ua', description: '👤 UA配置管理' },
+        { command: 'api', description: '🔗 管理后台菜单' },
+        { command: 'help', description: '❓ 帮助信息' }
+    ];
+
+    try {
+        const response = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/setMyCommands`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ commands })
+        });
+
+        const result = await response.json();
+        if (result.ok) {
+            logToBot('info', 'TG机器人命令菜单设置成功', { commandCount: commands.length });
+            return { success: true, result };
+        } else {
+            logToBot('error', 'TG机器人命令菜单设置失败', { error: result.description });
+            return { success: false, error: result.description };
+        }
+    } catch (error) {
+        logToBot('error', 'TG机器人命令菜单设置异常', { error: error.message });
+        return { success: false, error: error.message };
+    }
+}
+
+async function sendTelegramMessage(chatId, text, env, options = {}) {
     if (!env.TG_BOT_TOKEN) {
         console.log('❌ 发送消息失败: TG_BOT_TOKEN 环境变量未设置');
         logToBot('error', 'TG_BOT_TOKEN 环境变量未设置');
         return { success: false, error: 'TG_BOT_TOKEN 未设置' };
     }
-    
+
     const url = `https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`;
     console.log('📡 发送消息到TG API:', url);
-    
+
     try {
         const requestBody = {
             chat_id: chatId,
             text: text,
-            parse_mode: 'HTML'
+            ...options
         };
         console.log('📋 请求体:', JSON.stringify(requestBody, null, 2));
-        
+
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody)
         });
-        
+
         console.log('📡 TG API响应状态:', response.status, response.statusText);
-        
+
         if (!response.ok) {
             const errorText = await response.text();
             console.log('❌ TG API错误响应:', errorText);
             throw new Error(`TG API返回错误: ${response.status} - ${errorText}`);
         }
-        
+
         const result = await response.json();
         console.log('✅ TG API成功响应:', JSON.stringify(result, null, 2));
         return { success: true, result };
-        
+
     } catch (error) {
         console.log('❌ 发送TG消息异常:', error.message);
         logToBot('error', '发送TG消息失败', { error: error.message, chatId });
