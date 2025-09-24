@@ -31,3 +31,7 @@ yarn-error.log*
 # 系统文件
 .DS_Store
 Thumbs.db
+test_new_architecture.md
+.augment/rules/rules.md
+.cunzhi-memory/metadata.json
+.cunzhi-memory/patterns.md
