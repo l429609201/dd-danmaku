@@ -215,12 +215,14 @@ async function handleRequest(request, env, ctx) {
     const appId = env.APP_ID;
     // 优化：从 AppState DO 获取密钥
     const appStateStub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
-    const secretResponse = await appStateStub.fetch(new Request('https://do.internal/getSecret', {
+    // 优化：只获取当前应该使用的密钥标识（'1' 或 '2'），而不是密钥本身
+    const secretIdResponse = await appStateStub.fetch(new Request('https://do.internal/getSecretId', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'getSecret', loggingEnabled: ACCESS_CONFIG.logging.enabled })
+        body: JSON.stringify({ action: 'getSecretId', loggingEnabled: ACCESS_CONFIG.logging.enabled })
     }));
-    const appSecret = await secretResponse.text();
+    const secretId = await secretIdResponse.text();
+    const appSecret = secretId === '2' && env.APP_SECRET_2 ? env.APP_SECRET_2 : env.APP_SECRET;
 
 
     const timestamp = Math.floor(Date.now() / 1000);
@@ -307,7 +309,7 @@ async function handleRequest(request, env, ctx) {
 // AppSecret轮换管理
 async function getCurrentAppSecret(env) { // 此函数现在仅作为备份，主要逻辑在DO中
     const appStateStub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
-    const response = await appStateStub.fetch(new Request('https://do.internal/getSecret'));
+    const response = await appStateStub.fetch(new Request('https://do.internal/getSecretId', { method: 'POST', body: JSON.stringify({ action: 'getSecretId' }) }));
     return await response.text();
 }
 
@@ -692,8 +694,8 @@ export class AppState {
         }
         const { action, loggingEnabled } = await request.json();
 
-        if (action === 'getSecret') {
-            return this.getSecret(loggingEnabled);
+        if (action === 'getSecretId') {
+            return this.getSecretId(loggingEnabled);
         }
 
         if (action === 'recordUsage') {
@@ -703,11 +705,11 @@ export class AppState {
         return new Response('无效的操作', { status: 400 });
     }
 
-    async getSecret(loggingEnabled) {
+    async getSecretId(loggingEnabled) {
         const appSecret1 = this.env.APP_SECRET;
         const appSecret2 = this.env.APP_SECRET_2;
 
-        if (!appSecret2) return new Response(appSecret1);
+        if (!appSecret2) return new Response('1');
         if (loggingEnabled) {
             console.log(`Secret1使用次数: ${this.appState.count1}, Secret2使用次数: ${this.appState.count2}, 当前使用: Secret${this.appState.current}`);
         }
@@ -718,37 +720,38 @@ export class AppState {
             console.log('切换到APP_SECRET_2');
             // 立即写入状态，因为这是一个重要变更
             await this.state.storage.put('app_secret_state', this.appState);
-            return new Response(appSecret2);
+            return new Response('2');
         } else if (this.appState.current === '2' && this.appState.count2 >= SECRET_ROTATION_LIMIT) {
             this.appState.current = '1';
             this.appState.count2 = 0;
             console.log('切换到APP_SECRET');
             await this.state.storage.put('app_secret_state', this.appState);
-            return new Response(appSecret1);
+            return new Response('1');
         }
 
-        return new Response(this.appState.current === '1' ? appSecret1 : appSecret2);
+        return new Response(this.appState.current);
     }
 
-    async recordUsage(loggingEnabled) {
+    async recordUsage() {
         // 使用事务来安全地读取和更新状态
         await this.state.storage.transaction(async (txn) => {
             if (Math.random() > SECRET_USAGE_SAMPLING_RATE) {
                 return; // 90%的请求直接跳过，不执行任何存储操作
             }
 
-            // 从存储中读取最新状态
-            this.appState = await txn.get('app_secret_state') || { current: '1', count1: 0, count2: 0 };
+            let state = await txn.get('app_secret_state') || { current: '1', count1: 0, count2: 0 };
 
             const increment = Math.round(1 / SECRET_USAGE_SAMPLING_RATE);
-            if (this.appState.current === '1') {
-                this.appState.count1 += increment;
+            if (state.current === '1') {
+                state.count1 += increment;
             } else {
-                this.appState.count2 += increment;
+                state.count2 += increment;
             }
 
             // 将更新后的状态写回存储
-            await txn.put('app_secret_state', this.appState);
+            await txn.put('app_secret_state', state);
+            // 关键修复：同时更新内存中的状态
+            this.appState = state;
         });
         return new Response('OK');
     }
