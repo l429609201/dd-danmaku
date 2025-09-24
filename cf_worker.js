@@ -8,10 +8,26 @@ const hostlist = { 'api.dandanplay.net': null };
 // AppSecret轮换配置
 const SECRET_ROTATION_LIMIT = 500; // 每个secret使用500次后切换
 
+// 批量同步配置 - 减少DO调用次数
+const BATCH_SYNC_THRESHOLD = 100; // 每100次请求同步一次到DO
+const BATCH_SYNC_INTERVAL = 60000; // 或每60秒强制同步一次
+
+// 全局内存缓存
+let memoryCache = {
+    rateLimitCounts: new Map(), // 频率限制计数缓存
+    appSecretUsage: { count1: 0, count2: 0, current: '1' }, // AppSecret使用缓存
+    lastSyncTime: Date.now(),
+    pendingRequests: 0
+};
+
 // ========================================
 // ⚙️ Durable Object 配置
 // ========================================
 const ALARM_INTERVAL_SECONDS = 60; // 每60秒强制将内存中的计数写入存储，以确保在免费额度内
+
+// 数据清理配置
+const DATA_RETENTION_HOURS = 168; // 保留一周(7天×24小时)的数据
+const CLEANUP_INTERVAL_HOURS = 24; // 每24小时执行一次清理
 
 // 从环境变量获取IP黑名单配置
 function getIpBlacklist(env) {
@@ -158,11 +174,36 @@ async function handleRequest(request, env, ctx) {
     const urlObj = new URL(request.url);
     const ACCESS_CONFIG = getAccessConfig(env);
 
-    // IP黑名单检查
+    // IP黑名单和临时封禁检查
     const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+
+    // 检查临时封禁
+    try {
+        const { isIpTempBanned } = await import('./telegram_bot.js');
+        if (isIpTempBanned(clientIP)) {
+            console.log(`IP ${clientIP} 被临时封禁，拒绝访问`);
+            return new Response(JSON.stringify({
+                status: 403,
+                type: "临时封禁",
+                message: `IP ${clientIP} 因违规行为被临时封禁`
+            }), {
+                status: 403,
+                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+            });
+        }
+    } catch (e) { /* 忽略临时封禁检查错误 */ }
+
+    // 检查永久黑名单
     const ipBlacklist = getIpBlacklist(env);
     if (isIpBlacklisted(clientIP, ipBlacklist)) {
         console.log(`IP ${clientIP} 在黑名单中，拒绝访问`);
+
+        // 记录到TG机器人日志
+        try {
+            const { logToBot } = await import('./telegram_bot.js');
+            logToBot('warn', `IP黑名单拦截`, { ip: clientIP, userAgent: request.headers.get('X-User-Agent') });
+        } catch (e) { /* 忽略日志记录错误 */ }
+
         return new Response(JSON.stringify({
             status: 403,
             type: "IP黑名单",
@@ -176,6 +217,12 @@ async function handleRequest(request, env, ctx) {
     // 新增：处理挑战端点
     if (ACCESS_CONFIG.asymmetricAuth.enabled && urlObj.pathname === ACCESS_CONFIG.asymmetricAuth.challengeEndpoint) {
         return handleAuthChallenge(request, env);
+    }
+
+    // 新增：处理TG机器人webhook
+    if (urlObj.pathname === '/telegram-webhook') {
+        const { handleTelegramWebhook } = await import('./telegram_bot.js');
+        return handleTelegramWebhook(request, env);
     }
 
     // 提取目标URL和API路径
@@ -233,10 +280,70 @@ async function handleRequest(request, env, ctx) {
         console.log(`频率限制检查结果: ${JSON.stringify(rateLimitResult)}`);
     }
 
+    // 检查路径满载情况（在频率限制通过后）
+    if (rateLimitResult.allowed && rateLimitResult.pathSpecificCount && rateLimitResult.pathLimit) {
+        try {
+            const { checkPathOverload } = await import('./telegram_bot.js');
+            const overloadResult = checkPathOverload(
+                clientIP,
+                tUrlObj.pathname,
+                rateLimitResult.pathSpecificCount,
+                rateLimitResult.pathLimit
+            );
+
+            if (overloadResult.shouldBan) {
+                console.log(`IP ${clientIP} 因路径满载被自动封禁`);
+                return new Response(JSON.stringify({
+                    status: 403,
+                    type: "路径满载封禁",
+                    message: `IP ${clientIP} 因${overloadResult.reason}被封禁3天`
+                }), {
+                    status: 403,
+                    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+                });
+            }
+        } catch (e) { /* 忽略路径满载检查错误 */ }
+    }
+
     if (!rateLimitResult.allowed) {
         const userAgent = request.headers.get('X-User-Agent') || '';
         const errorMessage = `IP:${clientIP} UA:${userAgent} 频率限制：${rateLimitResult.reason}`;
         console.log(errorMessage);
+
+        // 记录违规行为和日志
+        try {
+            const { logToBot, recordIpViolation } = await import('./telegram_bot.js');
+
+            // 记录IP违规
+            const violationResult = recordIpViolation(clientIP, '频率限制', {
+                userAgent,
+                reason: rateLimitResult.reason,
+                path: tUrlObj.pathname
+            });
+
+            // 记录日志
+            logToBot('warn', `频率限制触发`, {
+                ip: clientIP,
+                userAgent,
+                reason: rateLimitResult.reason,
+                path: tUrlObj.pathname,
+                violationCount: violationResult.currentCount,
+                autoBanned: violationResult.autoBanned
+            });
+
+            // 如果触发自动封禁，返回特殊消息
+            if (violationResult.autoBanned) {
+                return new Response(JSON.stringify({
+                    status: 403,
+                    type: "自动封禁",
+                    message: `IP ${clientIP} 因频繁违规已被自动封禁`
+                }), {
+                    status: 403,
+                    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+                });
+            }
+        } catch (e) { /* 忽略违规记录错误 */ }
+
         return new Response(JSON.stringify({
             status: 429,
             type: "频率限制",
@@ -250,27 +357,28 @@ async function handleRequest(request, env, ctx) {
 
 
     const appId = env.APP_ID;
-    // 从AppState DO获取当前应该使用的密钥
-    const appStateStub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
-    const secretIdResponse = await appStateStub.fetch(new Request('https://do.internal/getSecretId', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'getSecretId', loggingEnabled: ACCESS_CONFIG.logging.enabled })
-    }));
-    const secretId = await secretIdResponse.text();
-    const appSecret = secretId === '2' && env.APP_SECRET_2 ? env.APP_SECRET_2 : env.APP_SECRET;
+    // 使用缓存的AppSecret信息，避免每次都调用DO
+    const { secretId, appSecret } = await getCachedAppSecret(env);
 
 
     const timestamp = Math.floor(Date.now() / 1000);
     const apiPath = tUrlObj.pathname;
     const signature = await generateSignature(appId, timestamp, apiPath, appSecret);
 
-    // 记录AppSecret使用次数
-    ctx.waitUntil(appStateStub.fetch(new Request('https://do.internal/recordUsage', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'recordUsage', loggingEnabled: ACCESS_CONFIG.logging.enabled })
-    })));
+    // 在内存中记录AppSecret使用次数
+    if (memoryCache.appSecretUsage.current === '1') {
+        memoryCache.appSecretUsage.count1++;
+    } else {
+        memoryCache.appSecretUsage.count2++;
+    }
+
+    // 增加待同步请求计数
+    memoryCache.pendingRequests++;
+
+    // 检查是否需要同步到存储
+    if (await shouldSyncToStorage(env)) {
+        ctx.waitUntil(syncCacheToStorage(env));
+    }
 
     if (ACCESS_CONFIG.logging.enabled) {
         console.log('应用ID: ' + appId);
@@ -340,7 +448,89 @@ async function handleRequest(request, env, ctx) {
     return response;
 }
 
-// 注意：AppSecret轮换相关代码已移除，现在直接使用环境变量APP_SECRET
+// 批量同步管理函数
+async function shouldSyncToStorage(env) {
+    const now = Date.now();
+    const timeSinceLastSync = now - memoryCache.lastSyncTime;
+
+    // 达到请求阈值或时间间隔时触发同步
+    return memoryCache.pendingRequests >= BATCH_SYNC_THRESHOLD ||
+           timeSinceLastSync >= BATCH_SYNC_INTERVAL;
+}
+
+async function syncCacheToStorage(env) {
+    if (memoryCache.pendingRequests === 0) return;
+
+    try {
+        // 同步AppSecret使用计数
+        if (memoryCache.appSecretUsage.count1 > 0 || memoryCache.appSecretUsage.count2 > 0) {
+            const appStateStub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
+            await appStateStub.fetch(new Request('https://do.internal/batchRecordUsage', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'batchRecordUsage',
+                    count1: memoryCache.appSecretUsage.count1,
+                    count2: memoryCache.appSecretUsage.count2
+                })
+            }));
+
+            // 重置缓存
+            memoryCache.appSecretUsage.count1 = 0;
+            memoryCache.appSecretUsage.count2 = 0;
+        }
+
+        // 重置计数器
+        memoryCache.pendingRequests = 0;
+        memoryCache.lastSyncTime = Date.now();
+
+    } catch (error) {
+        console.error('批量同步失败:', error);
+    }
+}
+
+// 获取缓存的AppSecret信息
+async function getCachedAppSecret(env) {
+    // 如果缓存为空，从DO获取初始状态
+    if (memoryCache.appSecretUsage.current === '1' &&
+        memoryCache.appSecretUsage.count1 === 0 &&
+        memoryCache.appSecretUsage.count2 === 0) {
+
+        try {
+            const appStateStub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
+            const response = await appStateStub.fetch(new Request('https://do.internal/getState', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'getState' })
+            }));
+            const state = await response.json();
+            memoryCache.appSecretUsage = state;
+        } catch (error) {
+            console.error('获取AppSecret状态失败:', error);
+        }
+    }
+
+    // 检查是否需要轮换
+    const current = memoryCache.appSecretUsage.current;
+    const count1 = memoryCache.appSecretUsage.count1;
+    const count2 = memoryCache.appSecretUsage.count2;
+
+    if (current === '1' && count1 >= SECRET_ROTATION_LIMIT && env.APP_SECRET_2) {
+        memoryCache.appSecretUsage.current = '2';
+        memoryCache.appSecretUsage.count1 = 0;
+        console.log('内存缓存：切换到APP_SECRET_2');
+    } else if (current === '2' && count2 >= SECRET_ROTATION_LIMIT) {
+        memoryCache.appSecretUsage.current = '1';
+        memoryCache.appSecretUsage.count2 = 0;
+        console.log('内存缓存：切换到APP_SECRET');
+    }
+
+    return {
+        secretId: memoryCache.appSecretUsage.current,
+        appSecret: memoryCache.appSecretUsage.current === '2' && env.APP_SECRET_2 ?
+                   env.APP_SECRET_2 : env.APP_SECRET
+    };
+}
 
 /**
  *
@@ -763,9 +953,43 @@ export class RateLimiter {
         // 如果检查通过，立即更新计数器
         await this.increment(apiPath, loggingEnabled, clientIP, uaType);
 
-        return new Response(JSON.stringify({ allowed: true }), {
+        // 获取路径特定的计数信息用于满载检测
+        const pathSpecificInfo = this.getPathSpecificInfo(apiPath);
+
+        return new Response(JSON.stringify({
+            allowed: true,
+            pathSpecificCount: pathSpecificInfo.currentCount,
+            pathLimit: pathSpecificInfo.limit
+        }), {
             headers: { 'Content-Type': 'application/json' }
         });
+    }
+
+    // 获取路径特定的计数信息
+    getPathSpecificInfo(apiPath) {
+        const now = Date.now();
+        const currentHour = Math.floor(now / (60 * 60 * 1000));
+
+        // 检查路径特定限制
+        for (const [pattern, config] of Object.entries(this.uaConfig.pathLimits || {})) {
+            if (apiPath.includes(pattern)) {
+                const pathKey = `${pattern}_${currentHour}`;
+                const currentCount = this.data.paths?.[pathKey]?.phc || 0;
+
+                return {
+                    currentCount: currentCount,
+                    limit: config.hourlyLimit,
+                    pattern: pattern
+                };
+            }
+        }
+
+        // 如果没有路径特定限制，返回全局限制信息
+        return {
+            currentCount: this.data.ghc || 0,
+            limit: this.uaConfig.globalLimits?.hourlyLimit || 0,
+            pattern: 'global'
+        };
     }
 
     // 提取检查逻辑为独立方法
@@ -821,6 +1045,59 @@ export class RateLimiter {
     async alarm() {
         // 定时器触发，将内存数据写入持久化存储
         await this.state.storage.put('data', this.data);
+
+        // 执行数据清理
+        await this.cleanupOldData();
+
+        // 设置下一个alarm
+        this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_SECONDS * 1000);
+    }
+
+    async cleanupOldData() {
+        const now = Date.now();
+        const cutoffTime = now - (DATA_RETENTION_HOURS * 60 * 60 * 1000);
+        const currentHour = Math.floor(now / (60 * 60 * 1000));
+        const cutoffHour = Math.floor(cutoffTime / (60 * 60 * 1000));
+        const currentDay = Math.floor(now / (24 * 60 * 60 * 1000));
+        const cutoffDay = Math.floor(cutoffTime / (24 * 60 * 60 * 1000));
+
+        let cleaned = false;
+
+        // 清理过期的全局小时计数
+        if (this.data.ghts && this.data.ghts < cutoffHour) {
+            delete this.data.ghc;
+            delete this.data.ghts;
+            cleaned = true;
+        }
+
+        // 清理过期的全局日计数
+        if (this.data.gdts && this.data.gdts < cutoffDay) {
+            delete this.data.gdc;
+            delete this.data.gdts;
+            cleaned = true;
+        }
+
+        // 清理过期的路径特定计数
+        if (this.data.paths) {
+            for (const [pathKey, pathData] of Object.entries(this.data.paths)) {
+                if (pathData.phts && pathData.phts < cutoffHour) {
+                    delete this.data.paths[pathKey];
+                    cleaned = true;
+                }
+            }
+
+            // 如果paths对象为空，删除它
+            if (Object.keys(this.data.paths).length === 0) {
+                delete this.data.paths;
+                cleaned = true;
+            }
+        }
+
+        // 如果有数据被清理，立即保存
+        if (cleaned) {
+            await this.state.storage.put('data', this.data);
+            console.log(`RateLimiter数据清理完成，清理了${new Date(cutoffTime).toISOString()}之前的数据`);
+        }
     }
 }
 
@@ -862,6 +1139,14 @@ export class AppState {
 
         if (action === 'recordUsage') {
             return this.recordUsage(loggingEnabled);
+        }
+
+        if (action === 'batchRecordUsage') {
+            return this.batchRecordUsage(await request.json());
+        }
+
+        if (action === 'getState') {
+            return this.getState();
         }
 
         return new Response(JSON.stringify({
@@ -917,8 +1202,54 @@ export class AppState {
         return new Response('OK');
     }
 
+    async batchRecordUsage({ count1, count2 }) {
+        // 批量记录使用次数
+        this.appState.count1 += count1 || 0;
+        this.appState.count2 += count2 || 0;
+
+        // 立即保存到持久化存储
+        await this.state.storage.put('app_secret_state', this.appState);
+
+        return new Response('OK');
+    }
+
+    async getState() {
+        // 返回当前状态
+        return new Response(JSON.stringify(this.appState), {
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+
     async alarm() {
         // 定期保存状态
         await this.state.storage.put('app_secret_state', this.appState);
+
+        // AppState数据相对简单，主要是重置过高的计数器
+        await this.cleanupCounters();
+    }
+
+    async cleanupCounters() {
+        let needsSave = false;
+
+        // 如果计数器过高（超过轮换限制的10倍），重置为合理值
+        const maxCount = SECRET_ROTATION_LIMIT * 10;
+
+        if (this.appState.count1 > maxCount) {
+            this.appState.count1 = Math.min(this.appState.count1, SECRET_ROTATION_LIMIT);
+            needsSave = true;
+        }
+
+        if (this.appState.count2 > maxCount) {
+            this.appState.count2 = Math.min(this.appState.count2, SECRET_ROTATION_LIMIT);
+            needsSave = true;
+        }
+
+        if (needsSave) {
+            await this.state.storage.put('app_secret_state', this.appState);
+            console.log('AppState计数器清理完成');
+        }
     }
 }
+
+// 导出函数供TG机器人模块使用
+export { getIpBlacklist, getAccessConfig, memoryCache };
