@@ -160,6 +160,10 @@ export default {
 
 
 async function handleRequest(request, env, ctx) {
+    // 添加请求日志
+    console.log('📥 收到请求:', request.method, new URL(request.url).pathname);
+    console.log('🌐 完整URL:', request.url);
+
     if (request.method === 'OPTIONS') {
         return new Response(null, {
             status: 204,
@@ -219,10 +223,42 @@ async function handleRequest(request, env, ctx) {
         return handleAuthChallenge(request, env);
     }
 
+    // 新增：TG机器人测试页面
+    if (urlObj.pathname === '/tg-test') {
+        return new Response(`
+            <html>
+            <body>
+                <h1>TG机器人测试页面</h1>
+                <p>如果你能看到这个页面，说明Worker正常运行</p>
+                <p>TG Webhook地址: <code>${urlObj.origin}/telegram-webhook</code></p>
+                <p>请求时间: ${new Date().toLocaleString('zh-CN')}</p>
+                <hr>
+                <h2>环境变量检查:</h2>
+                <p>TG_BOT_TOKEN: ${env.TG_BOT_TOKEN ? '已设置 (长度: ' + env.TG_BOT_TOKEN.length + ')' : '❌ 未设置'}</p>
+                <p>TG_ADMIN_USER_ID: ${env.TG_ADMIN_USER_ID ? '已设置: ' + env.TG_ADMIN_USER_ID : '❌ 未设置'}</p>
+                <p>WORKER_DOMAIN: ${env.WORKER_DOMAIN ? '已设置: ' + env.WORKER_DOMAIN : '❌ 未设置'}</p>
+            </body>
+            </html>
+        `, {
+            headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        });
+    }
+
     // 新增：处理TG机器人webhook
     if (urlObj.pathname === '/telegram-webhook') {
-        const { handleTelegramWebhook } = await import('./telegram_bot.js');
-        return handleTelegramWebhook(request, env);
+        console.log('🎯 TG Webhook路由被触发!');
+        console.log('📍 请求路径:', urlObj.pathname);
+        console.log('🔧 开始导入telegram_bot.js模块...');
+
+        try {
+            const { handleTelegramWebhook } = await import('./telegram_bot.js');
+            console.log('✅ telegram_bot.js模块导入成功');
+            return handleTelegramWebhook(request, env);
+        } catch (error) {
+            console.log('❌ telegram_bot.js模块导入失败:', error.message);
+            console.log('错误堆栈:', error.stack);
+            return new Response('TG Bot module import failed: ' + error.message, { status: 500 });
+        }
     }
 
     // 提取目标URL和API路径
