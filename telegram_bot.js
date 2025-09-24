@@ -426,7 +426,7 @@ async function processCommand(text, env) {
             return await manageWebhook(args, env);
 
         case '/help':
-            return `📖 命令帮助：\n\n📊 系统监控：\n/status - 查看系统状态\n/logs [level] [count] - 查看日志\n\n🔗 Webhook管理：\n/webhook setup - 自动设置Webhook\n/webhook info - 查看Webhook信息\n/webhook delete - 删除Webhook\n\n⚠️ IP违规管理：\n/violations list - 查看违规IP\n/violations ban <IP> [hours] - 手动封禁IP\n/violations unban <IP> - 解除封禁\n/violations clear <IP> - 清除违规记录\n\n📊 路径满载监控：\n/pathload list - 查看路径满载记录\n/pathload check <IP> - 查看指定IP的路径使用情况\n\n🚫 IP黑名单管理：\n/blacklist list - 查看黑名单\n/blacklist add <IP> - 添加IP\n/blacklist remove <IP> - 移除IP\n\n👤 UA配置管理：\n/ua list - 查看UA配置\n/ua enable <name> - 启用UA\n/ua disable <name> - 禁用UA`;
+            return `📖 命令帮助：\n\n📊 系统监控：\n/status - 查看系统状态\n/logs [level] [count] - 查看日志\n\n🔗 Webhook管理：\n/webhook setup - 自动设置Webhook\n/webhook info - 查看Webhook信息\n/webhook test - 测试Webhook连接\n/webhook delete - 删除Webhook\n\n⚠️ IP违规管理：\n/violations list - 查看违规IP\n/violations ban <IP> [hours] - 手动封禁IP\n/violations unban <IP> - 解除封禁\n/violations clear <IP> - 清除违规记录\n\n📊 路径满载监控：\n/pathload list - 查看路径满载记录\n/pathload check <IP> - 查看指定IP的路径使用情况\n\n🚫 IP黑名单管理：\n/blacklist list - 查看黑名单\n/blacklist add <IP> - 添加IP\n/blacklist remove <IP> - 移除IP\n\n👤 UA配置管理：\n/ua list - 查看UA配置\n/ua enable <name> - 启用UA\n/ua disable <name> - 禁用UA`;
             
         default:
             return `❓ 未知命令: ${command}\n使用 /help 查看可用命令`;
@@ -694,8 +694,11 @@ async function manageWebhook(args, env) {
                 // 尝试从环境变量获取域名
                 let workerDomain = env.WORKER_DOMAIN;
 
+                console.log('🔧 Webhook设置开始');
+                console.log('📋 WORKER_DOMAIN环境变量:', workerDomain || '❌ 未设置');
+
                 if (!workerDomain) {
-                    return `❌ 请设置 WORKER_DOMAIN 环境变量\n例如: WORKER_DOMAIN = "https://your-worker.workers.dev"`;
+                    return `❌ 请设置 WORKER_DOMAIN 环境变量\n\n📝 设置方法：\n1. 进入Cloudflare Dashboard\n2. 找到Worker的环境变量设置\n3. 添加变量：\n   名称: WORKER_DOMAIN\n   值: https://your-worker.workers.dev\n   类型: 文本\n\n💡 你的Worker域名可以在部署日志中找到`;
                 }
 
                 // 确保域名格式正确
@@ -704,6 +707,7 @@ async function manageWebhook(args, env) {
                 }
 
                 const webhookUrl = `${workerDomain}/telegram-webhook`;
+                console.log('🔗 准备设置Webhook URL:', webhookUrl);
 
                 const response = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/setWebhook`, {
                     method: 'POST',
@@ -715,15 +719,17 @@ async function manageWebhook(args, env) {
                 });
 
                 const result = await response.json();
+                console.log('📡 Telegram API响应:', JSON.stringify(result, null, 2));
 
                 if (result.ok) {
                     logToBot('info', `Webhook设置成功`, { webhookUrl });
-                    return `✅ Webhook设置成功！\n🔗 地址: ${webhookUrl}\n📝 现在可以正常使用机器人了`;
+                    return `✅ Webhook设置成功！\n🔗 地址: ${webhookUrl}\n📝 现在可以正常使用机器人了\n\n🧪 测试方法：发送 /start 命令`;
                 } else {
                     logToBot('error', `Webhook设置失败`, { error: result.description });
-                    return `❌ Webhook设置失败: ${result.description}`;
+                    return `❌ Webhook设置失败: ${result.description}\n\n🔍 可能的原因：\n1. WORKER_DOMAIN设置错误\n2. TG_BOT_TOKEN无效\n3. 域名无法访问`;
                 }
             } catch (error) {
+                console.log('❌ Webhook设置异常:', error.message);
                 logToBot('error', `Webhook设置异常`, { error: error.message });
                 return `❌ Webhook设置异常: ${error.message}`;
             }
@@ -756,6 +762,63 @@ async function manageWebhook(args, env) {
             } catch (error) {
                 return `❌ 获取Webhook信息异常: ${error.message}`;
             }
+
+    case 'test':
+        try {
+            // 先获取当前Webhook信息
+            const infoResponse = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/getWebhookInfo`);
+            const infoResult = await infoResponse.json();
+
+            if (!infoResult.ok) {
+                return `❌ 无法获取Webhook信息: ${infoResult.description}`;
+            }
+
+            const webhookInfo = infoResult.result;
+
+            if (!webhookInfo.url) {
+                return `❌ Webhook未设置\n💡 请先运行 /webhook setup`;
+            }
+
+            let testResult = `🧪 Webhook测试结果:\n\n`;
+            testResult += `📍 当前URL: ${webhookInfo.url}\n`;
+            testResult += `📊 待处理更新: ${webhookInfo.pending_update_count}\n`;
+
+            // 检查是否有错误
+            if (webhookInfo.last_error_date) {
+                const errorDate = new Date(webhookInfo.last_error_date * 1000);
+                testResult += `❌ 最后错误: ${errorDate.toLocaleString('zh-CN')}\n`;
+                testResult += `📝 错误信息: ${webhookInfo.last_error_message}\n`;
+                testResult += `\n🔍 可能的问题:\n`;
+                testResult += `1. Worker域名设置错误\n`;
+                testResult += `2. /telegram-webhook 路由不可访问\n`;
+                testResult += `3. 环境变量配置问题\n`;
+            } else {
+                testResult += `✅ 无错误记录\n`;
+            }
+
+            // 测试Worker域名是否正确
+            const expectedDomain = env.WORKER_DOMAIN;
+            if (expectedDomain) {
+                const expectedUrl = `${expectedDomain}/telegram-webhook`;
+                if (webhookInfo.url === expectedUrl) {
+                    testResult += `✅ Webhook URL匹配环境变量\n`;
+                } else {
+                    testResult += `⚠️ Webhook URL与环境变量不匹配\n`;
+                    testResult += `   当前: ${webhookInfo.url}\n`;
+                    testResult += `   期望: ${expectedUrl}\n`;
+                }
+            } else {
+                testResult += `⚠️ WORKER_DOMAIN环境变量未设置\n`;
+            }
+
+            // 发送测试消息给自己
+            testResult += `\n🔄 如果你能看到这条消息，说明Webhook工作正常！`;
+
+            return testResult;
+
+        } catch (error) {
+            return `❌ Webhook测试异常: ${error.message}`;
+        }
 
         case 'delete':
             try {

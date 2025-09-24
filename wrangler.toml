@@ -9,14 +9,13 @@ ENABLE_ASYMMETRIC_AUTH_ENV = "false"
 ENABLE_DETAILED_LOGGING = "true"
 USER_AGENT_LIMITS_CONFIG = '''{{USER_AGENT_LIMITS_CONFIG}}'''
 IP_BLACKLIST_CONFIG = '''{{IP_BLACKLIST_CONFIG}}'''
+TG_BOT_TOKEN = '''{{TG_BOT_TOKEN}}'''
+TG_ADMIN_USER_ID = '''{{TG_ADMIN_USER_ID}}'''
+WORKER_DOMAIN = '''{{WORKER_DOMAIN}}'''
 #密钥配置 （一般有两个，两个都填会轮换使用，配置成密钥的类型）
-# APP_ID 
+# APP_ID
 # APP_SECRET
 # APP_SECRET_2
-# TG机器人配置（需要在Cloudflare Dashboard中设置敏感环境变量）
-# TG_BOT_TOKEN = "your_bot_token_here"
-# TG_ADMIN_USER_ID = "your_user_id_here"
-# WORKER_DOMAIN = "https://your-worker.workers.dev"
 
 
 # wrangler.toml (wrangler v3.88.0^)
