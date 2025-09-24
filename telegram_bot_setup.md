@@ -24,16 +24,6 @@ TG_BOT_TOKEN = "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
 TG_ADMIN_USER_ID = "123456789,987654321"
 ```
 
-## 🔗 设置Webhook
-
-部署Worker后，设置TG机器人的webhook：
-
-```bash
-curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://your-worker-domain.workers.dev/telegram-webhook"}'
-```
-
 ## 📱 机器人命令
 
 ### 基础命令
