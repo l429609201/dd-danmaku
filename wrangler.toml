@@ -23,9 +23,5 @@ bindings = [
 ]
 
 [[migrations]]
-tag = "v1" # 初始迁移 - 创建RateLimiter
-new_sqlite_classes = ["RateLimiter"]
-
-[[migrations]]
-tag = "v2" # 添加AppState
+tag = "v6" # 添加AppState，不触碰已存在的RateLimiter
 new_sqlite_classes = ["AppState"]
