@@ -163,7 +163,14 @@ async function handleRequest(request, env, ctx) {
     const ipBlacklist = getIpBlacklist(env);
     if (isIpBlacklisted(clientIP, ipBlacklist)) {
         console.log(`IP ${clientIP} 在黑名单中，拒绝访问`);
-        return new Response('Access denied', { status: 403 });
+        return new Response(JSON.stringify({
+            status: 403,
+            type: "IP黑名单",
+            message: `IP ${clientIP} 已被列入黑名单`
+        }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
     }
 
     // 新增：处理挑战端点
@@ -195,6 +202,7 @@ async function handleRequest(request, env, ctx) {
 
         return new Response(JSON.stringify({
             status: accessCheck.status,
+            type: "访问控制",
             message: errorMessage
         }), {
             status: accessCheck.status,
@@ -229,7 +237,14 @@ async function handleRequest(request, env, ctx) {
         const userAgent = request.headers.get('X-User-Agent') || '';
         const errorMessage = `IP:${clientIP} UA:${userAgent} 频率限制：${rateLimitResult.reason}`;
         console.log(errorMessage);
-        return new Response(rateLimitResult.reason, { status: 429 });
+        return new Response(JSON.stringify({
+            status: 429,
+            type: "频率限制",
+            message: errorMessage
+        }), {
+            status: 429,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
     }
 
 
@@ -406,13 +421,27 @@ async function checkAccess(request, env, targetApiPath) {
 // 新增：处理挑战-响应认证
 async function handleAuthChallenge(request, env) {
     if (request.method !== 'POST') {
-        return new Response('请求方法不被允许', { status: 405 });
+        return new Response(JSON.stringify({
+            status: 405,
+            type: "方法不允许",
+            message: "请求方法不被允许"
+        }), {
+            status: 405,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
     }
 
     try {
         const { challenge } = await request.json();
         if (!challenge) {
-            return new Response('缺少挑战参数', { status: 400 });
+            return new Response(JSON.stringify({
+                status: 400,
+                type: "参数错误",
+                message: "缺少挑战参数"
+            }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+            });
         }
 
         const ACCESS_CONFIG = getAccessConfig(env);
@@ -427,7 +456,14 @@ async function handleAuthChallenge(request, env) {
         });
     } catch (error) {
         console.error('挑战处理失败:', error);
-        return new Response('挑战处理错误', { status: 500 });
+        return new Response(JSON.stringify({
+            status: 500,
+            type: "服务器错误",
+            message: "挑战处理错误"
+        }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
     }
 }
 
@@ -525,8 +561,13 @@ function base64ToArrayBuffer(base64) {
 }
 
 function Forbidden(url) {
-    return new Response(`主机名 ${url.hostname} 不被允许访问`, {
+    return new Response(JSON.stringify({
         status: 403,
+        type: "主机名限制",
+        message: `主机名 ${url.hostname} 不被允许访问`
+    }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
     });
 }
 
@@ -548,7 +589,14 @@ export class RateLimiter {
     async fetch(request) {
         await this.initialize();
         if (request.method !== 'POST') {
-            return new Response('无效的方法', { status: 405 });
+            return new Response(JSON.stringify({
+                status: 405,
+                type: "方法不允许",
+                message: "无效的方法"
+            }), {
+                status: 405,
+                headers: { 'Content-Type': 'application/json' }
+            });
         }
         const { action, uaConfig, apiPath, loggingEnabled, clientIP, uaType } = await request.json();
 
@@ -569,7 +617,14 @@ export class RateLimiter {
             return this.checkAndIncrement(apiPath, loggingEnabled, clientIP, uaType);
         }
 
-        return new Response('无效的操作', { status: 400 });
+        return new Response(JSON.stringify({
+            status: 400,
+            type: "参数错误",
+            message: "无效的操作"
+        }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+        });
     }
 
     check(apiPath, loggingEnabled, clientIP, uaType) {
@@ -790,7 +845,14 @@ export class AppState {
     async fetch(request) {
         await this.initialized;
         if (request.method !== 'POST') {
-            return new Response('无效的方法', { status: 405 });
+            return new Response(JSON.stringify({
+                status: 405,
+                type: "方法不允许",
+                message: "无效的方法"
+            }), {
+                status: 405,
+                headers: { 'Content-Type': 'application/json' }
+            });
         }
         const { action, loggingEnabled } = await request.json();
 
@@ -802,7 +864,14 @@ export class AppState {
             return this.recordUsage(loggingEnabled);
         }
 
-        return new Response('无效的操作', { status: 400 });
+        return new Response(JSON.stringify({
+            status: 400,
+            type: "参数错误",
+            message: "无效的操作"
+        }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+        });
     }
 
     async getSecretId(loggingEnabled) {
