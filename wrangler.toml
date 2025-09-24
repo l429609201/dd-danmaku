@@ -22,5 +22,9 @@ bindings = [
 ]
 
 [[migrations]]
-tag = "v4" # 移除AppState，简化架构
+tag = "v3" # 保持原有的迁移标签
 new_sqlite_classes = ["RateLimiter"]
+
+[[migrations]]
+tag = "v4" # 移除AppState，简化架构
+deleted_classes = ["AppState"]
