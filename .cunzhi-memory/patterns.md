@@ -1,2 +1,3 @@
 # 常用模式和最佳实践
 
+- CF Worker计数系统重构：移除复杂的AppState DO和AppSecret轮换逻辑，改为直接使用环境变量APP_SECRET，统一所有计数逻辑到RateLimiter DO中，使用同步的checkAndIncrement方法替代异步waitUntil模式
