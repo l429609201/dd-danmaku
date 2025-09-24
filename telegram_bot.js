@@ -318,8 +318,23 @@ export async function handleTelegramWebhook(request, env) {
     }
 
     try {
-        const update = await request.json();
-        console.log('📨 收到TG更新:', JSON.stringify(update, null, 2));
+        // 安全地解析JSON
+        let update;
+        try {
+            const requestText = await request.text();
+            console.log('📝 收到请求体:', requestText);
+
+            if (!requestText || requestText.trim() === '') {
+                console.log('⚠️ 请求体为空，可能是测试请求');
+                return new Response('TG Bot is working! Empty request body received.', { status: 200 });
+            }
+
+            update = JSON.parse(requestText);
+            console.log('📨 收到TG更新:', JSON.stringify(update, null, 2));
+        } catch (jsonError) {
+            console.log('❌ JSON解析失败:', jsonError.message);
+            return new Response('Invalid JSON: ' + jsonError.message, { status: 400 });
+        }
 
         // 验证是否来自授权用户
         if (!isAuthorizedUser(update, env)) {
