@@ -654,10 +654,20 @@ export class RateLimiter {
             }
         }
  
-        // 直接将更新后的内存状态写入存储
-        await this.state.storage.put('data', this.data);
+        // 恢复 alarm 机制，以确保日志可以被及时打印
+        // alarm 会在后台将内存状态写入存储
+        const currentAlarm = await this.state.storage.getAlarm();
+        if (currentAlarm === null) {
+            const alarmTime = Date.now() + ALARM_INTERVAL_SECONDS * 1000;
+            await this.state.storage.setAlarm(alarmTime);
+        }
  
         return new Response('OK');
+    }
+
+    async alarm() {
+        // 定时器触发，将内存数据写入持久化存储
+        await this.state.storage.put('data', this.data);
     }
 }
 
