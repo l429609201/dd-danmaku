@@ -177,8 +177,7 @@ async function handleRequest(request, env, ctx) {
     // 新增：访问控制检查
     const accessCheck = await checkAccess(request, env);
     if (!accessCheck.allowed) {
-        // 获取客户端信息
-        const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+        // 获取客户端信息（复用已定义的clientIP）
         const userAgent = request.headers.get('X-User-Agent') || '';
 
         // 格式化错误消息
@@ -296,11 +295,18 @@ async function handleRequest(request, env, ctx) {
     });
     response.headers.set('Access-Control-Allow-Origin', '*');
 
-    // 新增：记录请求到KV存储
+    // 新增：记录请求到DO存储
     ctx.waitUntil(accessCheck.doStub.fetch(new Request('https://do.internal/increment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'increment', apiPath: accessCheck.apiPath, loggingEnabled: ACCESS_CONFIG.logging.enabled })
+        body: JSON.stringify({
+            action: 'increment',
+            uaConfig: accessCheck.uaConfig,  // 传递完整的uaConfig
+            apiPath: accessCheck.apiPath,
+            loggingEnabled: ACCESS_CONFIG.logging.enabled,
+            clientIP: clientIP,
+            uaType: accessCheck.uaConfig.type
+        })
     })));
 
     return response;
@@ -549,8 +555,8 @@ export class RateLimiter {
         }
         const { action, uaConfig, apiPath, loggingEnabled, clientIP, uaType } = await request.json();
 
-        // 首次请求时，存储uaConfig
-        if (uaConfig && !this.uaConfig) {
+        // 每次请求都更新uaConfig，确保配置是最新的
+        if (uaConfig) {
             this.uaConfig = uaConfig;
         }
 
@@ -613,9 +619,17 @@ export class RateLimiter {
     }
 
     async increment(apiPath, loggingEnabled, clientIP, uaType) {
+        // 调试日志：记录increment方法被调用
+        if (loggingEnabled) {
+            console.log(`DO increment被调用: apiPath=${apiPath}, clientIP=${clientIP}, uaType=${uaType}, uaConfig存在=${!!this.uaConfig}`);
+        }
+
         const now = Date.now();
         const currentHour = Math.floor(now / (1000 * 60 * 60));
         const currentDay = Math.floor(now / (1000 * 60 * 60 * 24));
+
+        // 确保数据结构存在
+        if (!this.data) this.data = {};
 
         // 更新全局计数器
         this.data.ghc = (this.data.ghts === currentHour) ? (this.data.ghc || 0) + 1 : 1;
@@ -644,15 +658,18 @@ export class RateLimiter {
         if (loggingEnabled && clientIP && uaType) {
             const uaConfig = this.uaConfig;
 
-            if (matchedPathRule) {
+            if (matchedPathRule && uaConfig) {
                 const pathDisplay = matchedPathRule.maxRequestsPerHour === -1 ? '∞' : matchedPathRule.maxRequestsPerHour;
                 const globalHourDisplay = uaConfig.maxRequestsPerHour === -1 ? '∞' : uaConfig.maxRequestsPerHour;
                 const globalDayDisplay = uaConfig.maxRequestsPerDay === -1 ? '∞' : uaConfig.maxRequestsPerDay;
                 console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 路径限制=${pathHourCount}/${pathDisplay}/小时, 全局限制=${this.data.ghc}/${globalHourDisplay}/小时, 每日=${this.data.gdc}/${globalDayDisplay}/天, 时间=${new Date().toISOString()}`);
-            } else {
+            } else if (uaConfig) {
                 const hourDisplay = uaConfig.maxRequestsPerHour === -1 ? '∞' : uaConfig.maxRequestsPerHour;
                 const dayDisplay = uaConfig.maxRequestsPerDay === -1 ? '∞' : uaConfig.maxRequestsPerDay;
                 console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 全局限制=${this.data.ghc}/${hourDisplay}/小时, 每日=${this.data.gdc}/${dayDisplay}/天, 时间=${new Date().toISOString()}`);
+            } else {
+                // 如果uaConfig为null，仍然记录基本信息
+                console.log(`请求已记录: IP=${clientIP}, UA=${uaType}, 路径=${apiPath}, 全局计数=${this.data.ghc}/小时, 每日=${this.data.gdc}/天, 时间=${new Date().toISOString()}`);
             }
         }
  
