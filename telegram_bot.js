@@ -428,9 +428,10 @@ function isAuthorizedUser(update, env) {
         return false;
     }
     
-    const userId = update.message?.from?.id;
+    // 支持消息和回调查询
+    const userId = update.message?.from?.id || update.callback_query?.from?.id;
     console.log('👤 请求用户ID:', userId);
-    
+
     if (!userId) {
         console.log('❌ 授权失败: 无法获取用户ID');
         return false;
@@ -1280,22 +1281,23 @@ async function showUAManagementInterface(env) {
         // 创建内联键盘
         const keyboard = [];
 
-        // 为每个UA配置创建按钮行
-        uaKeys.forEach(key => {
+        // 为每个UA配置创建按钮行（使用序号）
+        uaKeys.forEach((key, index) => {
             const config = uaLimits[key];
             const isEnabled = config.enabled !== false;
+            const num = index + 1;
 
             const row = [
                 {
-                    text: isEnabled ? `❌ 禁用 ${key}` : `✅ 启用 ${key}`,
+                    text: isEnabled ? `❌ 禁用 ${num}` : `✅ 启用 ${num}`,
                     callback_data: `ua_toggle_${key}`
                 },
                 {
-                    text: `✏️ 编辑 ${key}`,
+                    text: `✏️ 编辑 ${num}`,
                     callback_data: `ua_edit_${key}`
                 },
                 {
-                    text: `🗑️ 删除 ${key}`,
+                    text: `🗑️ 删除 ${num}`,
                     callback_data: `ua_delete_${key}`
                 }
             ];
@@ -1346,16 +1348,17 @@ async function showBlacklistManagementInterface(env) {
         // 创建内联键盘
         const keyboard = [];
 
-        // 为每个IP创建按钮行（限制显示数量避免消息过长）
+        // 为每个IP创建按钮行（限制显示数量避免消息过长，使用序号）
         const displayLimit = 10;
-        blacklist.slice(0, displayLimit).forEach(ip => {
+        blacklist.slice(0, displayLimit).forEach((ip, index) => {
+            const num = index + 1;
             const row = [
                 {
-                    text: `🗑️ 移除 ${ip}`,
+                    text: `🗑️ 移除 ${num}`,
                     callback_data: `blacklist_remove_${ip}`
                 },
                 {
-                    text: `📊 查看详情`,
+                    text: `📊 详情 ${num}`,
                     callback_data: `blacklist_info_${ip}`
                 }
             ];
@@ -1395,6 +1398,13 @@ async function showBlacklistManagementInterface(env) {
 
 // 处理内联键盘回调
 async function handleCallbackQuery(callbackQuery, env) {
+    // 验证授权
+    if (!isAuthorizedUser({ callback_query: callbackQuery }, env)) {
+        console.log('❌ 回调查询用户未授权');
+        await answerCallbackQuery(callbackQuery.id, '未授权访问', env);
+        return new Response('Unauthorized', { status: 403 });
+    }
+
     const chatId = callbackQuery.message.chat.id;
     const messageId = callbackQuery.message.message_id;
     const callbackData = callbackQuery.data;
@@ -1408,23 +1418,44 @@ async function handleCallbackQuery(callbackQuery, env) {
         let newKeyboard = null;
 
         // 解析回调数据
-        const [action, operation, target] = callbackData.split('_');
+        const parts = callbackData.split('_');
+        const action = parts[0];
+        const operation = parts[1];
+        const target = parts.slice(2).join('_'); // 支持包含下划线的目标名称
 
         if (action === 'ua') {
-            response = await handleUACallback(operation, target, env);
-            if (operation === 'toggle' || operation === 'refresh') {
-                // 刷新UA管理界面
-                const uaInterface = await showUAManagementInterface(env);
-                newKeyboard = uaInterface.reply_markup;
-                response = uaInterface.text;
+            const callbackResult = await handleUACallback(operation, target, env);
+
+            if (typeof callbackResult === 'object' && callbackResult.text) {
+                // 如果返回的是带键盘的对象，直接使用
+                response = callbackResult.text;
+                newKeyboard = callbackResult.reply_markup;
+            } else {
+                // 如果返回的是字符串，检查是否需要刷新界面
+                response = callbackResult;
+                if (operation === 'toggle' || operation === 'refresh' || operation === 'delete') {
+                    // 刷新UA管理界面
+                    const uaInterface = await showUAManagementInterface(env);
+                    newKeyboard = uaInterface.reply_markup;
+                    response = uaInterface.text;
+                }
             }
         } else if (action === 'blacklist') {
-            response = await handleBlacklistCallback(operation, target, env);
-            if (operation === 'remove' || operation === 'refresh') {
-                // 刷新黑名单管理界面
-                const blacklistInterface = await showBlacklistManagementInterface(env);
-                newKeyboard = blacklistInterface.reply_markup;
-                response = blacklistInterface.text;
+            const callbackResult = await handleBlacklistCallback(operation, target, env);
+
+            if (typeof callbackResult === 'object' && callbackResult.text) {
+                // 如果返回的是带键盘的对象，直接使用
+                response = callbackResult.text;
+                newKeyboard = callbackResult.reply_markup;
+            } else {
+                // 如果返回的是字符串，检查是否需要刷新界面
+                response = callbackResult;
+                if (operation === 'remove' || operation === 'refresh') {
+                    // 刷新黑名单管理界面
+                    const blacklistInterface = await showBlacklistManagementInterface(env);
+                    newKeyboard = blacklistInterface.reply_markup;
+                    response = blacklistInterface.text;
+                }
             }
         }
 
@@ -1473,7 +1504,7 @@ async function handleUACallback(operation, target, env) {
             return await deleteUAConfig(target, env);
 
         case 'add':
-            return `➕ 添加新UA功能：请使用命令 /ua_add [名称] [UA字符串] [小时限制]`;
+            return await showAddUAInterface(env);
 
         case 'refresh':
             return `🔄 已刷新UA配置列表`;
@@ -1493,10 +1524,10 @@ async function handleBlacklistCallback(operation, target, env) {
                 `❌ 移除失败: ${result.error}`;
 
         case 'info':
-            return `📊 IP ${target} 详情功能开发中...`;
+            return await getIPDetails(target, env);
 
         case 'add':
-            return `➕ 添加新IP功能：请使用命令 /blacklist_add [IP地址]`;
+            return await showAddIPInterface(env);
 
         case 'refresh':
             return `🔄 已刷新黑名单列表`;
@@ -1754,4 +1785,100 @@ async function addNewIPToBlacklist(args, env) {
     }
 
     return await addIpToBlacklist(ip, env);
+}
+
+// 获取IP详细信息
+async function getIPDetails(ip, env) {
+    try {
+        let details = `📊 **IP ${ip} 详细信息**\n\n`;
+
+        // 检查是否在黑名单中
+        const blacklist = getIpBlacklistFromEnv(env);
+        const inBlacklist = blacklist.includes(ip);
+        details += `🚫 黑名单状态: ${inBlacklist ? '✅ 已加入' : '❌ 未加入'}\n`;
+
+        // 检查UA限制配置
+        const uaLimits = getUserAgentLimitsFromEnv(env);
+        const uaCount = Object.keys(uaLimits).length;
+        details += `👤 UA配置数量: ${uaCount} 个\n`;
+
+        // 显示当前时间信息
+        const now = new Date();
+        details += `⏰ 查询时间: ${now.toLocaleString('zh-CN')}\n`;
+        details += `📅 当前小时: ${now.getHours()}:00-${now.getHours()}:59\n`;
+
+        // 添加操作建议
+        details += `\n💡 **可用操作:**\n`;
+        if (inBlacklist) {
+            details += `• 使用 /blacklist_remove ${ip} 移除黑名单\n`;
+        } else {
+            details += `• 使用 /blacklist_add ${ip} 添加到黑名单\n`;
+        }
+        details += `• 使用 /violations check ${ip} 查看违规记录\n`;
+        details += `• 使用 /pathload check ${ip} 查看路径使用情况`;
+
+        return details;
+
+    } catch (error) {
+        return `❌ 获取IP详情失败: ${error.message}`;
+    }
+}
+
+// 显示添加IP界面
+async function showAddIPInterface(env) {
+    const message = `➕ **添加IP到黑名单**\n\n` +
+                   `请使用以下命令添加IP：\n` +
+                   `\`/blacklist_add [IP地址]\`\n\n` +
+                   `📝 **示例:**\n` +
+                   `• \`/blacklist_add 192.168.1.100\`\n` +
+                   `• \`/blacklist_add 10.0.0.1\`\n\n` +
+                   `💡 **提示:**\n` +
+                   `• IP地址格式会自动验证\n` +
+                   `• 重复IP会被自动忽略\n` +
+                   `• 添加后立即生效`;
+
+    return {
+        text: message,
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    {
+                        text: '🔙 返回黑名单管理',
+                        callback_data: 'blacklist_refresh'
+                    }
+                ]
+            ]
+        }
+    };
+}
+
+// 显示添加UA界面
+async function showAddUAInterface(env) {
+    const message = `➕ **添加新UA配置**\n\n` +
+                   `请使用以下命令添加UA配置：\n` +
+                   `\`/ua_add [名称] [UA字符串] [小时限制]\`\n\n` +
+                   `📝 **示例:**\n` +
+                   `• \`/ua_add TestUA "Mozilla/5.0 Test" 50\`\n` +
+                   `• \`/ua_add MobileUA "Mobile App/1.0" 100\`\n\n` +
+                   `💡 **参数说明:**\n` +
+                   `• **名称**: 配置的唯一标识符\n` +
+                   `• **UA字符串**: User-Agent字符串（用引号包围）\n` +
+                   `• **小时限制**: 每小时请求限制（可选，默认100）\n\n` +
+                   `⚠️ **注意:**\n` +
+                   `• 名称不能重复\n` +
+                   `• 配置添加后立即生效`;
+
+    return {
+        text: message,
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    {
+                        text: '🔙 返回UA管理',
+                        callback_data: 'ua_refresh'
+                    }
+                ]
+            ]
+        }
+    };
 }

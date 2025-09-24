@@ -232,27 +232,6 @@ async function handleRequest(request, env, ctx) {
         return handleAuthChallenge(request, env);
     }
 
-    // 新增：TG机器人测试页面
-    if (urlObj.pathname === '/tg-test') {
-        return new Response(`
-            <html>
-            <body>
-                <h1>TG机器人测试页面</h1>
-                <p>如果你能看到这个页面，说明Worker正常运行</p>
-                <p>TG Webhook地址: <code>${urlObj.origin}/telegram-webhook</code></p>
-                <p>请求时间: ${new Date().toLocaleString('zh-CN')}</p>
-                <hr>
-                <h2>环境变量检查:</h2>
-                <p>TG_BOT_TOKEN: ${env.TG_BOT_TOKEN ? '已设置 (长度: ' + env.TG_BOT_TOKEN.length + ')' : '❌ 未设置'}</p>
-                <p>TG_ADMIN_USER_ID: ${env.TG_ADMIN_USER_ID ? '已设置: ' + env.TG_ADMIN_USER_ID : '❌ 未设置'}</p>
-                <p>WORKER_DOMAIN: ${env.WORKER_DOMAIN ? '已设置: ' + env.WORKER_DOMAIN : '❌ 未设置'}</p>
-            </body>
-            </html>
-        `, {
-            headers: { 'Content-Type': 'text/html; charset=utf-8' }
-        });
-    }
-
     // 新增：处理TG机器人webhook
     if (urlObj.pathname === '/telegram-webhook') {
         console.log('🎯 TG Webhook路由被触发!');
