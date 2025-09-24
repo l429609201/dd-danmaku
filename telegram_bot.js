@@ -350,6 +350,11 @@ export async function handleTelegramWebhook(request, env) {
             return new Response('Invalid JSON: ' + jsonError.message, { status: 400 });
         }
 
+        // 处理内联键盘回调
+        if (update.callback_query) {
+            return await handleCallbackQuery(update.callback_query, env);
+        }
+
         // 验证是否来自授权用户
         if (!isAuthorizedUser(update, env)) {
             console.log('❌ TG机器人连接失败: 用户未授权');
@@ -381,14 +386,28 @@ export async function handleTelegramWebhook(request, env) {
         
         // 发送回复
         if (response) {
-            console.log('📤 准备发送回复，长度:', response.length);
-            const sendResult = await sendTelegramMessage(chatId, response, env);
-            if (sendResult.success) {
-                console.log('✅ 回复发送成功');
+            // 检查响应是否包含内联键盘
+            if (typeof response === 'object' && response.text) {
+                console.log('📤 准备发送带键盘回复，长度:', response.text.length);
+                const sendResult = await sendTelegramMessage(chatId, response.text, env, {
+                    reply_markup: response.reply_markup
+                });
+                if (sendResult.success) {
+                    console.log('✅ 带键盘回复发送成功');
+                } else {
+                    console.log('❌ 带键盘回复发送失败:', sendResult.error);
+                }
+                logToBot('info', `TG机器人发送带键盘回复`, { chatId, responseLength: response.text.length, success: sendResult.success });
             } else {
-                console.log('❌ 回复发送失败:', sendResult.error);
+                console.log('📤 准备发送回复，长度:', response.length);
+                const sendResult = await sendTelegramMessage(chatId, response, env);
+                if (sendResult.success) {
+                    console.log('✅ 回复发送成功');
+                } else {
+                    console.log('❌ 回复发送失败:', sendResult.error);
+                }
+                logToBot('info', `TG机器人发送回复`, { chatId, responseLength: response.length, success: sendResult.success });
             }
-            logToBot('info', `TG机器人发送回复`, { chatId, responseLength: response.length, success: sendResult.success });
         }
         
         return new Response('OK');
@@ -446,16 +465,28 @@ async function processCommand(text, env) {
             return await managePathLoad(args, env);
 
         case '/blacklist':
-            return await manageBlacklist(args, env);
+            return await showBlacklistManagementInterface(env);
 
         case '/ua':
-            return await manageUA(args, env);
+            return await showUAManagementInterface(env);
 
         case '/menu':
             return await getMainMenu(env);
 
         case '/api':
             return await getApiMenu(env);
+
+        case '/ua_add':
+            return await addNewUAConfig(args, env);
+
+        case '/ua_edit_ua':
+            return await editUAString(args, env);
+
+        case '/ua_edit_limit':
+            return await editUALimit(args, env);
+
+        case '/blacklist_add':
+            return await addNewIPToBlacklist(args, env);
 
         case '/help':
             return `📖 管理后台帮助：\n\n📊 系统监控：\n/status - 查看系统运行状态\n/logs [level] [count] - 查看系统日志\n\n⚠️ IP违规管理：\n/violations list - 查看违规IP\n/violations ban [IP] [hours] - 手动封禁IP\n/violations unban [IP] - 解除封禁\n/violations clear [IP] - 清除违规记录\n\n📊 路径满载监控：\n/pathload list - 查看路径满载记录\n/pathload check [IP] - 查看指定IP的路径使用情况\n\n� IP黑名单管理：\n/blacklist list - 查看黑名单\n/blacklist add [IP] - 添加IP\n/blacklist remove [IP] - 移除IP\n\n👤 UA配置管理：\n/ua list - 查看UA配置\n/ua enable [name] - 启用UA\n/ua disable [name] - 禁用UA\n\n�🔗 后台菜单：\n/api - 查看管理后台功能菜单`;
@@ -943,6 +974,12 @@ async function sendTelegramMessage(chatId, text, env, options = {}) {
             text: text,
             ...options
         };
+
+        // 如果有内联键盘，添加到请求体中
+        if (options.reply_markup) {
+            requestBody.reply_markup = options.reply_markup;
+        }
+
         console.log('📋 请求体:', JSON.stringify(requestBody, null, 2));
 
         const response = await fetch(url, {
@@ -1216,4 +1253,505 @@ async function updateCloudflareEnvVar(env, varName, varValue) {
         });
         return { success: false, error: `Cloudflare API调用失败: ${error.message}` };
     }
+}
+
+// UA管理界面
+async function showUAManagementInterface(env) {
+    try {
+        const uaLimits = getUserAgentLimitsFromEnv(env);
+        const uaKeys = Object.keys(uaLimits);
+
+        let message = `👤 UA配置管理\n\n`;
+
+        if (uaKeys.length === 0) {
+            message += `暂无UA配置\n\n`;
+        } else {
+            message += `当前配置 (${uaKeys.length}个)：\n\n`;
+            uaKeys.forEach((key, index) => {
+                const config = uaLimits[key];
+                const status = config.enabled !== false ? '✅' : '❌';
+                const userAgent = config.userAgent || 'N/A';
+                message += `${index + 1}. ${status} **${key}**\n`;
+                message += `   UA: \`${userAgent}\`\n`;
+                message += `   限制: ${config.hourlyLimit || 'N/A'}/小时\n\n`;
+            });
+        }
+
+        // 创建内联键盘
+        const keyboard = [];
+
+        // 为每个UA配置创建按钮行
+        uaKeys.forEach(key => {
+            const config = uaLimits[key];
+            const isEnabled = config.enabled !== false;
+
+            const row = [
+                {
+                    text: isEnabled ? `❌ 禁用 ${key}` : `✅ 启用 ${key}`,
+                    callback_data: `ua_toggle_${key}`
+                },
+                {
+                    text: `✏️ 编辑 ${key}`,
+                    callback_data: `ua_edit_${key}`
+                },
+                {
+                    text: `🗑️ 删除 ${key}`,
+                    callback_data: `ua_delete_${key}`
+                }
+            ];
+            keyboard.push(row);
+        });
+
+        // 添加管理按钮
+        keyboard.push([
+            {
+                text: '➕ 添加新UA',
+                callback_data: 'ua_add_new'
+            },
+            {
+                text: '🔄 刷新列表',
+                callback_data: 'ua_refresh'
+            }
+        ]);
+
+        return {
+            text: message,
+            reply_markup: {
+                inline_keyboard: keyboard
+            }
+        };
+
+    } catch (error) {
+        return `❌ 获取UA配置失败: ${error.message}`;
+    }
+}
+
+// IP黑名单管理界面
+async function showBlacklistManagementInterface(env) {
+    try {
+        const blacklist = getIpBlacklistFromEnv(env);
+
+        let message = `🚫 IP黑名单管理\n\n`;
+
+        if (blacklist.length === 0) {
+            message += `暂无黑名单记录\n\n`;
+        } else {
+            message += `当前黑名单 (${blacklist.length}个)：\n\n`;
+            blacklist.forEach((ip, index) => {
+                message += `${index + 1}. \`${ip}\`\n`;
+            });
+            message += `\n`;
+        }
+
+        // 创建内联键盘
+        const keyboard = [];
+
+        // 为每个IP创建按钮行（限制显示数量避免消息过长）
+        const displayLimit = 10;
+        blacklist.slice(0, displayLimit).forEach(ip => {
+            const row = [
+                {
+                    text: `🗑️ 移除 ${ip}`,
+                    callback_data: `blacklist_remove_${ip}`
+                },
+                {
+                    text: `📊 查看详情`,
+                    callback_data: `blacklist_info_${ip}`
+                }
+            ];
+            keyboard.push(row);
+        });
+
+        if (blacklist.length > displayLimit) {
+            keyboard.push([{
+                text: `📋 查看全部 (${blacklist.length}个)`,
+                callback_data: 'blacklist_show_all'
+            }]);
+        }
+
+        // 添加管理按钮
+        keyboard.push([
+            {
+                text: '➕ 添加IP',
+                callback_data: 'blacklist_add_new'
+            },
+            {
+                text: '🔄 刷新列表',
+                callback_data: 'blacklist_refresh'
+            }
+        ]);
+
+        return {
+            text: message,
+            reply_markup: {
+                inline_keyboard: keyboard
+            }
+        };
+
+    } catch (error) {
+        return `❌ 获取黑名单失败: ${error.message}`;
+    }
+}
+
+// 处理内联键盘回调
+async function handleCallbackQuery(callbackQuery, env) {
+    const chatId = callbackQuery.message.chat.id;
+    const messageId = callbackQuery.message.message_id;
+    const callbackData = callbackQuery.data;
+    const userId = callbackQuery.from.id;
+
+    console.log('🔘 收到回调查询:', callbackData);
+    logToBot('info', 'TG机器人收到回调查询', { callbackData, userId });
+
+    try {
+        let response = '';
+        let newKeyboard = null;
+
+        // 解析回调数据
+        const [action, operation, target] = callbackData.split('_');
+
+        if (action === 'ua') {
+            response = await handleUACallback(operation, target, env);
+            if (operation === 'toggle' || operation === 'refresh') {
+                // 刷新UA管理界面
+                const uaInterface = await showUAManagementInterface(env);
+                newKeyboard = uaInterface.reply_markup;
+                response = uaInterface.text;
+            }
+        } else if (action === 'blacklist') {
+            response = await handleBlacklistCallback(operation, target, env);
+            if (operation === 'remove' || operation === 'refresh') {
+                // 刷新黑名单管理界面
+                const blacklistInterface = await showBlacklistManagementInterface(env);
+                newKeyboard = blacklistInterface.reply_markup;
+                response = blacklistInterface.text;
+            }
+        }
+
+        // 回答回调查询
+        await answerCallbackQuery(callbackQuery.id, '操作完成', env);
+
+        // 如果需要更新消息
+        if (newKeyboard) {
+            await editMessageWithKeyboard(chatId, messageId, response, newKeyboard, env);
+        } else {
+            // 发送新消息
+            await sendTelegramMessage(chatId, response, env);
+        }
+
+        return new Response('OK');
+
+    } catch (error) {
+        console.error('处理回调查询失败:', error);
+        await answerCallbackQuery(callbackQuery.id, '操作失败: ' + error.message, env);
+        return new Response('Callback handling failed', { status: 500 });
+    }
+}
+
+// 处理UA相关回调
+async function handleUACallback(operation, target, env) {
+    switch (operation) {
+        case 'toggle':
+            const uaLimits = getUserAgentLimitsFromEnv(env);
+            if (!uaLimits[target]) {
+                return `❌ UA配置 ${target} 不存在`;
+            }
+
+            const isEnabled = uaLimits[target].enabled !== false;
+            if (isEnabled) {
+                const result = await disableUAConfig(target, env);
+                return result.success ? `✅ 已禁用 ${target}` : `❌ 禁用失败: ${result.error}`;
+            } else {
+                const result = await enableUAConfig(target, env);
+                return result.success ? `✅ 已启用 ${target}` : `❌ 启用失败: ${result.error}`;
+            }
+
+        case 'edit':
+            return await editUAConfig(target, env);
+
+        case 'delete':
+            return await deleteUAConfig(target, env);
+
+        case 'add':
+            return `➕ 添加新UA功能：请使用命令 /ua_add [名称] [UA字符串] [小时限制]`;
+
+        case 'refresh':
+            return `🔄 已刷新UA配置列表`;
+
+        default:
+            return `❓ 未知操作: ${operation}`;
+    }
+}
+
+// 处理黑名单相关回调
+async function handleBlacklistCallback(operation, target, env) {
+    switch (operation) {
+        case 'remove':
+            const result = await removeIpFromBlacklist(target, env);
+            return result.success ?
+                `✅ 已从黑名单移除 ${target}` :
+                `❌ 移除失败: ${result.error}`;
+
+        case 'info':
+            return `📊 IP ${target} 详情功能开发中...`;
+
+        case 'add':
+            return `➕ 添加新IP功能：请使用命令 /blacklist_add [IP地址]`;
+
+        case 'refresh':
+            return `🔄 已刷新黑名单列表`;
+
+        case 'show':
+            if (target === 'all') {
+                const blacklist = getIpBlacklistFromEnv(env);
+                let message = `📋 完整黑名单 (${blacklist.length}个)：\n\n`;
+                blacklist.forEach((ip, index) => {
+                    message += `${index + 1}. \`${ip}\`\n`;
+                });
+                return message;
+            }
+            return `❓ 未知显示操作: ${target}`;
+
+        default:
+            return `❓ 未知操作: ${operation}`;
+    }
+}
+
+// 回答回调查询
+async function answerCallbackQuery(callbackQueryId, text, env) {
+    const url = `https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`;
+
+    try {
+        await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                callback_query_id: callbackQueryId,
+                text: text,
+                show_alert: false
+            })
+        });
+    } catch (error) {
+        console.error('回答回调查询失败:', error);
+    }
+}
+
+// 编辑消息和键盘
+async function editMessageWithKeyboard(chatId, messageId, text, keyboard, env) {
+    const url = `https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageText`;
+
+    try {
+        await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: chatId,
+                message_id: messageId,
+                text: text,
+                reply_markup: keyboard
+            })
+        });
+    } catch (error) {
+        console.error('编辑消息失败:', error);
+    }
+}
+
+// 编辑UA配置
+async function editUAConfig(name, env) {
+    try {
+        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
+
+        if (!currentLimits[name]) {
+            return `❌ UA配置 ${name} 不存在`;
+        }
+
+        const config = currentLimits[name];
+
+        return `✏️ **编辑 ${name} 配置**\n\n` +
+               `当前配置：\n` +
+               `• UA字符串: \`${config.userAgent || 'N/A'}\`\n` +
+               `• 小时限制: ${config.hourlyLimit || 'N/A'}\n` +
+               `• 路径限制: ${config.pathSpecificLimits ? Object.keys(config.pathSpecificLimits).length : 0} 个\n` +
+               `• 状态: ${config.enabled !== false ? '启用' : '禁用'}\n\n` +
+               `💡 使用以下命令修改：\n` +
+               `• /ua_edit_ua ${name} [新UA字符串]\n` +
+               `• /ua_edit_limit ${name} [新小时限制]\n` +
+               `• /ua_edit_path ${name} [路径] [限制]`;
+
+    } catch (error) {
+        return `❌ 获取UA配置失败: ${error.message}`;
+    }
+}
+
+// 删除UA配置
+async function deleteUAConfig(name, env) {
+    try {
+        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
+
+        if (!currentLimits[name]) {
+            return `❌ UA配置 ${name} 不存在`;
+        }
+
+        // 不能删除default配置
+        if (name === 'default') {
+            return `❌ 不能删除默认配置 'default'`;
+        }
+
+        delete currentLimits[name];
+
+        // 调用Cloudflare API更新环境变量
+        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+
+        logToBot('info', 'UA配置删除请求', {
+            name,
+            action: 'delete',
+            cloudflareResult: updateResult,
+            newConfig: JSON.stringify(currentLimits)
+        });
+
+        return updateResult.success ?
+            `✅ 已删除UA配置 ${name}` :
+            `❌ 删除失败: ${updateResult.error}`;
+
+    } catch (error) {
+        return `❌ 删除UA配置失败: ${error.message}`;
+    }
+}
+
+// 添加新UA配置
+async function addNewUAConfig(args, env) {
+    const [name, userAgent, hourlyLimit] = args;
+
+    if (!name || !userAgent) {
+        return `❌ 使用格式: /ua_add [名称] [UA字符串] [小时限制(可选)]`;
+    }
+
+    try {
+        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
+
+        if (currentLimits[name]) {
+            return `❌ UA配置 ${name} 已存在，请使用其他名称`;
+        }
+
+        const newConfig = {
+            userAgent: userAgent,
+            hourlyLimit: parseInt(hourlyLimit) || 100,
+            enabled: true
+        };
+
+        currentLimits[name] = newConfig;
+
+        // 调用Cloudflare API更新环境变量
+        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+
+        logToBot('info', 'UA配置添加请求', {
+            name,
+            userAgent,
+            hourlyLimit: newConfig.hourlyLimit,
+            cloudflareResult: updateResult
+        });
+
+        return updateResult.success ?
+            `✅ 已添加UA配置 ${name}\n• UA: ${userAgent}\n• 小时限制: ${newConfig.hourlyLimit}` :
+            `❌ 添加失败: ${updateResult.error}`;
+
+    } catch (error) {
+        return `❌ 添加UA配置失败: ${error.message}`;
+    }
+}
+
+// 编辑UA字符串
+async function editUAString(args, env) {
+    const [name, newUserAgent] = args;
+
+    if (!name || !newUserAgent) {
+        return `❌ 使用格式: /ua_edit_ua [名称] [新UA字符串]`;
+    }
+
+    try {
+        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
+
+        if (!currentLimits[name]) {
+            return `❌ UA配置 ${name} 不存在`;
+        }
+
+        const oldUserAgent = currentLimits[name].userAgent;
+        currentLimits[name].userAgent = newUserAgent;
+
+        // 调用Cloudflare API更新环境变量
+        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+
+        logToBot('info', 'UA字符串编辑请求', {
+            name,
+            oldUserAgent,
+            newUserAgent,
+            cloudflareResult: updateResult
+        });
+
+        return updateResult.success ?
+            `✅ 已更新 ${name} 的UA字符串\n• 旧值: ${oldUserAgent}\n• 新值: ${newUserAgent}` :
+            `❌ 更新失败: ${updateResult.error}`;
+
+    } catch (error) {
+        return `❌ 编辑UA字符串失败: ${error.message}`;
+    }
+}
+
+// 编辑UA限制
+async function editUALimit(args, env) {
+    const [name, newLimit] = args;
+
+    if (!name || !newLimit) {
+        return `❌ 使用格式: /ua_edit_limit [名称] [新小时限制]`;
+    }
+
+    const limitNumber = parseInt(newLimit);
+    if (isNaN(limitNumber) || limitNumber <= 0) {
+        return `❌ 小时限制必须是大于0的数字`;
+    }
+
+    try {
+        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
+
+        if (!currentLimits[name]) {
+            return `❌ UA配置 ${name} 不存在`;
+        }
+
+        const oldLimit = currentLimits[name].hourlyLimit;
+        currentLimits[name].hourlyLimit = limitNumber;
+
+        // 调用Cloudflare API更新环境变量
+        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+
+        logToBot('info', 'UA限制编辑请求', {
+            name,
+            oldLimit,
+            newLimit: limitNumber,
+            cloudflareResult: updateResult
+        });
+
+        return updateResult.success ?
+            `✅ 已更新 ${name} 的小时限制\n• 旧值: ${oldLimit}\n• 新值: ${limitNumber}` :
+            `❌ 更新失败: ${updateResult.error}`;
+
+    } catch (error) {
+        return `❌ 编辑UA限制失败: ${error.message}`;
+    }
+}
+
+// 添加新IP到黑名单
+async function addNewIPToBlacklist(args, env) {
+    const [ip] = args;
+
+    if (!ip) {
+        return `❌ 使用格式: /blacklist_add [IP地址]`;
+    }
+
+    // 简单的IP格式验证
+    const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipRegex.test(ip)) {
+        return `❌ IP地址格式不正确: ${ip}`;
+    }
+
+    return await addIpToBlacklist(ip, env);
 }
