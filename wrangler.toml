@@ -18,7 +18,8 @@ enabled = true
 # Durable Object 绑定配置
 [durable_objects]
 bindings = [
-  { name = "RATE_LIMITER", class_name = "RateLimiter" }
+  { name = "RATE_LIMITER", class_name = "RateLimiter" },
+  { name = "APP_STATE", class_name = "AppState" }
 ]
 
 [[migrations]]
@@ -26,5 +27,5 @@ tag = "v3" # 保持原有的迁移标签
 new_sqlite_classes = ["RateLimiter"]
 
 [[migrations]]
-tag = "v4" # 移除AppState，简化架构
-deleted_classes = ["AppState"]
+tag = "v5" # 重新添加简化的AppState
+new_sqlite_classes = ["AppState"]
