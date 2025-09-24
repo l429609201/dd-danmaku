@@ -12,10 +12,13 @@ IP_BLACKLIST_CONFIG = '''{{IP_BLACKLIST_CONFIG}}'''
 TG_BOT_TOKEN = '''{{TG_BOT_TOKEN}}'''
 TG_ADMIN_USER_ID = '''{{TG_ADMIN_USER_ID}}'''
 WORKER_DOMAIN = '''{{WORKER_DOMAIN}}'''
+CLOUDFLARE_WORKER_NAME = '''{{CLOUDFLARE_WORKER_NAME}}'''
 #密钥配置 （一般有两个，两个都填会轮换使用，配置成密钥的类型）
 # APP_ID
 # APP_SECRET
 # APP_SECRET_2
+# CLOUDFLARE_API_TOKEN (密钥类型)
+# CLOUDFLARE_ACCOUNT_ID (密钥类型)
 
 
 # wrangler.toml (wrangler v3.88.0^)
