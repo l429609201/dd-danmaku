@@ -5,7 +5,8 @@
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
 
-// 注意：AppSecret轮换相关配置已移除
+// AppSecret轮换配置
+const SECRET_ROTATION_LIMIT = 500; // 每个secret使用500次后切换
 
 // ========================================
 // ⚙️ Durable Object 配置
@@ -137,12 +138,12 @@ function getAccessConfig(env) {
 
 export default {
   async fetch(request, env, ctx) {
-    return await handleRequest(request, env);
+    return await handleRequest(request, env, ctx);
   },
 };
 
 
-async function handleRequest(request, env) {
+async function handleRequest(request, env, ctx) {
     if (request.method === 'OPTIONS') {
         return new Response(null, {
             status: 204,
@@ -170,14 +171,26 @@ async function handleRequest(request, env) {
         return handleAuthChallenge(request, env);
     }
 
-    // 访问控制检查
-    const accessCheck = await checkAccess(request, env);
+    // 提取目标URL和API路径
+    let url = urlObj.href.replace(urlObj.origin + '/cors/', '').trim();
+    if (0 !== url.indexOf('https://') && 0 === url.indexOf('https:')) {
+        url = url.replace('https:/', 'https://');
+    } else if (0 !== url.indexOf('http://') && 0 === url.indexOf('http:')) {
+        url = url.replace('http:/', 'http://');
+    }
+    const tUrlObj = new URL(url);
+    if (!(tUrlObj.hostname in hostlist)) {
+        return Forbidden(tUrlObj);
+    }
+
+    // 访问控制检查，传递正确的API路径
+    const accessCheck = await checkAccess(request, env, tUrlObj.pathname);
     if (!accessCheck.allowed) {
         const userAgent = request.headers.get('X-User-Agent') || '';
         const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
 
         if (ACCESS_CONFIG.logging.enabled) {
-            console.log(`访问被拒绝: ${errorMessage}, 路径=${urlObj.pathname}`);
+            console.log(`访问被拒绝: ${errorMessage}, 路径=${tUrlObj.pathname}`);
         }
 
         return new Response(JSON.stringify({
@@ -219,25 +232,30 @@ async function handleRequest(request, env) {
         return new Response(rateLimitResult.reason, { status: 429 });
     }
 
-    let url = urlObj.href.replace(urlObj.origin + '/cors/', '').trim();
-    if (0 !== url.indexOf('https://') && 0 === url.indexOf('https:')) {
-        url = url.replace('https:/', 'https://');
-    } else if (0 !== url.indexOf('http://') && 0 === url.indexOf('http:')) {
-        url = url.replace('http:/', 'http://');
-    }
-    const tUrlObj = new URL(url);
-    if (!(tUrlObj.hostname in hostlist)) {
-        return Forbidden(tUrlObj);
-    }
+
 
     const appId = env.APP_ID;
-    // 简化：直接使用主要的AppSecret，移除复杂的轮换逻辑
-    const appSecret = env.APP_SECRET;
+    // 从AppState DO获取当前应该使用的密钥
+    const appStateStub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
+    const secretIdResponse = await appStateStub.fetch(new Request('https://do.internal/getSecretId', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'getSecretId', loggingEnabled: ACCESS_CONFIG.logging.enabled })
+    }));
+    const secretId = await secretIdResponse.text();
+    const appSecret = secretId === '2' && env.APP_SECRET_2 ? env.APP_SECRET_2 : env.APP_SECRET;
 
 
     const timestamp = Math.floor(Date.now() / 1000);
     const apiPath = tUrlObj.pathname;
     const signature = await generateSignature(appId, timestamp, apiPath, appSecret);
+
+    // 记录AppSecret使用次数
+    ctx.waitUntil(appStateStub.fetch(new Request('https://do.internal/recordUsage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'recordUsage', loggingEnabled: ACCESS_CONFIG.logging.enabled })
+    })));
 
     if (ACCESS_CONFIG.logging.enabled) {
         console.log('应用ID: ' + appId);
@@ -326,7 +344,7 @@ async function generateSignature(appId, timestamp, path, appSecret) {
     return hashBase64;
 }
 // 新增：访问控制检查函数
-async function checkAccess(request, env) {
+async function checkAccess(request, env, targetApiPath) {
     // 内部函数：识别User-Agent类型
     function identifyUserAgent(userAgent, ACCESS_CONFIG) {
         for (const [key, config] of Object.entries(ACCESS_CONFIG.userAgentLimits)) {
@@ -339,8 +357,7 @@ async function checkAccess(request, env) {
 
     const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
     const userAgent = request.headers.get('X-User-Agent') || '';
-    const urlObj = new URL(request.url);
-    const apiPath = urlObj.pathname.replace('/cors', ''); // 提取实际的API路径
+    const apiPath = targetApiPath; // 使用传入的目标API路径
     const ACCESS_CONFIG = getAccessConfig(env);
 
     // 1. 识别User-Agent类型并获取对应限制
@@ -744,4 +761,87 @@ export class RateLimiter {
     }
 }
 
-// AppState类已移除 - 不再需要复杂的AppSecret轮换逻辑
+// 简化的AppState类 - 专门处理AppSecret轮换
+export class AppState {
+    constructor(state, env) {
+        this.state = state;
+        this.env = env;
+        this.initialized = this.initialize();
+    }
+
+    async initialize() {
+        if (!this.appState) {
+            this.appState = await this.state.storage.get('app_secret_state') || {
+                current: '1',
+                count1: 0,
+                count2: 0
+            };
+        }
+    }
+
+    async fetch(request) {
+        await this.initialized;
+        if (request.method !== 'POST') {
+            return new Response('无效的方法', { status: 405 });
+        }
+        const { action, loggingEnabled } = await request.json();
+
+        if (action === 'getSecretId') {
+            return this.getSecretId(loggingEnabled);
+        }
+
+        if (action === 'recordUsage') {
+            return this.recordUsage(loggingEnabled);
+        }
+
+        return new Response('无效的操作', { status: 400 });
+    }
+
+    async getSecretId(loggingEnabled) {
+        if (!this.env.APP_SECRET_2) {
+            return new Response('1'); // 如果没有第二个密钥，总是使用第一个
+        }
+
+        if (loggingEnabled) {
+            console.log(`Secret1使用次数: ${this.appState.count1}, Secret2使用次数: ${this.appState.count2}, 当前使用: Secret${this.appState.current}`);
+        }
+
+        // 检查是否需要切换
+        if (this.appState.current === '1' && this.appState.count1 >= SECRET_ROTATION_LIMIT) {
+            this.appState.current = '2';
+            this.appState.count1 = 0;
+            await this.state.storage.put('app_secret_state', this.appState);
+            if (loggingEnabled) console.log('切换到APP_SECRET_2');
+            return new Response('2');
+        } else if (this.appState.current === '2' && this.appState.count2 >= SECRET_ROTATION_LIMIT) {
+            this.appState.current = '1';
+            this.appState.count2 = 0;
+            await this.state.storage.put('app_secret_state', this.appState);
+            if (loggingEnabled) console.log('切换到APP_SECRET');
+            return new Response('1');
+        }
+
+        return new Response(this.appState.current);
+    }
+
+    async recordUsage(loggingEnabled) {
+        // 简化的使用记录，每次调用都增加计数
+        if (this.appState.current === '1') {
+            this.appState.count1++;
+        } else {
+            this.appState.count2++;
+        }
+
+        // 定期保存到持久化存储（每10次保存一次）
+        if ((this.appState.count1 + this.appState.count2) % 10 === 0) {
+            await this.state.storage.put('app_secret_state', this.appState);
+        }
+
+        return new Response('OK');
+    }
+
+    async alarm() {
+        // 定期保存状态
+        await this.state.storage.put('app_secret_state', this.appState);
+    }
+}
