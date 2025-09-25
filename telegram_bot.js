@@ -1144,7 +1144,7 @@ async function addIpToBlacklist(ip, env) {
         const newBlacklist = [...currentBlacklist, ip];
 
         // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'IP_BLACKLIST_CONFIG', JSON.stringify(newBlacklist));
+        const updateResult = await updateBothEnvVars(env, 'IP_BLACKLIST_CONFIG', JSON.stringify(newBlacklist));
 
         logToBot('info', 'IP黑名单添加请求', {
             ip,
@@ -1174,7 +1174,7 @@ async function removeIpFromBlacklist(ip, env) {
         const newBlacklist = currentBlacklist.filter(item => item !== ip);
 
         // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'IP_BLACKLIST_CONFIG', JSON.stringify(newBlacklist));
+        const updateResult = await updateBothEnvVars(env, 'IP_BLACKLIST_CONFIG', JSON.stringify(newBlacklist));
 
         logToBot('info', 'IP黑名单移除请求', {
             ip,
@@ -1204,7 +1204,7 @@ async function enableUAConfig(name, env) {
         currentLimits[name].enabled = true;
 
         // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+        const updateResult = await updateBothEnvVars(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
 
         logToBot('info', 'UA配置启用请求', {
             name,
@@ -1233,7 +1233,7 @@ async function disableUAConfig(name, env) {
         currentLimits[name].enabled = false;
 
         // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+        const updateResult = await updateBothEnvVars(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
 
         logToBot('info', 'UA配置禁用请求', {
             name,
@@ -1251,8 +1251,8 @@ async function disableUAConfig(name, env) {
     }
 }
 
-// Cloudflare API调用函数
-async function updateCloudflareEnvVar(env, varName, varValue) {
+// Cloudflare API调用函数 - 更新环境变量（支持vars和secrets）
+async function updateCloudflareEnvVar(env, varName, varValue, isSecret = false) {
     try {
         // 需要的环境变量
         if (!env.CLOUDFLARE_API_TOKEN) {
@@ -1291,23 +1291,44 @@ async function updateCloudflareEnvVar(env, varName, varValue) {
         const currentEnvVars = currentSettings.result?.bindings?.filter(b => b.type === 'plain_text') || [];
 
         // 2. 更新或添加指定的环境变量
-        const updatedEnvVars = currentEnvVars.filter(v => v.name !== varName);
-        updatedEnvVars.push({
-            type: 'plain_text',
-            name: varName,
-            text: varValue
-        });
+        let updatedEnvVars, updatedSecrets;
+
+        if (isSecret) {
+            // 处理secret类型的环境变量
+            const currentSecrets = currentSettings.result?.bindings?.filter(b => b.type === 'secret_text') || [];
+            updatedSecrets = currentSecrets.filter(v => v.name !== varName);
+            updatedSecrets.push({
+                type: 'secret_text',
+                name: varName,
+                text: varValue
+            });
+            updatedEnvVars = currentEnvVars; // 保持原有的普通环境变量
+        } else {
+            // 处理普通环境变量
+            updatedEnvVars = currentEnvVars.filter(v => v.name !== varName);
+            updatedEnvVars.push({
+                type: 'plain_text',
+                name: varName,
+                text: varValue
+            });
+            updatedSecrets = currentSettings.result?.bindings?.filter(b => b.type === 'secret_text') || [];
+        }
 
         // 3. 保留其他类型的绑定（如DO绑定）
-        const otherBindings = currentSettings.result?.bindings?.filter(b => b.type !== 'plain_text') || [];
-        const allBindings = [...updatedEnvVars, ...otherBindings];
+        const otherBindings = currentSettings.result?.bindings?.filter(b => b.type !== 'plain_text' && b.type !== 'secret_text') || [];
+        const allBindings = [...updatedEnvVars, ...updatedSecrets, ...otherBindings];
 
-        // 4. 更新环境变量 - 使用multipart/form-data格式
+        // 4. 更新环境变量 - 使用正确的multipart/form-data格式
         const updateUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${workerName}/settings`;
 
-        // 创建FormData对象
+        // 创建FormData对象，包含必需的settings部分
         const formData = new FormData();
-        formData.append('bindings', JSON.stringify(allBindings));
+
+        // 添加settings部分（JSON格式）
+        const settings = {
+            bindings: allBindings
+        };
+        formData.append('settings', JSON.stringify(settings));
 
         const updateResponse = await fetch(updateUrl, {
             method: 'PATCH',
@@ -1344,6 +1365,32 @@ async function updateCloudflareEnvVar(env, varName, varValue) {
             error: error.message
         });
         return { success: false, error: `Cloudflare API调用失败: ${error.message}` };
+    }
+}
+
+// 同时更新vars和secrets中的环境变量
+async function updateBothEnvVars(env, varName, varValue) {
+    try {
+        // 同时更新普通环境变量和secret环境变量
+        const varsResult = await updateCloudflareEnvVar(env, varName, varValue, false);
+        const secretsResult = await updateCloudflareEnvVar(env, varName, varValue, true);
+
+        // 如果至少有一个成功，就认为更新成功
+        if (varsResult.success || secretsResult.success) {
+            return {
+                success: true,
+                message: `环境变量 ${varName} 已更新`,
+                varsResult,
+                secretsResult
+            };
+        } else {
+            return {
+                success: false,
+                error: `两种环境变量都更新失败: vars(${varsResult.error}), secrets(${secretsResult.error})`
+            };
+        }
+    } catch (error) {
+        return { success: false, error: `更新环境变量异常: ${error.message}` };
     }
 }
 
@@ -1580,7 +1627,7 @@ async function handleCallbackQuery(callbackQuery, env) {
                     config.enabled = !config.enabled;
 
                     // 更新配置
-                    const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
+                    const result = await updateBothEnvVars(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
 
                     if (result.success) {
                         // 创建临时env对象，包含更新后的配置
@@ -1614,7 +1661,7 @@ async function handleCallbackQuery(callbackQuery, env) {
                         delete uaLimits[configName];
 
                         // 更新配置
-                        const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
+                        const result = await updateBothEnvVars(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
 
                         if (result.success) {
                             // 创建临时env对象，包含更新后的配置
@@ -1737,7 +1784,7 @@ async function handleCallbackQuery(callbackQuery, env) {
                             }
 
                             // 更新配置
-                            const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
+                            const result = await updateBothEnvVars(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
 
                             if (result.success) {
                                 // 创建临时env对象，包含更新后的配置
@@ -2076,7 +2123,7 @@ async function deleteUAConfig(name, env) {
         delete currentLimits[name];
 
         // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+        const updateResult = await updateBothEnvVars(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
 
         logToBot('info', 'UA配置删除请求', {
             name,
@@ -2118,7 +2165,7 @@ async function addNewUAConfig(args, env) {
         currentLimits[name] = newConfig;
 
         // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+        const updateResult = await updateBothEnvVars(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
 
         logToBot('info', 'UA配置添加请求', {
             name,
@@ -2155,7 +2202,7 @@ async function editUAString(args, env) {
         currentLimits[name].userAgent = newUserAgent;
 
         // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+        const updateResult = await updateBothEnvVars(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
 
         logToBot('info', 'UA字符串编辑请求', {
             name,
@@ -2197,7 +2244,7 @@ async function editUALimit(args, env) {
         currentLimits[name].hourlyLimit = limitNumber;
 
         // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+        const updateResult = await updateBothEnvVars(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
 
         logToBot('info', 'UA限制编辑请求', {
             name,
@@ -2475,7 +2522,7 @@ async function editUAPathLimit(args, env) {
         currentLimits[name].pathSpecificLimits[path] = limitNumber;
 
         // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+        const updateResult = await updateBothEnvVars(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
 
         logToBot('info', 'UA路径限制编辑请求', {
             name,
