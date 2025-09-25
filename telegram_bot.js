@@ -1308,11 +1308,11 @@ async function showUAManagementInterface(env) {
         keyboard.push([
             {
                 text: '➕ 添加新UA',
-                callback_data: 'ua_add_new'
+                callback_data: 'ua_add_'
             },
             {
                 text: '🔄 刷新列表',
-                callback_data: 'ua_refresh'
+                callback_data: 'ua_refresh_'
             }
         ]);
 
@@ -1376,11 +1376,11 @@ async function showBlacklistManagementInterface(env) {
         keyboard.push([
             {
                 text: '➕ 添加IP',
-                callback_data: 'blacklist_add_new'
+                callback_data: 'blacklist_add_'
             },
             {
                 text: '🔄 刷新列表',
-                callback_data: 'blacklist_refresh'
+                callback_data: 'blacklist_refresh_'
             }
         ]);
 
@@ -1481,8 +1481,13 @@ async function handleCallbackQuery(callbackQuery, env) {
 
 // 处理UA相关回调
 async function handleUACallback(operation, target, env) {
+    console.log('🔧 处理UA回调:', { operation, target });
+
     switch (operation) {
         case 'toggle':
+            if (!target) {
+                return `❌ 缺少目标配置名称`;
+            }
             const uaLimits = getUserAgentLimitsFromEnv(env);
             if (!uaLimits[target]) {
                 return `❌ UA配置 ${target} 不存在`;
@@ -1498,9 +1503,15 @@ async function handleUACallback(operation, target, env) {
             }
 
         case 'edit':
+            if (!target) {
+                return `❌ 缺少目标配置名称`;
+            }
             return await editUAConfig(target, env);
 
         case 'delete':
+            if (!target) {
+                return `❌ 缺少目标配置名称`;
+            }
             return await deleteUAConfig(target, env);
 
         case 'add':
@@ -1516,14 +1527,22 @@ async function handleUACallback(operation, target, env) {
 
 // 处理黑名单相关回调
 async function handleBlacklistCallback(operation, target, env) {
+    console.log('🔧 处理黑名单回调:', { operation, target });
+
     switch (operation) {
         case 'remove':
+            if (!target) {
+                return `❌ 缺少目标IP地址`;
+            }
             const result = await removeIpFromBlacklist(target, env);
             return result.success ?
                 `✅ 已从黑名单移除 ${target}` :
                 `❌ 移除失败: ${result.error}`;
 
         case 'info':
+            if (!target) {
+                return `❌ 缺少目标IP地址`;
+            }
             return await getIPDetails(target, env);
 
         case 'add':
@@ -1844,7 +1863,7 @@ async function showAddIPInterface(env) {
                 [
                     {
                         text: '🔙 返回黑名单管理',
-                        callback_data: 'blacklist_refresh'
+                        callback_data: 'blacklist_refresh_'
                     }
                 ]
             ]
@@ -1875,7 +1894,7 @@ async function showAddUAInterface(env) {
                 [
                     {
                         text: '🔙 返回UA管理',
-                        callback_data: 'ua_refresh'
+                        callback_data: 'ua_refresh_'
                     }
                 ]
             ]
