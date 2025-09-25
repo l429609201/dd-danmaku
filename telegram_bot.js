@@ -1583,18 +1583,19 @@ async function handleCallbackQuery(callbackQuery, env) {
                     const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
 
                     if (result.success) {
-                        response = `✅ UA配置 "${configName}" 已${config.enabled ? '启用' : '禁用'}`;
+                        // 创建临时env对象，包含更新后的配置
+                        const tempEnv = { ...env, USER_AGENT_LIMITS_CONFIG: JSON.stringify(uaLimits) };
+
+                        // 使用更新后的配置刷新界面
+                        const uaInterface = await showUAManagementInterface(tempEnv);
+                        newKeyboard = uaInterface.reply_markup;
+                        response = uaInterface.text;
                     } else {
                         response = `❌ 更新失败: ${result.error}`;
                     }
                 } else {
                     response = `❌ 无效的配置名称: ${configName}`;
                 }
-
-                // 刷新界面
-                const uaInterface = await showUAManagementInterface(env);
-                newKeyboard = uaInterface.reply_markup;
-                response = uaInterface.text;
             } else if (operation === 'edit') {
                 // 处理编辑操作 - 显示编辑界面
                 const configName = target;
@@ -1616,9 +1617,11 @@ async function handleCallbackQuery(callbackQuery, env) {
                         const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
 
                         if (result.success) {
-                            response = `✅ 已删除UA配置 ${configName}`;
-                            // 刷新界面
-                            const uaInterface = await showUAManagementInterface(env);
+                            // 创建临时env对象，包含更新后的配置
+                            const tempEnv = { ...env, USER_AGENT_LIMITS_CONFIG: JSON.stringify(uaLimits) };
+
+                            // 使用更新后的配置刷新界面
+                            const uaInterface = await showUAManagementInterface(tempEnv);
                             newKeyboard = uaInterface.reply_markup;
                             response = uaInterface.text;
                         } else {
@@ -1737,8 +1740,11 @@ async function handleCallbackQuery(callbackQuery, env) {
                             const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
 
                             if (result.success) {
-                                // 刷新路径管理界面
-                                const pathInterface = await showPathLimitsInterface(configName, env);
+                                // 创建临时env对象，包含更新后的配置
+                                const tempEnv = { ...env, USER_AGENT_LIMITS_CONFIG: JSON.stringify(uaLimits) };
+
+                                // 使用更新后的配置刷新路径管理界面
+                                const pathInterface = await showPathLimitsInterface(configName, tempEnv);
                                 response = pathInterface.text;
                                 newKeyboard = pathInterface.reply_markup;
                             } else {
