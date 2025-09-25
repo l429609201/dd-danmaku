@@ -13,8 +13,6 @@ try {
     console.log('- TG_ADMIN_USER_ID:', process.env.TG_ADMIN_USER_ID ? '已设置 (已隐藏)' : '未设置，TG机器人将不可用');
     console.log('- WORKER_DOMAIN:', process.env.WORKER_DOMAIN ? '已设置 (已隐藏)' : '未设置，Webhook自动设置将不可用');
     console.log('- CLOUDFLARE_WORKER_NAME:', process.env.CLOUDFLARE_WORKER_NAME ? '已设置 (已隐藏)' : '未设置，动态配置更新将不可用');
-    console.log('- CLOUDFLARE_API_TOKEN:', '需要在Cloudflare Dashboard中配置为密钥类型');
-    console.log('- CLOUDFLARE_ACCOUNT_ID:', '需要在Cloudflare Dashboard中配置为密钥类型');
 
     // 读取 wrangler.toml 文件
     console.log('\n📝 读取 wrangler.toml...');
