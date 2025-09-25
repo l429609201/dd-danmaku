@@ -467,6 +467,8 @@ async function processCommand(text, env) {
                 return await manageViolations(args, env);
             }
 
+
+
         case '/pathload':
             return await managePathLoad(args, env);
 
@@ -1461,11 +1463,37 @@ async function handleCallbackQuery(callbackQuery, env) {
         if (action === 'ua') {
             console.log('🔧 处理UA回调:', { operation, target });
 
-            // 简化处理逻辑，直接返回刷新的界面
             if (operation === 'refresh') {
                 const uaInterface = await showUAManagementInterface(env);
                 response = uaInterface.text;
                 newKeyboard = uaInterface.reply_markup;
+            } else if (operation === 'toggle') {
+                // 处理启用/禁用操作
+                const index = parseInt(target);
+                const uaLimits = getAllUserAgentLimitsFromEnv(env);
+                const uaKeys = Object.keys(uaLimits);
+
+                if (index >= 0 && index < uaKeys.length) {
+                    const key = uaKeys[index];
+                    const config = uaLimits[key];
+                    config.enabled = !config.enabled;
+
+                    // 更新配置
+                    const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
+
+                    if (result.success) {
+                        response = `✅ UA配置 "${key}" 已${config.enabled ? '启用' : '禁用'}`;
+                    } else {
+                        response = `❌ 更新失败: ${result.error}`;
+                    }
+                } else {
+                    response = `❌ 无效的配置索引: ${index}`;
+                }
+
+                // 刷新界面
+                const uaInterface = await showUAManagementInterface(env);
+                newKeyboard = uaInterface.reply_markup;
+                response = uaInterface.text;
             } else {
                 response = `✅ UA操作: ${operation} ${target}`;
                 // 刷新界面
@@ -1503,10 +1531,11 @@ async function handleCallbackQuery(callbackQuery, env) {
             } else {
                 response = `✅ 违规操作: ${operation} ${target}`;
             }
-        }
 
-        // 回答回调查询
-        await answerCallbackQuery(callbackQuery.id, '操作完成', env);
+        } else {
+            console.log('❓ 未知回调数据:', callbackData);
+            response = `❓ 未知操作: ${callbackData}`;
+        }
 
         // 如果需要更新消息
         if (newKeyboard) {
