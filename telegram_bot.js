@@ -1131,28 +1131,7 @@ function getAllUserAgentLimitsFromEnv(env) {
     }
 }
 
-// 获取启用的UA配置（兼容旧版本）
-function getUserAgentLimitsFromEnv(env) {
-    if (!env.USER_AGENT_LIMITS_CONFIG) {
-        return {};
-    }
 
-    try {
-        const limits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
-        // 过滤出启用的客户端
-        const enabledLimits = {};
-        Object.keys(limits).forEach(key => {
-            const config = limits[key];
-            if (config && config.enabled !== false) {
-                enabledLimits[key] = config;
-            }
-        });
-        return enabledLimits;
-    } catch (error) {
-        console.error('解析UA配置失败:', error);
-        return {};
-    }
-}
 
 async function addIpToBlacklist(ip, env) {
     try {
@@ -1440,6 +1419,14 @@ async function showUAManagementInterface(env) {
             }
         ]);
 
+        // 添加返回按钮
+        keyboard.push([
+            {
+                text: '🔙 返回主菜单',
+                callback_data: 'menu_refresh'
+            }
+        ]);
+
         return {
             text: message,
             reply_markup: {
@@ -1502,11 +1489,19 @@ async function showBlacklistManagementInterface(env) {
         keyboard.push([
             {
                 text: '➕ 添加IP',
-                callback_data: 'blacklist_add_'
+                callback_data: 'blacklist_add_new'
             },
             {
                 text: '🔄 刷新列表',
-                callback_data: 'blacklist_refresh_'
+                callback_data: 'blacklist_refresh'
+            }
+        ]);
+
+        // 添加返回按钮
+        keyboard.push([
+            {
+                text: '🔙 返回主菜单',
+                callback_data: 'menu_refresh'
             }
         ]);
 
@@ -2128,6 +2123,12 @@ async function showViolationsManagementInterface(env) {
                     text: '🔄 刷新状态',
                     callback_data: 'violations_refresh'
                 }
+            ],
+            [
+                {
+                    text: '🔙 返回主菜单',
+                    callback_data: 'menu_refresh'
+                }
             ]
         ];
 
@@ -2376,7 +2377,7 @@ async function showAddIPInterface(env) {
                 [
                     {
                         text: '🔙 返回黑名单管理',
-                        callback_data: 'blacklist_refresh_'
+                        callback_data: 'blacklist_refresh'
                     }
                 ]
             ]
@@ -2407,7 +2408,7 @@ async function showAddUAInterface(env) {
                 [
                     {
                         text: '🔙 返回UA管理',
-                        callback_data: 'ua_refresh_'
+                        callback_data: 'ua_refresh'
                     }
                 ]
             ]
