@@ -1998,6 +1998,13 @@ async function editMessageWithKeyboard(chatId, messageId, text, keyboard, env) {
 
         if (!response.ok) {
             const errorText = await response.text();
+
+            // 检查是否是"消息未修改"错误，这种情况可以忽略
+            if (response.status === 400 && errorText.includes('message is not modified')) {
+                console.log('⚠️ 消息内容未变化，跳过编辑');
+                return;
+            }
+
             console.error('编辑消息API错误:', response.status, errorText);
         } else {
             console.log('✅ 消息编辑成功');
