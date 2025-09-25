@@ -1338,11 +1338,11 @@ async function showUAManagementInterface(env) {
         keyboard.push([
             {
                 text: '➕ 添加新UA',
-                callback_data: 'ua_add_'
+                callback_data: 'ua_add'
             },
             {
                 text: '🔄 刷新列表',
-                callback_data: 'ua_refresh_'
+                callback_data: 'ua_refresh'
             }
         ]);
 
@@ -1443,6 +1443,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     console.log('🔘 收到回调查询:', callbackData);
     console.log('👤 回调用户ID:', userId);
     console.log('💬 回调聊天ID:', chatId);
+    console.log('📋 完整回调查询对象:', JSON.stringify(callbackQuery, null, 2));
     logToBot('info', 'TG机器人收到回调查询', { callbackData, userId, chatId });
 
     try {
@@ -1453,26 +1454,24 @@ async function handleCallbackQuery(callbackQuery, env) {
         const parts = callbackData.split('_');
         const action = parts[0];
         const operation = parts[1];
-        const target = parts.slice(2).join('_'); // 支持包含下划线的目标名称
+        const target = parts.slice(2).join('_') || ''; // 支持包含下划线的目标名称，允许为空
 
-        console.log('🔍 回调数据解析:', { parts, action, operation, target });
+        console.log('🔍 回调数据解析:', { callbackData, parts, action, operation, target });
 
         if (action === 'ua') {
-            const callbackResult = await handleUACallback(operation, target, env);
+            console.log('🔧 处理UA回调:', { operation, target });
 
-            if (typeof callbackResult === 'object' && callbackResult.text) {
-                // 如果返回的是带键盘的对象，直接使用
-                response = callbackResult.text;
-                newKeyboard = callbackResult.reply_markup;
+            // 简化处理逻辑，直接返回刷新的界面
+            if (operation === 'refresh') {
+                const uaInterface = await showUAManagementInterface(env);
+                response = uaInterface.text;
+                newKeyboard = uaInterface.reply_markup;
             } else {
-                // 如果返回的是字符串，检查是否需要刷新界面
-                response = callbackResult;
-                if (operation === 'toggle' || operation === 'refresh' || operation === 'delete') {
-                    // 刷新UA管理界面
-                    const uaInterface = await showUAManagementInterface(env);
-                    newKeyboard = uaInterface.reply_markup;
-                    response = uaInterface.text;
-                }
+                response = `✅ UA操作: ${operation} ${target}`;
+                // 刷新界面
+                const uaInterface = await showUAManagementInterface(env);
+                newKeyboard = uaInterface.reply_markup;
+                response = uaInterface.text;
             }
         } else if (action === 'blacklist') {
             const callbackResult = await handleBlacklistCallback(operation, target, env);
@@ -1492,21 +1491,17 @@ async function handleCallbackQuery(callbackQuery, env) {
                 }
             }
         } else if (action === 'violations') {
-            const callbackResult = await handleViolationsCallback(operation, target, env);
+            console.log('🔧 处理violations回调:', { operation, target });
 
-            if (typeof callbackResult === 'object' && callbackResult.text) {
-                // 如果返回的是带键盘的对象，直接使用
-                response = callbackResult.text;
-                newKeyboard = callbackResult.reply_markup;
+            // 简化处理逻辑
+            if (operation === 'refresh') {
+                const violationsInterface = await showViolationsManagementInterface(env);
+                response = violationsInterface.text;
+                newKeyboard = violationsInterface.reply_markup;
+            } else if (operation === 'list') {
+                response = `📋 违规列表操作: ${operation}`;
             } else {
-                // 如果返回的是字符串，检查是否需要刷新界面
-                response = callbackResult;
-                if (operation === 'refresh' || operation === 'list') {
-                    // 刷新违规管理界面
-                    const violationsInterface = await showViolationsManagementInterface(env);
-                    newKeyboard = violationsInterface.reply_markup;
-                    response = violationsInterface.text;
-                }
+                response = `✅ 违规操作: ${operation} ${target}`;
             }
         }
 
@@ -1926,27 +1921,27 @@ async function showViolationsManagementInterface(env) {
             [
                 {
                     text: '📋 查看违规列表',
-                    callback_data: 'violations_list_'
+                    callback_data: 'violations_list'
                 },
                 {
                     text: '🚫 手动封禁IP',
-                    callback_data: 'violations_ban_'
+                    callback_data: 'violations_ban'
                 }
             ],
             [
                 {
                     text: '✅ 解除封禁',
-                    callback_data: 'violations_unban_'
+                    callback_data: 'violations_unban'
                 },
                 {
                     text: '🗑️ 清除记录',
-                    callback_data: 'violations_clear_'
+                    callback_data: 'violations_clear'
                 }
             ],
             [
                 {
                     text: '🔄 刷新状态',
-                    callback_data: 'violations_refresh_'
+                    callback_data: 'violations_refresh'
                 }
             ]
         ];
@@ -2026,7 +2021,7 @@ async function showBanIPInterface(env) {
                 [
                     {
                         text: '🔙 返回违规管理',
-                        callback_data: 'violations_refresh_'
+                        callback_data: 'violations_refresh'
                     }
                 ]
             ]
@@ -2054,7 +2049,7 @@ async function showUnbanIPInterface(env) {
                 [
                     {
                         text: '🔙 返回违规管理',
-                        callback_data: 'violations_refresh_'
+                        callback_data: 'violations_refresh'
                     }
                 ]
             ]
@@ -2082,7 +2077,7 @@ async function showClearViolationsInterface(env) {
                 [
                     {
                         text: '🔙 返回违规管理',
-                        callback_data: 'violations_refresh_'
+                        callback_data: 'violations_refresh'
                     }
                 ]
             ]
