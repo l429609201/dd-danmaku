@@ -1570,37 +1570,83 @@ async function handleCallbackQuery(callbackQuery, env) {
                 newKeyboard = uaInterface.reply_markup;
             } else if (operation === 'toggle') {
                 // 处理启用/禁用操作
-                const index = parseInt(target);
+                const configName = target; // target就是配置名称，如"MisakaDanmaku"
                 const uaLimits = getAllUserAgentLimitsFromEnv(env);
-                const uaKeys = Object.keys(uaLimits);
 
-                if (index >= 0 && index < uaKeys.length) {
-                    const key = uaKeys[index];
-                    const config = uaLimits[key];
+                if (uaLimits[configName]) {
+                    const config = uaLimits[configName];
                     config.enabled = !config.enabled;
 
                     // 更新配置
                     const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
 
                     if (result.success) {
-                        response = `✅ UA配置 "${key}" 已${config.enabled ? '启用' : '禁用'}`;
+                        response = `✅ UA配置 "${configName}" 已${config.enabled ? '启用' : '禁用'}`;
                     } else {
                         response = `❌ 更新失败: ${result.error}`;
                     }
                 } else {
-                    response = `❌ 无效的配置索引: ${index}`;
+                    response = `❌ 无效的配置名称: ${configName}`;
                 }
 
                 // 刷新界面
                 const uaInterface = await showUAManagementInterface(env);
                 newKeyboard = uaInterface.reply_markup;
                 response = uaInterface.text;
+            } else if (operation === 'edit') {
+                // 处理编辑操作
+                const configName = target;
+                const uaLimits = getAllUserAgentLimitsFromEnv(env);
+
+                if (uaLimits[configName]) {
+                    const config = uaLimits[configName];
+                    const hourlyLimit = config.hourlyLimit || config.maxRequestsPerHour || 'N/A';
+
+                    response = `✏️ 编辑 ${configName} 配置\n\n` +
+                              `当前配置：\n` +
+                              `• UA字符串: ${config.userAgent || 'N/A'}\n` +
+                              `• 小时限制: ${hourlyLimit}\n` +
+                              `• 状态: ${config.enabled !== false ? '启用' : '禁用'}\n\n` +
+                              `💡 使用以下命令修改：\n` +
+                              `• /ua_edit_ua ${configName} [新UA字符串]\n` +
+                              `• /ua_edit_limit ${configName} [新小时限制]`;
+                } else {
+                    response = `❌ 配置 ${configName} 不存在`;
+                }
+            } else if (operation === 'delete') {
+                // 处理删除操作
+                const configName = target;
+                const uaLimits = getAllUserAgentLimitsFromEnv(env);
+
+                if (uaLimits[configName]) {
+                    if (configName === 'default') {
+                        response = `❌ 不能删除默认配置 'default'`;
+                    } else {
+                        delete uaLimits[configName];
+
+                        // 更新配置
+                        const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
+
+                        if (result.success) {
+                            response = `✅ 已删除UA配置 ${configName}`;
+                            // 刷新界面
+                            const uaInterface = await showUAManagementInterface(env);
+                            newKeyboard = uaInterface.reply_markup;
+                            response = uaInterface.text;
+                        } else {
+                            response = `❌ 删除失败: ${result.error}`;
+                        }
+                    }
+                } else {
+                    response = `❌ 配置 ${configName} 不存在`;
+                }
+            } else if (operation === 'add') {
+                // 处理添加新UA操作
+                const addInterface = await showAddUAInterface(env);
+                response = addInterface.text;
+                newKeyboard = addInterface.reply_markup;
             } else {
-                response = `✅ UA操作: ${operation} ${target}`;
-                // 刷新界面
-                const uaInterface = await showUAManagementInterface(env);
-                newKeyboard = uaInterface.reply_markup;
-                response = uaInterface.text;
+                response = `❓ 未知UA操作: ${operation}`;
             }
         } else if (action === 'blacklist') {
             const callbackResult = await handleBlacklistCallback(operation, target, env);
