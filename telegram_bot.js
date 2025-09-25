@@ -1302,18 +1302,20 @@ async function updateCloudflareEnvVar(env, varName, varValue) {
         const otherBindings = currentSettings.result?.bindings?.filter(b => b.type !== 'plain_text') || [];
         const allBindings = [...updatedEnvVars, ...otherBindings];
 
-        // 4. 更新环境变量
+        // 4. 更新环境变量 - 使用multipart/form-data格式
         const updateUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${workerName}/settings`;
+
+        // 创建FormData对象
+        const formData = new FormData();
+        formData.append('bindings', JSON.stringify(allBindings));
 
         const updateResponse = await fetch(updateUrl, {
             method: 'PATCH',
             headers: {
-                'Authorization': `Bearer ${apiToken}`,
-                'Content-Type': 'application/json'
+                'Authorization': `Bearer ${apiToken}`
+                // 不设置Content-Type，让浏览器自动设置multipart/form-data
             },
-            body: JSON.stringify({
-                bindings: allBindings
-            })
+            body: formData
         });
 
         if (!updateResponse.ok) {
@@ -1594,25 +1596,11 @@ async function handleCallbackQuery(callbackQuery, env) {
                 newKeyboard = uaInterface.reply_markup;
                 response = uaInterface.text;
             } else if (operation === 'edit') {
-                // 处理编辑操作
+                // 处理编辑操作 - 显示编辑界面
                 const configName = target;
-                const uaLimits = getAllUserAgentLimitsFromEnv(env);
-
-                if (uaLimits[configName]) {
-                    const config = uaLimits[configName];
-                    const hourlyLimit = config.hourlyLimit || config.maxRequestsPerHour || 'N/A';
-
-                    response = `✏️ 编辑 ${configName} 配置\n\n` +
-                              `当前配置：\n` +
-                              `• UA字符串: ${config.userAgent || 'N/A'}\n` +
-                              `• 小时限制: ${hourlyLimit}\n` +
-                              `• 状态: ${config.enabled !== false ? '启用' : '禁用'}\n\n` +
-                              `💡 使用以下命令修改：\n` +
-                              `• /ua_edit_ua ${configName} [新UA字符串]\n` +
-                              `• /ua_edit_limit ${configName} [新小时限制]`;
-                } else {
-                    response = `❌ 配置 ${configName} 不存在`;
-                }
+                const editInterface = await showEditUAInterface(configName, env);
+                response = editInterface.text;
+                newKeyboard = editInterface.reply_markup;
             } else if (operation === 'delete') {
                 // 处理删除操作
                 const configName = target;
@@ -1645,8 +1633,128 @@ async function handleCallbackQuery(callbackQuery, env) {
                 const addInterface = await showAddUAInterface(env);
                 response = addInterface.text;
                 newKeyboard = addInterface.reply_markup;
+            } else if (operation === 'edit' && target.startsWith('ua_')) {
+                // 处理编辑UA字符串操作: ua_edit_ua_MisakaDanmaku
+                const configName = target.substring(3); // 移除 "ua_" 前缀
+                response = `✏️ 修改 ${configName} 的UA字符串\n\n` +
+                          `当前UA: ${getAllUserAgentLimitsFromEnv(env)[configName]?.userAgent || 'N/A'}\n\n` +
+                          `请使用以下命令修改：\n` +
+                          `/ua_edit_ua ${configName} [新UA字符串]\n\n` +
+                          `示例: /ua_edit_ua ${configName} "MyApp/2.0"`;
+            } else if (operation === 'edit' && target.startsWith('limit_')) {
+                // 处理编辑小时限制操作: ua_edit_limit_MisakaDanmaku
+                const configName = target.substring(6); // 移除 "limit_" 前缀
+                const config = getAllUserAgentLimitsFromEnv(env)[configName];
+                const currentLimit = config?.hourlyLimit || config?.maxRequestsPerHour || 'N/A';
+                response = `🔢 修改 ${configName} 的小时限制\n\n` +
+                          `当前限制: ${currentLimit}/小时\n\n` +
+                          `请使用以下命令修改：\n` +
+                          `/ua_edit_limit ${configName} [新小时限制]\n\n` +
+                          `示例: /ua_edit_limit ${configName} 200\n` +
+                          `提示: 使用 -1 表示无限制`;
+            } else if (operation === 'edit' && target.startsWith('paths_')) {
+                // 处理管理路径限制操作: ua_edit_paths_MisakaDanmaku
+                const configName = target.substring(6); // 移除 "paths_" 前缀
+                const pathInterface = await showPathLimitsInterface(configName, env);
+                response = pathInterface.text;
+                newKeyboard = pathInterface.reply_markup;
+            } else if (operation === 'path') {
+                // 处理路径限制相关操作: ua_path_edit_MisakaDanmaku_0, ua_path_delete_MisakaDanmaku_0, ua_path_add_MisakaDanmaku
+                const pathParts = target.split('_');
+                const pathOperation = pathParts[0]; // edit, delete, add
+                const configName = pathParts.slice(1, -1).join('_'); // 配置名称（可能包含下划线）
+                const pathIndex = pathParts[pathParts.length - 1]; // 路径索引（对于add操作，这里是配置名的一部分）
+
+                if (pathOperation === 'add') {
+                    // 添加新路径限制: ua_path_add_MisakaDanmaku
+                    const actualConfigName = pathParts.slice(1).join('_');
+                    response = `➕ 为 ${actualConfigName} 添加路径限制\n\n` +
+                              `请使用以下命令添加：\n` +
+                              `/ua_path_add ${actualConfigName} [路径] [小时限制]\n\n` +
+                              `📝 示例:\n` +
+                              `• /ua_path_add ${actualConfigName} "/api/v2/comment" 25\n` +
+                              `• /ua_path_add ${actualConfigName} "/api/v2/search" 50\n\n` +
+                              `💡 说明:\n` +
+                              `• 路径必须以 / 开头\n` +
+                              `• 小时限制为数字，-1表示无限制`;
+                } else if (pathOperation === 'edit') {
+                    // 编辑路径限制: ua_path_edit_MisakaDanmaku_0
+                    const index = parseInt(pathIndex);
+                    const uaLimits = getAllUserAgentLimitsFromEnv(env);
+                    const config = uaLimits[configName];
+
+                    if (config) {
+                        let pathLimits = [];
+                        if (config.pathSpecificLimits) {
+                            pathLimits = Object.entries(config.pathSpecificLimits);
+                        } else if (config.pathLimits) {
+                            pathLimits = config.pathLimits.map(p => [p.path, p.maxRequestsPerHour || p.limit]);
+                        }
+
+                        if (index >= 0 && index < pathLimits.length) {
+                            const [path, limit] = pathLimits[index];
+                            response = `✏️ 编辑 ${configName} 的路径限制\n\n` +
+                                      `当前配置:\n` +
+                                      `• 路径: ${path}\n` +
+                                      `• 限制: ${limit}/小时\n\n` +
+                                      `请使用以下命令修改：\n` +
+                                      `/ua_path_edit ${configName} ${index} [新路径] [新限制]\n\n` +
+                                      `示例: /ua_path_edit ${configName} ${index} "/api/v2/new" 100`;
+                        } else {
+                            response = `❌ 路径索引 ${index} 无效`;
+                        }
+                    } else {
+                        response = `❌ 配置 ${configName} 不存在`;
+                    }
+                } else if (pathOperation === 'delete') {
+                    // 删除路径限制: ua_path_delete_MisakaDanmaku_0
+                    const index = parseInt(pathIndex);
+                    const uaLimits = getAllUserAgentLimitsFromEnv(env);
+                    const config = uaLimits[configName];
+
+                    if (config) {
+                        let pathLimits = [];
+                        let isPathSpecificLimits = false;
+
+                        if (config.pathSpecificLimits && Object.keys(config.pathSpecificLimits).length > 0) {
+                            pathLimits = Object.entries(config.pathSpecificLimits);
+                            isPathSpecificLimits = true;
+                        } else if (config.pathLimits && Array.isArray(config.pathLimits)) {
+                            pathLimits = config.pathLimits.map((p, i) => [p.path, p.maxRequestsPerHour || p.limit, i]);
+                        }
+
+                        if (index >= 0 && index < pathLimits.length) {
+                            const pathToDelete = pathLimits[index][0];
+
+                            // 删除路径限制
+                            if (isPathSpecificLimits) {
+                                delete config.pathSpecificLimits[pathToDelete];
+                            } else {
+                                config.pathLimits.splice(index, 1);
+                            }
+
+                            // 更新配置
+                            const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
+
+                            if (result.success) {
+                                // 刷新路径管理界面
+                                const pathInterface = await showPathLimitsInterface(configName, env);
+                                response = pathInterface.text;
+                                newKeyboard = pathInterface.reply_markup;
+                            } else {
+                                response = `❌ 删除失败: ${result.error}`;
+                            }
+                        } else {
+                            response = `❌ 路径索引 ${index} 无效`;
+                        }
+                    } else {
+                        response = `❌ 配置 ${configName} 不存在`;
+                    }
+                } else {
+                    response = `❓ 未知路径操作: ${pathOperation}`;
+                }
             } else {
-                response = `❓ 未知UA操作: ${operation}`;
+                response = `❓ 未知UA操作: ${operation} ${target}`;
             }
         } else if (action === 'blacklist') {
             const callbackResult = await handleBlacklistCallback(operation, target, env);
@@ -2434,6 +2542,189 @@ async function showAddIPInterface(env) {
                     }
                 ]
             ]
+        }
+    };
+}
+
+// 显示编辑UA界面
+async function showEditUAInterface(configName, env) {
+    const uaLimits = getAllUserAgentLimitsFromEnv(env);
+
+    if (!uaLimits[configName]) {
+        return {
+            text: `❌ 配置 ${configName} 不存在`,
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        {
+                            text: '🔙 返回UA管理',
+                            callback_data: 'ua_refresh'
+                        }
+                    ]
+                ]
+            }
+        };
+    }
+
+    const config = uaLimits[configName];
+    const hourlyLimit = config.hourlyLimit || config.maxRequestsPerHour || 'N/A';
+
+    let message = `✏️ 编辑 ${configName} 配置\n\n`;
+    message += `当前配置：\n`;
+    message += `• UA字符串: ${config.userAgent || 'N/A'}\n`;
+    message += `• 小时限制: ${hourlyLimit}\n`;
+    message += `• 状态: ${config.enabled !== false ? '启用' : '禁用'}\n`;
+
+    // 显示路径特定限制
+    let hasPathLimits = false;
+    if (config.pathSpecificLimits && Object.keys(config.pathSpecificLimits).length > 0) {
+        message += `\n路径限制：\n`;
+        Object.entries(config.pathSpecificLimits).forEach(([path, limit]) => {
+            message += `- 路径：${path}     小时限制：${limit}\n`;
+        });
+        hasPathLimits = true;
+    } else if (config.pathLimits && Array.isArray(config.pathLimits) && config.pathLimits.length > 0) {
+        message += `\n路径限制：\n`;
+        config.pathLimits.forEach(pathLimit => {
+            const limit = pathLimit.maxRequestsPerHour || 'N/A';
+            message += `- 路径：${pathLimit.path}     小时限制：${limit}\n`;
+        });
+        hasPathLimits = true;
+    }
+
+    if (!hasPathLimits) {
+        message += `\n路径限制：无\n`;
+    }
+
+    // 创建内联键盘
+    const keyboard = [
+        [
+            {
+                text: '✏️ 修改UA字符串',
+                callback_data: `ua_edit_ua_${configName}`
+            }
+        ],
+        [
+            {
+                text: '🔢 修改小时限制',
+                callback_data: `ua_edit_limit_${configName}`
+            }
+        ],
+        [
+            {
+                text: '🛣️ 管理路径限制',
+                callback_data: `ua_edit_paths_${configName}`
+            }
+        ],
+        [
+            {
+                text: config.enabled !== false ? '❌ 禁用配置' : '✅ 启用配置',
+                callback_data: `ua_toggle_${configName}`
+            }
+        ],
+        [
+            {
+                text: '🔙 返回UA管理',
+                callback_data: 'ua_refresh'
+            }
+        ]
+    ];
+
+    return {
+        text: message,
+        reply_markup: {
+            inline_keyboard: keyboard
+        }
+    };
+}
+
+// 显示路径限制管理界面
+async function showPathLimitsInterface(configName, env) {
+    const uaLimits = getAllUserAgentLimitsFromEnv(env);
+
+    if (!uaLimits[configName]) {
+        return {
+            text: `❌ 配置 ${configName} 不存在`,
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        {
+                            text: '🔙 返回编辑界面',
+                            callback_data: `ua_edit_${configName}`
+                        }
+                    ]
+                ]
+            }
+        };
+    }
+
+    const config = uaLimits[configName];
+    let message = `🛣️ ${configName} 路径限制管理\n\n`;
+
+    // 显示当前路径限制
+    let pathLimits = [];
+    if (config.pathSpecificLimits && Object.keys(config.pathSpecificLimits).length > 0) {
+        pathLimits = Object.entries(config.pathSpecificLimits).map(([path, limit]) => ({
+            path,
+            limit
+        }));
+    } else if (config.pathLimits && Array.isArray(config.pathLimits) && config.pathLimits.length > 0) {
+        pathLimits = config.pathLimits.map(pathLimit => ({
+            path: pathLimit.path,
+            limit: pathLimit.maxRequestsPerHour || pathLimit.limit
+        }));
+    }
+
+    if (pathLimits.length > 0) {
+        message += `当前路径限制 (${pathLimits.length}个)：\n\n`;
+        pathLimits.forEach((pathLimit, index) => {
+            message += `${index + 1}. 路径：${pathLimit.path}\n`;
+            message += `   限制：${pathLimit.limit}/小时\n\n`;
+        });
+    } else {
+        message += `当前无路径限制\n\n`;
+    }
+
+    message += `💡 管理操作：`;
+
+    // 创建内联键盘
+    const keyboard = [];
+
+    // 为每个现有路径限制创建编辑和删除按钮
+    pathLimits.forEach((pathLimit, index) => {
+        const num = index + 1;
+        keyboard.push([
+            {
+                text: `✏️ 编辑路径${num}`,
+                callback_data: `ua_path_edit_${configName}_${index}`
+            },
+            {
+                text: `🗑️ 删除路径${num}`,
+                callback_data: `ua_path_delete_${configName}_${index}`
+            }
+        ]);
+    });
+
+    // 添加新路径按钮
+    keyboard.push([
+        {
+            text: '➕ 添加新路径限制',
+            callback_data: `ua_path_add_${configName}`
+        }
+    ]);
+
+    // 返回按钮
+    keyboard.push([
+        {
+            text: '🔙 返回编辑界面',
+            callback_data: `ua_edit_${configName}`
+        }
+    ]);
+
+    return {
+        text: message,
+        reply_markup: {
+            inline_keyboard: keyboard
         }
     };
 }
