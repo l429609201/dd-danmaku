@@ -511,29 +511,70 @@ async function getMainMenu(env) {
     try {
         const domain = env.WORKER_DOMAIN || 'https://your-worker.workers.dev';
 
-        let menu = `🎛️ 系统管理控制台\n\n`;
+        let menu = `🎛️ **系统管理控制台**\n\n`;
         menu += `🌐 服务域名: ${domain}\n\n`;
-        menu += `请选择要执行的操作：\n\n`;
+        menu += `请选择要执行的操作：`;
 
-        menu += `📊 **系统监控**\n`;
-        menu += `• /status - 查看系统运行状态\n`;
-        menu += `• /logs - 查看系统日志记录\n\n`;
+        // 创建内联键盘
+        const keyboard = [
+            // 系统监控行
+            [
+                {
+                    text: '📊 系统状态',
+                    callback_data: 'menu_status'
+                },
+                {
+                    text: '📝 系统日志',
+                    callback_data: 'menu_logs'
+                }
+            ],
+            // 安全管理行
+            [
+                {
+                    text: '⚠️ IP违规管理',
+                    callback_data: 'menu_violations'
+                },
+                {
+                    text: '🚫 IP黑名单',
+                    callback_data: 'menu_blacklist'
+                }
+            ],
+            [
+                {
+                    text: '👤 UA配置管理',
+                    callback_data: 'menu_ua'
+                },
+                {
+                    text: '📈 路径满载监控',
+                    callback_data: 'menu_pathload'
+                }
+            ],
+            // 系统信息行
+            [
+                {
+                    text: '🔧 详细配置信息',
+                    callback_data: 'menu_api'
+                },
+                {
+                    text: '📖 命令帮助',
+                    callback_data: 'menu_help'
+                }
+            ],
+            // 刷新按钮
+            [
+                {
+                    text: '🔄 刷新菜单',
+                    callback_data: 'menu_refresh'
+                }
+            ]
+        ];
 
-        menu += `⚠️ **安全管理**\n`;
-        menu += `• /violations - IP违规记录管理\n`;
-        menu += `• /blacklist - IP黑名单管理\n`;
-        menu += `• /ua - UA配置管理\n\n`;
-
-        menu += `📈 **性能监控**\n`;
-        menu += `• /pathload - 路径满载监控\n\n`;
-
-        menu += `🔧 **系统信息**\n`;
-        menu += `• /api - 查看详细配置信息\n`;
-        menu += `• /help - 查看命令帮助\n\n`;
-
-        menu += `💡 点击命令或直接输入命令使用`;
-
-        return menu;
+        return {
+            text: menu,
+            reply_markup: {
+                inline_keyboard: keyboard
+            }
+        };
     } catch (error) {
         return `❌ 获取主菜单失败: ${error.message}`;
     }
@@ -914,20 +955,42 @@ async function manageUA(args, env) {
 async function getStartMessage(env) {
     const domain = env.WORKER_DOMAIN || 'https://your-worker.workers.dev';
 
-    let message = `🤖 dandanplay跨域代理管理机器人\n\n`;
+    let message = `🤖 **dandanplay跨域代理管理机器人**\n\n`;
     message += `🌐 服务域名: ${domain}\n\n`;
     message += `📋 **主要功能**\n`;
     message += `📊 系统监控 - 实时查看系统状态和日志\n`;
     message += `⚠️ IP管理 - 违规记录和自动封禁管理\n`;
     message += `📈 性能监控 - 路径满载检测和优化\n`;
     message += `🛡️ 安全配置 - 黑名单和UA限制管理\n\n`;
-    message += `💡 **快速开始**\n`;
-    message += `• 使用 /menu 查看功能菜单\n`;
-    message += `• 使用 /status 查看系统状态\n`;
-    message += `• 使用 /help 查看详细帮助\n\n`;
-    message += `🔧 专业的系统管理和监控工具`;
+    message += `🔧 专业的系统管理和监控工具\n\n`;
+    message += `点击下方按钮开始使用：`;
 
-    return message;
+    // 创建快速开始内联键盘
+    const keyboard = [
+        [
+            {
+                text: '📋 功能菜单',
+                callback_data: 'menu_refresh'
+            },
+            {
+                text: '📊 系统状态',
+                callback_data: 'menu_status'
+            }
+        ],
+        [
+            {
+                text: '📖 使用帮助',
+                callback_data: 'menu_help'
+            }
+        ]
+    ];
+
+    return {
+        text: message,
+        reply_markup: {
+            inline_keyboard: keyboard
+        }
+    };
 }
 
 async function setupBotCommands(env) {
@@ -1531,7 +1594,39 @@ async function handleCallbackQuery(callbackQuery, env) {
             } else {
                 response = `✅ 违规操作: ${operation} ${target}`;
             }
+        } else if (action === 'menu') {
+            console.log('🔧 处理菜单回调:', { operation, target });
 
+            // 处理主菜单回调
+            if (operation === 'refresh') {
+                const mainMenu = await getMainMenu(env);
+                response = mainMenu.text;
+                newKeyboard = mainMenu.reply_markup;
+            } else if (operation === 'status') {
+                response = await getSystemStatus(env);
+            } else if (operation === 'logs') {
+                response = await getSystemLogs([], env);
+            } else if (operation === 'violations') {
+                const violationsInterface = await showViolationsManagementInterface(env);
+                response = violationsInterface.text;
+                newKeyboard = violationsInterface.reply_markup;
+            } else if (operation === 'blacklist') {
+                const blacklistInterface = await showBlacklistManagementInterface(env);
+                response = blacklistInterface.text;
+                newKeyboard = blacklistInterface.reply_markup;
+            } else if (operation === 'ua') {
+                const uaInterface = await showUAManagementInterface(env);
+                response = uaInterface.text;
+                newKeyboard = uaInterface.reply_markup;
+            } else if (operation === 'pathload') {
+                response = await managePathLoad(['list'], env);
+            } else if (operation === 'api') {
+                response = await getApiMenu(env);
+            } else if (operation === 'help') {
+                response = await processCommand('/help', [], env);
+            } else {
+                response = `✅ 菜单操作: ${operation}`;
+            }
         } else {
             console.log('❓ 未知回调数据:', callbackData);
             response = `❓ 未知操作: ${callbackData}`;
