@@ -486,6 +486,9 @@ async function processCommand(text, env) {
         case '/ua_edit_limit':
             return await editUALimit(args, env);
 
+        case '/ua_edit_path':
+            return await editUAPathLimit(args, env);
+
         case '/blacklist_add':
             return await addNewIPToBlacklist(args, env);
 
@@ -1044,6 +1047,20 @@ function getUserAgentLimitsFromEnv(env) {
     }
 }
 
+// 获取所有UA配置（包括禁用的）
+function getAllUserAgentLimitsFromEnv(env) {
+    if (!env.USER_AGENT_LIMITS_CONFIG) {
+        return {};
+    }
+
+    try {
+        return JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
+    } catch (error) {
+        console.error('解析UA限制配置失败:', error);
+        return {};
+    }
+}
+
 async function addIpToBlacklist(ip, env) {
     try {
         const currentBlacklist = getIpBlacklistFromEnv(env);
@@ -1259,7 +1276,7 @@ async function updateCloudflareEnvVar(env, varName, varValue) {
 // UA管理界面
 async function showUAManagementInterface(env) {
     try {
-        const uaLimits = getUserAgentLimitsFromEnv(env);
+        const uaLimits = getAllUserAgentLimitsFromEnv(env);
         const uaKeys = Object.keys(uaLimits);
 
         let message = `👤 UA配置管理\n\n`;
@@ -1274,7 +1291,15 @@ async function showUAManagementInterface(env) {
                 const userAgent = config.userAgent || 'N/A';
                 message += `${index + 1}. ${status} **${key}**\n`;
                 message += `   UA: \`${userAgent}\`\n`;
-                message += `   限制: ${config.hourlyLimit || 'N/A'}/小时\n\n`;
+                message += `   限制: ${config.hourlyLimit || 'N/A'}/小时\n`;
+
+                // 显示路径特定限制
+                if (config.pathSpecificLimits && Object.keys(config.pathSpecificLimits).length > 0) {
+                    Object.entries(config.pathSpecificLimits).forEach(([path, limit]) => {
+                        message += `   - 路径 \`${path}\`: ${limit}/小时\n`;
+                    });
+                }
+                message += `\n`;
             });
         }
 
@@ -1411,7 +1436,9 @@ async function handleCallbackQuery(callbackQuery, env) {
     const userId = callbackQuery.from.id;
 
     console.log('🔘 收到回调查询:', callbackData);
-    logToBot('info', 'TG机器人收到回调查询', { callbackData, userId });
+    console.log('👤 回调用户ID:', userId);
+    console.log('💬 回调聊天ID:', chatId);
+    logToBot('info', 'TG机器人收到回调查询', { callbackData, userId, chatId });
 
     try {
         let response = '';
@@ -1422,6 +1449,8 @@ async function handleCallbackQuery(callbackQuery, env) {
         const action = parts[0];
         const operation = parts[1];
         const target = parts.slice(2).join('_'); // 支持包含下划线的目标名称
+
+        console.log('🔍 回调数据解析:', { parts, action, operation, target });
 
         if (action === 'ua') {
             const callbackResult = await handleUACallback(operation, target, env);
@@ -1488,7 +1517,7 @@ async function handleUACallback(operation, target, env) {
             if (!target) {
                 return `❌ 缺少目标配置名称`;
             }
-            const uaLimits = getUserAgentLimitsFromEnv(env);
+            const uaLimits = getAllUserAgentLimitsFromEnv(env);
             if (!uaLimits[target]) {
                 return `❌ UA配置 ${target} 不存在`;
             }
@@ -1617,16 +1646,28 @@ async function editUAConfig(name, env) {
 
         const config = currentLimits[name];
 
-        return `✏️ **编辑 ${name} 配置**\n\n` +
-               `当前配置：\n` +
-               `• UA字符串: \`${config.userAgent || 'N/A'}\`\n` +
-               `• 小时限制: ${config.hourlyLimit || 'N/A'}\n` +
-               `• 路径限制: ${config.pathSpecificLimits ? Object.keys(config.pathSpecificLimits).length : 0} 个\n` +
-               `• 状态: ${config.enabled !== false ? '启用' : '禁用'}\n\n` +
-               `💡 使用以下命令修改：\n` +
-               `• /ua_edit_ua ${name} [新UA字符串]\n` +
-               `• /ua_edit_limit ${name} [新小时限制]\n` +
-               `• /ua_edit_path ${name} [路径] [限制]`;
+        let details = `✏️ **编辑 ${name} 配置**\n\n` +
+                     `当前配置：\n` +
+                     `• UA字符串: \`${config.userAgent || 'N/A'}\`\n` +
+                     `• 小时限制: ${config.hourlyLimit || 'N/A'}\n` +
+                     `• 状态: ${config.enabled !== false ? '启用' : '禁用'}\n`;
+
+        // 显示路径特定限制
+        if (config.pathSpecificLimits && Object.keys(config.pathSpecificLimits).length > 0) {
+            details += `• 路径限制 (${Object.keys(config.pathSpecificLimits).length}个):\n`;
+            Object.entries(config.pathSpecificLimits).forEach(([path, limit]) => {
+                details += `  - \`${path}\`: ${limit}/小时\n`;
+            });
+        } else {
+            details += `• 路径限制: 无\n`;
+        }
+
+        details += `\n💡 使用以下命令修改：\n` +
+                  `• /ua_edit_ua ${name} [新UA字符串]\n` +
+                  `• /ua_edit_limit ${name} [新小时限制]\n` +
+                  `• /ua_edit_path ${name} [路径] [限制]`;
+
+        return details;
 
     } catch (error) {
         return `❌ 获取UA配置失败: ${error.message}`;
@@ -1804,6 +1845,55 @@ async function addNewIPToBlacklist(args, env) {
     }
 
     return await addIpToBlacklist(ip, env);
+}
+
+// 编辑UA路径限制
+async function editUAPathLimit(args, env) {
+    const [name, path, newLimit] = args;
+
+    if (!name || !path || !newLimit) {
+        return `❌ 使用格式: /ua_edit_path [名称] [路径] [新限制]\n\n` +
+               `📝 示例: /ua_edit_path MisakaTest "/api/v2/comment" 20`;
+    }
+
+    const limitNumber = parseInt(newLimit);
+    if (isNaN(limitNumber) || limitNumber <= 0) {
+        return `❌ 路径限制必须是大于0的数字`;
+    }
+
+    try {
+        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
+
+        if (!currentLimits[name]) {
+            return `❌ UA配置 ${name} 不存在`;
+        }
+
+        // 初始化路径限制对象
+        if (!currentLimits[name].pathSpecificLimits) {
+            currentLimits[name].pathSpecificLimits = {};
+        }
+
+        const oldLimit = currentLimits[name].pathSpecificLimits[path];
+        currentLimits[name].pathSpecificLimits[path] = limitNumber;
+
+        // 调用Cloudflare API更新环境变量
+        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
+
+        logToBot('info', 'UA路径限制编辑请求', {
+            name,
+            path,
+            oldLimit,
+            newLimit: limitNumber,
+            cloudflareResult: updateResult
+        });
+
+        return updateResult.success ?
+            `✅ 已更新 ${name} 的路径限制\n• 路径: ${path}\n• 旧值: ${oldLimit || '无'}\n• 新值: ${limitNumber}` :
+            `❌ 更新失败: ${updateResult.error}`;
+
+    } catch (error) {
+        return `❌ 编辑UA路径限制失败: ${error.message}`;
+    }
 }
 
 // 获取IP详细信息
