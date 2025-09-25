@@ -1346,8 +1346,14 @@ async function updateCloudflareEnvVar(env, varName, varValue) {
 // UA管理界面
 async function showUAManagementInterface(env) {
     try {
+        console.log('🔧 开始获取UA配置...');
+        console.log('📋 环境变量USER_AGENT_LIMITS_CONFIG:', env.USER_AGENT_LIMITS_CONFIG);
+
         const uaLimits = getAllUserAgentLimitsFromEnv(env);
+        console.log('📋 解析后的UA配置:', uaLimits);
+
         const uaKeys = Object.keys(uaLimits);
+        console.log('📋 UA配置键列表:', uaKeys);
 
         let message = `👤 UA配置管理\n\n`;
 
@@ -1419,6 +1425,8 @@ async function showUAManagementInterface(env) {
         };
 
     } catch (error) {
+        console.error('❌ showUAManagementInterface异常:', error);
+        console.error('❌ 异常堆栈:', error.stack);
         return `❌ 获取UA配置失败: ${error.message}`;
     }
 }
@@ -1515,8 +1523,12 @@ async function handleCallbackQuery(callbackQuery, env) {
         let response = '';
         let newKeyboard = null;
 
+        console.log('🔍 开始解析回调数据:', callbackData);
+
         // 解析回调数据
         const parts = callbackData.split('_');
+        console.log('🔍 分割结果:', parts);
+
         const action = parts[0];
         const operation = parts[1];
         const target = parts.slice(2).join('_') || ''; // 支持包含下划线的目标名称，允许为空
@@ -1615,9 +1627,17 @@ async function handleCallbackQuery(callbackQuery, env) {
                 response = blacklistInterface.text;
                 newKeyboard = blacklistInterface.reply_markup;
             } else if (operation === 'ua') {
+                console.log('🔧 开始调用showUAManagementInterface...');
                 const uaInterface = await showUAManagementInterface(env);
-                response = uaInterface.text;
-                newKeyboard = uaInterface.reply_markup;
+                console.log('🔧 showUAManagementInterface返回结果:', typeof uaInterface, uaInterface);
+
+                if (typeof uaInterface === 'string') {
+                    // 如果返回的是错误字符串
+                    response = uaInterface;
+                } else {
+                    response = uaInterface.text;
+                    newKeyboard = uaInterface.reply_markup;
+                }
             } else if (operation === 'pathload') {
                 response = await managePathLoad(['list'], env);
             } else if (operation === 'api') {
@@ -1752,10 +1772,12 @@ async function handleBlacklistCallback(operation, target, env) {
 
 // 回答回调查询
 async function answerCallbackQuery(callbackQueryId, text, env) {
+    console.log('🔧 开始回答回调查询:', { callbackQueryId, text });
+
     const url = `https://api.telegram.org/bot${env.TG_BOT_TOKEN}/answerCallbackQuery`;
 
     try {
-        await fetch(url, {
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1764,6 +1786,13 @@ async function answerCallbackQuery(callbackQueryId, text, env) {
                 show_alert: false
             })
         });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('回答回调查询API错误:', response.status, errorText);
+        } else {
+            console.log('✅ 回调查询回答成功');
+        }
     } catch (error) {
         console.error('回答回调查询失败:', error);
     }
@@ -1771,10 +1800,12 @@ async function answerCallbackQuery(callbackQueryId, text, env) {
 
 // 编辑消息和键盘
 async function editMessageWithKeyboard(chatId, messageId, text, keyboard, env) {
+    console.log('🔧 开始编辑消息:', { chatId, messageId, textLength: text.length, keyboardRows: keyboard?.inline_keyboard?.length });
+
     const url = `https://api.telegram.org/bot${env.TG_BOT_TOKEN}/editMessageText`;
 
     try {
-        await fetch(url, {
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1785,6 +1816,13 @@ async function editMessageWithKeyboard(chatId, messageId, text, keyboard, env) {
                 reply_markup: keyboard
             })
         });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('编辑消息API错误:', response.status, errorText);
+        } else {
+            console.log('✅ 消息编辑成功');
+        }
     } catch (error) {
         console.error('编辑消息失败:', error);
     }
