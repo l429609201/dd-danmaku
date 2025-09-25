@@ -390,6 +390,7 @@ export async function handleTelegramWebhook(request, env) {
             if (typeof response === 'object' && response.text) {
                 console.log('📤 准备发送带键盘回复，长度:', response.text.length);
                 const sendResult = await sendTelegramMessage(chatId, response.text, env, {
+                    parse_mode: 'Markdown',
                     reply_markup: response.reply_markup
                 });
                 if (sendResult.success) {
@@ -460,7 +461,11 @@ async function processCommand(text, env) {
             return await getSystemLogs(args);
 
         case '/violations':
-            return await manageViolations(args, env);
+            if (args.length === 0) {
+                return await showViolationsManagementInterface(env);
+            } else {
+                return await manageViolations(args, env);
+            }
 
         case '/pathload':
             return await managePathLoad(args, env);
@@ -1306,7 +1311,7 @@ async function showUAManagementInterface(env) {
         // 创建内联键盘
         const keyboard = [];
 
-        // 为每个UA配置创建按钮行（使用序号）
+        // 为每个UA配置创建按钮行（使用索引参数）
         uaKeys.forEach((key, index) => {
             const config = uaLimits[key];
             const isEnabled = config.enabled !== false;
@@ -1315,15 +1320,15 @@ async function showUAManagementInterface(env) {
             const row = [
                 {
                     text: isEnabled ? `❌ 禁用 ${num}` : `✅ 启用 ${num}`,
-                    callback_data: `ua_toggle_${key}`
+                    callback_data: `ua_toggle_${index}`
                 },
                 {
                     text: `✏️ 编辑 ${num}`,
-                    callback_data: `ua_edit_${key}`
+                    callback_data: `ua_edit_${index}`
                 },
                 {
                     text: `🗑️ 删除 ${num}`,
-                    callback_data: `ua_delete_${key}`
+                    callback_data: `ua_delete_${index}`
                 }
             ];
             keyboard.push(row);
@@ -1373,18 +1378,18 @@ async function showBlacklistManagementInterface(env) {
         // 创建内联键盘
         const keyboard = [];
 
-        // 为每个IP创建按钮行（限制显示数量避免消息过长，使用序号）
+        // 为每个IP创建按钮行（限制显示数量避免消息过长，使用索引参数）
         const displayLimit = 10;
         blacklist.slice(0, displayLimit).forEach((ip, index) => {
             const num = index + 1;
             const row = [
                 {
                     text: `🗑️ 移除 ${num}`,
-                    callback_data: `blacklist_remove_${ip}`
+                    callback_data: `blacklist_remove_${index}`
                 },
                 {
                     text: `📊 详情 ${num}`,
-                    callback_data: `blacklist_info_${ip}`
+                    callback_data: `blacklist_info_${index}`
                 }
             ];
             keyboard.push(row);
@@ -1486,6 +1491,23 @@ async function handleCallbackQuery(callbackQuery, env) {
                     response = blacklistInterface.text;
                 }
             }
+        } else if (action === 'violations') {
+            const callbackResult = await handleViolationsCallback(operation, target, env);
+
+            if (typeof callbackResult === 'object' && callbackResult.text) {
+                // 如果返回的是带键盘的对象，直接使用
+                response = callbackResult.text;
+                newKeyboard = callbackResult.reply_markup;
+            } else {
+                // 如果返回的是字符串，检查是否需要刷新界面
+                response = callbackResult;
+                if (operation === 'refresh' || operation === 'list') {
+                    // 刷新违规管理界面
+                    const violationsInterface = await showViolationsManagementInterface(env);
+                    newKeyboard = violationsInterface.reply_markup;
+                    response = violationsInterface.text;
+                }
+            }
         }
 
         // 回答回调查询
@@ -1496,9 +1518,13 @@ async function handleCallbackQuery(callbackQuery, env) {
             await editMessageWithKeyboard(chatId, messageId, response, newKeyboard, env);
         } else {
             // 发送新消息
-            await sendTelegramMessage(chatId, response, env);
+            await sendTelegramMessage(chatId, response, env, {
+                parse_mode: 'Markdown'
+            });
         }
 
+        // 必须回答回调查询，否则用户会看到持续的加载状态
+        await answerCallbackQuery(callbackQuery.id, '操作完成', env);
         return new Response('OK');
 
     } catch (error) {
@@ -1514,34 +1540,35 @@ async function handleUACallback(operation, target, env) {
 
     switch (operation) {
         case 'toggle':
-            if (!target) {
-                return `❌ 缺少目标配置名称`;
-            }
-            const uaLimits = getAllUserAgentLimitsFromEnv(env);
-            if (!uaLimits[target]) {
-                return `❌ UA配置 ${target} 不存在`;
-            }
-
-            const isEnabled = uaLimits[target].enabled !== false;
-            if (isEnabled) {
-                const result = await disableUAConfig(target, env);
-                return result.success ? `✅ 已禁用 ${target}` : `❌ 禁用失败: ${result.error}`;
-            } else {
-                const result = await enableUAConfig(target, env);
-                return result.success ? `✅ 已启用 ${target}` : `❌ 启用失败: ${result.error}`;
-            }
-
         case 'edit':
-            if (!target) {
-                return `❌ 缺少目标配置名称`;
-            }
-            return await editUAConfig(target, env);
-
         case 'delete':
-            if (!target) {
-                return `❌ 缺少目标配置名称`;
+            // 通过索引获取配置名称
+            const uaLimits = getAllUserAgentLimitsFromEnv(env);
+            const uaKeys = Object.keys(uaLimits);
+            const targetIndex = parseInt(target);
+
+            if (isNaN(targetIndex) || targetIndex < 0 || targetIndex >= uaKeys.length) {
+                return `❌ 无效的配置索引: ${target}`;
             }
-            return await deleteUAConfig(target, env);
+
+            const configName = uaKeys[targetIndex];
+            console.log('🎯 通过索引找到配置:', { targetIndex, configName });
+
+            if (operation === 'toggle') {
+                const isEnabled = uaLimits[configName].enabled !== false;
+                if (isEnabled) {
+                    const result = await disableUAConfig(configName, env);
+                    return result.success ? `✅ 已禁用 ${configName}` : `❌ 禁用失败: ${result.error}`;
+                } else {
+                    const result = await enableUAConfig(configName, env);
+                    return result.success ? `✅ 已启用 ${configName}` : `❌ 启用失败: ${result.error}`;
+                }
+            } else if (operation === 'edit') {
+                return await editUAConfig(configName, env);
+            } else if (operation === 'delete') {
+                return await deleteUAConfig(configName, env);
+            }
+            break;
 
         case 'add':
             return await showAddUAInterface(env);
@@ -1560,19 +1587,27 @@ async function handleBlacklistCallback(operation, target, env) {
 
     switch (operation) {
         case 'remove':
-            if (!target) {
-                return `❌ 缺少目标IP地址`;
-            }
-            const result = await removeIpFromBlacklist(target, env);
-            return result.success ?
-                `✅ 已从黑名单移除 ${target}` :
-                `❌ 移除失败: ${result.error}`;
-
         case 'info':
-            if (!target) {
-                return `❌ 缺少目标IP地址`;
+            // 通过索引获取IP地址
+            const blacklist = getIpBlacklistFromEnv(env);
+            const targetIndex = parseInt(target);
+
+            if (isNaN(targetIndex) || targetIndex < 0 || targetIndex >= blacklist.length) {
+                return `❌ 无效的IP索引: ${target}`;
             }
-            return await getIPDetails(target, env);
+
+            const ipAddress = blacklist[targetIndex];
+            console.log('🎯 通过索引找到IP:', { targetIndex, ipAddress });
+
+            if (operation === 'remove') {
+                const result = await removeIpFromBlacklist(ipAddress, env);
+                return result.success ?
+                    `✅ 已从黑名单移除 ${ipAddress}` :
+                    `❌ 移除失败: ${result.error}`;
+            } else if (operation === 'info') {
+                return await getIPDetails(ipAddress, env);
+            }
+            break;
 
         case 'add':
             return await showAddIPInterface(env);
@@ -1627,6 +1662,7 @@ async function editMessageWithKeyboard(chatId, messageId, text, keyboard, env) {
                 chat_id: chatId,
                 message_id: messageId,
                 text: text,
+                parse_mode: 'Markdown',
                 reply_markup: keyboard
             })
         });
@@ -1845,6 +1881,213 @@ async function addNewIPToBlacklist(args, env) {
     }
 
     return await addIpToBlacklist(ip, env);
+}
+
+// 违规管理界面
+async function showViolationsManagementInterface(env) {
+    try {
+        let message = `⚠️ **IP违规管理**\n\n`;
+
+        // 显示当前违规记录统计
+        const violationCount = ipViolationStorage.violations.size;
+        message += `当前违规记录: ${violationCount} 个IP\n\n`;
+
+        if (violationCount > 0) {
+            // 显示前5个违规IP的简要信息
+            let count = 0;
+            for (const [ip, record] of ipViolationStorage.violations.entries()) {
+                if (count >= 5) break;
+
+                const now = Date.now();
+                const status = record.banned ?
+                    (record.banExpiry && now < record.banExpiry ?
+                        `🚫 已封禁 (${Math.ceil((record.banExpiry - now) / (60 * 60 * 1000))}小时后解封)` :
+                        `🚫 已封禁`) :
+                    `⚠️ 违规${record.count}次`;
+
+                message += `• \`${ip}\`: ${status}\n`;
+                count++;
+            }
+
+            if (violationCount > 5) {
+                message += `• ... 还有 ${violationCount - 5} 个IP\n`;
+            }
+            message += `\n`;
+        }
+
+        message += `📋 **管理功能:**\n`;
+        message += `• 查看完整违规IP列表\n`;
+        message += `• 手动封禁IP地址\n`;
+        message += `• 解除IP封禁\n`;
+        message += `• 清除违规记录\n`;
+
+        // 创建内联键盘
+        const keyboard = [
+            [
+                {
+                    text: '📋 查看违规列表',
+                    callback_data: 'violations_list_'
+                },
+                {
+                    text: '🚫 手动封禁IP',
+                    callback_data: 'violations_ban_'
+                }
+            ],
+            [
+                {
+                    text: '✅ 解除封禁',
+                    callback_data: 'violations_unban_'
+                },
+                {
+                    text: '🗑️ 清除记录',
+                    callback_data: 'violations_clear_'
+                }
+            ],
+            [
+                {
+                    text: '🔄 刷新状态',
+                    callback_data: 'violations_refresh_'
+                }
+            ]
+        ];
+
+        return {
+            text: message,
+            reply_markup: {
+                inline_keyboard: keyboard
+            }
+        };
+
+    } catch (error) {
+        return `❌ 获取违规管理界面失败: ${error.message}`;
+    }
+}
+
+// 处理违规相关回调
+async function handleViolationsCallback(operation, target, env) {
+    console.log('🔧 处理违规回调:', { operation, target });
+
+    switch (operation) {
+        case 'list':
+            if (ipViolationStorage.violations.size === 0) {
+                return `📋 没有违规IP记录`;
+            }
+
+            let violationList = `⚠️ IP违规记录 (${ipViolationStorage.violations.size} 个):\n\n`;
+
+            for (const [violationIp, record] of ipViolationStorage.violations.entries()) {
+                const now = Date.now();
+                const status = record.banned ?
+                    (record.banExpiry && now < record.banExpiry ?
+                        `🚫 已封禁 (${Math.ceil((record.banExpiry - now) / (60 * 60 * 1000))}小时后解封)` :
+                        `🚫 已封禁`) :
+                    `⚠️ 违规${record.count}次`;
+
+                const lastViolation = new Date(record.lastViolation).toLocaleString('zh-CN');
+                violationList += `\`${violationIp}\`\n${status}\n最后违规: ${lastViolation}\n\n`;
+            }
+
+            return violationList;
+
+        case 'ban':
+            return await showBanIPInterface(env);
+
+        case 'unban':
+            return await showUnbanIPInterface(env);
+
+        case 'clear':
+            return await showClearViolationsInterface(env);
+
+        case 'refresh':
+            return `🔄 已刷新违规管理状态`;
+
+        default:
+            return `❓ 未知操作: ${operation}`;
+    }
+}
+
+// 显示封禁IP界面
+async function showBanIPInterface(env) {
+    const message = `🚫 **手动封禁IP**\n\n` +
+                   `请使用以下命令封禁IP：\n` +
+                   `\`/violations ban [IP地址] [小时数]\`\n\n` +
+                   `📝 **示例:**\n` +
+                   `• \`/violations ban 192.168.1.100 24\` - 封禁24小时\n` +
+                   `• \`/violations ban 10.0.0.1 48\` - 封禁48小时\n\n` +
+                   `💡 **说明:**\n` +
+                   `• 小时数可选，默认24小时\n` +
+                   `• 封禁后立即生效\n` +
+                   `• 可以通过解除封禁功能撤销`;
+
+    return {
+        text: message,
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    {
+                        text: '🔙 返回违规管理',
+                        callback_data: 'violations_refresh_'
+                    }
+                ]
+            ]
+        }
+    };
+}
+
+// 显示解除封禁界面
+async function showUnbanIPInterface(env) {
+    const message = `✅ **解除IP封禁**\n\n` +
+                   `请使用以下命令解除封禁：\n` +
+                   `\`/violations unban [IP地址]\`\n\n` +
+                   `📝 **示例:**\n` +
+                   `• \`/violations unban 192.168.1.100\`\n` +
+                   `• \`/violations unban 10.0.0.1\`\n\n` +
+                   `💡 **说明:**\n` +
+                   `• 立即解除指定IP的封禁状态\n` +
+                   `• 不会清除违规记录\n` +
+                   `• 解除后IP可以正常访问`;
+
+    return {
+        text: message,
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    {
+                        text: '🔙 返回违规管理',
+                        callback_data: 'violations_refresh_'
+                    }
+                ]
+            ]
+        }
+    };
+}
+
+// 显示清除违规记录界面
+async function showClearViolationsInterface(env) {
+    const message = `🗑️ **清除违规记录**\n\n` +
+                   `请使用以下命令清除记录：\n` +
+                   `\`/violations clear [IP地址]\`\n\n` +
+                   `📝 **示例:**\n` +
+                   `• \`/violations clear 192.168.1.100\`\n` +
+                   `• \`/violations clear 10.0.0.1\`\n\n` +
+                   `⚠️ **注意:**\n` +
+                   `• 清除后该IP的所有违规记录将被删除\n` +
+                   `• 如果IP当前被封禁，封禁状态也会被解除\n` +
+                   `• 此操作不可撤销`;
+
+    return {
+        text: message,
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    {
+                        text: '🔙 返回违规管理',
+                        callback_data: 'violations_refresh_'
+                    }
+                ]
+            ]
+        }
+    };
 }
 
 // 编辑UA路径限制
