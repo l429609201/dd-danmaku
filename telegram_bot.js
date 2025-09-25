@@ -580,6 +580,7 @@ async function getMainMenu(env) {
     }
 }
 
+
 async function getApiMenu(env) {
     try {
         const domain = env.WORKER_DOMAIN || 'https://your-worker.workers.dev';
@@ -867,90 +868,17 @@ async function manageBlacklist(args, env) {
             }
 
         case 'add':
-            if (!ip) return `❌ 请提供要添加的IP地址`;
-            try {
-                const result = await addIpToBlacklist(ip, env);
-                logToBot('info', `管理员添加IP到黑名单`, { ip, success: result.success });
-                return result.success ?
-                    `✅ IP ${ip} 已添加到黑名单\n⚠️ 注意：需要重新部署才能生效\n\n当前黑名单: ${result.blacklist.join(', ')}` :
-                    `❌ 添加失败: ${result.error}`;
-            } catch (error) {
-                return `❌ 添加IP到黑名单失败: ${error.message}`;
-            }
+            return `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
 
         case 'remove':
-            if (!ip) return `❌ 请提供要移除的IP地址`;
-            try {
-                const result = await removeIpFromBlacklist(ip, env);
-                logToBot('info', `管理员从黑名单移除IP`, { ip, success: result.success });
-                return result.success ?
-                    `✅ IP ${ip} 已从黑名单移除\n⚠️ 注意：需要重新部署才能生效\n\n当前黑名单: ${result.blacklist.join(', ') || '(空)'}` :
-                    `❌ 移除失败: ${result.error}`;
-            } catch (error) {
-                return `❌ 从黑名单移除IP失败: ${error.message}`;
-            }
+            return `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
 
         default:
             return `❓ 未知操作: ${action}\n使用格式: /blacklist [list|add|remove] [IP]`;
     }
 }
 
-async function manageUA(args, env) {
-    const [action, name] = args;
 
-    if (!action) {
-        return `👤 UA配置管理\n\n📋 可用操作：\n• /ua list - 查看当前UA配置\n• /ua enable [name] - 启用指定UA配置\n• /ua disable [name] - 禁用指定UA配置\n\n⚠️ 注意：UA配置修改需要重新部署才能生效\n💡 UA配置存储在cf_worker.js的ACCESS_CONFIG中`;
-    }
-
-    switch (action) {
-        case 'list':
-            try {
-                const uaLimits = getUserAgentLimitsFromEnv(env);
-                const uaKeys = Object.keys(uaLimits);
-
-                if (uaKeys.length === 0) {
-                    return `👤 UA配置列表：\n\n暂无UA配置记录\n\n💡 使用 /ua enable/disable [name] 管理UA配置`;
-                }
-
-                let result = `👤 UA配置列表 (${uaKeys.length}个)：\n\n`;
-                uaKeys.forEach((key, index) => {
-                    const config = uaLimits[key];
-                    const status = config.enabled !== false ? '✅' : '❌';
-                    const userAgent = config.userAgent || 'N/A';
-                    result += `${index + 1}. ${status} ${key}: ${userAgent}\n`;
-                });
-                result += `\n💡 使用 /ua enable [name] 启用配置\n💡 使用 /ua disable [name] 禁用配置`;
-                return result;
-            } catch (error) {
-                return `❌ 获取UA配置失败: ${error.message}`;
-            }
-
-        case 'enable':
-            if (!name) return `❌ 请提供要启用的UA配置名称`;
-            try {
-                const result = await enableUAConfig(name, env);
-                return result.success ?
-                    `✅ UA配置 ${name} 已启用\n⚠️ 注意：需要重新部署才能生效\n\n💡 请查看日志获取具体的环境变量更新指令` :
-                    `❌ 启用失败: ${result.error}`;
-            } catch (error) {
-                return `❌ 启用UA配置失败: ${error.message}`;
-            }
-
-        case 'disable':
-            if (!name) return `❌ 请提供要禁用的UA配置名称`;
-            try {
-                const result = await disableUAConfig(name, env);
-                return result.success ?
-                    `✅ UA配置 ${name} 已禁用\n⚠️ 注意：需要重新部署才能生效\n\n💡 请查看日志获取具体的环境变量更新指令` :
-                    `❌ 禁用失败: ${result.error}`;
-            } catch (error) {
-                return `❌ 禁用UA配置失败: ${error.message}`;
-            }
-
-        default:
-            return `❓ 未知操作: ${action}\n使用格式: /ua [list|enable|disable] [name]`;
-    }
-}
 
 async function getStartMessage(env) {
     const domain = env.WORKER_DOMAIN || 'https://your-worker.workers.dev';
@@ -1095,27 +1023,7 @@ function getIpBlacklistFromEnv(env) {
     }
 }
 
-function getUserAgentLimitsFromEnv(env) {
-    if (!env.USER_AGENT_LIMITS_CONFIG) {
-        return {};
-    }
 
-    try {
-        const limits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
-        // 过滤出启用的客户端
-        const enabledLimits = {};
-        Object.keys(limits).forEach(key => {
-            const config = limits[key];
-            if (config && config.enabled !== false) {
-                enabledLimits[key] = config;
-            }
-        });
-        return enabledLimits;
-    } catch (error) {
-        console.error('解析UA配置失败:', error);
-        return {};
-    }
-}
 
 // 获取所有UA配置（包括禁用的）
 function getAllUserAgentLimitsFromEnv(env) {
@@ -1133,219 +1041,24 @@ function getAllUserAgentLimitsFromEnv(env) {
 
 
 
-async function addIpToBlacklist(ip, env) {
-    try {
-        const currentBlacklist = getIpBlacklistFromEnv(env);
+// 添加IP到黑名单功能已禁用
+// async function addIpToBlacklist(ip, env) { ... }
 
-        if (currentBlacklist.includes(ip)) {
-            return { success: false, error: 'IP已在黑名单中' };
-        }
+// 移除IP黑名单功能已禁用
+// async function removeIpFromBlacklist(ip, env) { ... }
 
-        const newBlacklist = [...currentBlacklist, ip];
+// UA配置启用功能已禁用
+// async function enableUAConfig(name, env) { ... }
 
-        // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'IP_BLACKLIST_CONFIG', JSON.stringify(newBlacklist));
+// UA配置禁用功能已禁用
+// async function disableUAConfig(name, env) { ... }
 
-        logToBot('info', 'IP黑名单添加请求', {
-            ip,
-            action: 'add',
-            cloudflareResult: updateResult,
-            newConfig: JSON.stringify(newBlacklist)
-        });
+// Cloudflare API调用函数 - 更新环境变量（支持vars和secrets）
+// Cloudflare API调用函数已禁用
+// async function updateCloudflareEnvVar(env, varName, varValue, isSecret = false) { ... }
 
-        return {
-            success: updateResult.success,
-            blacklist: newBlacklist,
-            message: updateResult.success ? '已通过Cloudflare API更新' : updateResult.error
-        };
-    } catch (error) {
-        return { success: false, error: error.message };
-    }
-}
-
-async function removeIpFromBlacklist(ip, env) {
-    try {
-        const currentBlacklist = getIpBlacklistFromEnv(env);
-
-        if (!currentBlacklist.includes(ip)) {
-            return { success: false, error: 'IP不在黑名单中' };
-        }
-
-        const newBlacklist = currentBlacklist.filter(item => item !== ip);
-
-        // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'IP_BLACKLIST_CONFIG', JSON.stringify(newBlacklist));
-
-        logToBot('info', 'IP黑名单移除请求', {
-            ip,
-            action: 'remove',
-            cloudflareResult: updateResult,
-            newConfig: JSON.stringify(newBlacklist)
-        });
-
-        return {
-            success: updateResult.success,
-            blacklist: newBlacklist,
-            message: updateResult.success ? '已通过Cloudflare API更新' : updateResult.error
-        };
-    } catch (error) {
-        return { success: false, error: error.message };
-    }
-}
-
-async function enableUAConfig(name, env) {
-    try {
-        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
-
-        if (!currentLimits[name]) {
-            return { success: false, error: 'UA配置不存在' };
-        }
-
-        currentLimits[name].enabled = true;
-
-        // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
-
-        logToBot('info', 'UA配置启用请求', {
-            name,
-            action: 'enable',
-            cloudflareResult: updateResult,
-            newConfig: JSON.stringify(currentLimits)
-        });
-
-        return {
-            success: updateResult.success,
-            message: updateResult.success ? '已通过Cloudflare API更新' : updateResult.error
-        };
-    } catch (error) {
-        return { success: false, error: error.message };
-    }
-}
-
-async function disableUAConfig(name, env) {
-    try {
-        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
-
-        if (!currentLimits[name]) {
-            return { success: false, error: 'UA配置不存在' };
-        }
-
-        currentLimits[name].enabled = false;
-
-        // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
-
-        logToBot('info', 'UA配置禁用请求', {
-            name,
-            action: 'disable',
-            cloudflareResult: updateResult,
-            newConfig: JSON.stringify(currentLimits)
-        });
-
-        return {
-            success: updateResult.success,
-            message: updateResult.success ? '已通过Cloudflare API更新' : updateResult.error
-        };
-    } catch (error) {
-        return { success: false, error: error.message };
-    }
-}
-
-// Cloudflare API调用函数
-async function updateCloudflareEnvVar(env, varName, varValue) {
-    try {
-        // 需要的环境变量
-        if (!env.CLOUDFLARE_API_TOKEN) {
-            return { success: false, error: 'CLOUDFLARE_API_TOKEN 环境变量未设置' };
-        }
-
-        if (!env.CLOUDFLARE_ACCOUNT_ID) {
-            return { success: false, error: 'CLOUDFLARE_ACCOUNT_ID 环境变量未设置' };
-        }
-
-        if (!env.CLOUDFLARE_WORKER_NAME) {
-            return { success: false, error: 'CLOUDFLARE_WORKER_NAME 环境变量未设置' };
-        }
-
-        const accountId = env.CLOUDFLARE_ACCOUNT_ID;
-        const workerName = env.CLOUDFLARE_WORKER_NAME;
-        const apiToken = env.CLOUDFLARE_API_TOKEN;
-
-        // 1. 首先获取当前的环境变量
-        const getUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${workerName}/settings`;
-
-        const getResponse = await fetch(getUrl, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${apiToken}`,
-                'Content-Type': 'application/json'
-            }
-        });
-
-        if (!getResponse.ok) {
-            const errorText = await getResponse.text();
-            return { success: false, error: `获取当前环境变量失败: ${getResponse.status} - ${errorText}` };
-        }
-
-        const currentSettings = await getResponse.json();
-        const currentEnvVars = currentSettings.result?.bindings?.filter(b => b.type === 'plain_text') || [];
-
-        // 2. 更新或添加指定的环境变量
-        const updatedEnvVars = currentEnvVars.filter(v => v.name !== varName);
-        updatedEnvVars.push({
-            type: 'plain_text',
-            name: varName,
-            text: varValue
-        });
-
-        // 3. 保留其他类型的绑定（如DO绑定）
-        const otherBindings = currentSettings.result?.bindings?.filter(b => b.type !== 'plain_text') || [];
-        const allBindings = [...updatedEnvVars, ...otherBindings];
-
-        // 4. 更新环境变量 - 使用multipart/form-data格式
-        const updateUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${workerName}/settings`;
-
-        // 创建FormData对象
-        const formData = new FormData();
-        formData.append('bindings', JSON.stringify(allBindings));
-
-        const updateResponse = await fetch(updateUrl, {
-            method: 'PATCH',
-            headers: {
-                'Authorization': `Bearer ${apiToken}`
-                // 不设置Content-Type，让浏览器自动设置multipart/form-data
-            },
-            body: formData
-        });
-
-        if (!updateResponse.ok) {
-            const errorText = await updateResponse.text();
-            return { success: false, error: `更新环境变量失败: ${updateResponse.status} - ${errorText}` };
-        }
-
-        const updateResult = await updateResponse.json();
-
-        logToBot('info', 'Cloudflare API环境变量更新成功', {
-            varName,
-            accountId,
-            workerName,
-            result: updateResult.success
-        });
-
-        return {
-            success: true,
-            message: `环境变量 ${varName} 已通过Cloudflare API更新`,
-            result: updateResult
-        };
-
-    } catch (error) {
-        logToBot('error', 'Cloudflare API调用异常', {
-            varName,
-            error: error.message
-        });
-        return { success: false, error: `Cloudflare API调用失败: ${error.message}` };
-    }
-}
+// 环境变量更新函数已禁用
+// async function updateBothEnvVars(env, varName, varValue) { ... }
 
 // UA管理界面
 async function showUAManagementInterface(env) {
@@ -1394,35 +1107,8 @@ async function showUAManagementInterface(env) {
         // 创建内联键盘
         const keyboard = [];
 
-        // 为每个UA配置创建按钮行（使用配置名称）
-        uaKeys.forEach((key, index) => {
-            const config = uaLimits[key];
-            const isEnabled = config.enabled !== false;
-            const num = index + 1;
-
-            const row = [
-                {
-                    text: isEnabled ? `❌ 禁用 ${num}` : `✅ 启用 ${num}`,
-                    callback_data: `ua_toggle_${key}`
-                },
-                {
-                    text: `✏️ 编辑 ${num}`,
-                    callback_data: `ua_edit_${key}`
-                },
-                {
-                    text: `🗑️ 删除 ${num}`,
-                    callback_data: `ua_delete_${key}`
-                }
-            ];
-            keyboard.push(row);
-        });
-
-        // 添加管理按钮
+        // 只保留刷新按钮
         keyboard.push([
-            {
-                text: '➕ 添加新UA',
-                callback_data: 'ua_add_new'
-            },
             {
                 text: '🔄 刷新列表',
                 callback_data: 'ua_refresh'
@@ -1473,15 +1159,11 @@ async function showBlacklistManagementInterface(env) {
 
         // 为每个IP创建按钮行（限制显示数量避免消息过长，使用索引参数）
         const displayLimit = 10;
-        blacklist.slice(0, displayLimit).forEach((ip, index) => {
+        blacklist.slice(0, displayLimit).forEach((_, index) => {
             const num = index + 1;
             const row = [
                 {
-                    text: `🗑️ 移除 ${num}`,
-                    callback_data: `blacklist_remove_${index}`
-                },
-                {
-                    text: `📊 详情 ${num}`,
+                    text: ` 详情 ${num}`,
                     callback_data: `blacklist_info_${index}`
                 }
             ];
@@ -1495,12 +1177,8 @@ async function showBlacklistManagementInterface(env) {
             }]);
         }
 
-        // 添加管理按钮
+        // 只保留刷新按钮
         keyboard.push([
-            {
-                text: '➕ 添加IP',
-                callback_data: 'blacklist_add_new'
-            },
             {
                 text: '🔄 刷新列表',
                 callback_data: 'blacklist_refresh'
@@ -1571,194 +1249,29 @@ async function handleCallbackQuery(callbackQuery, env) {
                 response = uaInterface.text;
                 newKeyboard = uaInterface.reply_markup;
             } else if (operation === 'toggle') {
-                // 处理启用/禁用操作
-                const configName = target; // target就是配置名称，如"MisakaDanmaku"
-                const uaLimits = getAllUserAgentLimitsFromEnv(env);
-
-                if (uaLimits[configName]) {
-                    const config = uaLimits[configName];
-                    config.enabled = !config.enabled;
-
-                    // 更新配置
-                    const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
-
-                    if (result.success) {
-                        // 创建临时env对象，包含更新后的配置
-                        const tempEnv = { ...env, USER_AGENT_LIMITS_CONFIG: JSON.stringify(uaLimits) };
-
-                        // 使用更新后的配置刷新界面
-                        const uaInterface = await showUAManagementInterface(tempEnv);
-                        newKeyboard = uaInterface.reply_markup;
-                        response = uaInterface.text;
-                    } else {
-                        response = `❌ 更新失败: ${result.error}`;
-                    }
-                } else {
-                    response = `❌ 无效的配置名称: ${configName}`;
-                }
+                // 启用/禁用操作已禁用
+                response = `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
             } else if (operation === 'edit') {
-                // 处理编辑操作 - 显示编辑界面
-                const configName = target;
-                const editInterface = await showEditUAInterface(configName, env);
-                response = editInterface.text;
-                newKeyboard = editInterface.reply_markup;
+                // 编辑操作已禁用
+                response = `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
             } else if (operation === 'delete') {
-                // 处理删除操作
-                const configName = target;
-                const uaLimits = getAllUserAgentLimitsFromEnv(env);
-
-                if (uaLimits[configName]) {
-                    if (configName === 'default') {
-                        response = `❌ 不能删除默认配置 'default'`;
-                    } else {
-                        delete uaLimits[configName];
-
-                        // 更新配置
-                        const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
-
-                        if (result.success) {
-                            // 创建临时env对象，包含更新后的配置
-                            const tempEnv = { ...env, USER_AGENT_LIMITS_CONFIG: JSON.stringify(uaLimits) };
-
-                            // 使用更新后的配置刷新界面
-                            const uaInterface = await showUAManagementInterface(tempEnv);
-                            newKeyboard = uaInterface.reply_markup;
-                            response = uaInterface.text;
-                        } else {
-                            response = `❌ 删除失败: ${result.error}`;
-                        }
-                    }
-                } else {
-                    response = `❌ 配置 ${configName} 不存在`;
-                }
+                // 删除操作已禁用
+                response = `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
             } else if (operation === 'add') {
-                // 处理添加新UA操作
-                const addInterface = await showAddUAInterface(env);
-                response = addInterface.text;
-                newKeyboard = addInterface.reply_markup;
+                // 添加操作已禁用
+                response = `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
             } else if (operation === 'edit' && target.startsWith('ua_')) {
-                // 处理编辑UA字符串操作: ua_edit_ua_MisakaDanmaku
-                const configName = target.substring(3); // 移除 "ua_" 前缀
-                response = `✏️ 修改 ${configName} 的UA字符串\n\n` +
-                          `当前UA: ${getAllUserAgentLimitsFromEnv(env)[configName]?.userAgent || 'N/A'}\n\n` +
-                          `请使用以下命令修改：\n` +
-                          `/ua_edit_ua ${configName} [新UA字符串]\n\n` +
-                          `示例: /ua_edit_ua ${configName} "MyApp/2.0"`;
+                // UA编辑功能已禁用
+                response = `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
             } else if (operation === 'edit' && target.startsWith('limit_')) {
-                // 处理编辑小时限制操作: ua_edit_limit_MisakaDanmaku
-                const configName = target.substring(6); // 移除 "limit_" 前缀
-                const config = getAllUserAgentLimitsFromEnv(env)[configName];
-                const currentLimit = config?.hourlyLimit || config?.maxRequestsPerHour || 'N/A';
-                response = `🔢 修改 ${configName} 的小时限制\n\n` +
-                          `当前限制: ${currentLimit}/小时\n\n` +
-                          `请使用以下命令修改：\n` +
-                          `/ua_edit_limit ${configName} [新小时限制]\n\n` +
-                          `示例: /ua_edit_limit ${configName} 200\n` +
-                          `提示: 使用 -1 表示无限制`;
+                // 限制编辑功能已禁用
+                response = `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
             } else if (operation === 'edit' && target.startsWith('paths_')) {
-                // 处理管理路径限制操作: ua_edit_paths_MisakaDanmaku
-                const configName = target.substring(6); // 移除 "paths_" 前缀
-                const pathInterface = await showPathLimitsInterface(configName, env);
-                response = pathInterface.text;
-                newKeyboard = pathInterface.reply_markup;
+                // 路径管理功能已禁用
+                response = `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
             } else if (operation === 'path') {
-                // 处理路径限制相关操作: ua_path_edit_MisakaDanmaku_0, ua_path_delete_MisakaDanmaku_0, ua_path_add_MisakaDanmaku
-                const pathParts = target.split('_');
-                const pathOperation = pathParts[0]; // edit, delete, add
-                const configName = pathParts.slice(1, -1).join('_'); // 配置名称（可能包含下划线）
-                const pathIndex = pathParts[pathParts.length - 1]; // 路径索引（对于add操作，这里是配置名的一部分）
-
-                if (pathOperation === 'add') {
-                    // 添加新路径限制: ua_path_add_MisakaDanmaku
-                    const actualConfigName = pathParts.slice(1).join('_');
-                    response = `➕ 为 ${actualConfigName} 添加路径限制\n\n` +
-                              `请使用以下命令添加：\n` +
-                              `/ua_path_add ${actualConfigName} [路径] [小时限制]\n\n` +
-                              `📝 示例:\n` +
-                              `• /ua_path_add ${actualConfigName} "/api/v2/comment" 25\n` +
-                              `• /ua_path_add ${actualConfigName} "/api/v2/search" 50\n\n` +
-                              `💡 说明:\n` +
-                              `• 路径必须以 / 开头\n` +
-                              `• 小时限制为数字，-1表示无限制`;
-                } else if (pathOperation === 'edit') {
-                    // 编辑路径限制: ua_path_edit_MisakaDanmaku_0
-                    const index = parseInt(pathIndex);
-                    const uaLimits = getAllUserAgentLimitsFromEnv(env);
-                    const config = uaLimits[configName];
-
-                    if (config) {
-                        let pathLimits = [];
-                        if (config.pathSpecificLimits) {
-                            pathLimits = Object.entries(config.pathSpecificLimits);
-                        } else if (config.pathLimits) {
-                            pathLimits = config.pathLimits.map(p => [p.path, p.maxRequestsPerHour || p.limit]);
-                        }
-
-                        if (index >= 0 && index < pathLimits.length) {
-                            const [path, limit] = pathLimits[index];
-                            response = `✏️ 编辑 ${configName} 的路径限制\n\n` +
-                                      `当前配置:\n` +
-                                      `• 路径: ${path}\n` +
-                                      `• 限制: ${limit}/小时\n\n` +
-                                      `请使用以下命令修改：\n` +
-                                      `/ua_path_edit ${configName} ${index} [新路径] [新限制]\n\n` +
-                                      `示例: /ua_path_edit ${configName} ${index} "/api/v2/new" 100`;
-                        } else {
-                            response = `❌ 路径索引 ${index} 无效`;
-                        }
-                    } else {
-                        response = `❌ 配置 ${configName} 不存在`;
-                    }
-                } else if (pathOperation === 'delete') {
-                    // 删除路径限制: ua_path_delete_MisakaDanmaku_0
-                    const index = parseInt(pathIndex);
-                    const uaLimits = getAllUserAgentLimitsFromEnv(env);
-                    const config = uaLimits[configName];
-
-                    if (config) {
-                        let pathLimits = [];
-                        let isPathSpecificLimits = false;
-
-                        if (config.pathSpecificLimits && Object.keys(config.pathSpecificLimits).length > 0) {
-                            pathLimits = Object.entries(config.pathSpecificLimits);
-                            isPathSpecificLimits = true;
-                        } else if (config.pathLimits && Array.isArray(config.pathLimits)) {
-                            pathLimits = config.pathLimits.map((p, i) => [p.path, p.maxRequestsPerHour || p.limit, i]);
-                        }
-
-                        if (index >= 0 && index < pathLimits.length) {
-                            const pathToDelete = pathLimits[index][0];
-
-                            // 删除路径限制
-                            if (isPathSpecificLimits) {
-                                delete config.pathSpecificLimits[pathToDelete];
-                            } else {
-                                config.pathLimits.splice(index, 1);
-                            }
-
-                            // 更新配置
-                            const result = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(uaLimits));
-
-                            if (result.success) {
-                                // 创建临时env对象，包含更新后的配置
-                                const tempEnv = { ...env, USER_AGENT_LIMITS_CONFIG: JSON.stringify(uaLimits) };
-
-                                // 使用更新后的配置刷新路径管理界面
-                                const pathInterface = await showPathLimitsInterface(configName, tempEnv);
-                                response = pathInterface.text;
-                                newKeyboard = pathInterface.reply_markup;
-                            } else {
-                                response = `❌ 删除失败: ${result.error}`;
-                            }
-                        } else {
-                            response = `❌ 路径索引 ${index} 无效`;
-                        }
-                    } else {
-                        response = `❌ 配置 ${configName} 不存在`;
-                    }
-                } else {
-                    response = `❓ 未知路径操作: ${pathOperation}`;
-                }
+                // 路径管理功能已禁用
+                response = `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
             } else {
                 response = `❓ 未知UA操作: ${operation} ${target}`;
             }
@@ -1782,15 +1295,29 @@ async function handleCallbackQuery(callbackQuery, env) {
         } else if (action === 'violations') {
             console.log('🔧 处理violations回调:', { operation, target });
 
-            // 简化处理逻辑
             if (operation === 'refresh') {
                 const violationsInterface = await showViolationsManagementInterface(env);
                 response = violationsInterface.text;
                 newKeyboard = violationsInterface.reply_markup;
             } else if (operation === 'list') {
-                response = `📋 违规列表操作: ${operation}`;
+                if (ipViolationStorage.violations.size === 0) {
+                    response = `📋 没有违规IP记录`;
+                } else {
+                    let violationList = `⚠️ IP违规记录 (${ipViolationStorage.violations.size} 个):\n\n`;
+                    for (const [violationIp, record] of ipViolationStorage.violations.entries()) {
+                        const now = Date.now();
+                        const status = record.banned ?
+                            (record.banExpiry && now < record.banExpiry ?
+                                `🚫 已封禁 (${Math.ceil((record.banExpiry - now) / (60 * 60 * 1000))}小时后解封)` :
+                                `🚫 已封禁`) :
+                            `⚠️ 违规${record.count}次`;
+                        const lastViolation = new Date(record.lastViolation).toLocaleString('zh-CN');
+                        violationList += `\`${violationIp}\`\n${status}\n最后违规: ${lastViolation}\n\n`;
+                    }
+                    response = violationList;
+                }
             } else {
-                response = `✅ 违规操作: ${operation} ${target}`;
+                response = `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
             }
         } else if (action === 'menu') {
             console.log('🔧 处理菜单回调:', { operation, target });
@@ -1859,52 +1386,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     }
 }
 
-// 处理UA相关回调
-async function handleUACallback(operation, target, env) {
-    console.log('🔧 处理UA回调:', { operation, target });
 
-    switch (operation) {
-        case 'toggle':
-        case 'edit':
-        case 'delete':
-            // 通过索引获取配置名称
-            const uaLimits = getAllUserAgentLimitsFromEnv(env);
-            const uaKeys = Object.keys(uaLimits);
-            const targetIndex = parseInt(target);
-
-            if (isNaN(targetIndex) || targetIndex < 0 || targetIndex >= uaKeys.length) {
-                return `❌ 无效的配置索引: ${target}`;
-            }
-
-            const configName = uaKeys[targetIndex];
-            console.log('🎯 通过索引找到配置:', { targetIndex, configName });
-
-            if (operation === 'toggle') {
-                const isEnabled = uaLimits[configName].enabled !== false;
-                if (isEnabled) {
-                    const result = await disableUAConfig(configName, env);
-                    return result.success ? `✅ 已禁用 ${configName}` : `❌ 禁用失败: ${result.error}`;
-                } else {
-                    const result = await enableUAConfig(configName, env);
-                    return result.success ? `✅ 已启用 ${configName}` : `❌ 启用失败: ${result.error}`;
-                }
-            } else if (operation === 'edit') {
-                return await editUAConfig(configName, env);
-            } else if (operation === 'delete') {
-                return await deleteUAConfig(configName, env);
-            }
-            break;
-
-        case 'add':
-            return await showAddUAInterface(env);
-
-        case 'refresh':
-            return `🔄 已刷新UA配置列表`;
-
-        default:
-            return `❓ 未知操作: ${operation}`;
-    }
-}
 
 // 处理黑名单相关回调
 async function handleBlacklistCallback(operation, target, env) {
@@ -1912,6 +1394,9 @@ async function handleBlacklistCallback(operation, target, env) {
 
     switch (operation) {
         case 'remove':
+            // 移除功能已禁用
+            return `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
+
         case 'info':
             // 通过索引获取IP地址
             const blacklist = getIpBlacklistFromEnv(env);
@@ -1923,19 +1408,11 @@ async function handleBlacklistCallback(operation, target, env) {
 
             const ipAddress = blacklist[targetIndex];
             console.log('🎯 通过索引找到IP:', { targetIndex, ipAddress });
-
-            if (operation === 'remove') {
-                const result = await removeIpFromBlacklist(ipAddress, env);
-                return result.success ?
-                    `✅ 已从黑名单移除 ${ipAddress}` :
-                    `❌ 移除失败: ${result.error}`;
-            } else if (operation === 'info') {
-                return await getIPDetails(ipAddress, env);
-            }
-            break;
+            return await getIPDetails(ipAddress, env);
 
         case 'add':
-            return await showAddIPInterface(env);
+            // 添加功能已禁用
+            return `⚠️ 配置修改功能已禁用，请通过Cloudflare Dashboard手动修改`;
 
         case 'refresh':
             return `🔄 已刷新黑名单列表`;
@@ -2020,217 +1497,17 @@ async function editMessageWithKeyboard(chatId, messageId, text, keyboard, env) {
     }
 }
 
-// 编辑UA配置
-async function editUAConfig(name, env) {
-    try {
-        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
+// UA配置编辑功能已禁用
+// async function editUAConfig(name, env) { ... }
 
-        if (!currentLimits[name]) {
-            return `❌ UA配置 ${name} 不存在`;
-        }
+// UA配置删除功能已禁用
+// async function deleteUAConfig(name, env) { ... }
 
-        const config = currentLimits[name];
 
-        let details = `✏️ **编辑 ${name} 配置**\n\n` +
-                     `当前配置：\n` +
-                     `• UA字符串: \`${config.userAgent || 'N/A'}\`\n` +
-                     `• 小时限制: ${config.hourlyLimit || 'N/A'}\n` +
-                     `• 状态: ${config.enabled !== false ? '启用' : '禁用'}\n`;
 
-        // 显示路径特定限制
-        if (config.pathSpecificLimits && Object.keys(config.pathSpecificLimits).length > 0) {
-            details += `• 路径限制 (${Object.keys(config.pathSpecificLimits).length}个):\n`;
-            Object.entries(config.pathSpecificLimits).forEach(([path, limit]) => {
-                details += `  - \`${path}\`: ${limit}/小时\n`;
-            });
-        } else {
-            details += `• 路径限制: 无\n`;
-        }
 
-        details += `\n💡 使用以下命令修改：\n` +
-                  `• /ua_edit_ua ${name} [新UA字符串]\n` +
-                  `• /ua_edit_limit ${name} [新小时限制]\n` +
-                  `• /ua_edit_path ${name} [路径] [限制]`;
 
-        return details;
 
-    } catch (error) {
-        return `❌ 获取UA配置失败: ${error.message}`;
-    }
-}
-
-// 删除UA配置
-async function deleteUAConfig(name, env) {
-    try {
-        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
-
-        if (!currentLimits[name]) {
-            return `❌ UA配置 ${name} 不存在`;
-        }
-
-        // 不能删除default配置
-        if (name === 'default') {
-            return `❌ 不能删除默认配置 'default'`;
-        }
-
-        delete currentLimits[name];
-
-        // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
-
-        logToBot('info', 'UA配置删除请求', {
-            name,
-            action: 'delete',
-            cloudflareResult: updateResult,
-            newConfig: JSON.stringify(currentLimits)
-        });
-
-        return updateResult.success ?
-            `✅ 已删除UA配置 ${name}` :
-            `❌ 删除失败: ${updateResult.error}`;
-
-    } catch (error) {
-        return `❌ 删除UA配置失败: ${error.message}`;
-    }
-}
-
-// 添加新UA配置
-async function addNewUAConfig(args, env) {
-    const [name, userAgent, hourlyLimit] = args;
-
-    if (!name || !userAgent) {
-        return `❌ 使用格式: /ua_add [名称] [UA字符串] [小时限制(可选)]`;
-    }
-
-    try {
-        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
-
-        if (currentLimits[name]) {
-            return `❌ UA配置 ${name} 已存在，请使用其他名称`;
-        }
-
-        const newConfig = {
-            userAgent: userAgent,
-            hourlyLimit: parseInt(hourlyLimit) || 100,
-            enabled: true
-        };
-
-        currentLimits[name] = newConfig;
-
-        // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
-
-        logToBot('info', 'UA配置添加请求', {
-            name,
-            userAgent,
-            hourlyLimit: newConfig.hourlyLimit,
-            cloudflareResult: updateResult
-        });
-
-        return updateResult.success ?
-            `✅ 已添加UA配置 ${name}\n• UA: ${userAgent}\n• 小时限制: ${newConfig.hourlyLimit}` :
-            `❌ 添加失败: ${updateResult.error}`;
-
-    } catch (error) {
-        return `❌ 添加UA配置失败: ${error.message}`;
-    }
-}
-
-// 编辑UA字符串
-async function editUAString(args, env) {
-    const [name, newUserAgent] = args;
-
-    if (!name || !newUserAgent) {
-        return `❌ 使用格式: /ua_edit_ua [名称] [新UA字符串]`;
-    }
-
-    try {
-        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
-
-        if (!currentLimits[name]) {
-            return `❌ UA配置 ${name} 不存在`;
-        }
-
-        const oldUserAgent = currentLimits[name].userAgent;
-        currentLimits[name].userAgent = newUserAgent;
-
-        // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
-
-        logToBot('info', 'UA字符串编辑请求', {
-            name,
-            oldUserAgent,
-            newUserAgent,
-            cloudflareResult: updateResult
-        });
-
-        return updateResult.success ?
-            `✅ 已更新 ${name} 的UA字符串\n• 旧值: ${oldUserAgent}\n• 新值: ${newUserAgent}` :
-            `❌ 更新失败: ${updateResult.error}`;
-
-    } catch (error) {
-        return `❌ 编辑UA字符串失败: ${error.message}`;
-    }
-}
-
-// 编辑UA限制
-async function editUALimit(args, env) {
-    const [name, newLimit] = args;
-
-    if (!name || !newLimit) {
-        return `❌ 使用格式: /ua_edit_limit [名称] [新小时限制]`;
-    }
-
-    const limitNumber = parseInt(newLimit);
-    if (isNaN(limitNumber) || limitNumber <= 0) {
-        return `❌ 小时限制必须是大于0的数字`;
-    }
-
-    try {
-        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
-
-        if (!currentLimits[name]) {
-            return `❌ UA配置 ${name} 不存在`;
-        }
-
-        const oldLimit = currentLimits[name].hourlyLimit;
-        currentLimits[name].hourlyLimit = limitNumber;
-
-        // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
-
-        logToBot('info', 'UA限制编辑请求', {
-            name,
-            oldLimit,
-            newLimit: limitNumber,
-            cloudflareResult: updateResult
-        });
-
-        return updateResult.success ?
-            `✅ 已更新 ${name} 的小时限制\n• 旧值: ${oldLimit}\n• 新值: ${limitNumber}` :
-            `❌ 更新失败: ${updateResult.error}`;
-
-    } catch (error) {
-        return `❌ 编辑UA限制失败: ${error.message}`;
-    }
-}
-
-// 添加新IP到黑名单
-async function addNewIPToBlacklist(args, env) {
-    const [ip] = args;
-
-    if (!ip) {
-        return `❌ 使用格式: /blacklist_add [IP地址]`;
-    }
-
-    // 简单的IP格式验证
-    const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
-    if (!ipRegex.test(ip)) {
-        return `❌ IP地址格式不正确: ${ip}`;
-    }
-
-    return await addIpToBlacklist(ip, env);
-}
 
 // 违规管理界面
 async function showViolationsManagementInterface(env) {
@@ -2266,9 +1543,7 @@ async function showViolationsManagementInterface(env) {
 
         message += `📋 管理功能:\n`;
         message += `• 查看完整违规IP列表\n`;
-        message += `• 手动封禁IP地址\n`;
-        message += `• 解除IP封禁\n`;
-        message += `• 清除违规记录\n`;
+        message += `⚠️ 编辑功能已禁用，请通过Cloudflare Dashboard手动修改\n`;
 
         // 创建内联键盘
         const keyboard = [
@@ -2276,20 +1551,6 @@ async function showViolationsManagementInterface(env) {
                 {
                     text: '📋 查看违规列表',
                     callback_data: 'violations_list'
-                },
-                {
-                    text: '🚫 手动封禁IP',
-                    callback_data: 'violations_ban'
-                }
-            ],
-            [
-                {
-                    text: '✅ 解除封禁',
-                    callback_data: 'violations_unban'
-                },
-                {
-                    text: '🗑️ 清除记录',
-                    callback_data: 'violations_clear'
                 }
             ],
             [
@@ -2318,457 +1579,13 @@ async function showViolationsManagementInterface(env) {
     }
 }
 
-// 处理违规相关回调
-async function handleViolationsCallback(operation, target, env) {
-    console.log('🔧 处理违规回调:', { operation, target });
 
-    switch (operation) {
-        case 'list':
-            if (ipViolationStorage.violations.size === 0) {
-                return `📋 没有违规IP记录`;
-            }
 
-            let violationList = `⚠️ IP违规记录 (${ipViolationStorage.violations.size} 个):\n\n`;
 
-            for (const [violationIp, record] of ipViolationStorage.violations.entries()) {
-                const now = Date.now();
-                const status = record.banned ?
-                    (record.banExpiry && now < record.banExpiry ?
-                        `🚫 已封禁 (${Math.ceil((record.banExpiry - now) / (60 * 60 * 1000))}小时后解封)` :
-                        `🚫 已封禁`) :
-                    `⚠️ 违规${record.count}次`;
-
-                const lastViolation = new Date(record.lastViolation).toLocaleString('zh-CN');
-                violationList += `\`${violationIp}\`\n${status}\n最后违规: ${lastViolation}\n\n`;
-            }
-
-            return violationList;
-
-        case 'ban':
-            return await showBanIPInterface(env);
-
-        case 'unban':
-            return await showUnbanIPInterface(env);
-
-        case 'clear':
-            return await showClearViolationsInterface(env);
-
-        case 'refresh':
-            return `🔄 已刷新违规管理状态`;
-
-        default:
-            return `❓ 未知操作: ${operation}`;
-    }
-}
-
-// 显示封禁IP界面
-async function showBanIPInterface(env) {
-    const message = `🚫 **手动封禁IP**\n\n` +
-                   `请使用以下命令封禁IP：\n` +
-                   `\`/violations ban [IP地址] [小时数]\`\n\n` +
-                   `📝 **示例:**\n` +
-                   `• \`/violations ban 192.168.1.100 24\` - 封禁24小时\n` +
-                   `• \`/violations ban 10.0.0.1 48\` - 封禁48小时\n\n` +
-                   `💡 **说明:**\n` +
-                   `• 小时数可选，默认24小时\n` +
-                   `• 封禁后立即生效\n` +
-                   `• 可以通过解除封禁功能撤销`;
-
-    return {
-        text: message,
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    {
-                        text: '🔙 返回违规管理',
-                        callback_data: 'violations_refresh'
-                    }
-                ]
-            ]
-        }
-    };
-}
-
-// 显示解除封禁界面
-async function showUnbanIPInterface(env) {
-    const message = `✅ **解除IP封禁**\n\n` +
-                   `请使用以下命令解除封禁：\n` +
-                   `\`/violations unban [IP地址]\`\n\n` +
-                   `📝 **示例:**\n` +
-                   `• \`/violations unban 192.168.1.100\`\n` +
-                   `• \`/violations unban 10.0.0.1\`\n\n` +
-                   `💡 **说明:**\n` +
-                   `• 立即解除指定IP的封禁状态\n` +
-                   `• 不会清除违规记录\n` +
-                   `• 解除后IP可以正常访问`;
-
-    return {
-        text: message,
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    {
-                        text: '🔙 返回违规管理',
-                        callback_data: 'violations_refresh'
-                    }
-                ]
-            ]
-        }
-    };
-}
-
-// 显示清除违规记录界面
-async function showClearViolationsInterface(env) {
-    const message = `🗑️ **清除违规记录**\n\n` +
-                   `请使用以下命令清除记录：\n` +
-                   `\`/violations clear [IP地址]\`\n\n` +
-                   `📝 **示例:**\n` +
-                   `• \`/violations clear 192.168.1.100\`\n` +
-                   `• \`/violations clear 10.0.0.1\`\n\n` +
-                   `⚠️ **注意:**\n` +
-                   `• 清除后该IP的所有违规记录将被删除\n` +
-                   `• 如果IP当前被封禁，封禁状态也会被解除\n` +
-                   `• 此操作不可撤销`;
-
-    return {
-        text: message,
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    {
-                        text: '🔙 返回违规管理',
-                        callback_data: 'violations_refresh'
-                    }
-                ]
-            ]
-        }
-    };
-}
 
 // 编辑UA路径限制
-async function editUAPathLimit(args, env) {
-    const [name, path, newLimit] = args;
 
-    if (!name || !path || !newLimit) {
-        return `❌ 使用格式: /ua_edit_path [名称] [路径] [新限制]\n\n` +
-               `📝 示例: /ua_edit_path MisakaTest "/api/v2/comment" 20`;
-    }
 
-    const limitNumber = parseInt(newLimit);
-    if (isNaN(limitNumber) || limitNumber <= 0) {
-        return `❌ 路径限制必须是大于0的数字`;
-    }
 
-    try {
-        const currentLimits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG || '{}');
 
-        if (!currentLimits[name]) {
-            return `❌ UA配置 ${name} 不存在`;
-        }
 
-        // 初始化路径限制对象
-        if (!currentLimits[name].pathSpecificLimits) {
-            currentLimits[name].pathSpecificLimits = {};
-        }
-
-        const oldLimit = currentLimits[name].pathSpecificLimits[path];
-        currentLimits[name].pathSpecificLimits[path] = limitNumber;
-
-        // 调用Cloudflare API更新环境变量
-        const updateResult = await updateCloudflareEnvVar(env, 'USER_AGENT_LIMITS_CONFIG', JSON.stringify(currentLimits));
-
-        logToBot('info', 'UA路径限制编辑请求', {
-            name,
-            path,
-            oldLimit,
-            newLimit: limitNumber,
-            cloudflareResult: updateResult
-        });
-
-        return updateResult.success ?
-            `✅ 已更新 ${name} 的路径限制\n• 路径: ${path}\n• 旧值: ${oldLimit || '无'}\n• 新值: ${limitNumber}` :
-            `❌ 更新失败: ${updateResult.error}`;
-
-    } catch (error) {
-        return `❌ 编辑UA路径限制失败: ${error.message}`;
-    }
-}
-
-// 获取IP详细信息
-async function getIPDetails(ip, env) {
-    try {
-        let details = `📊 **IP ${ip} 详细信息**\n\n`;
-
-        // 检查是否在黑名单中
-        const blacklist = getIpBlacklistFromEnv(env);
-        const inBlacklist = blacklist.includes(ip);
-        details += `🚫 黑名单状态: ${inBlacklist ? '✅ 已加入' : '❌ 未加入'}\n`;
-
-        // 检查UA限制配置
-        const uaLimits = getUserAgentLimitsFromEnv(env);
-        const uaCount = Object.keys(uaLimits).length;
-        details += `👤 UA配置数量: ${uaCount} 个\n`;
-
-        // 显示当前时间信息
-        const now = new Date();
-        details += `⏰ 查询时间: ${now.toLocaleString('zh-CN')}\n`;
-        details += `📅 当前小时: ${now.getHours()}:00-${now.getHours()}:59\n`;
-
-        // 添加操作建议
-        details += `\n💡 **可用操作:**\n`;
-        if (inBlacklist) {
-            details += `• 使用 /blacklist_remove ${ip} 移除黑名单\n`;
-        } else {
-            details += `• 使用 /blacklist_add ${ip} 添加到黑名单\n`;
-        }
-        details += `• 使用 /violations check ${ip} 查看违规记录\n`;
-        details += `• 使用 /pathload check ${ip} 查看路径使用情况`;
-
-        return details;
-
-    } catch (error) {
-        return `❌ 获取IP详情失败: ${error.message}`;
-    }
-}
-
-// 显示添加IP界面
-async function showAddIPInterface(env) {
-    const message = `➕ **添加IP到黑名单**\n\n` +
-                   `请使用以下命令添加IP：\n` +
-                   `\`/blacklist_add [IP地址]\`\n\n` +
-                   `📝 **示例:**\n` +
-                   `• \`/blacklist_add 192.168.1.100\`\n` +
-                   `• \`/blacklist_add 10.0.0.1\`\n\n` +
-                   `💡 **提示:**\n` +
-                   `• IP地址格式会自动验证\n` +
-                   `• 重复IP会被自动忽略\n` +
-                   `• 添加后立即生效`;
-
-    return {
-        text: message,
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    {
-                        text: '🔙 返回黑名单管理',
-                        callback_data: 'blacklist_refresh'
-                    }
-                ]
-            ]
-        }
-    };
-}
-
-// 显示编辑UA界面
-async function showEditUAInterface(configName, env) {
-    const uaLimits = getAllUserAgentLimitsFromEnv(env);
-
-    if (!uaLimits[configName]) {
-        return {
-            text: `❌ 配置 ${configName} 不存在`,
-            reply_markup: {
-                inline_keyboard: [
-                    [
-                        {
-                            text: '🔙 返回UA管理',
-                            callback_data: 'ua_refresh'
-                        }
-                    ]
-                ]
-            }
-        };
-    }
-
-    const config = uaLimits[configName];
-    const hourlyLimit = config.hourlyLimit || config.maxRequestsPerHour || 'N/A';
-
-    let message = `✏️ 编辑 ${configName} 配置\n\n`;
-    message += `当前配置：\n`;
-    message += `• UA字符串: ${config.userAgent || 'N/A'}\n`;
-    message += `• 小时限制: ${hourlyLimit}\n`;
-    message += `• 状态: ${config.enabled !== false ? '启用' : '禁用'}\n`;
-
-    // 显示路径特定限制
-    let hasPathLimits = false;
-    if (config.pathSpecificLimits && Object.keys(config.pathSpecificLimits).length > 0) {
-        message += `\n路径限制：\n`;
-        Object.entries(config.pathSpecificLimits).forEach(([path, limit]) => {
-            message += `- 路径：${path}     小时限制：${limit}\n`;
-        });
-        hasPathLimits = true;
-    } else if (config.pathLimits && Array.isArray(config.pathLimits) && config.pathLimits.length > 0) {
-        message += `\n路径限制：\n`;
-        config.pathLimits.forEach(pathLimit => {
-            const limit = pathLimit.maxRequestsPerHour || 'N/A';
-            message += `- 路径：${pathLimit.path}     小时限制：${limit}\n`;
-        });
-        hasPathLimits = true;
-    }
-
-    if (!hasPathLimits) {
-        message += `\n路径限制：无\n`;
-    }
-
-    // 创建内联键盘
-    const keyboard = [
-        [
-            {
-                text: '✏️ 修改UA字符串',
-                callback_data: `ua_edit_ua_${configName}`
-            }
-        ],
-        [
-            {
-                text: '🔢 修改小时限制',
-                callback_data: `ua_edit_limit_${configName}`
-            }
-        ],
-        [
-            {
-                text: '🛣️ 管理路径限制',
-                callback_data: `ua_edit_paths_${configName}`
-            }
-        ],
-        [
-            {
-                text: config.enabled !== false ? '❌ 禁用配置' : '✅ 启用配置',
-                callback_data: `ua_toggle_${configName}`
-            }
-        ],
-        [
-            {
-                text: '🔙 返回UA管理',
-                callback_data: 'ua_refresh'
-            }
-        ]
-    ];
-
-    return {
-        text: message,
-        reply_markup: {
-            inline_keyboard: keyboard
-        }
-    };
-}
-
-// 显示路径限制管理界面
-async function showPathLimitsInterface(configName, env) {
-    const uaLimits = getAllUserAgentLimitsFromEnv(env);
-
-    if (!uaLimits[configName]) {
-        return {
-            text: `❌ 配置 ${configName} 不存在`,
-            reply_markup: {
-                inline_keyboard: [
-                    [
-                        {
-                            text: '🔙 返回编辑界面',
-                            callback_data: `ua_edit_${configName}`
-                        }
-                    ]
-                ]
-            }
-        };
-    }
-
-    const config = uaLimits[configName];
-    let message = `🛣️ ${configName} 路径限制管理\n\n`;
-
-    // 显示当前路径限制
-    let pathLimits = [];
-    if (config.pathSpecificLimits && Object.keys(config.pathSpecificLimits).length > 0) {
-        pathLimits = Object.entries(config.pathSpecificLimits).map(([path, limit]) => ({
-            path,
-            limit
-        }));
-    } else if (config.pathLimits && Array.isArray(config.pathLimits) && config.pathLimits.length > 0) {
-        pathLimits = config.pathLimits.map(pathLimit => ({
-            path: pathLimit.path,
-            limit: pathLimit.maxRequestsPerHour || pathLimit.limit
-        }));
-    }
-
-    if (pathLimits.length > 0) {
-        message += `当前路径限制 (${pathLimits.length}个)：\n\n`;
-        pathLimits.forEach((pathLimit, index) => {
-            message += `${index + 1}. 路径：${pathLimit.path}\n`;
-            message += `   限制：${pathLimit.limit}/小时\n\n`;
-        });
-    } else {
-        message += `当前无路径限制\n\n`;
-    }
-
-    message += `💡 管理操作：`;
-
-    // 创建内联键盘
-    const keyboard = [];
-
-    // 为每个现有路径限制创建编辑和删除按钮
-    pathLimits.forEach((pathLimit, index) => {
-        const num = index + 1;
-        keyboard.push([
-            {
-                text: `✏️ 编辑路径${num}`,
-                callback_data: `ua_path_edit_${configName}_${index}`
-            },
-            {
-                text: `🗑️ 删除路径${num}`,
-                callback_data: `ua_path_delete_${configName}_${index}`
-            }
-        ]);
-    });
-
-    // 添加新路径按钮
-    keyboard.push([
-        {
-            text: '➕ 添加新路径限制',
-            callback_data: `ua_path_add_${configName}`
-        }
-    ]);
-
-    // 返回按钮
-    keyboard.push([
-        {
-            text: '🔙 返回编辑界面',
-            callback_data: `ua_edit_${configName}`
-        }
-    ]);
-
-    return {
-        text: message,
-        reply_markup: {
-            inline_keyboard: keyboard
-        }
-    };
-}
-
-// 显示添加UA界面
-async function showAddUAInterface(env) {
-    const message = `➕ **添加新UA配置**\n\n` +
-                   `请使用以下命令添加UA配置：\n` +
-                   `\`/ua_add [名称] [UA字符串] [小时限制]\`\n\n` +
-                   `📝 **示例:**\n` +
-                   `• \`/ua_add TestUA "Mozilla/5.0 Test" 50\`\n` +
-                   `• \`/ua_add MobileUA "Mobile App/1.0" 100\`\n\n` +
-                   `💡 **参数说明:**\n` +
-                   `• **名称**: 配置的唯一标识符\n` +
-                   `• **UA字符串**: User-Agent字符串（用引号包围）\n` +
-                   `• **小时限制**: 每小时请求限制（可选，默认100）\n\n` +
-                   `⚠️ **注意:**\n` +
-                   `• 名称不能重复\n` +
-                   `• 配置添加后立即生效`;
-
-    return {
-        text: message,
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    {
-                        text: '🔙 返回UA管理',
-                        callback_data: 'ua_refresh'
-                    }
-                ]
-            ]
-        }
-    };
-}
