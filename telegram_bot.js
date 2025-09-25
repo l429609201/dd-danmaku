@@ -699,7 +699,7 @@ async function manageViolations(args, env) {
             return violationList;
 
         case 'ban':
-            if (!ip) return `❌ 请提供要封禁的IP地址`;
+            if (!ip) return `🚫 **手动封禁IP**\n\n请使用以下格式封禁IP：\n\`/violations ban [IP地址] [小时数]\`\n\n📝 **示例:**\n• \`/violations ban 192.168.1.100 24\` - 封禁24小时\n• \`/violations ban 10.0.0.1 12\` - 封禁12小时\n\n💡 **说明:**\n• 小时数可选，默认24小时\n• 封禁后立即生效\n• 可使用 /violations unban 解除封禁`;
 
             const banHours = parseInt(hours) || 24;
             const banDuration = banHours * 60 * 60 * 1000;
@@ -724,7 +724,7 @@ async function manageViolations(args, env) {
             return `✅ IP ${ip} 已封禁 ${banHours} 小时\n⏰ 解封时间: ${new Date(banExpiry).toLocaleString('zh-CN')}`;
 
         case 'unban':
-            if (!ip) return `❌ 请提供要解封的IP地址`;
+            if (!ip) return `✅ **解除IP封禁**\n\n请使用以下格式解除封禁：\n\`/violations unban [IP地址]\`\n\n📝 **示例:**\n• \`/violations unban 192.168.1.100\`\n• \`/violations unban 10.0.0.1\`\n\n💡 **说明:**\n• 解除封禁后立即生效\n• 可使用 /violations list 查看当前封禁列表`;
 
             const unbanRecord = ipViolationStorage.violations.get(ip);
             if (!unbanRecord || !unbanRecord.banned) {
@@ -738,7 +738,7 @@ async function manageViolations(args, env) {
             return `✅ IP ${ip} 已解除封禁`;
 
         case 'clear':
-            if (!ip) return `❌ 请提供要清除记录的IP地址`;
+            if (!ip) return `🗑️ **清除违规记录**\n\n请使用以下格式清除记录：\n\`/violations clear [IP地址]\`\n\n📝 **示例:**\n• \`/violations clear 192.168.1.100\`\n• \`/violations clear 10.0.0.1\`\n\n💡 **说明:**\n• 清除该IP的所有违规记录\n• 不会解除当前封禁状态\n• 如需解除封禁请使用 /violations unban`;
 
             if (ipViolationStorage.violations.has(ip)) {
                 ipViolationStorage.violations.delete(ip);
@@ -1131,6 +1131,29 @@ function getAllUserAgentLimitsFromEnv(env) {
     }
 }
 
+// 获取启用的UA配置（兼容旧版本）
+function getUserAgentLimitsFromEnv(env) {
+    if (!env.USER_AGENT_LIMITS_CONFIG) {
+        return {};
+    }
+
+    try {
+        const limits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
+        // 过滤出启用的客户端
+        const enabledLimits = {};
+        Object.keys(limits).forEach(key => {
+            const config = limits[key];
+            if (config && config.enabled !== false) {
+                enabledLimits[key] = config;
+            }
+        });
+        return enabledLimits;
+    } catch (error) {
+        console.error('解析UA配置失败:', error);
+        return {};
+    }
+}
+
 async function addIpToBlacklist(ip, env) {
     try {
         const currentBlacklist = getIpBlacklistFromEnv(env);
@@ -1382,7 +1405,7 @@ async function showUAManagementInterface(env) {
         // 创建内联键盘
         const keyboard = [];
 
-        // 为每个UA配置创建按钮行（使用索引参数）
+        // 为每个UA配置创建按钮行（使用配置名称）
         uaKeys.forEach((key, index) => {
             const config = uaLimits[key];
             const isEnabled = config.enabled !== false;
@@ -1391,15 +1414,15 @@ async function showUAManagementInterface(env) {
             const row = [
                 {
                     text: isEnabled ? `❌ 禁用 ${num}` : `✅ 启用 ${num}`,
-                    callback_data: `ua_toggle_${index}`
+                    callback_data: `ua_toggle_${key}`
                 },
                 {
                     text: `✏️ 编辑 ${num}`,
-                    callback_data: `ua_edit_${index}`
+                    callback_data: `ua_edit_${key}`
                 },
                 {
                     text: `🗑️ 删除 ${num}`,
-                    callback_data: `ua_delete_${index}`
+                    callback_data: `ua_delete_${key}`
                 }
             ];
             keyboard.push(row);
@@ -1409,7 +1432,7 @@ async function showUAManagementInterface(env) {
         keyboard.push([
             {
                 text: '➕ 添加新UA',
-                callback_data: 'ua_add'
+                callback_data: 'ua_add_new'
             },
             {
                 text: '🔄 刷新列表',
