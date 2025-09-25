@@ -1367,14 +1367,22 @@ async function showUAManagementInterface(env) {
                 const config = uaLimits[key];
                 const status = config.enabled !== false ? '✅' : '❌';
                 const userAgent = config.userAgent || 'N/A';
-                message += `${index + 1}. ${status} **${key}**\n`;
-                message += `   UA: \`${userAgent}\`\n`;
-                message += `   限制: ${config.hourlyLimit || 'N/A'}/小时\n`;
+                const hourlyLimit = config.hourlyLimit || config.maxRequestsPerHour || 'N/A';
+
+                message += `${index + 1}. ${status} ${key}\n`;
+                message += `   UA: ${userAgent}\n`;
+                message += `   限制: ${hourlyLimit}/小时\n`;
 
                 // 显示路径特定限制
                 if (config.pathSpecificLimits && Object.keys(config.pathSpecificLimits).length > 0) {
                     Object.entries(config.pathSpecificLimits).forEach(([path, limit]) => {
-                        message += `   - 路径 \`${path}\`: ${limit}/小时\n`;
+                        message += `   - 路径 ${path}: ${limit}/小时\n`;
+                    });
+                } else if (config.pathLimits && Array.isArray(config.pathLimits) && config.pathLimits.length > 0) {
+                    // 兼容新的pathLimits格式
+                    config.pathLimits.forEach(pathLimit => {
+                        const limit = pathLimit.maxRequestsPerHour || 'N/A';
+                        message += `   - 路径 ${pathLimit.path}: ${limit}/小时\n`;
                     });
                 }
                 message += `\n`;
@@ -1830,7 +1838,6 @@ async function editMessageWithKeyboard(chatId, messageId, text, keyboard, env) {
                 chat_id: chatId,
                 message_id: messageId,
                 text: text,
-                parse_mode: 'Markdown',
                 reply_markup: keyboard
             })
         });
@@ -2061,7 +2068,7 @@ async function addNewIPToBlacklist(args, env) {
 // 违规管理界面
 async function showViolationsManagementInterface(env) {
     try {
-        let message = `⚠️ **IP违规管理**\n\n`;
+        let message = `⚠️ IP违规管理\n\n`;
 
         // 显示当前违规记录统计
         const violationCount = ipViolationStorage.violations.size;
@@ -2090,7 +2097,7 @@ async function showViolationsManagementInterface(env) {
             message += `\n`;
         }
 
-        message += `📋 **管理功能:**\n`;
+        message += `📋 管理功能:\n`;
         message += `• 查看完整违规IP列表\n`;
         message += `• 手动封禁IP地址\n`;
         message += `• 解除IP封禁\n`;
