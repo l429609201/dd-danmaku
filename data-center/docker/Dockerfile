@@ -27,11 +27,12 @@ WORKDIR /app
 # 安装运行时依赖（最小化）
 RUN apk add --no-cache \
     wget \
+    su-exec \
     && rm -rf /var/cache/apk/*
 
-# 创建非root用户
-RUN addgroup -g 1000 appuser && \
-    adduser -u 1000 -G appuser -s /bin/sh -D appuser
+# 创建默认用户组和用户（将通过PUID/PGID动态调整）
+RUN addgroup -g 1000 appgroup && \
+    adduser -u 1000 -G appgroup -s /bin/sh -D appuser
 
 # 复制Python依赖文件
 COPY requirements/ requirements/
@@ -53,13 +54,8 @@ COPY --chown=appuser:appuser src/ ./src/
 # 复制前端构建产物
 COPY --from=frontend-builder --chown=appuser:appuser /app/web/dist ./web/dist
 
-# 创建必要的目录并设置权限
-RUN mkdir -p /app/config /app/config/logs /app/config/backups && \
-    chown -R appuser:appuser /app/config && \
-    chmod -R 755 /app/config
-
-# 切换到非root用户
-USER appuser
+# 创建必要的目录
+RUN mkdir -p /app/config /app/config/logs /app/config/backups
 
 # 设置环境变量
 ENV PYTHONPATH=/app
