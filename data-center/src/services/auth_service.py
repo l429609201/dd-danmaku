@@ -119,20 +119,25 @@ class AuthService:
             await self.cleanup_expired_sessions(user.id)
 
             # 创建新会话
+            expires_at = naive_now() + timedelta(hours=expires_hours)
             session = LoginSession(
                 user_id=user.id,
                 session_token=LoginSession.generate_token(),
                 jwt_token=jwt_token,
-                expires_at=naive_now() + timedelta(hours=expires_hours),
+                expires_at=expires_at,
                 ip_address=ip_address,
                 user_agent=user_agent,
                 is_active=True,
                 created_at=naive_now()
             )
 
+            logger.info(f"🔐 创建会话: jwt_token={jwt_token[:20]}..., expires_at={expires_at}")
+
             db.add(session)
             db.commit()
             db.refresh(session)
+
+            logger.info(f"🔐 会话已保存到数据库: session_id={session.id}")
 
             # 获取用户名用于日志记录
             username = user.username if hasattr(user, 'username') else str(user.id)
@@ -348,11 +353,29 @@ class AuthService:
         try:
             db = self.db()
 
+            logger.info(f"🔍 查找JWT会话: {jwt_token[:20]}...")
+            logger.info(f"🔍 当前时间: {naive_now()}")
+
+            # 先查找所有匹配的会话
+            all_sessions = db.query(LoginSession).filter(
+                LoginSession.jwt_token == jwt_token
+            ).all()
+
+            logger.info(f"🔍 找到 {len(all_sessions)} 个匹配的会话")
+
+            for s in all_sessions:
+                logger.info(f"🔍 会话详情: id={s.id}, active={s.is_active}, expires_at={s.expires_at}")
+
             session = db.query(LoginSession).filter(
                 LoginSession.jwt_token == jwt_token,
                 LoginSession.is_active == True,
                 LoginSession.expires_at > naive_now()
             ).first()
+
+            if session:
+                logger.info(f"✅ 找到有效会话: id={session.id}")
+            else:
+                logger.warning(f"❌ 未找到有效会话")
 
             db.close()
             return session
