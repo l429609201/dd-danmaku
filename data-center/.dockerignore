@@ -76,11 +76,11 @@ web/node_modules/
 web/yarn.lock
 web/pnpm-lock.yaml
 
-# 前端源码（构建后不需要）
-web/src/
-web/public/
-web/index.html
-web/vite.config.js
+# 前端源码（构建时需要，但最终镜像不需要）
+# web/src/
+# web/public/
+# web/index.html
+# web/vite.config.js
 
 # 开发工具配置
 .eslintrc*
