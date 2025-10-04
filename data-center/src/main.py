@@ -118,11 +118,63 @@ def create_application() -> FastAPI:
 
     # 静态文件服务（Vue.js构建产物）
     import os
-    static_dir = "web/dist"
-    if os.path.exists(static_dir) and os.path.isdir(static_dir):
+    from pathlib import Path
+
+    # 检测运行环境
+    def _is_docker_environment():
+        if Path("/.dockerenv").exists():
+            return True
+        if os.getenv("DOCKER_CONTAINER") == "true" or os.getenv("IN_DOCKER") == "true":
+            return True
+        if Path.cwd() == Path("/app"):
+            return True
+        return False
+
+    # 根据环境确定静态文件目录
+    if _is_docker_environment():
+        static_dir = Path("/app/web/dist")
+        assets_dir = Path("/app/web/dist/assets")
+    else:
+        static_dir = Path("web/dist")
+        assets_dir = Path("web/dist/assets")
+
+    # 生产环境：挂载静态资源
+    if static_dir.exists() and static_dir.is_dir():
         try:
-            app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
-            logger.info("✅ 静态文件服务已挂载")
+            # 挂载静态资源目录
+            if assets_dir.exists():
+                app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+                logger.info("✅ 静态资源目录已挂载: /assets")
+
+            # 挂载其他静态文件
+            app.mount("/dist", StaticFiles(directory=str(static_dir)), name="dist")
+            logger.info("✅ 静态文件目录已挂载: /dist")
+
+            # SPA路由支持 - 所有非API路径返回index.html
+            from fastapi.responses import FileResponse, HTMLResponse
+            from fastapi import Request
+
+            @app.get("/{full_path:path}", include_in_schema=False)
+            async def serve_spa(request: Request, full_path: str):
+                # 如果是API路径，让其正常处理
+                if (full_path.startswith("api/") or
+                    full_path.startswith("health") or
+                    full_path.startswith("docs") or
+                    full_path.startswith("assets/") or
+                    full_path.startswith("dist/")):
+                    # 这些路径应该由其他路由处理，返回404让FastAPI继续匹配
+                    from fastapi import HTTPException
+                    raise HTTPException(status_code=404, detail="Not found")
+
+                # 返回index.html支持前端路由
+                index_file = static_dir / "index.html"
+                if index_file.exists():
+                    return FileResponse(str(index_file))
+                else:
+                    return HTMLResponse("Frontend not built", status_code=404)
+
+            logger.info("✅ SPA路由支持已启用")
+
         except Exception as e:
             logger.warning(f"⚠️ 静态文件服务挂载失败: {e}")
     else:
