@@ -70,8 +70,8 @@ EXPOSE 7759
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:7759/health || exit 1
 
-# 启动脚本
-COPY --chown=appuser:appuser docker/entrypoint.sh /entrypoint.sh
+# 启动脚本（需要root权限执行用户切换）
+COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # 启动命令

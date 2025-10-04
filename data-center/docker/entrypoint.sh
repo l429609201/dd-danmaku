@@ -23,6 +23,10 @@ fi
 
 # 确保配置目录存在并有正确权限
 mkdir -p /app/config /app/config/logs /app/config/backups
+
+# 等待用户修改完成后再设置权限
+sleep 1
+
 chown -R appuser:appgroup /app/config
 chmod -R 755 /app/config
 
