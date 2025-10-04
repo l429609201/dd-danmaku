@@ -58,13 +58,13 @@
 <script>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { logout as apiLogout } from '../utils/api.js'
+import { logout as apiLogout, authFetch } from '../utils/api.js'
 
 export default {
   name: 'Layout',
   setup() {
     const router = useRouter()
-    const username = ref('admin')
+    const username = ref('')
     const showDropdown = ref(false)
 
     const toggleDropdown = () => {
@@ -81,12 +81,27 @@ export default {
         apiLogout()
       }
     }
-    
+
+    const loadUserInfo = async () => {
+      try {
+        const response = await authFetch('/api/v1/auth/me')
+        if (response.ok) {
+          const userInfo = await response.json()
+          username.value = userInfo.username || ''
+        }
+      } catch (error) {
+        console.error('获取用户信息失败:', error)
+      }
+    }
+
     onMounted(() => {
       // 检查登录状态
       const token = localStorage.getItem('access_token')
       if (!token) {
         router.push('/login')
+      } else {
+        // 加载用户信息
+        loadUserInfo()
       }
     })
     

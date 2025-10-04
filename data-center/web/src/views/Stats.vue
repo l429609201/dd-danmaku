@@ -98,25 +98,33 @@ export default {
     const lastUpdate = ref('')
 
     const stats = ref({
-      todayRequests: 1234,
-      totalRequests: 56789,
-      successRate: 98.5,
-      onlineWorkers: 3,
-      totalWorkers: 4,
-      avgResponseTime: 125,
-      blockedIPs: 23,
-      todayBlocked: 45,
-      violationRequests: 12,
-      memoryUsage: 256,
-      cpuUsage: 15.2,
-      uptime: '2天 14小时'
+      todayRequests: 0,
+      totalRequests: 0,
+      successRate: 0,
+      onlineWorkers: 0,
+      totalWorkers: 0,
+      avgResponseTime: 0,
+      blockedIPs: 0,
+      todayBlocked: 0,
+      violationRequests: 0,
+      memoryUsage: 0,
+      cpuUsage: 0,
+      uptime: '0分钟'
     })
 
     const refreshStats = async () => {
       loading.value = true
       try {
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        // TODO: 实现真实的API调用
+        // const response = await authFetch('/api/v1/stats/summary')
+        // if (response.ok) {
+        //   const data = await response.json()
+        //   stats.value = data
+        // }
+
+        // 暂时只更新时间戳，等待后端API实现
         lastUpdate.value = new Date().toLocaleString()
+        console.log('统计数据API尚未实现，显示默认值')
       } catch (error) {
         console.error('刷新统计数据失败:', error)
       } finally {

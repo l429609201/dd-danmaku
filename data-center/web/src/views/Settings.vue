@@ -24,16 +24,34 @@
 </template>
 
 <script>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { authFetch } from '../utils/api.js'
 
 export default {
   name: 'Settings',
   setup() {
     const settings = ref({
-      username: 'admin',
-      email: 'admin@example.com'
+      username: '',
+      email: ''
     })
-    
+
+    const loadUserInfo = async () => {
+      try {
+        const response = await authFetch('/api/v1/auth/me')
+        if (response.ok) {
+          const userInfo = await response.json()
+          settings.value.username = userInfo.username || ''
+          settings.value.email = userInfo.email || ''
+        }
+      } catch (error) {
+        console.error('获取用户信息失败:', error)
+      }
+    }
+
+    onMounted(() => {
+      loadUserInfo()
+    })
+
     return {
       settings
     }

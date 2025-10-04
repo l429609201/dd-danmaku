@@ -49,13 +49,15 @@ export default {
 
     const loadStats = async () => {
       try {
-        // 模拟API调用
-        stats.value = {
-          totalRequests: 12345,
-          activeWorkers: 4,
-          blockedIPs: 23,
-          errorRate: 2.1
-        }
+        // TODO: 实现真实的API调用
+        // const response = await authFetch('/api/v1/stats/dashboard')
+        // if (response.ok) {
+        //   const data = await response.json()
+        //   stats.value = data
+        // }
+
+        // 暂时保持初始值为0，等待后端API实现
+        console.log('统计数据API尚未实现，显示默认值')
       } catch (error) {
         console.error('加载统计数据失败:', error)
       }
