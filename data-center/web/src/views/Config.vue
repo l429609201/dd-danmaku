@@ -167,9 +167,13 @@ export default {
         if (response.ok) {
           const data = await response.json()
           workers.value = data
+        } else {
+          console.error('加载Worker配置失败:', response.status, response.statusText)
+          showMessage('加载Worker配置失败', 'error')
         }
       } catch (error) {
         console.error('加载Worker配置失败:', error)
+        showMessage('加载Worker配置失败', 'error')
       }
     }
 
@@ -179,9 +183,13 @@ export default {
         if (response.ok) {
           const data = await response.json()
           apiKey.value = data.worker_api_key || ''
+        } else {
+          console.error('加载系统设置失败:', response.status, response.statusText)
+          showMessage('加载系统设置失败', 'error')
         }
       } catch (error) {
         console.error('加载系统设置失败:', error)
+        showMessage('加载系统设置失败', 'error')
       }
     }
 

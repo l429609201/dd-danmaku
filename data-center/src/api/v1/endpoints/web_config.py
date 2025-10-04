@@ -76,6 +76,7 @@ def get_web_config_service() -> WebConfigService:
 
 @router.get("/system-settings", response_model=Dict[str, Any])
 async def get_system_settings(
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """获取系统设置"""
@@ -92,6 +93,7 @@ async def get_system_settings(
 
 @router.get("/system-settings/with-secrets", response_model=Dict[str, Any])
 async def get_system_settings_with_secrets(
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """获取系统设置（包含敏感信息）"""
@@ -108,6 +110,7 @@ async def get_system_settings_with_secrets(
 @router.put("/system-settings", response_model=ConfigResponse)
 async def update_system_settings(
     settings_data: SystemSettingsUpdate,
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """更新系统设置"""
@@ -132,6 +135,7 @@ async def update_system_settings(
 
 @router.get("/configs", response_model=Dict[str, List[Dict]])
 async def get_all_configs(
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """获取所有配置（按分类分组）"""
@@ -144,6 +148,7 @@ async def get_all_configs(
 @router.get("/configs/{category}", response_model=List[Dict])
 async def get_configs_by_category(
     category: str,
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """根据分类获取配置"""
@@ -157,6 +162,7 @@ async def get_configs_by_category(
 async def get_config_value(
     category: str,
     key: str,
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """获取配置值"""
@@ -179,6 +185,7 @@ async def get_config_value(
 @router.post("/configs", response_model=ConfigResponse)
 async def set_config_value(
     config_item: ConfigItem,
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """设置配置值"""
@@ -210,6 +217,7 @@ async def update_config_value(
     category: str,
     key: str,
     config_item: ConfigItem,
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """更新配置值"""
@@ -240,6 +248,7 @@ async def update_config_value(
 async def delete_config(
     category: str,
     key: str,
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """删除配置"""
@@ -261,6 +270,7 @@ async def delete_config(
 
 @router.post("/init-defaults", response_model=ConfigResponse)
 async def init_default_configs(
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """初始化默认配置"""
@@ -366,6 +376,7 @@ async def create_worker(
 async def update_worker(
     worker_id: str,
     worker_data: WorkerConfigUpdate,
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """更新Worker配置"""
@@ -412,6 +423,7 @@ async def update_worker(
 @router.delete("/workers/{worker_id}", response_model=ConfigResponse)
 async def delete_worker(
     worker_id: str,
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """删除Worker配置"""
@@ -448,6 +460,7 @@ async def delete_worker(
 
 @router.post("/workers/generate-api-key", response_model=ConfigResponse)
 async def generate_new_api_key(
+    current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """生成新的API密钥"""

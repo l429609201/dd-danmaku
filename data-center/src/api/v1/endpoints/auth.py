@@ -18,6 +18,11 @@ class LoginRequest(BaseModel):
     password: str
 
 class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+
+class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str
 
@@ -67,6 +72,42 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="用户不存在")
 
     return user
+
+@router.post("/change-password", response_model=AuthResponse)
+async def change_password(
+    password_data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service)
+):
+    """修改密码"""
+    try:
+        # 验证新密码确认
+        if password_data.new_password != password_data.confirm_password:
+            raise HTTPException(status_code=400, detail="新密码与确认密码不匹配")
+
+        # 验证新密码强度
+        if len(password_data.new_password) < 6:
+            raise HTTPException(status_code=400, detail="新密码长度至少6位")
+
+        # 使用带验证的修改密码方法
+        success = await auth_service.change_password(
+            user_id=current_user.id,
+            old_password=password_data.current_password,
+            new_password=password_data.new_password
+        )
+
+        if success:
+            return AuthResponse(
+                success=True,
+                message="密码修改成功"
+            )
+        else:
+            raise HTTPException(status_code=400, detail="当前密码错误")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
@@ -129,33 +170,7 @@ async def get_current_user_info(
     """获取当前用户信息"""
     return current_user.to_dict()
 
-@router.post("/change-password", response_model=AuthResponse)
-async def change_password(
-    password_data: ChangePasswordRequest,
-    current_user: User = Depends(get_current_user),
-    auth_service: AuthService = Depends(get_auth_service)
-):
-    """修改密码"""
-    try:
-        success = await auth_service.change_password(
-            user_id=current_user.id,
-            old_password=password_data.old_password,
-            new_password=password_data.new_password
-        )
-        
-        if success:
-            return AuthResponse(
-                success=True,
-                message="密码修改成功，请重新登录"
-            )
-        else:
-            return AuthResponse(
-                success=False,
-                message="旧密码错误"
-            )
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/sessions", response_model=list[Dict[str, Any]])
 async def get_user_sessions(

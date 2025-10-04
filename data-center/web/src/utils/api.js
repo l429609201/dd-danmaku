@@ -27,20 +27,23 @@ export async function authFetch(url, options = {}) {
     ...getAuthHeaders(),
     ...(options.headers || {})
   }
-  
+
   const response = await fetch(url, {
     ...options,
     headers
   })
-  
+
   // 如果返回401，清除本地令牌并跳转到登录页
   if (response.status === 401) {
+    console.warn('JWT令牌已过期或无效，正在跳转到登录页...')
     localStorage.removeItem('access_token')
     localStorage.removeItem('token_type')
+
+    // 立即跳转到登录页
     window.location.href = '/login'
     return response
   }
-  
+
   return response
 }
 

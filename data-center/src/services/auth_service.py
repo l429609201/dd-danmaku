@@ -305,3 +305,35 @@ class AuthService:
         except Exception as e:
             logger.error(f"获取用户失败: {e}")
             return None
+
+    async def change_user_password(self, user_id: int, new_password: str) -> bool:
+        """修改用户密码"""
+        try:
+            db = self.db()
+
+            user = db.query(User).filter(
+                User.id == user_id,
+                User.is_active == True
+            ).first()
+
+            if not user:
+                logger.error(f"用户不存在: {user_id}")
+                db.close()
+                return False
+
+            # 更新密码
+            user.set_password(new_password)
+            user.updated_at = now()
+
+            db.commit()
+            db.close()
+
+            logger.info(f"用户 {user.username} 密码修改成功")
+            return True
+
+        except Exception as e:
+            logger.error(f"修改密码失败: {e}")
+            if 'db' in locals():
+                db.rollback()
+                db.close()
+            return False

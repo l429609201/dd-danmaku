@@ -32,7 +32,19 @@
       <div class="user-section">
         <div class="user-info">
           <span class="username">{{ username }}</span>
-          <button @click="logout" class="logout-btn">🚪 退出</button>
+          <div class="user-dropdown">
+            <button @click="toggleDropdown" class="user-btn">
+              👤 <span class="dropdown-arrow" :class="{ open: showDropdown }">▼</span>
+            </button>
+            <div v-if="showDropdown" class="dropdown-menu">
+              <router-link to="/change-password" class="dropdown-item" @click="closeDropdown">
+                🔐 修改密码
+              </router-link>
+              <button @click="logout" class="dropdown-item logout-item">
+                🚪 退出登录
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </nav>
@@ -53,8 +65,18 @@ export default {
   setup() {
     const router = useRouter()
     const username = ref('admin')
-    
+    const showDropdown = ref(false)
+
+    const toggleDropdown = () => {
+      showDropdown.value = !showDropdown.value
+    }
+
+    const closeDropdown = () => {
+      showDropdown.value = false
+    }
+
     const logout = () => {
+      closeDropdown()
       if (confirm('确定要退出登录吗？')) {
         apiLogout()
       }
@@ -68,8 +90,20 @@ export default {
       }
     })
     
+    // 点击外部关闭下拉菜单
+    onMounted(() => {
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('.user-dropdown')) {
+          showDropdown.value = false
+        }
+      })
+    })
+
     return {
       username,
+      showDropdown,
+      toggleDropdown,
+      closeDropdown,
       logout
     }
   }
@@ -154,7 +188,11 @@ export default {
   font-size: 14px;
 }
 
-.logout-btn {
+.user-dropdown {
+  position: relative;
+}
+
+.user-btn {
   background: #e74c3c;
   color: white;
   border: none;
@@ -162,11 +200,63 @@ export default {
   border-radius: 4px;
   cursor: pointer;
   font-size: 12px;
-  transition: background 0.3s;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.logout-btn:hover {
+.user-btn:hover {
   background: #c0392b;
+}
+
+.dropdown-arrow {
+  font-size: 10px;
+  transition: transform 0.3s ease;
+}
+
+.dropdown-arrow.open {
+  transform: rotate(180deg);
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  min-width: 150px;
+  z-index: 1000;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 12px 16px;
+  color: #333;
+  text-decoration: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+  transition: background-color 0.2s ease;
+}
+
+.dropdown-item:hover {
+  background: #f8f9fa;
+}
+
+.logout-item {
+  border-top: 1px solid #e9ecef;
+  color: #dc3545;
+}
+
+.logout-item:hover {
+  background: #f8d7da;
 }
 
 .main-content {
