@@ -132,12 +132,23 @@ def create_application() -> FastAPI:
         return False
 
     # 根据环境确定静态文件目录
-    if _is_docker_environment():
+    is_docker = _is_docker_environment()
+    if is_docker:
         static_dir = Path("/app/web/dist")
         dev_static_dir = Path("/app/web")
     else:
         static_dir = Path("web/dist")
         dev_static_dir = Path("web")
+
+    # 调试信息
+    logger.info(f"🔍 运行环境: {'Docker' if is_docker else '本地开发'}")
+    logger.info(f"🔍 当前工作目录: {Path.cwd()}")
+    logger.info(f"🔍 静态文件目录: {static_dir}")
+    logger.info(f"🔍 静态文件目录存在: {static_dir.exists()}")
+    if static_dir.exists():
+        logger.info(f"🔍 静态文件目录内容: {list(static_dir.iterdir())}")
+        index_file = static_dir / "index.html"
+        logger.info(f"🔍 index.html存在: {index_file.exists()}")
 
     # 尝试挂载构建后的静态文件
     if static_dir.exists() and static_dir.is_dir():
