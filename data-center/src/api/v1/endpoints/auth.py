@@ -26,6 +26,14 @@ class AuthResponse(BaseModel):
     message: str
     data: Any = None
 
+class LoginResponse(BaseModel):
+    success: bool
+    message: str
+    access_token: str
+    token_type: str
+    expires_in: int
+    user: dict
+
 # 依赖注入
 def get_auth_service() -> AuthService:
     return AuthService()
@@ -60,7 +68,7 @@ async def get_current_user(
 
     return user
 
-@router.post("/login", response_model=AuthResponse)
+@router.post("/login", response_model=LoginResponse)
 async def login(
     request: Request,
     response: Response,
@@ -73,10 +81,7 @@ async def login(
         user = await auth_service.authenticate_user(login_data.username, login_data.password)
         
         if not user:
-            return AuthResponse(
-                success=False,
-                message="用户名或密码错误"
-            )
+            raise HTTPException(status_code=401, detail="用户名或密码错误")
         
         # 创建JWT令牌
         token_data = {

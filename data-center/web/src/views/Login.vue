@@ -103,16 +103,25 @@ export default {
           body: JSON.stringify(loginData)
         })
 
-        const result = await response.json()
-
-        if (response.ok && result.access_token) {
-          // 保存JWT令牌
-          localStorage.setItem('access_token', result.access_token)
-          localStorage.setItem('token_type', result.token_type || 'bearer')
-          showMessage(result.message || '登录成功', 'success')
-          router.push('/')
+        if (response.ok) {
+          const result = await response.json()
+          if (result.access_token) {
+            // 保存JWT令牌
+            localStorage.setItem('access_token', result.access_token)
+            localStorage.setItem('token_type', result.token_type || 'bearer')
+            showMessage(result.message || '登录成功', 'success')
+            router.push('/')
+          } else {
+            showMessage(result.message || '登录失败', 'error')
+          }
         } else {
-          showMessage(result.message || result.detail || '登录失败', 'error')
+          // 处理HTTP错误状态码
+          try {
+            const errorResult = await response.json()
+            showMessage(errorResult.detail || errorResult.message || '登录失败', 'error')
+          } catch {
+            showMessage('登录失败', 'error')
+          }
         }
       } catch (error) {
         console.error('登录错误:', error)
