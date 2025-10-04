@@ -23,4 +23,4 @@ pymysql==1.1.0  # MySQL支持
 python-multipart==0.0.6  # 文件上传支持
 passlib[bcrypt]==1.7.4  # 密码哈希（必需）
 pytz==2024.2  # 时区处理
-pyjwt==2.8.0  # JWT令牌处理
+python-jose[cryptography]==3.3.0  # JWT令牌处理（与misaka_danmu_server保持一致）

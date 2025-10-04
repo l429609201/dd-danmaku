@@ -1,7 +1,7 @@
 """
 JWT令牌工具模块
 """
-import jwt
+from jose import jwt, JWTError
 import secrets
 from datetime import timedelta, datetime
 from typing import Optional, Dict, Any
@@ -44,7 +44,7 @@ class JWTUtils:
         """
         to_encode = data.copy()
         
-        # 使用本地时间的naive datetime对象（参考misaka_danmu_server项目）
+        # 使用本地时间的naive datetime对象（python-jose支持直接使用datetime）
         now = naive_now()
         if expires_delta:
             expire = now + expires_delta
@@ -52,8 +52,8 @@ class JWTUtils:
             expire = now + timedelta(days=3)  # 默认3天
 
         to_encode.update({
-            "exp": expire,  # 直接使用datetime对象，不转换为timestamp
-            "iat": now,     # 直接使用datetime对象，不转换为timestamp
+            "exp": expire,  # python-jose支持直接使用datetime对象
+            "iat": now,     # python-jose支持直接使用datetime对象
             "type": "access"
         })
         
@@ -89,11 +89,12 @@ class JWTUtils:
 
             logger.info("✅ JWT令牌验证成功")
             return payload
-        except jwt.ExpiredSignatureError:
-            logger.warning(f"⚠️ JWT令牌已过期: {token[:20]}...")
-            return None
-        except jwt.InvalidTokenError as e:
-            logger.warning(f"⚠️ JWT令牌无效: {e}, token: {token[:20]}...")
+        except JWTError as e:
+            # python-jose的JWTError包含了所有JWT相关错误
+            if "expired" in str(e).lower():
+                logger.warning(f"⚠️ JWT令牌已过期: {token[:20]}...")
+            else:
+                logger.warning(f"⚠️ JWT令牌无效: {e}, token: {token[:20]}...")
             return None
         except Exception as e:
             logger.error(f"❌ JWT令牌验证失败: {e}, token: {token[:20]}...")
@@ -111,7 +112,7 @@ class JWTUtils:
         """
         try:
             return jwt.decode(token, options={"verify_signature": False})
-        except Exception as e:
+        except JWTError as e:
             logger.error(f"❌ JWT令牌解码失败: {e}")
             return None
     
@@ -142,10 +143,11 @@ class JWTUtils:
         """
         expiry = self.get_token_expiry(token)
         if expiry:
-            # 如果expiry是datetime对象，直接比较；如果是timestamp，需要转换
+            # python-jose返回的expiry可能是datetime对象或timestamp
             if isinstance(expiry, datetime):
                 return naive_now() > expiry
             else:
+                # 如果是timestamp，转换为本地时间比较
                 return naive_now().timestamp() > expiry
         return True
     
