@@ -113,6 +113,25 @@ def create_application() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # 添加请求日志中间件
+    @app.middleware("http")
+    async def log_requests(request, call_next):
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if request.url.path.startswith("/api/v1/auth/me"):
+            logger.info(f"🔍 收到/me请求")
+            logger.info(f"🔍 请求方法: {request.method}")
+            logger.info(f"🔍 请求URL: {request.url}")
+            logger.info(f"🔍 请求头: {dict(request.headers)}")
+
+        response = await call_next(request)
+
+        if request.url.path.startswith("/api/v1/auth/me"):
+            logger.info(f"🔍 /me响应状态: {response.status_code}")
+
+        return response
+
     # API路由
     app.include_router(api_router, prefix=settings.API_V1_STR)
 

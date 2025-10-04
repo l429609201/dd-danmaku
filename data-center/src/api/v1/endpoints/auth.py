@@ -219,9 +219,17 @@ async def logout(
 
 @router.get("/me", response_model=Dict[str, Any])
 async def get_current_user_info(
+    request: Request,
     current_user: User = Depends(get_current_user)
 ):
     """获取当前用户信息"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"🔐 /me端点被调用")
+    logger.info(f"🔐 请求头: {dict(request.headers)}")
+    logger.info(f"🔐 Authorization头: {request.headers.get('authorization')}")
+
     return current_user.to_dict()
 
 
