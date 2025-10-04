@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 import logging
 
 from src.utils.time_utils import now, utc_now
+from src.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -65,30 +66,35 @@ class JWTUtils:
     def verify_token(self, token: str) -> Optional[Dict[str, Any]]:
         """
         验证令牌
-        
+
         Args:
             token: JWT令牌字符串
-            
+
         Returns:
             解码后的数据，如果验证失败返回None
         """
         try:
+            logger.info(f"🔐 开始验证JWT令牌: {token[:20]}...")
+            logger.info(f"🔐 使用密钥: {self.secret_key[:10]}...")
+
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
-            
+            logger.info(f"🔐 JWT解码成功: {payload}")
+
             # 检查令牌类型
             if payload.get("type") != "access":
                 logger.warning("⚠️ 令牌类型不正确")
                 return None
-            
+
+            logger.info("✅ JWT令牌验证成功")
             return payload
         except jwt.ExpiredSignatureError:
-            logger.warning("⚠️ JWT令牌已过期")
+            logger.warning(f"⚠️ JWT令牌已过期: {token[:20]}...")
             return None
         except jwt.InvalidTokenError as e:
-            logger.warning(f"⚠️ JWT令牌无效: {e}")
+            logger.warning(f"⚠️ JWT令牌无效: {e}, token: {token[:20]}...")
             return None
         except Exception as e:
-            logger.error(f"❌ JWT令牌验证失败: {e}")
+            logger.error(f"❌ JWT令牌验证失败: {e}, token: {token[:20]}...")
             return None
     
     def decode_token_without_verification(self, token: str) -> Optional[Dict[str, Any]]:
@@ -159,8 +165,8 @@ class JWTUtils:
         return self.create_access_token(payload, expires_delta)
 
 
-# 全局JWT工具实例
-jwt_utils = JWTUtils()
+# 全局JWT工具实例（使用配置中的密钥）
+jwt_utils = JWTUtils(secret_key=settings.SECRET_KEY)
 
 # 便捷函数
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:

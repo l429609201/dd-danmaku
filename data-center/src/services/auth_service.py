@@ -106,7 +106,7 @@ class AuthService:
             logger.error(f"用户认证失败: {e}")
             return None
     
-    async def create_session(self, user: User, ip_address: str = None,
+    async def create_session(self, user: User, jwt_token: str = None, ip_address: str = None,
                            user_agent: str = None, expires_hours: int = 24) -> LoginSession:
         """创建登录会话"""
         try:
@@ -119,6 +119,7 @@ class AuthService:
             session = LoginSession(
                 user_id=user.id,
                 session_token=LoginSession.generate_token(),
+                jwt_token=jwt_token,
                 expires_at=now() + timedelta(hours=expires_hours),
                 ip_address=ip_address,
                 user_agent=user_agent,
@@ -333,6 +334,75 @@ class AuthService:
 
         except Exception as e:
             logger.error(f"修改密码失败: {e}")
+            if 'db' in locals():
+                db.rollback()
+                db.close()
+            return False
+
+    async def get_session_by_jwt_token(self, jwt_token: str) -> Optional[LoginSession]:
+        """根据JWT令牌获取会话"""
+        try:
+            db = self.db()
+
+            session = db.query(LoginSession).filter(
+                LoginSession.jwt_token == jwt_token,
+                LoginSession.is_active == True,
+                LoginSession.expires_at > now()
+            ).first()
+
+            db.close()
+            return session
+
+        except Exception as e:
+            logger.error(f"获取会话失败: {e}")
+            return None
+
+    async def validate_jwt_session(self, jwt_token: str) -> Optional[User]:
+        """验证JWT令牌并返回用户信息"""
+        try:
+            # 从数据库中查找会话
+            session = await self.get_session_by_jwt_token(jwt_token)
+            if not session:
+                logger.warning(f"🔐 会话不存在或已过期: {jwt_token[:20]}...")
+                return None
+
+            # 获取用户信息
+            user = await self.get_user_by_id(session.user_id)
+            if not user:
+                logger.warning(f"🔐 会话对应的用户不存在: user_id={session.user_id}")
+                return None
+
+            logger.info(f"🔐 JWT会话验证成功: {user.username}")
+            return user
+
+        except Exception as e:
+            logger.error(f"JWT会话验证失败: {e}")
+            return None
+
+    async def revoke_jwt_session(self, jwt_token: str) -> bool:
+        """撤销JWT会话"""
+        try:
+            db = self.db()
+
+            # 查找并撤销会话
+            session = db.query(LoginSession).filter(
+                LoginSession.jwt_token == jwt_token,
+                LoginSession.is_active == True
+            ).first()
+
+            if session:
+                session.is_active = False
+                db.commit()
+                logger.info(f"🔐 JWT会话已撤销: session_id={session.id}")
+                db.close()
+                return True
+            else:
+                logger.warning(f"🔐 要撤销的会话不存在: {jwt_token[:20]}...")
+                db.close()
+                return False
+
+        except Exception as e:
+            logger.error(f"撤销JWT会话失败: {e}")
             if 'db' in locals():
                 db.rollback()
                 db.close()

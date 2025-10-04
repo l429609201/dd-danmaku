@@ -48,29 +48,36 @@ async def get_current_user(
     auth_service: AuthService = Depends(get_auth_service)
 ) -> User:
     """获取当前用户（JWT认证）"""
+    import logging
+    logger = logging.getLogger(__name__)
+
     if not authorization:
+        logger.warning("🔐 认证失败: 未提供认证令牌")
         raise HTTPException(status_code=401, detail="未提供认证令牌")
 
     # 检查Bearer格式
     if not authorization.startswith("Bearer "):
+        logger.warning(f"🔐 认证失败: 令牌格式错误 - {authorization[:20]}...")
         raise HTTPException(status_code=401, detail="认证令牌格式错误")
 
     token = authorization.split(" ")[1]
+    logger.info(f"🔐 正在验证JWT令牌: {token[:20]}...")
 
-    # 验证JWT令牌
+    # 首先验证JWT令牌格式和签名
     payload = verify_token(token)
     if not payload:
+        logger.warning(f"🔐 认证失败: JWT令牌格式无效或签名错误 - {token[:20]}...")
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
 
-    # 获取用户信息
-    user_id = payload.get("user_id")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="令牌数据无效")
+    logger.info(f"🔐 JWT令牌格式验证成功: {payload}")
 
-    user = await auth_service.get_user_by_id(user_id)
+    # 从数据库验证会话
+    user = await auth_service.validate_jwt_session(token)
     if not user:
-        raise HTTPException(status_code=401, detail="用户不存在")
+        logger.warning(f"🔐 认证失败: 会话不存在或已过期 - {token[:20]}...")
+        raise HTTPException(status_code=401, detail="会话无效或已过期")
 
+    logger.info(f"🔐 用户认证成功: {user.username}")
     return user
 
 @router.post("/change-password", response_model=AuthResponse)
@@ -137,9 +144,24 @@ async def login(
             expires_delta=timedelta(days=3)
         )
 
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"🔐 为用户 {user.username} 生成JWT令牌: {access_token[:20]}...")
+
         # 记录登录信息（可选，用于审计）
         client_ip = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
+
+        # 创建会话并存储JWT令牌
+        session = await auth_service.create_session(
+            user=user,
+            jwt_token=access_token,
+            ip_address=client_ip,
+            user_agent=user_agent,
+            expires_hours=72  # 3天
+        )
+
+        logger.info(f"🔐 会话创建成功: session_id={session.id}")
 
         return {
             "success": True,
@@ -155,13 +177,32 @@ async def login(
 
 @router.post("/logout")
 async def logout(
-    current_user: User = Depends(get_current_user)
+    authorization: Optional[str] = Header(None),
+    current_user: User = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service)
 ):
-    """用户登出（JWT令牌无需服务端处理）"""
-    return {
-        "success": True,
-        "message": "登出成功"
-    }
+    """用户登出（撤销JWT令牌）"""
+    try:
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization.split(" ")[1]
+
+            # 撤销会话
+            success = await auth_service.revoke_jwt_session(token)
+            if success:
+                return AuthResponse(
+                    success=True,
+                    message="登出成功"
+                )
+
+        return AuthResponse(
+            success=True,
+            message="登出成功"
+        )
+    except Exception as e:
+        return AuthResponse(
+            success=True,
+            message="登出成功"  # 即使撤销失败也返回成功，因为前端会清除令牌
+        )
 
 @router.get("/me", response_model=Dict[str, Any])
 async def get_current_user_info(

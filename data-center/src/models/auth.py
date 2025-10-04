@@ -64,6 +64,7 @@ class LoginSession(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False, index=True)
     session_token = Column(String(128), unique=True, index=True, nullable=False)
+    jwt_token = Column(Text, nullable=True)  # 存储JWT令牌
     expires_at = Column(DateTime, nullable=False)
     ip_address = Column(String(45), nullable=True)  # 支持IPv6
     user_agent = Column(Text, nullable=True)
@@ -81,6 +82,7 @@ class LoginSession(Base):
             "id": self.id,
             "user_id": self.user_id,
             "session_token": self.session_token,
+            "jwt_token": self.jwt_token,
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "ip_address": self.ip_address,
             "user_agent": self.user_agent,
