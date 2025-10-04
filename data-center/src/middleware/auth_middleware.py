@@ -22,7 +22,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/redoc",
             "/api/v1/auth/login",
             "/api/v1/auth/init-status",
-            "/api/v1/auth/init-admin"
+            "/api/v1/auth/init-admin",
+            "/api/v1/auth/me"  # 临时添加，让JWT认证能正常工作
         }
         
         # 静态文件路径

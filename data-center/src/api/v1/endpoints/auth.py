@@ -218,15 +218,16 @@ async def logout(
         )
 
 @router.get("/me", response_model=Dict[str, Any])
-async def get_current_user_info(
-    request: Request,
-    auth_service: AuthService = Depends(get_auth_service)
-):
+async def get_current_user_info(request: Request):
     """获取当前用户信息"""
     import logging
     logger = logging.getLogger(__name__)
 
+    logger.error(f"🚨 /me端点开始执行！！！")
     logger.info(f"🔐 /me端点被调用")
+
+    # 手动创建AuthService实例
+    auth_service = AuthService()
     logger.info(f"🔐 请求头: {dict(request.headers)}")
 
     # 直接在这里处理认证
