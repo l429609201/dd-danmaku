@@ -1,11 +1,15 @@
 """
 Web界面配置管理API端点
 """
+import secrets
+import string
 from typing import Dict, Any, List
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from src.services.web_config_service import WebConfigService
+from src.api.v1.endpoints.auth import get_current_user
+from src.models.auth import User
 
 router = APIRouter()
 
@@ -48,6 +52,23 @@ class ConfigResponse(BaseModel):
     success: bool
     message: str
     data: Any = None
+
+class WorkerConfig(BaseModel):
+    id: str
+    name: str
+    endpoint: str
+    api_key: str
+    status: str = "offline"
+    last_sync: str = None
+
+class WorkerConfigCreate(BaseModel):
+    name: str
+    endpoint: str
+
+class WorkerConfigUpdate(BaseModel):
+    name: str = None
+    endpoint: str = None
+    api_key: str = None
 
 # 依赖注入
 def get_web_config_service() -> WebConfigService:
@@ -250,5 +271,200 @@ async def init_default_configs(
             success=True,
             message="默认配置初始化成功"
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+def generate_api_key(length: int = 32) -> str:
+    """生成随机API密钥"""
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+@router.get("/workers", response_model=List[Dict])
+async def get_workers(
+    current_user: User = Depends(get_current_user),
+    web_config_service: WebConfigService = Depends(get_web_config_service)
+):
+    """获取所有Worker配置"""
+    try:
+        # 从系统设置中获取worker配置
+        settings = await web_config_service.get_system_settings()
+        if not settings:
+            return []
+
+        workers = []
+        worker_endpoints = settings.worker_endpoints or ""
+        worker_api_key = settings.worker_api_key or ""
+
+        if worker_endpoints:
+            endpoints = [ep.strip() for ep in worker_endpoints.split(',') if ep.strip()]
+            for i, endpoint in enumerate(endpoints):
+                workers.append({
+                    "id": f"worker_{i+1}",
+                    "name": f"Worker-{i+1}",
+                    "endpoint": endpoint,
+                    "api_key": worker_api_key,
+                    "status": "offline",
+                    "last_sync": None
+                })
+
+        return workers
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/workers", response_model=ConfigResponse)
+async def create_worker(
+    worker_data: WorkerConfigCreate,
+    current_user: User = Depends(get_current_user),
+    web_config_service: WebConfigService = Depends(get_web_config_service)
+):
+    """创建新的Worker配置"""
+    try:
+        settings = await web_config_service.get_system_settings()
+        if not settings:
+            settings = await web_config_service.create_default_system_settings()
+
+        # 获取现有endpoints
+        current_endpoints = settings.worker_endpoints or ""
+        endpoints = [ep.strip() for ep in current_endpoints.split(',') if ep.strip()]
+
+        # 添加新endpoint
+        if worker_data.endpoint not in endpoints:
+            endpoints.append(worker_data.endpoint)
+            new_endpoints = ','.join(endpoints)
+
+            # 如果没有API密钥，生成一个
+            api_key = settings.worker_api_key
+            if not api_key:
+                api_key = generate_api_key()
+
+            # 更新设置
+            success = await web_config_service.update_system_settings({
+                "worker_endpoints": new_endpoints,
+                "worker_api_key": api_key
+            })
+
+            if success:
+                return ConfigResponse(
+                    success=True,
+                    message="Worker配置创建成功",
+                    data={"api_key": api_key}
+                )
+            else:
+                return ConfigResponse(
+                    success=False,
+                    message="Worker配置创建失败"
+                )
+        else:
+            return ConfigResponse(
+                success=False,
+                message="Worker端点已存在"
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/workers/{worker_id}", response_model=ConfigResponse)
+async def update_worker(
+    worker_id: str,
+    worker_data: WorkerConfigUpdate,
+    web_config_service: WebConfigService = Depends(get_web_config_service)
+):
+    """更新Worker配置"""
+    try:
+        settings = await web_config_service.get_system_settings()
+        if not settings:
+            return ConfigResponse(success=False, message="系统设置不存在")
+
+        current_endpoints = settings.worker_endpoints or ""
+        endpoints = [ep.strip() for ep in current_endpoints.split(',') if ep.strip()]
+
+        # 解析worker_id获取索引
+        try:
+            worker_index = int(worker_id.split('_')[1]) - 1
+        except (IndexError, ValueError):
+            return ConfigResponse(success=False, message="无效的Worker ID")
+
+        if 0 <= worker_index < len(endpoints):
+            # 更新endpoint
+            if worker_data.endpoint:
+                endpoints[worker_index] = worker_data.endpoint
+
+            update_data = {"worker_endpoints": ','.join(endpoints)}
+
+            # 如果需要重新生成API密钥
+            if worker_data.api_key == "regenerate":
+                update_data["worker_api_key"] = generate_api_key()
+
+            success = await web_config_service.update_system_settings(update_data)
+
+            if success:
+                return ConfigResponse(
+                    success=True,
+                    message="Worker配置更新成功",
+                    data={"api_key": update_data.get("worker_api_key")}
+                )
+            else:
+                return ConfigResponse(success=False, message="Worker配置更新失败")
+        else:
+            return ConfigResponse(success=False, message="Worker不存在")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/workers/{worker_id}", response_model=ConfigResponse)
+async def delete_worker(
+    worker_id: str,
+    web_config_service: WebConfigService = Depends(get_web_config_service)
+):
+    """删除Worker配置"""
+    try:
+        settings = await web_config_service.get_system_settings()
+        if not settings:
+            return ConfigResponse(success=False, message="系统设置不存在")
+
+        current_endpoints = settings.worker_endpoints or ""
+        endpoints = [ep.strip() for ep in current_endpoints.split(',') if ep.strip()]
+
+        # 解析worker_id获取索引
+        try:
+            worker_index = int(worker_id.split('_')[1]) - 1
+        except (IndexError, ValueError):
+            return ConfigResponse(success=False, message="无效的Worker ID")
+
+        if 0 <= worker_index < len(endpoints):
+            # 删除endpoint
+            endpoints.pop(worker_index)
+
+            success = await web_config_service.update_system_settings({
+                "worker_endpoints": ','.join(endpoints)
+            })
+
+            if success:
+                return ConfigResponse(success=True, message="Worker配置删除成功")
+            else:
+                return ConfigResponse(success=False, message="Worker配置删除失败")
+        else:
+            return ConfigResponse(success=False, message="Worker不存在")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/workers/generate-api-key", response_model=ConfigResponse)
+async def generate_new_api_key(
+    web_config_service: WebConfigService = Depends(get_web_config_service)
+):
+    """生成新的API密钥"""
+    try:
+        new_api_key = generate_api_key()
+
+        success = await web_config_service.update_system_settings({
+            "worker_api_key": new_api_key
+        })
+
+        if success:
+            return ConfigResponse(
+                success=True,
+                message="API密钥生成成功",
+                data={"api_key": new_api_key}
+            )
+        else:
+            return ConfigResponse(success=False, message="API密钥生成失败")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

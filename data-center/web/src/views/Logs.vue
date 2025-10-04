@@ -62,6 +62,7 @@
 
 <script>
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { authFetch } from '../utils/api.js'
 
 export default {
   name: 'Logs',
@@ -72,13 +73,7 @@ export default {
     const autoScroll = ref(true)
     const logList = ref(null)
 
-    const logs = ref([
-      { id: 1, timestamp: '2024-01-01 10:00:00', level: 'INFO', message: '系统启动成功' },
-      { id: 2, timestamp: '2024-01-01 10:01:00', level: 'INFO', message: '数据库连接成功' },
-      { id: 3, timestamp: '2024-01-01 10:02:00', level: 'WARNING', message: 'Worker连接超时，正在重试...' },
-      { id: 4, timestamp: '2024-01-01 10:03:00', level: 'ERROR', message: 'API调用失败: 网络超时' },
-      { id: 5, timestamp: '2024-01-01 10:04:00', level: 'INFO', message: 'Telegram机器人启动成功' }
-    ])
+    const logs = ref([])
 
     const filteredLogs = computed(() => {
       let result = logs.value
@@ -115,7 +110,18 @@ export default {
     const refreshLogs = async () => {
       loading.value = true
       try {
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        const response = await authFetch('/api/v1/logs/system?limit=100')
+        if (response.ok) {
+          const data = await response.json()
+          logs.value = data.map((log, index) => ({
+            id: index + 1,
+            timestamp: log.timestamp || log.created_at,
+            level: log.level,
+            message: log.message
+          }))
+        } else {
+          console.error('获取日志失败:', response.status)
+        }
       } catch (error) {
         console.error('刷新日志失败:', error)
       } finally {
@@ -153,6 +159,11 @@ export default {
 
     onMounted(() => {
       refreshLogs()
+      nextTick(() => {
+        if (autoScroll.value) {
+          scrollToBottom()
+        }
+      })
     })
 
     return {

@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 
 from src.services.stats_service import StatsService
+from src.api.v1.endpoints.auth import get_current_user
+from src.models.auth import User
 
 router = APIRouter()
 
@@ -30,6 +32,7 @@ def get_stats_service() -> StatsService:
 async def get_system_logs(
     limit: int = Query(50, description="返回记录数量"),
     level: str = Query(None, description="日志级别过滤"),
+    current_user: User = Depends(get_current_user),
     stats_service: StatsService = Depends(get_stats_service)
 ):
     """获取系统日志"""

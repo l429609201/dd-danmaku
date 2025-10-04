@@ -116,6 +116,11 @@ def create_application() -> FastAPI:
             "task_scheduler": task_scheduler is not None
         }
 
+    # 处理可能的日志路由请求
+    @app.get("/logs")
+    async def logs_redirect():
+        raise HTTPException(status_code=404, detail="Use /api/v1/logs/system instead")
+
     # 静态文件服务配置
     import os
     from pathlib import Path
@@ -192,6 +197,7 @@ def create_application() -> FastAPI:
         if (full_path.startswith("api/") or
             full_path.startswith("health") or
             full_path.startswith("docs") or
+            full_path.startswith("logs") or
             full_path.startswith("assets/") or
             full_path.startswith("images/")):
             raise HTTPException(status_code=404, detail="Not found")
