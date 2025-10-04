@@ -8,8 +8,10 @@ WORKDIR /app/web
 # 复制前端依赖文件
 COPY web/package*.json ./
 
-# 安装前端依赖（包含开发依赖，用于构建）
-RUN npm install
+# 清理npm缓存并安装依赖
+RUN npm cache clean --force && \
+    rm -rf node_modules package-lock.json && \
+    npm install
 
 # 复制前端源码
 COPY web/ .
