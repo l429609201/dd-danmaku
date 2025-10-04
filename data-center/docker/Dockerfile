@@ -29,10 +29,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制Python依赖文件
-COPY requirements/prod.txt requirements.txt
+COPY requirements/ requirements/
 
 # 安装Python依赖
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements/prod.txt
 
 # 复制后端源码
 COPY src/ ./src/
