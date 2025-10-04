@@ -8,8 +8,8 @@ WORKDIR /app/web
 # 复制前端依赖文件
 COPY web/package*.json ./
 
-# 安装前端依赖
-RUN npm install --omit=dev
+# 安装前端依赖（包含开发依赖，用于构建）
+RUN npm install
 
 # 复制前端源码
 COPY web/ .
