@@ -106,12 +106,13 @@ export default {
         const result = await response.json()
 
         if (response.ok && result.access_token) {
-          // 保存token
+          // 保存JWT令牌
           localStorage.setItem('access_token', result.access_token)
-          showMessage('登录成功', 'success')
+          localStorage.setItem('token_type', result.token_type || 'bearer')
+          showMessage(result.message || '登录成功', 'success')
           router.push('/')
         } else {
-          showMessage(result.detail || '登录失败', 'error')
+          showMessage(result.message || result.detail || '登录失败', 'error')
         }
       } catch (error) {
         console.error('登录错误:', error)

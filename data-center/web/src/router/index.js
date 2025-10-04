@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { isLoggedIn } from '../utils/api.js'
 
 // 路由配置
 const routes = [
@@ -54,8 +55,7 @@ router.beforeEach((to, from, next) => {
 
   // 检查认证状态
   if (to.meta.requiresAuth !== false) {
-    const token = localStorage.getItem('access_token')
-    if (!token) {
+    if (!isLoggedIn()) {
       // 未登录，跳转到登录页
       next('/login')
     } else {

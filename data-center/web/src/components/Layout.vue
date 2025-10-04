@@ -46,6 +46,7 @@
 <script>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { logout as apiLogout } from '../utils/api.js'
 
 export default {
   name: 'Layout',
@@ -55,8 +56,7 @@ export default {
     
     const logout = () => {
       if (confirm('确定要退出登录吗？')) {
-        localStorage.removeItem('access_token')
-        router.push('/login')
+        apiLogout()
       }
     }
     

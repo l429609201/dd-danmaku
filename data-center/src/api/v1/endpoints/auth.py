@@ -1,12 +1,14 @@
 """
 用户认证API端点
 """
-from typing import Dict, Any
-from fastapi import APIRouter, HTTPException, Depends, Request, Response
+from typing import Dict, Any, Optional
+from fastapi import APIRouter, HTTPException, Depends, Request, Response, Header
 from pydantic import BaseModel
+from datetime import timedelta
 
 from src.services.auth_service import AuthService
 from src.models.auth import User
+from src.utils import create_access_token, verify_token
 
 router = APIRouter()
 
@@ -28,18 +30,34 @@ class AuthResponse(BaseModel):
 def get_auth_service() -> AuthService:
     return AuthService()
 
-async def get_current_user(request: Request, auth_service: AuthService = Depends(get_auth_service)) -> User:
-    """获取当前登录用户"""
-    # 从Cookie中获取会话令牌
-    session_token = request.cookies.get("session_token")
-    
-    if not session_token:
-        raise HTTPException(status_code=401, detail="未登录")
-    
-    user = await auth_service.validate_session(session_token)
+async def get_current_user(
+    authorization: Optional[str] = Header(None),
+    auth_service: AuthService = Depends(get_auth_service)
+) -> User:
+    """获取当前用户（JWT认证）"""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="未提供认证令牌")
+
+    # 检查Bearer格式
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="认证令牌格式错误")
+
+    token = authorization.split(" ")[1]
+
+    # 验证JWT令牌
+    payload = verify_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+
+    # 获取用户信息
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="令牌数据无效")
+
+    user = await auth_service.get_user_by_id(user_id)
     if not user:
-        raise HTTPException(status_code=401, detail="会话已过期，请重新登录")
-    
+        raise HTTPException(status_code=401, detail="用户不存在")
+
     return user
 
 @router.post("/login", response_model=AuthResponse)
@@ -60,62 +78,44 @@ async def login(
                 message="用户名或密码错误"
             )
         
-        # 创建会话
+        # 创建JWT令牌
+        token_data = {
+            "user_id": user.id,
+            "username": user.username,
+            "sub": str(user.id)  # JWT标准字段
+        }
+
+        # 创建访问令牌，有效期3天
+        access_token = create_access_token(
+            data=token_data,
+            expires_delta=timedelta(days=3)
+        )
+
+        # 记录登录信息（可选，用于审计）
         client_ip = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
-        
-        session = await auth_service.create_session(
-            user=user,
-            ip_address=client_ip,
-            user_agent=user_agent,
-            expires_hours=24
-        )
-        
-        # 设置Cookie
-        response.set_cookie(
-            key="session_token",
-            value=session.session_token,
-            max_age=24 * 60 * 60,  # 24小时
-            httponly=True,
-            secure=False,  # 开发环境设为False，生产环境应设为True
-            samesite="lax"
-        )
-        
-        return AuthResponse(
-            success=True,
-            message="登录成功",
-            data={
-                "user": user.to_dict(),
-                "session_expires": session.expires_at.isoformat()
-            }
-        )
+
+        return {
+            "success": True,
+            "message": "登录成功",
+            "access_token": access_token,
+            "token_type": "bearer",
+            "expires_in": 3 * 24 * 60 * 60,  # 3天，单位秒
+            "user": user.to_dict()
+        }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/logout", response_model=AuthResponse)
+@router.post("/logout")
 async def logout(
-    request: Request,
-    response: Response,
-    auth_service: AuthService = Depends(get_auth_service)
+    current_user: User = Depends(get_current_user)
 ):
-    """用户登出"""
-    try:
-        session_token = request.cookies.get("session_token")
-        
-        if session_token:
-            await auth_service.logout_session(session_token)
-        
-        # 清除Cookie
-        response.delete_cookie(key="session_token")
-        
-        return AuthResponse(
-            success=True,
-            message="登出成功"
-        )
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """用户登出（JWT令牌无需服务端处理）"""
+    return {
+        "success": True,
+        "message": "登出成功"
+    }
 
 @router.get("/me", response_model=Dict[str, Any])
 async def get_current_user_info(

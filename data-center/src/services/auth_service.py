@@ -288,3 +288,20 @@ class AuthService:
         except Exception as e:
             logger.error(f"获取用户会话失败: {e}")
             return []
+
+    async def get_user_by_id(self, user_id: int) -> Optional[User]:
+        """根据用户ID获取用户"""
+        try:
+            db = self.db()
+
+            user = db.query(User).filter(
+                User.id == user_id,
+                User.is_active == True
+            ).first()
+
+            db.close()
+            return user
+
+        except Exception as e:
+            logger.error(f"获取用户失败: {e}")
+            return None
