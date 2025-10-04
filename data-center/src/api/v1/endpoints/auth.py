@@ -51,6 +51,11 @@ async def get_current_user(
     import logging
     logger = logging.getLogger(__name__)
 
+    logger.info(f"🔐 收到认证请求")
+    logger.info(f"🔐 Authorization头内容: {authorization}")
+    logger.info(f"🔐 Authorization头类型: {type(authorization)}")
+    logger.info(f"🔐 Authorization头长度: {len(authorization) if authorization else 0}")
+
     if not authorization:
         logger.warning("🔐 认证失败: 未提供认证令牌")
         raise HTTPException(status_code=401, detail="未提供认证令牌")
