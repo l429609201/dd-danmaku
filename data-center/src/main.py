@@ -142,24 +142,21 @@ def create_application() -> FastAPI:
     # 尝试挂载构建后的静态文件
     if static_dir.exists() and static_dir.is_dir():
         try:
-            # 生产环境：挂载构建后的静态资源
+            # 参考misaka项目的挂载方式
+            # 挂载静态资源目录
             assets_dir = static_dir / "assets"
             if assets_dir.exists():
                 app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
                 logger.info("✅ 静态资源目录已挂载: /assets")
 
-            # 挂载完整的dist目录
-            app.mount("/dist", StaticFiles(directory=str(static_dir)), name="dist")
-            logger.info("✅ 静态文件目录已挂载: /dist")
+            # 挂载图片目录（如果存在）
+            images_dir = static_dir / "images"
+            if images_dir.exists():
+                app.mount("/images", StaticFiles(directory=str(images_dir)), name="images")
+                logger.info("✅ 图片目录已挂载: /images")
 
-            # SPA路由支持
-            from fastapi.responses import FileResponse
-            from fastapi import Request, HTTPException
-
-            # 注意：SPA路由必须在所有API路由之后定义
-            # 这里先不定义，在create_application函数最后定义
-
-            logger.info("✅ SPA路由支持已启用")
+            # 不挂载整个dist目录，而是在SPA路由中直接返回文件
+            logger.info("✅ 静态文件挂载完成，等待SPA路由配置")
 
         except Exception as e:
             logger.warning(f"⚠️ 静态文件服务挂载失败: {e}")
@@ -231,7 +228,7 @@ def create_application() -> FastAPI:
                 full_path.startswith("health") or
                 full_path.startswith("docs") or
                 full_path.startswith("assets/") or
-                full_path.startswith("dist/")):
+                full_path.startswith("images/")):
                 raise HTTPException(status_code=404, detail="Not found")
 
             # 返回构建后的index.html
