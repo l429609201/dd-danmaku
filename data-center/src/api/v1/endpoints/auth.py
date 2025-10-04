@@ -220,7 +220,7 @@ async def logout(
 @router.get("/me", response_model=Dict[str, Any])
 async def get_current_user_info(
     request: Request,
-    current_user: User = Depends(get_current_user)
+    auth_service: AuthService = Depends(get_auth_service)
 ):
     """获取当前用户信息"""
     import logging
@@ -228,9 +228,39 @@ async def get_current_user_info(
 
     logger.info(f"🔐 /me端点被调用")
     logger.info(f"🔐 请求头: {dict(request.headers)}")
-    logger.info(f"🔐 Authorization头: {request.headers.get('authorization')}")
 
-    return current_user.to_dict()
+    # 直接在这里处理认证
+    authorization = request.headers.get('authorization')
+    logger.info(f"🔐 Authorization头: {authorization}")
+
+    if not authorization:
+        logger.warning("🔐 认证失败: 未提供认证令牌")
+        raise HTTPException(status_code=401, detail="未提供认证令牌")
+
+    # 检查Bearer格式
+    if not authorization.startswith("Bearer "):
+        logger.warning(f"🔐 认证失败: 令牌格式错误 - {authorization[:20]}...")
+        raise HTTPException(status_code=401, detail="认证令牌格式错误")
+
+    token = authorization.split(" ")[1]
+    logger.info(f"🔐 正在验证JWT令牌: {token[:20]}...")
+
+    # 首先验证JWT令牌格式和签名
+    payload = verify_token(token)
+    if not payload:
+        logger.warning(f"🔐 认证失败: JWT令牌格式无效或签名错误 - {token[:20]}...")
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+
+    logger.info(f"🔐 JWT令牌格式验证成功: {payload}")
+
+    # 从数据库验证会话
+    user = await auth_service.validate_jwt_session(token)
+    if not user:
+        logger.warning(f"🔐 认证失败: 会话不存在或已过期 - {token[:20]}...")
+        raise HTTPException(status_code=401, detail="会话无效或已过期")
+
+    logger.info(f"🔐 用户认证成功: {user.username}")
+    return user.to_dict()
 
 
 
