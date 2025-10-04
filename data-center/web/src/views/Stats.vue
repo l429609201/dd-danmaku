@@ -1,35 +1,138 @@
 <template>
   <div class="stats-page">
-    <h2>统计数据</h2>
-    <p>系统统计数据页面</p>
-    
-    <el-card>
-      <template #header>
-        <span>数据统计</span>
-      </template>
-      <el-table :data="statsData" style="width: 100%">
-        <el-table-column prop="name" label="指标名称" />
-        <el-table-column prop="value" label="数值" />
-        <el-table-column prop="unit" label="单位" />
-      </el-table>
-    </el-card>
+    <div class="page-header">
+      <h1>📊 统计数据</h1>
+      <p>查看系统运行统计和性能指标</p>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <h3>📈 请求统计</h3>
+        <div class="stat-list">
+          <div class="stat-item">
+            <span class="stat-label">今日请求</span>
+            <span class="stat-value">{{ stats.todayRequests }}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">总请求数</span>
+            <span class="stat-value">{{ stats.totalRequests }}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">成功率</span>
+            <span class="stat-value">{{ stats.successRate }}%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <h3>🌐 Worker状态</h3>
+        <div class="stat-list">
+          <div class="stat-item">
+            <span class="stat-label">在线Worker</span>
+            <span class="stat-value">{{ stats.onlineWorkers }}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">总Worker数</span>
+            <span class="stat-value">{{ stats.totalWorkers }}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">平均响应时间</span>
+            <span class="stat-value">{{ stats.avgResponseTime }}ms</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <h3>🛡️ 安全统计</h3>
+        <div class="stat-list">
+          <div class="stat-item">
+            <span class="stat-label">封禁IP数</span>
+            <span class="stat-value">{{ stats.blockedIPs }}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">今日拦截</span>
+            <span class="stat-value">{{ stats.todayBlocked }}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">违规请求</span>
+            <span class="stat-value">{{ stats.violationRequests }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <h3>💾 系统资源</h3>
+        <div class="stat-list">
+          <div class="stat-item">
+            <span class="stat-label">内存使用</span>
+            <span class="stat-value">{{ stats.memoryUsage }}MB</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">CPU使用率</span>
+            <span class="stat-value">{{ stats.cpuUsage }}%</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">运行时间</span>
+            <span class="stat-value">{{ stats.uptime }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="refresh-section">
+      <button @click="refreshStats" class="refresh-btn" :disabled="loading">
+        {{ loading ? '刷新中...' : '🔄 刷新数据' }}
+      </button>
+      <span class="last-update">最后更新: {{ lastUpdate }}</span>
+    </div>
   </div>
 </template>
 
 <script>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 
 export default {
   name: 'Stats',
   setup() {
-    const statsData = ref([
-      { name: '总请求数', value: 12345, unit: '次' },
-      { name: '活跃用户', value: 234, unit: '人' },
-      { name: '错误率', value: 2.1, unit: '%' }
-    ])
-    
+    const loading = ref(false)
+    const lastUpdate = ref('')
+
+    const stats = ref({
+      todayRequests: 1234,
+      totalRequests: 56789,
+      successRate: 98.5,
+      onlineWorkers: 3,
+      totalWorkers: 4,
+      avgResponseTime: 125,
+      blockedIPs: 23,
+      todayBlocked: 45,
+      violationRequests: 12,
+      memoryUsage: 256,
+      cpuUsage: 15.2,
+      uptime: '2天 14小时'
+    })
+
+    const refreshStats = async () => {
+      loading.value = true
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        lastUpdate.value = new Date().toLocaleString()
+      } catch (error) {
+        console.error('刷新统计数据失败:', error)
+      } finally {
+        loading.value = false
+      }
+    }
+
+    onMounted(() => {
+      refreshStats()
+    })
+
     return {
-      statsData
+      stats,
+      loading,
+      lastUpdate,
+      refreshStats
     }
   }
 }
@@ -38,5 +141,100 @@ export default {
 <style scoped>
 .stats-page {
   padding: 20px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.page-header {
+  margin-bottom: 30px;
+}
+
+.page-header h1 {
+  color: #333;
+  margin-bottom: 8px;
+}
+
+.page-header p {
+  color: #666;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  margin-bottom: 30px;
+}
+
+.stat-card {
+  background: white;
+  padding: 24px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.stat-card h3 {
+  color: #333;
+  margin-bottom: 20px;
+  font-size: 18px;
+}
+
+.stat-list {
+  display: grid;
+  gap: 12px;
+}
+
+.stat-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.stat-item:last-child {
+  border-bottom: none;
+}
+
+.stat-label {
+  color: #666;
+  font-size: 14px;
+}
+
+.stat-value {
+  color: #333;
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.refresh-section {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  justify-content: center;
+}
+
+.refresh-btn {
+  padding: 12px 24px;
+  background: #409eff;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.3s;
+}
+
+.refresh-btn:hover:not(:disabled) {
+  background: #337ecc;
+}
+
+.refresh-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.last-update {
+  color: #999;
+  font-size: 12px;
 }
 </style>

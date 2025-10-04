@@ -1,94 +1,100 @@
 <template>
   <div class="login-container">
-    <el-card class="login-card">
-      <template #header>
-        <div class="login-header">
-          <h2>DanDanPlay 数据交互中心</h2>
-          <p>请登录以继续</p>
-        </div>
-      </template>
-      
-      <el-form
-        ref="loginForm"
-        :model="loginData"
-        :rules="rules"
-        label-width="80px"
-        @submit.prevent="handleLogin"
-      >
-        <el-form-item label="用户名" prop="username">
-          <el-input
+    <div class="login-card">
+      <div class="login-header">
+        <h2>🎯 DanDanPlay 数据交互中心</h2>
+        <p>请登录以继续</p>
+      </div>
+
+      <form @submit.prevent="handleLogin" class="login-form">
+        <div class="form-group">
+          <label for="username">用户名</label>
+          <input
+            id="username"
             v-model="loginData.username"
+            type="text"
             placeholder="请输入用户名"
-            :prefix-icon="User"
+            required
           />
-        </el-form-item>
-        
-        <el-form-item label="密码" prop="password">
-          <el-input
+        </div>
+
+        <div class="form-group">
+          <label for="password">密码</label>
+          <input
+            id="password"
             v-model="loginData.password"
             type="password"
             placeholder="请输入密码"
-            :prefix-icon="Lock"
-            show-password
+            required
             @keyup.enter="handleLogin"
           />
-        </el-form-item>
-        
-        <el-form-item>
-          <el-button
-            type="primary"
-            :loading="loading"
-            style="width: 100%"
-            @click="handleLogin"
-          >
-            {{ loading ? '登录中...' : '登录' }}
-          </el-button>
-        </el-form-item>
-      </el-form>
-      
+        </div>
+
+        <button
+          type="submit"
+          class="login-btn"
+          :disabled="loading"
+        >
+          {{ loading ? '登录中...' : '登录' }}
+        </button>
+      </form>
+
       <div class="login-footer">
-        <p>首次使用？查看启动日志获取初始密码</p>
+        <p>💡 首次使用？查看启动日志获取初始密码</p>
+        <p class="api-links">
+          <a href="/docs" target="_blank">📖 API文档</a>
+          <a href="/health" target="_blank">🔍 健康检查</a>
+        </p>
       </div>
-    </el-card>
+    </div>
   </div>
 </template>
 
 <script>
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { User, Lock } from '@element-plus/icons-vue'
 
 export default {
   name: 'Login',
   setup() {
     const router = useRouter()
-    const loginForm = ref()
     const loading = ref(false)
-    
+
     const loginData = reactive({
       username: '',
       password: ''
     })
-    
-    const rules = {
-      username: [
-        { required: true, message: '请输入用户名', trigger: 'blur' }
-      ],
-      password: [
-        { required: true, message: '请输入密码', trigger: 'blur' },
-        { min: 6, message: '密码长度至少6位', trigger: 'blur' }
-      ]
+
+    const showMessage = (message, type = 'info') => {
+      // 简单的消息提示
+      const messageEl = document.createElement('div')
+      messageEl.textContent = message
+      messageEl.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 20px;
+        background: ${type === 'success' ? '#67c23a' : type === 'error' ? '#f56c6c' : '#409eff'};
+        color: white;
+        border-radius: 4px;
+        z-index: 9999;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      `
+      document.body.appendChild(messageEl)
+      setTimeout(() => {
+        document.body.removeChild(messageEl)
+      }, 3000)
     }
-    
+
     const handleLogin = async () => {
+      if (!loginData.username || !loginData.password) {
+        showMessage('请填写用户名和密码', 'error')
+        return
+      }
+
       try {
-        const valid = await loginForm.value.validate()
-        if (!valid) return
-        
         loading.value = true
-        
-        // 这里调用登录API
+
         const response = await fetch('/api/v1/auth/login', {
           method: 'POST',
           headers: {
@@ -96,31 +102,29 @@ export default {
           },
           body: JSON.stringify(loginData)
         })
-        
+
         const result = await response.json()
-        
-        if (result.success) {
-          ElMessage.success('登录成功')
+
+        if (response.ok && result.access_token) {
+          // 保存token
+          localStorage.setItem('access_token', result.access_token)
+          showMessage('登录成功', 'success')
           router.push('/')
         } else {
-          ElMessage.error(result.message || '登录失败')
+          showMessage(result.detail || '登录失败', 'error')
         }
       } catch (error) {
         console.error('登录错误:', error)
-        ElMessage.error('登录失败，请检查网络连接')
+        showMessage('登录失败，请检查网络连接', 'error')
       } finally {
         loading.value = false
       }
     }
-    
+
     return {
-      loginForm,
       loginData,
-      rules,
       loading,
-      handleLogin,
-      User,
-      Lock
+      handleLogin
     }
   }
 }
@@ -133,26 +137,86 @@ export default {
   align-items: center;
   min-height: 100vh;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 20px;
 }
 
 .login-card {
-  width: 400px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+  background: white;
+  padding: 40px;
+  border-radius: 16px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  max-width: 400px;
 }
 
 .login-header {
   text-align: center;
-  margin-bottom: 20px;
+  margin-bottom: 30px;
 }
 
 .login-header h2 {
   color: #333;
   margin-bottom: 8px;
+  font-size: 24px;
 }
 
 .login-header p {
   color: #666;
   font-size: 14px;
+}
+
+.login-form {
+  margin-bottom: 20px;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  color: #333;
+  font-weight: 500;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+  transition: border-color 0.3s;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+}
+
+.login-btn {
+  width: 100%;
+  padding: 12px;
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.login-btn:hover:not(:disabled) {
+  background: #5a67d8;
+  transform: translateY(-1px);
+}
+
+.login-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .login-footer {
@@ -163,5 +227,21 @@ export default {
 .login-footer p {
   color: #999;
   font-size: 12px;
+  margin: 8px 0;
+}
+
+.api-links {
+  margin-top: 15px;
+}
+
+.api-links a {
+  color: #667eea;
+  text-decoration: none;
+  margin: 0 10px;
+  font-size: 12px;
+}
+
+.api-links a:hover {
+  text-decoration: underline;
 }
 </style>

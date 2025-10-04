@@ -3,40 +3,40 @@ import { createRouter, createWebHistory } from 'vue-router'
 // 路由配置
 const routes = [
   {
-    path: '/',
-    name: 'Dashboard',
-    component: () => import('../views/Dashboard.vue'),
-    meta: { title: '仪表板' }
-  },
-  {
     path: '/login',
     name: 'Login',
     component: () => import('../views/Login.vue'),
     meta: { title: '登录', requiresAuth: false }
   },
   {
-    path: '/config',
-    name: 'Config',
-    component: () => import('../views/Config.vue'),
-    meta: { title: '配置管理' }
-  },
-  {
-    path: '/stats',
-    name: 'Stats',
-    component: () => import('../views/Stats.vue'),
-    meta: { title: '统计数据' }
-  },
-  {
-    path: '/logs',
-    name: 'Logs',
-    component: () => import('../views/Logs.vue'),
-    meta: { title: '日志管理' }
-  },
-  {
-    path: '/settings',
-    name: 'Settings',
-    component: () => import('../views/Settings.vue'),
-    meta: { title: '系统设置' }
+    path: '/',
+    component: () => import('../components/Layout.vue'),
+    children: [
+      {
+        path: '',
+        name: 'Dashboard',
+        component: () => import('../views/Dashboard.vue'),
+        meta: { title: '仪表板' }
+      },
+      {
+        path: 'config',
+        name: 'Config',
+        component: () => import('../views/Config.vue'),
+        meta: { title: '配置管理' }
+      },
+      {
+        path: 'stats',
+        name: 'Stats',
+        component: () => import('../views/Stats.vue'),
+        meta: { title: '统计数据' }
+      },
+      {
+        path: 'logs',
+        name: 'Logs',
+        component: () => import('../views/Logs.vue'),
+        meta: { title: '日志管理' }
+      }
+    ]
   }
 ]
 
@@ -51,13 +51,19 @@ router.beforeEach((to, from, next) => {
   if (to.meta.title) {
     document.title = `${to.meta.title} - DanDanPlay 数据交互中心`
   }
-  
+
   // 检查认证状态
   if (to.meta.requiresAuth !== false) {
-    // 这里可以添加认证检查逻辑
-    // 暂时允许所有访问
-    next()
+    const token = localStorage.getItem('access_token')
+    if (!token) {
+      // 未登录，跳转到登录页
+      next('/login')
+    } else {
+      // 已登录，允许访问
+      next()
+    }
   } else {
+    // 不需要认证的页面（如登录页）
     next()
   }
 })

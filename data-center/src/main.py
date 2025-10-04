@@ -150,11 +150,11 @@ def create_application() -> FastAPI:
         index_file = static_dir / "index.html"
         logger.info(f"🔍 index.html存在: {index_file.exists()}")
         if index_file.exists():
-            # 读取index.html的前200个字符来检查内容
+            # 读取完整的index.html来检查内容
             try:
                 with open(index_file, 'r', encoding='utf-8') as f:
-                    content = f.read(200)
-                    logger.info(f"🔍 index.html内容预览: {content}")
+                    content = f.read()
+                    logger.info(f"🔍 index.html完整内容: {content}")
             except Exception as e:
                 logger.warning(f"⚠️ 读取index.html失败: {e}")
 

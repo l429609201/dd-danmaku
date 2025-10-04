@@ -1,64 +1,41 @@
 <template>
   <div class="dashboard">
-    <el-row :gutter="20">
-      <el-col :span="6">
-        <el-card class="stat-card">
-          <div class="stat-item">
-            <div class="stat-value">{{ stats.totalRequests }}</div>
-            <div class="stat-label">总请求数</div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card class="stat-card">
-          <div class="stat-item">
-            <div class="stat-value">{{ stats.activeWorkers }}</div>
-            <div class="stat-label">活跃Worker</div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card class="stat-card">
-          <div class="stat-item">
-            <div class="stat-value">{{ stats.blockedIPs }}</div>
-            <div class="stat-label">封禁IP</div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card class="stat-card">
-          <div class="stat-item">
-            <div class="stat-value">{{ stats.errorRate }}%</div>
-            <div class="stat-label">错误率</div>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+    <h1>🎯 DanDanPlay API 数据交互中心</h1>
 
-    <el-row :gutter="20" style="margin-top: 20px;">
-      <el-col :span="12">
-        <el-card>
-          <template #header>
-            <span>请求趋势</span>
-          </template>
-          <div id="requestChart" style="height: 300px;"></div>
-        </el-card>
-      </el-col>
-      <el-col :span="12">
-        <el-card>
-          <template #header>
-            <span>Worker状态</span>
-          </template>
-          <div id="workerChart" style="height: 300px;"></div>
-        </el-card>
-      </el-col>
-    </el-row>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-value">{{ stats.totalRequests }}</div>
+        <div class="stat-label">总请求数</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">{{ stats.activeWorkers }}</div>
+        <div class="stat-label">活跃Worker</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">{{ stats.blockedIPs }}</div>
+        <div class="stat-label">封禁IP</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value">{{ stats.errorRate }}%</div>
+        <div class="stat-label">错误率</div>
+      </div>
+    </div>
+
+    <div class="charts-grid">
+      <div class="chart-card">
+        <h3>请求趋势</h3>
+        <div class="chart-placeholder">图表加载中...</div>
+      </div>
+      <div class="chart-card">
+        <h3>Worker状态</h3>
+        <div class="chart-placeholder">图表加载中...</div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script>
 import { ref, onMounted } from 'vue'
-import * as echarts from 'echarts'
 
 export default {
   name: 'Dashboard',
@@ -70,33 +47,9 @@ export default {
       errorRate: 0
     })
 
-    const initCharts = () => {
-      // 请求趋势图
-      const requestChart = echarts.init(document.getElementById('requestChart'))
-      requestChart.setOption({
-        title: { text: '24小时请求趋势' },
-        xAxis: { type: 'category', data: [] },
-        yAxis: { type: 'value' },
-        series: [{ type: 'line', data: [] }]
-      })
-
-      // Worker状态图
-      const workerChart = echarts.init(document.getElementById('workerChart'))
-      workerChart.setOption({
-        title: { text: 'Worker状态分布' },
-        series: [{
-          type: 'pie',
-          data: [
-            { name: '正常', value: 3 },
-            { name: '异常', value: 1 }
-          ]
-        }]
-      })
-    }
-
     const loadStats = async () => {
       try {
-        // 这里调用API获取统计数据
+        // 模拟API调用
         stats.value = {
           totalRequests: 12345,
           activeWorkers: 4,
@@ -110,7 +63,6 @@ export default {
 
     onMounted(() => {
       loadStats()
-      setTimeout(initCharts, 100) // 延迟初始化图表
     })
 
     return {
@@ -123,14 +75,29 @@ export default {
 <style scoped>
 .dashboard {
   padding: 20px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+h1 {
+  text-align: center;
+  color: #333;
+  margin-bottom: 30px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 20px;
+  margin-bottom: 30px;
 }
 
 .stat-card {
-  text-align: center;
-}
-
-.stat-item {
+  background: white;
   padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  text-align: center;
 }
 
 .stat-value {
@@ -143,5 +110,33 @@ export default {
 .stat-label {
   font-size: 14px;
   color: #666;
+}
+
+.charts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 20px;
+}
+
+.chart-card {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.chart-card h3 {
+  margin: 0 0 15px 0;
+  color: #333;
+}
+
+.chart-placeholder {
+  height: 300px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f5f5f5;
+  border-radius: 4px;
+  color: #999;
 }
 </style>
