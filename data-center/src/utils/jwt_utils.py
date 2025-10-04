@@ -50,8 +50,8 @@ class JWTUtils:
             expire = naive_now() + timedelta(days=3)  # 默认3天
 
         to_encode.update({
-            "exp": expire,
-            "iat": naive_now(),
+            "exp": int(expire.timestamp()),
+            "iat": int(naive_now().timestamp()),
             "type": "access"
         })
         
@@ -131,10 +131,10 @@ class JWTUtils:
     def is_token_expired(self, token: str) -> bool:
         """
         检查令牌是否过期
-        
+
         Args:
             token: JWT令牌字符串
-            
+
         Returns:
             是否过期
         """
