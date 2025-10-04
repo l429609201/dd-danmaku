@@ -39,10 +39,20 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: {
       output: {
-        manualChunks: {
-          'element-plus': ['element-plus'],
-          'vue-vendor': ['vue', 'vue-router', 'pinia'],
-          'echarts': ['echarts', 'vue-echarts']
+        manualChunks(id) {
+          // 将node_modules中的包分离到vendor chunk
+          if (id.includes('node_modules')) {
+            if (id.includes('element-plus')) {
+              return 'element-plus'
+            }
+            if (id.includes('vue') || id.includes('pinia')) {
+              return 'vue-vendor'
+            }
+            if (id.includes('echarts')) {
+              return 'echarts'
+            }
+            return 'vendor'
+          }
         }
       }
     }
