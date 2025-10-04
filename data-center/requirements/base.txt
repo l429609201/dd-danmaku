@@ -22,3 +22,4 @@ pymysql==1.1.0  # MySQL支持
 # 工具库
 python-multipart==0.0.6  # 文件上传支持
 passlib[bcrypt]==1.7.4  # 密码哈希（必需）
+pytz==2024.2  # 时区处理
