@@ -44,7 +44,7 @@ def get_auth_service() -> AuthService:
     return AuthService()
 
 async def get_current_user(
-    authorization: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     auth_service: AuthService = Depends(get_auth_service)
 ) -> User:
     """获取当前用户（JWT认证）"""
