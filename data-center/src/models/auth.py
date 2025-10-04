@@ -2,8 +2,8 @@
 用户认证模型
 """
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
-from sqlalchemy.sql import func
 from src.database import Base
+from src.utils import naive_now
 import hashlib
 import secrets
 
@@ -18,8 +18,8 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
     last_login = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
     
     def set_password(self, password: str):
         """设置密码（哈希存储）"""
@@ -69,7 +69,7 @@ class LoginSession(Base):
     ip_address = Column(String(45), nullable=True)  # 支持IPv6
     user_agent = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, nullable=False)
     
     @staticmethod
     def generate_token() -> str:

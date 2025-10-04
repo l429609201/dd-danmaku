@@ -40,10 +40,13 @@ class AuthService:
                 password = self.generate_random_password()
 
             # 创建管理员用户
+            current_time = naive_now()
             admin_user = User(
                 username=username,
                 is_active=True,
-                is_admin=True
+                is_admin=True,
+                created_at=current_time,
+                updated_at=current_time
             )
             admin_user.set_password(password)
 
@@ -123,7 +126,8 @@ class AuthService:
                 expires_at=naive_now() + timedelta(hours=expires_hours),
                 ip_address=ip_address,
                 user_agent=user_agent,
-                is_active=True
+                is_active=True,
+                created_at=naive_now()
             )
 
             db.add(session)
