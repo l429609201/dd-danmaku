@@ -1,0 +1,54 @@
+name: Deploy Cloudflare Worker
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'cf_worker.js'
+      - 'telegram_bot.js'
+      - 'build.js'
+      - 'wrangler.toml'
+      - '.github/workflows/cloudflare-worker.yml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'cf_worker.js'
+      - 'telegram_bot.js'
+      - 'build.js'
+      - 'wrangler.toml'
+      - '.github/workflows/cloudflare-worker.yml'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    name: Build and Deploy Worker
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Build Worker
+      run: node build.js
+
+    - name: Deploy to Cloudflare Workers
+      if: github.event_name != 'pull_request'
+      uses: cloudflare/wrangler-action@v3
+      with:
+        apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        command: deploy --name ${{ secrets.WORKER_NAME || 'danmu-proxy' }}
+
+    - name: Test deployment (optional)
+      if: github.event_name != 'pull_request'
+      run: |
+        echo "Worker deployed successfully!"
+        echo "Worker URL: https://${{ secrets.WORKER_NAME || 'danmu-proxy' }}.${{ secrets.CLOUDFLARE_SUBDOMAIN || 'workers' }}.dev"

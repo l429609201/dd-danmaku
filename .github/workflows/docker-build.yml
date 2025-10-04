@@ -4,8 +4,14 @@ on:
   push:
     branches: [ main, master ]
     tags: [ 'v*' ]
+    paths:
+      - 'data-center/**'
+      - '.github/workflows/docker-build.yml'
   pull_request:
     branches: [ main, master ]
+    paths:
+      - 'data-center/**'
+      - '.github/workflows/docker-build.yml'
 
 env:
   REGISTRY: docker.io

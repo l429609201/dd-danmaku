@@ -3,6 +3,15 @@
 .gitignore
 .github
 
+# Cloudflare Worker files (not needed in Docker)
+cf_worker.js
+telegram_bot.js
+build.js
+wrangler.toml
+wrangler.local.toml
+ede.js
+prettierrc.json
+
 # Documentation
 README.md
 *.md

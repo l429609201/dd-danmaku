@@ -1,7 +1,7 @@
 # 多阶段构建Dockerfile
 
 # 前端构建阶段
-FROM node:18-alpine as frontend-builder
+FROM node:18-alpine AS frontend-builder
 
 WORKDIR /app/web
 
@@ -9,7 +9,7 @@ WORKDIR /app/web
 COPY web/package*.json ./
 
 # 安装前端依赖
-RUN npm ci --only=production
+RUN npm install --omit=dev
 
 # 复制前端源码
 COPY web/ .
@@ -18,7 +18,7 @@ COPY web/ .
 RUN npm run build
 
 # Python后端阶段
-FROM python:3.11-slim as backend
+FROM python:3.11-slim AS backend
 
 WORKDIR /app
 

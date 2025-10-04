@@ -1,0 +1,18 @@
+# 根目录的.dockerignore - 用于排除不需要的文件
+
+# 只保留data-center目录
+*
+!data-center/
+
+# 排除data-center中的开发文件
+data-center/.git
+data-center/.github
+data-center/node_modules/
+data-center/.env
+data-center/.env.local
+data-center/config/
+data-center/data/
+data-center/logs/
+data-center/*.db
+data-center/*.sqlite
+data-center/*.sqlite3
