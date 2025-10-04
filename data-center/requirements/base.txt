@@ -1,8 +1,7 @@
-# 基础依赖包
+# 基础依赖包（精简版）
 fastapi==0.104.1
-uvicorn[standard]==0.24.0
+uvicorn==0.24.0  # 移除[standard]减少依赖
 sqlalchemy==2.0.23
-alembic==1.12.1
 pydantic==2.5.0
 pydantic-settings==2.1.0
 
@@ -17,10 +16,9 @@ httpx==0.25.2
 
 # 数据库驱动
 # sqlite3  # Python内置，无需安装
-psycopg2-binary==2.9.9  # PostgreSQL支持（可选）
-pymysql==1.1.0  # MySQL支持（可选）
+psycopg2-binary==2.9.9  # PostgreSQL支持
+pymysql==1.1.0  # MySQL支持
 
 # 工具库
 python-multipart==0.0.6  # 文件上传支持
-python-jose[cryptography]==3.3.0  # JWT支持
-passlib[bcrypt]==1.7.4  # 密码哈希
+passlib[bcrypt]==1.7.4  # 密码哈希（必需）
