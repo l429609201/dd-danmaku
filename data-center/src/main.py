@@ -184,9 +184,46 @@ def create_application() -> FastAPI:
         logger.warning(f"⚠️ 构建产物不存在: {static_dir}")
         logger.info("💡 请先构建前端或访问 /docs 查看API文档")
 
-        @app.get("/", response_class=HTMLResponse)
-        async def fallback_index():
-            return """
+        # 注意：不在这里定义fallback路由，而是在最后的SPA路由中处理
+
+    # 最后添加SPA路由支持（必须在所有API路由之后）
+    # 重新检查静态文件目录
+    if _is_docker_environment():
+        final_static_dir = Path("/app/web/dist")
+    else:
+        final_static_dir = Path("web/dist")
+
+    from fastapi.responses import FileResponse
+    from fastapi import Request, HTTPException
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(request: Request, full_path: str):
+        # 记录SPA路由被调用
+        logger.info(f"🔍 SPA路由被调用: {full_path}")
+
+        # API路径让其他路由处理
+        if (full_path.startswith("api/") or
+            full_path.startswith("health") or
+            full_path.startswith("docs") or
+            full_path.startswith("assets/") or
+            full_path.startswith("images/")):
+            logger.info(f"🔍 路径被排除，交给其他路由处理: {full_path}")
+            raise HTTPException(status_code=404, detail="Not found")
+
+        # 检查构建产物是否存在
+        if final_static_dir.exists() and final_static_dir.is_dir():
+            # 返回构建后的index.html
+            index_file = final_static_dir / "index.html"
+            logger.info(f"🔍 尝试返回index.html: {index_file}")
+            if index_file.exists():
+                return FileResponse(str(index_file))
+            else:
+                logger.warning(f"⚠️ index.html不存在: {index_file}")
+                return HTMLResponse("Frontend index.html not found", status_code=404)
+        else:
+            # 返回fallback页面
+            logger.info(f"🔍 返回fallback页面")
+            return HTMLResponse("""
             <!DOCTYPE html>
             <html lang="zh-CN">
             <head>
@@ -227,43 +264,9 @@ def create_application() -> FastAPI:
                 </div>
             </body>
             </html>
-            """
+            """)
 
-    # 最后添加SPA路由支持（必须在所有API路由之后）
-    # 重新检查静态文件目录
-    if _is_docker_environment():
-        final_static_dir = Path("/app/web/dist")
-    else:
-        final_static_dir = Path("web/dist")
-
-    if final_static_dir.exists() and final_static_dir.is_dir():
-        from fastapi.responses import FileResponse
-        from fastapi import Request, HTTPException
-
-        @app.get("/{full_path:path}", include_in_schema=False)
-        async def serve_spa(request: Request, full_path: str):
-            # 记录SPA路由被调用
-            logger.info(f"🔍 SPA路由被调用: {full_path}")
-
-            # API路径让其他路由处理
-            if (full_path.startswith("api/") or
-                full_path.startswith("health") or
-                full_path.startswith("docs") or
-                full_path.startswith("assets/") or
-                full_path.startswith("images/")):
-                logger.info(f"🔍 路径被排除，交给其他路由处理: {full_path}")
-                raise HTTPException(status_code=404, detail="Not found")
-
-            # 返回构建后的index.html
-            index_file = final_static_dir / "index.html"
-            logger.info(f"🔍 尝试返回index.html: {index_file}")
-            if index_file.exists():
-                return FileResponse(str(index_file))
-            else:
-                logger.warning(f"⚠️ index.html不存在: {index_file}")
-                return HTMLResponse("Frontend index.html not found", status_code=404)
-
-        logger.info("✅ SPA路由支持已启用")
+    logger.info("✅ SPA路由支持已启用")
 
     return app
 
