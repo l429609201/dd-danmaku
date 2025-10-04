@@ -44,22 +44,30 @@ class JWTUtils:
         """
         to_encode = data.copy()
         
-        # 使用本地时间的naive datetime对象（python-jose支持直接使用datetime）
+        # 使用本地时间但转换为timestamp（确保兼容性）
         now = naive_now()
         if expires_delta:
             expire = now + expires_delta
         else:
             expire = now + timedelta(days=3)  # 默认3天
 
+        exp_timestamp = int(expire.timestamp())
+        iat_timestamp = int(now.timestamp())
+
+        logger.info(f"🔐 JWT时间信息: now={now}, expire={expire}")
+        logger.info(f"🔐 JWT时间戳: iat={iat_timestamp}, exp={exp_timestamp}")
+
         to_encode.update({
-            "exp": expire,  # python-jose支持直接使用datetime对象
-            "iat": now,     # python-jose支持直接使用datetime对象
+            "exp": exp_timestamp,  # 转换为timestamp确保兼容性
+            "iat": iat_timestamp,  # 转换为timestamp确保兼容性
             "type": "access"
         })
         
         try:
+            logger.info(f"🔐 准备编码JWT数据: {to_encode}")
             encoded_jwt = jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
             logger.info(f"✅ JWT令牌创建成功，过期时间: {expire} (本地时间)")
+            logger.info(f"✅ 生成的JWT令牌: {encoded_jwt[:50]}...")
             return encoded_jwt
         except Exception as e:
             logger.error(f"❌ JWT令牌创建失败: {e}")
@@ -91,10 +99,17 @@ class JWTUtils:
             return payload
         except JWTError as e:
             # python-jose的JWTError包含了所有JWT相关错误
-            if "expired" in str(e).lower():
+            error_msg = str(e)
+            logger.error(f"❌ JWT验证失败详情: {error_msg}")
+            logger.error(f"❌ 令牌内容: {token[:50]}...")
+            logger.error(f"❌ 使用的密钥: {self.secret_key[:10]}...")
+
+            if "expired" in error_msg.lower():
                 logger.warning(f"⚠️ JWT令牌已过期: {token[:20]}...")
+            elif "signature" in error_msg.lower():
+                logger.warning(f"⚠️ JWT令牌签名无效: {token[:20]}...")
             else:
-                logger.warning(f"⚠️ JWT令牌无效: {e}, token: {token[:20]}...")
+                logger.warning(f"⚠️ JWT令牌格式无效: {error_msg}, token: {token[:20]}...")
             return None
         except Exception as e:
             logger.error(f"❌ JWT令牌验证失败: {e}, token: {token[:20]}...")
@@ -143,12 +158,13 @@ class JWTUtils:
         """
         expiry = self.get_token_expiry(token)
         if expiry:
-            # python-jose返回的expiry可能是datetime对象或timestamp
-            if isinstance(expiry, datetime):
-                return naive_now() > expiry
-            else:
-                # 如果是timestamp，转换为本地时间比较
-                return naive_now().timestamp() > expiry
+            # expiry现在是timestamp，直接比较
+            current_timestamp = naive_now().timestamp()
+            logger.info(f"🔐 过期检查: current={current_timestamp}, expiry={expiry}")
+            is_expired = current_timestamp > expiry
+            logger.info(f"🔐 令牌过期状态: {is_expired}")
+            return is_expired
+        logger.warning("🔐 无法获取令牌过期时间，视为已过期")
         return True
     
     def refresh_token(self, token: str, expires_delta: Optional[timedelta] = None) -> Optional[str]:
@@ -192,3 +208,27 @@ def is_token_expired(token: str) -> bool:
 def refresh_token(token: str, expires_delta: Optional[timedelta] = None) -> Optional[str]:
     """刷新令牌"""
     return jwt_utils.refresh_token(token, expires_delta)
+
+def test_jwt_functionality():
+    """测试JWT功能"""
+    logger.info("🧪 开始JWT功能自测试...")
+
+    # 创建测试数据
+    test_data = {
+        "user_id": 1,
+        "username": "test_user",
+        "sub": "1"
+    }
+
+    # 创建JWT令牌
+    token = create_access_token(test_data, timedelta(minutes=30))
+    logger.info(f"🧪 创建测试令牌: {token[:50]}...")
+
+    # 验证JWT令牌
+    payload = verify_token(token)
+    if payload:
+        logger.info(f"✅ JWT自测试成功: {payload}")
+        return True
+    else:
+        logger.error("❌ JWT自测试失败")
+        return False

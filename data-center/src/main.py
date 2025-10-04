@@ -64,6 +64,14 @@ async def lifespan(app: FastAPI):
     await task_scheduler.start()
     logger.info("✅ 任务调度器启动成功")
     
+    # JWT功能自测试
+    logger.info("🧪 执行JWT功能自测试...")
+    from src.utils.jwt_utils import test_jwt_functionality
+    if test_jwt_functionality():
+        logger.info("✅ JWT功能自测试通过")
+    else:
+        logger.error("❌ JWT功能自测试失败，请检查配置")
+
     logger.info("🎉 数据交互中心启动完成！")
     
     yield
@@ -111,24 +119,11 @@ def create_application() -> FastAPI:
     # 健康检查端点
     @app.get("/health")
     async def health_check():
-        try:
-            # 基本健康检查，不依赖复杂的服务状态
-            return {
-                "status": "healthy",
-                "timestamp": naive_now().isoformat(),
-                "services": {
-                    "api": True,
-                    "telegram_bot": telegram_bot is not None,
-                    "task_scheduler": task_scheduler is not None
-                }
-            }
-        except Exception as e:
-            logger.error(f"健康检查失败: {e}")
-            return {
-                "status": "unhealthy",
-                "error": str(e),
-                "timestamp": naive_now().isoformat()
-            }
+        """简单的健康检查端点"""
+        return {
+            "status": "healthy",
+            "timestamp": naive_now().isoformat()
+        }
 
     # 处理可能的日志路由请求
     @app.get("/logs")

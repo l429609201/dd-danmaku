@@ -148,6 +148,14 @@ async def login(
         logger = logging.getLogger(__name__)
         logger.info(f"🔐 为用户 {user.username} 生成JWT令牌: {access_token[:20]}...")
 
+        # 立即测试JWT令牌是否可以验证
+        from src.utils import verify_token
+        test_payload = verify_token(access_token)
+        if test_payload:
+            logger.info(f"✅ JWT令牌创建后立即验证成功: {test_payload}")
+        else:
+            logger.error(f"❌ JWT令牌创建后立即验证失败！")
+
         # 记录登录信息（可选，用于审计）
         client_ip = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
