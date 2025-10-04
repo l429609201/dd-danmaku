@@ -8,8 +8,8 @@ WORKDIR /app/web
 # 复制前端依赖文件
 COPY web/package*.json ./
 
-# 安装依赖（使用npm ci提高速度和可靠性）
-RUN npm ci --only=production --no-audit --no-fund
+# 安装依赖
+RUN npm install --only=production --no-audit --no-fund
 
 # 复制前端源码
 COPY web/ .
