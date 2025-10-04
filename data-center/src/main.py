@@ -117,11 +117,57 @@ def create_application() -> FastAPI:
         }
 
     # 静态文件服务（Vue.js构建产物）
-    try:
-        app.mount("/", StaticFiles(directory="web/dist", html=True), name="static")
-        logger.info("✅ 静态文件服务已挂载")
-    except Exception as e:
-        logger.warning(f"⚠️ 静态文件服务挂载失败: {e}")
+    import os
+    static_dir = "web/dist"
+    if os.path.exists(static_dir) and os.path.isdir(static_dir):
+        try:
+            app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+            logger.info("✅ 静态文件服务已挂载")
+        except Exception as e:
+            logger.warning(f"⚠️ 静态文件服务挂载失败: {e}")
+    else:
+        logger.warning(f"⚠️ 静态文件目录不存在: {static_dir}")
+        logger.info("💡 请确保前端已构建，或访问 /docs 查看API文档")
+
+        # 添加简单的fallback页面
+        from fastapi.responses import HTMLResponse
+
+        @app.get("/", response_class=HTMLResponse)
+        async def fallback_index():
+            return """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>DanDanPlay API 数据交互中心</title>
+                <meta charset="utf-8">
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+                    .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                    h1 { color: #333; text-align: center; }
+                    .status { background: #e3f2fd; padding: 20px; border-radius: 4px; margin: 20px 0; }
+                    .links { text-align: center; margin-top: 30px; }
+                    .links a { display: inline-block; margin: 0 10px; padding: 10px 20px; background: #1976d2; color: white; text-decoration: none; border-radius: 4px; }
+                    .links a:hover { background: #1565c0; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>🎯 DanDanPlay API 数据交互中心</h1>
+                    <div class="status">
+                        <h3>📊 系统状态</h3>
+                        <p>✅ 后端服务正常运行</p>
+                        <p>⚠️ 前端界面构建中...</p>
+                        <p>💡 您可以直接使用API接口或查看文档</p>
+                    </div>
+                    <div class="links">
+                        <a href="/docs">📖 API文档</a>
+                        <a href="/health">🔍 健康检查</a>
+                        <a href="/api/v1/auth/init-status">⚙️ 初始化状态</a>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
 
     return app
 
