@@ -156,22 +156,8 @@ def create_application() -> FastAPI:
             from fastapi.responses import FileResponse
             from fastapi import Request, HTTPException
 
-            @app.get("/{full_path:path}", include_in_schema=False)
-            async def serve_spa(request: Request, full_path: str):
-                # API路径让其他路由处理
-                if (full_path.startswith("api/") or
-                    full_path.startswith("health") or
-                    full_path.startswith("docs") or
-                    full_path.startswith("assets/") or
-                    full_path.startswith("dist/")):
-                    raise HTTPException(status_code=404, detail="Not found")
-
-                # 返回构建后的index.html
-                index_file = static_dir / "index.html"
-                if index_file.exists():
-                    return FileResponse(str(index_file))
-                else:
-                    return HTMLResponse("Frontend index.html not found", status_code=404)
+            # 注意：SPA路由必须在所有API路由之后定义
+            # 这里先不定义，在create_application函数最后定义
 
             logger.info("✅ SPA路由支持已启用")
 
@@ -226,6 +212,36 @@ def create_application() -> FastAPI:
             </body>
             </html>
             """
+
+    # 最后添加SPA路由支持（必须在所有API路由之后）
+    # 重新检查静态文件目录
+    if _is_docker_environment():
+        final_static_dir = Path("/app/web/dist")
+    else:
+        final_static_dir = Path("web/dist")
+
+    if final_static_dir.exists() and final_static_dir.is_dir():
+        from fastapi.responses import FileResponse
+        from fastapi import Request, HTTPException
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def serve_spa(request: Request, full_path: str):
+            # API路径让其他路由处理
+            if (full_path.startswith("api/") or
+                full_path.startswith("health") or
+                full_path.startswith("docs") or
+                full_path.startswith("assets/") or
+                full_path.startswith("dist/")):
+                raise HTTPException(status_code=404, detail="Not found")
+
+            # 返回构建后的index.html
+            index_file = final_static_dir / "index.html"
+            if index_file.exists():
+                return FileResponse(str(index_file))
+            else:
+                return HTMLResponse("Frontend index.html not found", status_code=404)
+
+        logger.info("✅ SPA路由支持已启用")
 
     return app
 
