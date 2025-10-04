@@ -17,21 +17,27 @@ class AuthService:
     def __init__(self):
         self.db = get_db_sync
     
-    async def create_admin_user(self, username: str = "admin", password: str = None) -> tuple[User, str]:
+    async def create_admin_user(self, username: str = None, password: str = None) -> tuple[User, str]:
         """创建管理员用户"""
         try:
             db = self.db()
-            
-            # 检查是否已存在管理员
-            existing_admin = db.query(User).filter(User.is_admin == True).first()
+
+            # 从环境变量获取用户名，默认为admin
+            if not username:
+                import os
+                username = os.getenv('ADMIN_USERNAME', 'admin')
+
+            # 检查是否已存在该用户名的管理员
+            existing_admin = db.query(User).filter(User.username == username).first()
             if existing_admin:
                 db.close()
+                logger.info(f"👤 用户 '{username}' 已经存在，跳过创建过程")
                 return existing_admin, None
-            
+
             # 生成随机密码（如果未提供）
             if not password:
                 password = self.generate_random_password()
-            
+
             # 创建管理员用户
             admin_user = User(
                 username=username,
@@ -39,13 +45,14 @@ class AuthService:
                 is_admin=True
             )
             admin_user.set_password(password)
-            
+
             db.add(admin_user)
             db.commit()
             db.refresh(admin_user)
             db.close()
-            
-            logger.info(f"✅ 管理员用户创建成功: {username}")
+
+            logger.info(f"✅ 管理员用户 '{username}' 创建成功")
+            logger.info(f"🔑 初始密码: {password}")
             return admin_user, password
             
         except Exception as e:

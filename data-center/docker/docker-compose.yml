@@ -2,9 +2,7 @@ version: '3.8'
 
 services:
   data-center:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
+    image: l429609201/dd-danmaku:latest
     container_name: danmu-data-center
     ports:
       - "7759:7759"      # Web界面和API端口
@@ -16,14 +14,12 @@ services:
       - LOG_LEVEL=INFO
       - LOG_FILE=/app/config/logs/app.log
 
-      # 安全配置
-      - SECRET_KEY=your-secret-key-change-in-production
-      - ACCESS_TOKEN_EXPIRE_MINUTES=30
-
       # 服务配置
       - HOST=0.0.0.0
       - PORT=7759
-      - ALLOWED_HOSTS=*
+
+      # 管理员用户配置
+      - ADMIN_USERNAME=admin
 
       # 可选：MySQL配置（如果使用MySQL，取消注释）
       # - DATABASE_TYPE=mysql
