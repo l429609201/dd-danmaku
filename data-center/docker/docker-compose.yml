@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  data-center:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: danmu-data-center
+    ports:
+      - "7759:7759"      # Web界面和API端口
+    environment:
+      # 基础配置
+      - PROJECT_NAME=DanDanPlay API 数据交互中心
+      - DEBUG=false
+      
+      # 数据库配置
+      - DATABASE_URL=sqlite:///app/data/database.db
+      
+      # Telegram机器人配置（轮询模式，无需公网地址）
+      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
+      - TG_ADMIN_USER_ID=${TG_ADMIN_USER_ID}
+      
+      # Worker端点配置（逗号分隔）
+      - WORKER_ENDPOINTS=${WORKER_ENDPOINTS}
+      
+      # 同步配置
+      - SYNC_INTERVAL_HOURS=1
+      - SYNC_RETRY_ATTEMPTS=3
+      - SYNC_TIMEOUT_SECONDS=30
+      
+      # 日志配置
+      - LOG_LEVEL=INFO
+      
+    volumes:
+      # 配置和数据持久化
+      - ./config:/app/config
+      
+    restart: unless-stopped
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7759/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # 可选：Redis缓存（如果需要）
+  redis:
+    image: redis:7-alpine
+    container_name: danmu-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+
+  # 可选：Nginx反向代理
+  nginx:
+    image: nginx:alpine
+    container_name: danmu-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - data-center
+    restart: unless-stopped
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+        reservations:
+          memory: 32M
+
+volumes:
+  redis_data:
+
+networks:
+  default:
+    name: danmu-network

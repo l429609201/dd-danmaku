@@ -1,0 +1,172 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./data-center
+        file: ./data-center/docker/Dockerfile
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        platforms: linux/amd64
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Generate deployment files
+      if: github.event_name != 'pull_request'
+      run: |
+        mkdir -p deploy
+        
+        # 生成 docker-compose.yml
+        cat > deploy/docker-compose.yml << 'EOF'
+        version: '3.8'
+        
+        services:
+          data-center:
+            image: ${{ env.IMAGE_NAME }}:latest
+            container_name: danmu-data-center
+            ports:
+              - "7759:7759"
+            environment:
+              - DATABASE_TYPE=sqlite
+              - CONFIG_PATH=/app/config
+              - SQLITE_PATH=/app/config/database.db
+              - LOG_LEVEL=INFO
+              - LOG_FILE=/app/config/logs/app.log
+            volumes:
+              - ./config:/app/config
+            restart: unless-stopped
+            healthcheck:
+              test: ["CMD", "curl", "-f", "http://localhost:7759/health"]
+              interval: 30s
+              timeout: 10s
+              retries: 3
+              start_period: 40s
+        EOF
+        
+        # 生成 .env.example
+        cat > deploy/.env.example << 'EOF'
+        # 数据库配置
+        DATABASE_TYPE=sqlite
+        SQLITE_PATH=/app/config/database.db
+        
+        # 配置文件路径
+        CONFIG_PATH=/app/config
+        
+        # 日志配置
+        LOG_LEVEL=INFO
+        LOG_FILE=/app/config/logs/app.log
+        
+        # 安全配置
+        SECRET_KEY=your-secret-key-change-in-production
+        ACCESS_TOKEN_EXPIRE_MINUTES=30
+        EOF
+        
+        # 生成部署说明
+        cat > deploy/README.md << 'EOF'
+        # DanDanPlay API 数据交互中心 - Docker 部署
+        
+        ## 快速部署
+        
+        1. 下载部署文件：
+        ```bash
+        wget https://github.com/${{ github.repository }}/releases/latest/download/deploy.tar.gz
+        tar -xzf deploy.tar.gz
+        cd deploy
+        ```
+        
+        2. 配置环境变量：
+        ```bash
+        cp .env.example .env
+        # 编辑 .env 文件，修改必要的配置
+        ```
+        
+        3. 启动服务：
+        ```bash
+        docker-compose up -d
+        ```
+        
+        4. 访问服务：
+        - Web界面: http://localhost:7759
+        - API文档: http://localhost:7759/docs
+        
+        ## 配置说明
+        
+        所有配置都可以通过Web界面管理，包括：
+        - Telegram机器人配置
+        - Worker端点配置
+        - 同步参数配置
+        - 数据库配置
+        
+        ## 数据持久化
+        
+        配置和数据存储在 `./config` 目录中：
+        - `database.db` - SQLite数据库文件
+        - `logs/` - 日志文件
+        - `backups/` - 备份文件
+        EOF
+
+    - name: Create deployment archive
+      if: github.event_name != 'pull_request'
+      run: |
+        cd deploy
+        tar -czf ../deploy.tar.gz .
+        cd ..
+
+    - name: Upload deployment files
+      if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          deploy.tar.gz
+          deploy/docker-compose.yml
+          deploy/.env.example
+          deploy/README.md
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
