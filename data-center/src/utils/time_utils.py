@@ -63,11 +63,26 @@ class TimeUtils:
     def utc_now(self) -> datetime:
         """
         获取当前UTC时间
-        
+
         Returns:
             当前UTC时间
         """
         return datetime.now(UTC_TIMEZONE)
+
+    def naive_now(self, timezone_str: Optional[str] = None) -> datetime:
+        """
+        获取当前时间（不带时区信息，但已调整到指定时区）
+
+        Args:
+            timezone_str: 指定时区，如果不指定则使用默认时区或TZ环境变量
+
+        Returns:
+            当前时间（naive datetime，已调整到指定时区）
+        """
+        tz = self._get_timezone(timezone_str) if timezone_str else self._default_timezone
+        # 获取带时区的时间，然后移除时区信息
+        aware_time = datetime.now(tz)
+        return aware_time.replace(tzinfo=None)
     
     def to_local(self, dt: datetime, timezone_str: Optional[str] = None) -> datetime:
         """
@@ -216,6 +231,10 @@ def now(timezone_str: Optional[str] = None) -> datetime:
 def utc_now() -> datetime:
     """获取当前UTC时间"""
     return time_utils.utc_now()
+
+def naive_now(timezone_str: Optional[str] = None) -> datetime:
+    """获取当前时间（不带时区信息，但已调整到指定时区）"""
+    return time_utils.naive_now(timezone_str)
 
 def to_local(dt: datetime, timezone_str: Optional[str] = None) -> datetime:
     """转换为本地时区"""

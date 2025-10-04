@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 from src.database import get_db_sync
 from src.models.auth import User, LoginSession
-from src.utils import now, utc_now
+from src.utils import naive_now
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ class AuthService:
 
             if user and user.verify_password(password):
                 # 更新最后登录时间
-                user.last_login = now()
+                user.last_login = naive_now()
                 db.commit()
 
                 # 创建一个分离的用户对象，避免会话问题
@@ -120,7 +120,7 @@ class AuthService:
                 user_id=user.id,
                 session_token=LoginSession.generate_token(),
                 jwt_token=jwt_token,
-                expires_at=now() + timedelta(hours=expires_hours),
+                expires_at=naive_now() + timedelta(hours=expires_hours),
                 ip_address=ip_address,
                 user_agent=user_agent,
                 is_active=True
@@ -150,7 +150,7 @@ class AuthService:
             session = db.query(LoginSession).filter(
                 LoginSession.session_token == session_token,
                 LoginSession.is_active == True,
-                LoginSession.expires_at > now()
+                LoginSession.expires_at > naive_now()
             ).first()
             
             if not session:
@@ -201,7 +201,7 @@ class AuthService:
             db = self.db()
             
             query = db.query(LoginSession).filter(
-                LoginSession.expires_at < now()
+                LoginSession.expires_at < naive_now()
             )
             
             if user_id:
@@ -280,7 +280,7 @@ class AuthService:
             sessions = db.query(LoginSession).filter(
                 LoginSession.user_id == user_id,
                 LoginSession.is_active == True,
-                LoginSession.expires_at > now()
+                LoginSession.expires_at > naive_now()
             ).order_by(LoginSession.created_at.desc()).all()
             
             db.close()
@@ -324,7 +324,7 @@ class AuthService:
 
             # 更新密码
             user.set_password(new_password)
-            user.updated_at = now()
+            user.updated_at = naive_now()
 
             db.commit()
             db.close()
@@ -347,7 +347,7 @@ class AuthService:
             session = db.query(LoginSession).filter(
                 LoginSession.jwt_token == jwt_token,
                 LoginSession.is_active == True,
-                LoginSession.expires_at > now()
+                LoginSession.expires_at > naive_now()
             ).first()
 
             db.close()

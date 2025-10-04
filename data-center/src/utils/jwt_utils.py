@@ -7,7 +7,7 @@ from datetime import timedelta
 from typing import Optional, Dict, Any
 import logging
 
-from src.utils.time_utils import now, utc_now
+from src.utils.time_utils import naive_now
 from src.config import settings
 
 logger = logging.getLogger(__name__)
@@ -45,13 +45,13 @@ class JWTUtils:
         to_encode = data.copy()
         
         if expires_delta:
-            expire = utc_now() + expires_delta
+            expire = naive_now() + expires_delta
         else:
-            expire = utc_now() + timedelta(days=3)  # 默认3天
-        
+            expire = naive_now() + timedelta(days=3)  # 默认3天
+
         to_encode.update({
             "exp": expire,
-            "iat": utc_now(),
+            "iat": naive_now(),
             "type": "access"
         })
         
@@ -140,7 +140,7 @@ class JWTUtils:
         """
         expiry = self.get_token_expiry(token)
         if expiry:
-            return utc_now().timestamp() > expiry
+            return naive_now().timestamp() > expiry
         return True
     
     def refresh_token(self, token: str, expires_delta: Optional[timedelta] = None) -> Optional[str]:

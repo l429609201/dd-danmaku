@@ -4,6 +4,7 @@ FastAPI + TG机器人轮询模式
 """
 import asyncio
 import logging
+from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -110,11 +111,24 @@ def create_application() -> FastAPI:
     # 健康检查端点
     @app.get("/health")
     async def health_check():
-        return {
-            "status": "healthy",
-            "telegram_bot": telegram_bot is not None,
-            "task_scheduler": task_scheduler is not None
-        }
+        try:
+            # 基本健康检查，不依赖复杂的服务状态
+            return {
+                "status": "healthy",
+                "timestamp": datetime.now().isoformat(),
+                "services": {
+                    "api": True,
+                    "telegram_bot": telegram_bot is not None,
+                    "task_scheduler": task_scheduler is not None
+                }
+            }
+        except Exception as e:
+            logger.error(f"健康检查失败: {e}")
+            return {
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
 
     # 处理可能的日志路由请求
     @app.get("/logs")

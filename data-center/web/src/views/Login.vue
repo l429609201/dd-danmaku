@@ -51,14 +51,23 @@
 </template>
 
 <script>
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { isLoggedIn } from '../utils/api.js'
 
 export default {
   name: 'Login',
   setup() {
     const router = useRouter()
     const loading = ref(false)
+
+    // 检查是否已登录
+    onMounted(() => {
+      if (isLoggedIn()) {
+        // 如果已登录，重定向到主页
+        router.push('/')
+      }
+    })
 
     const loginData = reactive({
       username: '',
