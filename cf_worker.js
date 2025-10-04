@@ -20,6 +20,17 @@ let memoryCache = {
     pendingRequests: 0
 };
 
+// 数据中心集成配置
+let DATA_CENTER_CONFIG = {
+    url: '',
+    apiKey: '',
+    workerId: 'worker-1',
+    lastConfigSync: 0,
+    lastStatsSync: 0,
+    syncInterval: 3600000, // 1小时同步一次
+    enabled: false
+};
+
 // ========================================
 // ⚙️ Durable Object 配置
 // ========================================
@@ -28,6 +39,183 @@ const ALARM_INTERVAL_SECONDS = 60; // 每60秒强制将内存中的计数写入�
 // 数据清理配置
 const DATA_RETENTION_HOURS = 168; // 保留一周(7天×24小时)的数据
 const CLEANUP_INTERVAL_HOURS = 24; // 每24小时执行一次清理
+
+// ========================================
+// 🔗 数据中心集成功能
+// ========================================
+
+// 初始化数据中心配置
+async function initializeDataCenterConfig(env) {
+    if (env.DATA_CENTER_URL && env.DATA_CENTER_API_KEY) {
+        DATA_CENTER_CONFIG.url = env.DATA_CENTER_URL;
+        DATA_CENTER_CONFIG.apiKey = env.DATA_CENTER_API_KEY;
+        DATA_CENTER_CONFIG.workerId = env.WORKER_ID || 'worker-1';
+        DATA_CENTER_CONFIG.enabled = true;
+
+        // 启动时同步配置
+        await syncConfigFromDataCenter(env);
+    }
+}
+
+// 从数据中心同步配置
+async function syncConfigFromDataCenter(env) {
+    if (!DATA_CENTER_CONFIG.enabled) return;
+
+    const now = Date.now();
+    if (now - DATA_CENTER_CONFIG.lastConfigSync < DATA_CENTER_CONFIG.syncInterval) {
+        return; // 还没到同步时间
+    }
+
+    try {
+        const response = await fetch(`${DATA_CENTER_CONFIG.url}/api/v1/config/export`, {
+            method: 'GET',
+            headers: {
+                'X-API-Key': DATA_CENTER_CONFIG.apiKey,
+                'X-Worker-ID': DATA_CENTER_CONFIG.workerId,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (response.ok) {
+            const config = await response.json();
+
+            // 更新UA配置
+            if (config.ua_configs) {
+                env.USER_AGENT_LIMITS_CONFIG = JSON.stringify(config.ua_configs);
+            }
+
+            // 更新IP黑名单
+            if (config.ip_blacklist) {
+                env.IP_BLACKLIST_CONFIG = JSON.stringify(config.ip_blacklist);
+            }
+
+            DATA_CENTER_CONFIG.lastConfigSync = now;
+            console.log('✅ 配置同步成功');
+        }
+    } catch (error) {
+        console.error('❌ 配置同步失败:', error);
+    }
+}
+
+// 向数据中心发送统计数据
+async function syncStatsToDataCenter(env, stats) {
+    if (!DATA_CENTER_CONFIG.enabled) return;
+
+    try {
+        const response = await fetch(`${DATA_CENTER_CONFIG.url}/api/v1/stats/import`, {
+            method: 'POST',
+            headers: {
+                'X-API-Key': DATA_CENTER_CONFIG.apiKey,
+                'X-Worker-ID': DATA_CENTER_CONFIG.workerId,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                worker_id: DATA_CENTER_CONFIG.workerId,
+                timestamp: Date.now(),
+                stats: stats
+            })
+        });
+
+        if (response.ok) {
+            DATA_CENTER_CONFIG.lastStatsSync = Date.now();
+            console.log('✅ 统计数据同步成功');
+        }
+    } catch (error) {
+        console.error('❌ 统计数据同步失败:', error);
+    }
+}
+
+// API密钥验证中间件
+function verifyApiKey(request, env) {
+    const apiKey = request.headers.get('X-API-Key');
+    if (!apiKey || apiKey !== DATA_CENTER_CONFIG.apiKey) {
+        return new Response('Unauthorized', { status: 401 });
+    }
+    return null;
+}
+
+// 处理数据中心API请求
+async function handleDataCenterAPI(request, env, urlObj) {
+    // 验证API密钥
+    const authError = verifyApiKey(request, env);
+    if (authError) return authError;
+
+    const path = urlObj.pathname;
+    const method = request.method;
+
+    try {
+        // 配置更新端点
+        if (path === '/api/config/update' && method === 'POST') {
+            const config = await request.json();
+
+            // 更新UA配置
+            if (config.ua_configs) {
+                env.USER_AGENT_LIMITS_CONFIG = JSON.stringify(config.ua_configs);
+            }
+
+            // 更新IP黑名单
+            if (config.ip_blacklist) {
+                env.IP_BLACKLIST_CONFIG = JSON.stringify(config.ip_blacklist);
+            }
+
+            return new Response(JSON.stringify({ success: true, message: '配置更新成功' }), {
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        // 统计数据导出端点
+        if (path === '/api/stats/export' && method === 'GET') {
+            const stats = await getWorkerStats(env);
+            return new Response(JSON.stringify(stats), {
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        // 健康检查端点
+        if (path === '/api/health' && method === 'GET') {
+            return new Response(JSON.stringify({
+                status: 'healthy',
+                worker_id: DATA_CENTER_CONFIG.workerId,
+                timestamp: Date.now(),
+                data_center_enabled: DATA_CENTER_CONFIG.enabled
+            }), {
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        return new Response('Not Found', { status: 404 });
+
+    } catch (error) {
+        console.error('API处理错误:', error);
+        return new Response(JSON.stringify({ error: error.message }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+}
+
+// 获取Worker统计数据
+async function getWorkerStats(env) {
+    try {
+        // 这里可以从Durable Object获取统计数据
+        // 暂时返回基本统计信息
+        return {
+            worker_id: DATA_CENTER_CONFIG.workerId,
+            timestamp: Date.now(),
+            requests_total: memoryCache.pendingRequests || 0,
+            memory_cache_size: memoryCache.rateLimitCounts.size,
+            last_sync_time: DATA_CENTER_CONFIG.lastConfigSync,
+            uptime: Date.now() - memoryCache.lastSyncTime
+        };
+    } catch (error) {
+        console.error('获取统计数据失败:', error);
+        return {
+            worker_id: DATA_CENTER_CONFIG.workerId,
+            timestamp: Date.now(),
+            error: error.message
+        };
+    }
+}
 
 // 从环境变量获取IP黑名单配置
 function getIpBlacklist(env) {
@@ -157,6 +345,9 @@ let webhookInitialized = false;
 
 export default {
   async fetch(request, env, ctx) {
+    // 初始化数据中心配置
+    await initializeDataCenterConfig(env);
+
     // 只在第一次请求时设置Webhook
     if (!webhookInitialized && env.TG_BOT_TOKEN && env.WORKER_DOMAIN) {
       webhookInitialized = true;
@@ -186,6 +377,11 @@ async function handleRequest(request, env, ctx) {
 
     const urlObj = new URL(request.url);
     const ACCESS_CONFIG = getAccessConfig(env);
+
+    // 数据中心API端点处理
+    if (urlObj.pathname.startsWith('/api/')) {
+        return await handleDataCenterAPI(request, env, urlObj);
+    }
 
     // IP黑名单和临时封禁检查
     const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';

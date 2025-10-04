@@ -12,8 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.database import init_db
 from src.api.v1.api import api_router
-from src.telegram.bot import TelegramBot
 from src.tasks.scheduler import TaskScheduler
+from src.telegram.bot import TelegramBot
 from src.middleware.auth_middleware import AuthMiddleware
 
 # 配置日志
@@ -39,17 +39,22 @@ async def lifespan(app: FastAPI):
     await init_db()
     
     # 启动TG机器人（轮询模式）
-    if settings.TG_BOT_TOKEN and settings.TG_ADMIN_USER_ID:
+    from src.services.web_config_service import WebConfigService
+    web_config_service = WebConfigService()
+    settings_data = await web_config_service.get_system_settings()
+
+    if settings_data and settings_data.tg_bot_token and settings_data.tg_admin_user_ids:
         logger.info("🤖 启动Telegram机器人（轮询模式）...")
         telegram_bot = TelegramBot(
-            token=settings.TG_BOT_TOKEN,
-            admin_user_id=settings.TG_ADMIN_USER_ID
+            token=settings_data.tg_bot_token,
+            admin_user_ids=settings_data.tg_admin_user_ids.split(',') if settings_data.tg_admin_user_ids else []
         )
+
         # 在后台任务中启动机器人
         bot_task = asyncio.create_task(telegram_bot.start())
         logger.info("✅ Telegram机器人启动成功")
     else:
-        logger.warning("⚠️ TG机器人配置不完整，跳过启动")
+        logger.info("ℹ️ TG机器人未配置，请通过Web界面配置后重启服务")
         bot_task = None
     
     # 启动定时任务调度器
@@ -64,17 +69,17 @@ async def lifespan(app: FastAPI):
     
     # 关闭时清理资源
     logger.info("🛑 正在关闭数据交互中心...")
-    
-    if bot_task:
+
+    if 'bot_task' in locals() and bot_task:
         logger.info("🤖 停止Telegram机器人...")
         bot_task.cancel()
         if telegram_bot:
             await telegram_bot.stop()
-    
+
     if task_scheduler:
         logger.info("⏰ 停止任务调度器...")
         await task_scheduler.stop()
-    
+
     logger.info("✅ 数据交互中心已安全关闭")
 
 def create_application() -> FastAPI:

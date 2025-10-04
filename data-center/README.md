@@ -9,7 +9,8 @@
 - **⚙️ 配置管理** - UA限制、IP黑名单、Worker配置
 - **🔄 自动同步** - 定时同步配置到Worker节点
 - **📝 日志管理** - 系统日志、同步日志、机器人日志
-- **🌐 现代化Web界面** - Vue3 + Element Plus
+- **🌐 现代化Web界面** - Vue3 + Element Plus + ECharts
+- **🔐 用户认证** - 安全的用户登录和会话管理
 
 ## 🏗️ 技术架构
 
@@ -28,7 +29,12 @@
 - **ECharts** - 数据可视化
 
 ### 数据库
-- **SQLite** - 默认数据库（生产可切换PostgreSQL）
+- **SQLite** - 默认数据库（支持MySQL/PostgreSQL）
+
+### 认证系统
+- **Cookie会话认证** - HttpOnly安全Cookie
+- **密码哈希** - SHA256 + 随机盐值
+- **API密钥验证** - Worker通信加密
 
 ## 🚀 快速开始
 
@@ -56,9 +62,15 @@ cp .env.example .env
 docker-compose -f docker/docker-compose.yml up -d
 ```
 
-4. **访问服务**
+4. **查看管理员密码**
+```bash
+docker-compose logs data-center | grep "初始密码"
+```
+
+5. **访问服务**
 - Web界面: http://localhost:7759
 - API文档: http://localhost:7759/docs
+- 默认用户: admin / 查看日志中的随机密码
 
 ### 本地开发
 
@@ -84,13 +96,52 @@ npm run dev
 
 ### 环境变量配置
 
-| 变量名 | 说明 | 示例值 |
-|--------|------|--------|
-| `TG_BOT_TOKEN` | Telegram机器人Token | `123456:ABC-DEF...` |
-| `TG_ADMIN_USER_ID` | 管理员用户ID | `123456789` |
-| `WORKER_ENDPOINTS` | Worker端点列表 | `https://worker1.com,https://worker2.com` |
-| `DATABASE_URL` | 数据库连接URL | `sqlite:///./data/database.db` |
-| `SYNC_INTERVAL_HOURS` | 同步间隔（小时） | `1` |
+**基础配置**:
+```bash
+DATABASE_TYPE=sqlite
+SQLITE_PATH=/app/config/database.db
+CONFIG_PATH=/app/config
+LOG_LEVEL=INFO
+LOG_FILE=/app/config/logs/app.log
+```
+
+**安全配置**:
+```bash
+SECRET_KEY=your-secret-key-change-in-production
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+```
+
+**服务配置**:
+```bash
+HOST=0.0.0.0
+PORT=7759
+ALLOWED_HOSTS=*
+```
+
+**可选数据库配置**:
+```bash
+# MySQL配置
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=your_mysql_password
+MYSQL_DATABASE=danmu_data_center
+
+# PostgreSQL配置
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your_postgres_password
+POSTGRES_DATABASE=danmu_data_center
+```
+
+### Web界面配置
+
+首次启动后，所有配置都可以通过Web界面管理：
+- **Telegram机器人配置** - Token和管理员用户ID
+- **Worker端点配置** - Worker地址和API密钥
+- **同步参数配置** - 同步间隔和重试次数
+- **用户管理** - 密码修改和会话管理
 
 ### Telegram机器人配置
 
@@ -101,10 +152,11 @@ npm run dev
 2. **获取用户ID**
    - 联系 @userinfobot 获取你的用户ID
 
-3. **配置轮询模式**
-   - 无需设置Webhook
-   - 机器人自动轮询获取消息
-   - 支持Docker容器内运行
+3. **在Web界面配置**
+   - 登录Web管理界面
+   - 进入系统设置页面
+   - 填入机器人Token和管理员用户ID
+   - 重启服务生效
 
 ## 🔧 功能模块
 

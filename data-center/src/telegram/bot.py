@@ -20,30 +20,30 @@ logger = logging.getLogger(__name__)
 
 class TelegramBot:
     """Telegram机器人类 - 使用轮询模式，无需公网地址"""
-    
+
     def __init__(self, token: str, admin_user_id: list):
         self.token = token
         self.admin_user_ids = admin_user_id if isinstance(admin_user_id, list) else [admin_user_id]
         self.application: Optional[Application] = None
         self.config_service = ConfigService()
         self.stats_service = StatsService()
-        
+
         logger.info(f"🤖 初始化TG机器人，管理员ID: {self.admin_user_ids}")
-    
+
     async def start(self):
         """启动机器人 - 轮询模式"""
         try:
             logger.info("🚀 启动Telegram机器人轮询模式...")
-            
+
             # 创建应用
             self.application = Application.builder().token(self.token).build()
-            
+
             # 注册命令处理器
             await self._register_handlers()
-            
+
             # 设置机器人命令菜单
             await self._setup_bot_commands()
-            
+
             # 启动轮询 - 关键：不需要公网地址！
             logger.info("🔄 开始轮询Telegram API...")
             await self.application.run_polling(
@@ -52,18 +52,18 @@ class TelegramBot:
                 bootstrap_retries=5,    # 启动重试5次
                 drop_pending_updates=True  # 丢弃待处理的更新
             )
-            
+
         except Exception as e:
             logger.error(f"❌ TG机器人启动失败: {e}")
             raise
-    
+
     async def stop(self):
         """停止机器人"""
         if self.application:
             logger.info("🛑 停止Telegram机器人...")
             await self.application.stop()
             logger.info("✅ Telegram机器人已停止")
-    
+
     async def _register_handlers(self):
         """注册命令处理器"""
         handlers = [
@@ -75,12 +75,12 @@ class TelegramBot:
             CommandHandler("help", self.help_command),
             CallbackQueryHandler(self.handle_callback)
         ]
-        
+
         for handler in handlers:
             self.application.add_handler(handler)
-        
+
         logger.info(f"✅ 注册了 {len(handlers)} 个命令处理器")
-    
+
     async def _setup_bot_commands(self):
         """设置机器人命令菜单"""
         commands = [
@@ -91,17 +91,17 @@ class TelegramBot:
             ("logs", "📝 查看系统日志"),
             ("help", "❓ 帮助信息")
         ]
-        
+
         try:
             await self.application.bot.set_my_commands(commands)
             logger.info("✅ 机器人命令菜单设置成功")
         except Exception as e:
             logger.error(f"❌ 设置机器人命令菜单失败: {e}")
-    
+
     def _is_authorized(self, user_id: int) -> bool:
         """检查用户是否有权限"""
         return user_id in self.admin_user_ids
-    
+
     async def _log_command(self, user_id: int, username: str, command: str, response: str, status: str = "success", error: str = None):
         """记录命令执行日志"""
         try:
@@ -119,16 +119,16 @@ class TelegramBot:
             db.close()
         except Exception as e:
             logger.error(f"记录TG命令日志失败: {e}")
-    
+
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """开始命令"""
         user_id = update.effective_user.id
         username = update.effective_user.username or update.effective_user.first_name
-        
+
         if not self._is_authorized(user_id):
             await update.message.reply_text("❌ 权限不足")
             return
-        
+
         message = f"""🤖 **DanDanPlay API 数据交互中心**
 
 🌐 欢迎使用管理机器人！
@@ -141,7 +141,7 @@ class TelegramBot:
 
 🔧 使用 /help 查看所有可用命令
 """
-        
+
         keyboard = [
             [
                 InlineKeyboardButton("📊 系统状态", callback_data="status"),
@@ -153,23 +153,23 @@ class TelegramBot:
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
         await self._log_command(user_id, username, "/start", message)
-    
+
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """系统状态命令"""
         user_id = update.effective_user.id
         username = update.effective_user.username or update.effective_user.first_name
-        
+
         if not self._is_authorized(user_id):
             await update.message.reply_text("❌ 权限不足")
             return
-        
+
         try:
             # 获取系统统计信息
             stats = await self.stats_service.get_system_overview()
-            
+
             message = f"""📊 **系统状态报告**
 
 🕐 当前时间: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}
@@ -190,20 +190,20 @@ class TelegramBot:
 
 🤖 **系统状态**: 正常运行
 """
-            
+
             keyboard = [
                 [InlineKeyboardButton("🔄 刷新状态", callback_data="status")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            
+
             await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
             await self._log_command(user_id, username, "/status", "系统状态查询成功")
-            
+
         except Exception as e:
             error_msg = f"获取系统状态失败: {str(e)}"
             await update.message.reply_text(f"❌ {error_msg}")
             await self._log_command(user_id, username, "/status", error_msg, "error", str(e))
-    
+
     async def ua_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """UA管理命令"""
         user_id = update.effective_user.id
@@ -400,3 +400,139 @@ class TelegramBot:
             error_msg = f"处理回调失败: {str(e)}"
             await query.edit_message_text(f"❌ {error_msg}")
             await self._log_command(user_id, username, f"callback:{callback_data}", error_msg, "error", str(e))
+
+    async def _handle_status_callback(self, query):
+        """处理状态回调"""
+        try:
+            stats = await self.stats_service.get_system_overview()
+
+            message = f"""📊 **系统状态详情**
+
+🕐 当前时间: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}
+
+📈 **请求统计**
+• 总请求数: {stats.get('total_requests', 0):,} 次
+• 成功请求: {stats.get('successful_requests', 0):,} 次
+• 被阻止请求: {stats.get('blocked_requests', 0):,} 次
+
+🚫 **安全统计**
+• IP黑名单: {stats.get('blacklist_count', 0)} 个
+• 违规IP数: {stats.get('violation_ips', 0)} 个
+
+🤖 **系统状态**: 正常运行
+"""
+
+            keyboard = [[InlineKeyboardButton("🔄 刷新状态", callback_data="status")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+
+        except Exception as e:
+            await query.edit_message_text(f"❌ 获取状态失败: {str(e)}")
+
+    async def _handle_ua_callback(self, query, callback_data):
+        """处理UA相关回调"""
+        if callback_data == "ua_list":
+            try:
+                ua_configs = await self.config_service.get_ua_configs()
+
+                message = "👤 **UA配置列表**\n\n"
+
+                if not ua_configs:
+                    message += "📝 暂无UA配置"
+                else:
+                    for i, config in enumerate(ua_configs[:10], 1):
+                        status = "✅" if config.enabled else "❌"
+                        message += f"{i}. {status} **{config.name}**\n"
+                        message += f"   UA: `{config.user_agent[:50]}...`\n"
+                        message += f"   限制: {config.hourly_limit}/小时\n\n"
+
+                keyboard = [
+                    [
+                        InlineKeyboardButton("➕ 添加配置", callback_data="ua_add"),
+                        InlineKeyboardButton("🔄 刷新列表", callback_data="ua_list")
+                    ]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                await query.edit_message_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+
+            except Exception as e:
+                await query.edit_message_text(f"❌ 获取UA配置失败: {str(e)}")
+
+        elif callback_data == "ua_add":
+            message = """➕ **添加UA配置**
+
+请通过Web界面添加新的UA配置：
+🌐 http://localhost:7759
+
+**配置项目：**
+• UA名称
+• User-Agent字符串
+• 小时限制
+• 路径特定限制
+"""
+            keyboard = [[InlineKeyboardButton("🔙 返回UA管理", callback_data="ua_list")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+
+    async def _handle_blacklist_callback(self, query, callback_data):
+        """处理黑名单相关回调"""
+        if callback_data == "blacklist_list":
+            try:
+                blacklist = await self.config_service.get_ip_blacklist()
+
+                message = "🚫 **IP黑名单列表**\n\n"
+
+                if not blacklist:
+                    message += "📝 暂无黑名单记录"
+                else:
+                    for i, ip_record in enumerate(blacklist[:10], 1):
+                        status = "✅" if ip_record.enabled else "❌"
+                        message += f"{i}. {status} `{ip_record.ip_address}`\n"
+                        if ip_record.reason:
+                            message += f"   原因: {ip_record.reason}\n"
+                        message += f"   时间: {ip_record.created_at.strftime('%m-%d %H:%M')}\n\n"
+
+                keyboard = [
+                    [
+                        InlineKeyboardButton("➕ 添加IP", callback_data="blacklist_add"),
+                        InlineKeyboardButton("🔄 刷新列表", callback_data="blacklist_list")
+                    ]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                await query.edit_message_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+
+            except Exception as e:
+                await query.edit_message_text(f"❌ 获取黑名单失败: {str(e)}")
+
+    async def _handle_logs_callback(self, query, callback_data):
+        """处理日志相关回调"""
+        if callback_data == "logs_recent":
+            try:
+                logs = await self.stats_service.get_recent_logs(limit=10)
+
+                message = "📝 **最近日志**\n\n"
+
+                if not logs:
+                    message += "📝 暂无日志记录"
+                else:
+                    for log in logs:
+                        level_emoji = {"INFO": "ℹ️", "WARN": "⚠️", "ERROR": "❌"}.get(log.level, "📝")
+                        message += f"{level_emoji} **{log.level}** - {log.created_at.strftime('%H:%M:%S')}\n"
+                        message += f"   {log.message[:100]}...\n\n"
+
+                keyboard = [
+                    [
+                        InlineKeyboardButton("🔄 刷新日志", callback_data="logs_recent"),
+                        InlineKeyboardButton("⚠️ 错误日志", callback_data="logs_error")
+                    ]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                await query.edit_message_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+
+            except Exception as e:
+                await query.edit_message_text(f"❌ 获取日志失败: {str(e)}")

@@ -10,26 +10,36 @@ services:
       - "7759:7759"      # Web界面和API端口
     environment:
       # 基础配置
-      - PROJECT_NAME=DanDanPlay API 数据交互中心
-      - DEBUG=false
-      
-      # 数据库配置
-      - DATABASE_URL=sqlite:///app/data/database.db
-      
-      # Telegram机器人配置（轮询模式，无需公网地址）
-      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
-      - TG_ADMIN_USER_ID=${TG_ADMIN_USER_ID}
-      
-      # Worker端点配置（逗号分隔）
-      - WORKER_ENDPOINTS=${WORKER_ENDPOINTS}
-      
-      # 同步配置
-      - SYNC_INTERVAL_HOURS=1
-      - SYNC_RETRY_ATTEMPTS=3
-      - SYNC_TIMEOUT_SECONDS=30
-      
-      # 日志配置
+      - DATABASE_TYPE=sqlite
+      - SQLITE_PATH=/app/config/database.db
+      - CONFIG_PATH=/app/config
       - LOG_LEVEL=INFO
+      - LOG_FILE=/app/config/logs/app.log
+
+      # 安全配置
+      - SECRET_KEY=your-secret-key-change-in-production
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+      # 服务配置
+      - HOST=0.0.0.0
+      - PORT=7759
+      - ALLOWED_HOSTS=*
+
+      # 可选：MySQL配置（如果使用MySQL，取消注释）
+      # - DATABASE_TYPE=mysql
+      # - MYSQL_HOST=mysql
+      # - MYSQL_PORT=3306
+      # - MYSQL_USER=root
+      # - MYSQL_PASSWORD=your_mysql_password
+      # - MYSQL_DATABASE=danmu_data_center
+
+      # 可选：PostgreSQL配置（如果使用PostgreSQL，取消注释）
+      # - DATABASE_TYPE=postgresql
+      # - POSTGRES_HOST=postgres
+      # - POSTGRES_PORT=5432
+      # - POSTGRES_USER=postgres
+      # - POSTGRES_PASSWORD=your_postgres_password
+      # - POSTGRES_DATABASE=danmu_data_center
       
     volumes:
       # 配置和数据持久化
@@ -53,50 +63,43 @@ services:
         reservations:
           memory: 256M
 
-  # 可选：Redis缓存（如果需要）
-  redis:
-    image: redis:7-alpine
-    container_name: danmu-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-    command: redis-server --appendonly yes
-    
-    # 资源限制
-    deploy:
-      resources:
-        limits:
-          memory: 128M
-        reservations:
-          memory: 64M
+  # 可选：MySQL数据库服务（如果使用MySQL，取消注释）
+  # mysql:
+  #   image: mysql:8.0
+  #   container_name: danmu-mysql
+  #   environment:
+  #     - MYSQL_ROOT_PASSWORD=your_mysql_password
+  #     - MYSQL_DATABASE=danmu_data_center
+  #     - MYSQL_USER=danmu_user
+  #     - MYSQL_PASSWORD=your_mysql_password
+  #   volumes:
+  #     - mysql_data:/var/lib/mysql
+  #   ports:
+  #     - "3306:3306"
+  #   restart: unless-stopped
+  #   networks:
+  #     - danmu-network
 
-  # 可选：Nginx反向代理
-  nginx:
-    image: nginx:alpine
-    container_name: danmu-nginx
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-    depends_on:
-      - data-center
-    restart: unless-stopped
-    
-    # 资源限制
-    deploy:
-      resources:
-        limits:
-          memory: 64M
-        reservations:
-          memory: 32M
+  # 可选：PostgreSQL数据库服务（如果使用PostgreSQL，取消注释）
+  # postgres:
+  #   image: postgres:15
+  #   container_name: danmu-postgres
+  #   environment:
+  #     - POSTGRES_DB=danmu_data_center
+  #     - POSTGRES_USER=postgres
+  #     - POSTGRES_PASSWORD=your_postgres_password
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432"
+  #   restart: unless-stopped
+  #   networks:
+  #     - danmu-network
 
 volumes:
-  redis_data:
+  # mysql_data:
+  # postgres_data:
 
 networks:
-  default:
-    name: danmu-network
+  danmu-network:
+    driver: bridge
