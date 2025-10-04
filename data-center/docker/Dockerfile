@@ -53,9 +53,10 @@ COPY --chown=appuser:appuser src/ ./src/
 # 复制前端构建产物
 COPY --from=frontend-builder --chown=appuser:appuser /app/web/dist ./web/dist
 
-# 创建必要的目录
+# 创建必要的目录并设置权限
 RUN mkdir -p /app/config /app/config/logs /app/config/backups && \
-    chown -R appuser:appuser /app/config
+    chown -R appuser:appuser /app/config && \
+    chmod -R 755 /app/config
 
 # 切换到非root用户
 USER appuser
@@ -72,5 +73,9 @@ EXPOSE 7759
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:7759/health || exit 1
 
+# 启动脚本
+COPY --chown=appuser:appuser docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # 启动命令
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "7759", "--workers", "1"]
+CMD ["/entrypoint.sh"]

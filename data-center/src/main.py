@@ -140,23 +140,13 @@ def create_application() -> FastAPI:
         static_dir = Path("web/dist")
         dev_static_dir = Path("web")
 
-    # 调试信息
+    # 基本信息
     logger.info(f"🔍 运行环境: {'Docker' if is_docker else '本地开发'}")
-    logger.info(f"🔍 当前工作目录: {Path.cwd()}")
     logger.info(f"🔍 静态文件目录: {static_dir}")
-    logger.info(f"🔍 静态文件目录存在: {static_dir.exists()}")
     if static_dir.exists():
-        logger.info(f"🔍 静态文件目录内容: {list(static_dir.iterdir())}")
-        index_file = static_dir / "index.html"
-        logger.info(f"🔍 index.html存在: {index_file.exists()}")
-        if index_file.exists():
-            # 读取完整的index.html来检查内容
-            try:
-                with open(index_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    logger.info(f"🔍 index.html完整内容: {content}")
-            except Exception as e:
-                logger.warning(f"⚠️ 读取index.html失败: {e}")
+        logger.info(f"✅ 前端构建产物已就绪")
+    else:
+        logger.warning(f"⚠️ 前端构建产物不存在，将显示fallback页面")
 
     # 尝试挂载构建后的静态文件
     if static_dir.exists() and static_dir.is_dir():
@@ -198,31 +188,24 @@ def create_application() -> FastAPI:
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(request: Request, full_path: str):
-        # 记录SPA路由被调用
-        logger.info(f"🔍 SPA路由被调用: {full_path}")
-
         # API路径让其他路由处理
         if (full_path.startswith("api/") or
             full_path.startswith("health") or
             full_path.startswith("docs") or
             full_path.startswith("assets/") or
             full_path.startswith("images/")):
-            logger.info(f"🔍 路径被排除，交给其他路由处理: {full_path}")
             raise HTTPException(status_code=404, detail="Not found")
 
         # 检查构建产物是否存在
         if final_static_dir.exists() and final_static_dir.is_dir():
             # 返回构建后的index.html
             index_file = final_static_dir / "index.html"
-            logger.info(f"🔍 尝试返回index.html: {index_file}")
             if index_file.exists():
                 return FileResponse(str(index_file))
             else:
-                logger.warning(f"⚠️ index.html不存在: {index_file}")
                 return HTMLResponse("Frontend index.html not found", status_code=404)
         else:
             # 返回fallback页面
-            logger.info(f"🔍 返回fallback页面")
             return HTMLResponse("""
             <!DOCTYPE html>
             <html lang="zh-CN">
