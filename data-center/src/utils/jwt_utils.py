@@ -3,7 +3,7 @@ JWT令牌工具模块
 """
 import jwt
 import secrets
-from datetime import timedelta
+from datetime import timedelta, datetime
 from typing import Optional, Dict, Any
 import logging
 
@@ -44,20 +44,22 @@ class JWTUtils:
         """
         to_encode = data.copy()
         
+        # 使用本地时间的naive datetime对象（参考misaka_danmu_server项目）
+        now = naive_now()
         if expires_delta:
-            expire = naive_now() + expires_delta
+            expire = now + expires_delta
         else:
-            expire = naive_now() + timedelta(days=3)  # 默认3天
+            expire = now + timedelta(days=3)  # 默认3天
 
         to_encode.update({
-            "exp": int(expire.timestamp()),
-            "iat": int(naive_now().timestamp()),
+            "exp": expire,  # 直接使用datetime对象，不转换为timestamp
+            "iat": now,     # 直接使用datetime对象，不转换为timestamp
             "type": "access"
         })
         
         try:
             encoded_jwt = jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
-            logger.info(f"✅ JWT令牌创建成功，过期时间: {expire}")
+            logger.info(f"✅ JWT令牌创建成功，过期时间: {expire} (本地时间)")
             return encoded_jwt
         except Exception as e:
             logger.error(f"❌ JWT令牌创建失败: {e}")
@@ -140,7 +142,11 @@ class JWTUtils:
         """
         expiry = self.get_token_expiry(token)
         if expiry:
-            return naive_now().timestamp() > expiry
+            # 如果expiry是datetime对象，直接比较；如果是timestamp，需要转换
+            if isinstance(expiry, datetime):
+                return naive_now() > expiry
+            else:
+                return naive_now().timestamp() > expiry
         return True
     
     def refresh_token(self, token: str, expires_delta: Optional[timedelta] = None) -> Optional[str]:
