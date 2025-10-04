@@ -116,9 +116,10 @@ def create_application() -> FastAPI:
             "task_scheduler": task_scheduler is not None
         }
 
-    # 静态文件服务（Vue.js构建产物）
+    # 静态文件服务配置
     import os
     from pathlib import Path
+    from fastapi.responses import HTMLResponse
 
     # 检测运行环境
     def _is_docker_environment():
@@ -133,73 +134,75 @@ def create_application() -> FastAPI:
     # 根据环境确定静态文件目录
     if _is_docker_environment():
         static_dir = Path("/app/web/dist")
-        assets_dir = Path("/app/web/dist/assets")
+        dev_static_dir = Path("/app/web")
     else:
         static_dir = Path("web/dist")
-        assets_dir = Path("web/dist/assets")
+        dev_static_dir = Path("web")
 
-    # 生产环境：挂载静态资源
+    # 尝试挂载构建后的静态文件
     if static_dir.exists() and static_dir.is_dir():
         try:
-            # 挂载静态资源目录
+            # 生产环境：挂载构建后的静态资源
+            assets_dir = static_dir / "assets"
             if assets_dir.exists():
                 app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
                 logger.info("✅ 静态资源目录已挂载: /assets")
 
-            # 挂载其他静态文件
+            # 挂载完整的dist目录
             app.mount("/dist", StaticFiles(directory=str(static_dir)), name="dist")
             logger.info("✅ 静态文件目录已挂载: /dist")
 
-            # SPA路由支持 - 所有非API路径返回index.html
-            from fastapi.responses import FileResponse, HTMLResponse
-            from fastapi import Request
+            # SPA路由支持
+            from fastapi.responses import FileResponse
+            from fastapi import Request, HTTPException
 
             @app.get("/{full_path:path}", include_in_schema=False)
             async def serve_spa(request: Request, full_path: str):
-                # 如果是API路径，让其正常处理
+                # API路径让其他路由处理
                 if (full_path.startswith("api/") or
                     full_path.startswith("health") or
                     full_path.startswith("docs") or
                     full_path.startswith("assets/") or
                     full_path.startswith("dist/")):
-                    # 这些路径应该由其他路由处理，返回404让FastAPI继续匹配
-                    from fastapi import HTTPException
                     raise HTTPException(status_code=404, detail="Not found")
 
-                # 返回index.html支持前端路由
+                # 返回构建后的index.html
                 index_file = static_dir / "index.html"
                 if index_file.exists():
                     return FileResponse(str(index_file))
                 else:
-                    return HTMLResponse("Frontend not built", status_code=404)
+                    return HTMLResponse("Frontend index.html not found", status_code=404)
 
             logger.info("✅ SPA路由支持已启用")
 
         except Exception as e:
             logger.warning(f"⚠️ 静态文件服务挂载失败: {e}")
     else:
-        logger.warning(f"⚠️ 静态文件目录不存在: {static_dir}")
-        logger.info("💡 请确保前端已构建，或访问 /docs 查看API文档")
-
-        # 添加简单的fallback页面
-        from fastapi.responses import HTMLResponse
+        # 开发环境或构建产物不存在：提供fallback页面
+        logger.warning(f"⚠️ 构建产物不存在: {static_dir}")
+        logger.info("💡 请先构建前端或访问 /docs 查看API文档")
 
         @app.get("/", response_class=HTMLResponse)
         async def fallback_index():
             return """
             <!DOCTYPE html>
-            <html>
+            <html lang="zh-CN">
             <head>
                 <title>DanDanPlay API 数据交互中心</title>
                 <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <style>
-                    body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
-                    .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-                    h1 { color: #333; text-align: center; }
-                    .status { background: #e3f2fd; padding: 20px; border-radius: 4px; margin: 20px 0; }
-                    .links { text-align: center; margin-top: 30px; }
-                    .links a { display: inline-block; margin: 0 10px; padding: 10px 20px; background: #1976d2; color: white; text-decoration: none; border-radius: 4px; }
-                    .links a:hover { background: #1565c0; }
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+                    .container { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); max-width: 500px; width: 90%; text-align: center; }
+                    h1 { color: #333; margin-bottom: 20px; font-size: 24px; }
+                    .status { background: #f8f9ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #667eea; }
+                    .status h3 { color: #667eea; margin-bottom: 15px; }
+                    .status p { color: #666; margin: 8px 0; }
+                    .links { margin-top: 30px; }
+                    .links a { display: inline-block; margin: 8px; padding: 12px 24px; background: #667eea; color: white; text-decoration: none; border-radius: 6px; transition: all 0.3s; }
+                    .links a:hover { background: #5a67d8; transform: translateY(-2px); }
+                    .build-info { background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 6px; padding: 15px; margin: 20px 0; color: #856404; }
                 </style>
             </head>
             <body>
@@ -208,8 +211,11 @@ def create_application() -> FastAPI:
                     <div class="status">
                         <h3>📊 系统状态</h3>
                         <p>✅ 后端服务正常运行</p>
-                        <p>⚠️ 前端界面构建中...</p>
-                        <p>💡 您可以直接使用API接口或查看文档</p>
+                        <p>⚠️ 前端界面需要构建</p>
+                    </div>
+                    <div class="build-info">
+                        <strong>💡 构建前端界面：</strong><br>
+                        <code>cd data-center/web && npm install && npm run build</code>
                     </div>
                     <div class="links">
                         <a href="/docs">📖 API文档</a>
