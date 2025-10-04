@@ -71,38 +71,49 @@ class AuthService:
         """验证用户登录"""
         try:
             db = self.db()
-            
+
             user = db.query(User).filter(
                 User.username == username,
                 User.is_active == True
             ).first()
-            
+
             if user and user.verify_password(password):
                 # 更新最后登录时间
                 user.last_login = datetime.now()
                 db.commit()
+
+                # 创建一个分离的用户对象，避免会话问题
+                user_data = User(
+                    id=user.id,
+                    username=user.username,
+                    password_hash=user.password_hash,
+                    is_active=user.is_active,
+                    created_at=user.created_at,
+                    last_login=user.last_login
+                )
+
                 db.close()
-                
+
                 logger.info(f"✅ 用户登录成功: {username}")
-                return user
-            
+                return user_data
+
             db.close()
             logger.warning(f"⚠️ 用户登录失败: {username}")
             return None
-            
+
         except Exception as e:
             logger.error(f"用户认证失败: {e}")
             return None
     
-    async def create_session(self, user: User, ip_address: str = None, 
+    async def create_session(self, user: User, ip_address: str = None,
                            user_agent: str = None, expires_hours: int = 24) -> LoginSession:
         """创建登录会话"""
         try:
             db = self.db()
-            
+
             # 清理过期会话
             await self.cleanup_expired_sessions(user.id)
-            
+
             # 创建新会话
             session = LoginSession(
                 user_id=user.id,
@@ -112,15 +123,19 @@ class AuthService:
                 user_agent=user_agent,
                 is_active=True
             )
-            
+
             db.add(session)
             db.commit()
             db.refresh(session)
+
+            # 获取用户名用于日志记录
+            username = user.username if hasattr(user, 'username') else str(user.id)
+
             db.close()
-            
-            logger.info(f"✅ 会话创建成功: 用户{user.username}")
+
+            logger.info(f"✅ 会话创建成功: 用户{username}")
             return session
-            
+
         except Exception as e:
             logger.error(f"创建会话失败: {e}")
             raise
