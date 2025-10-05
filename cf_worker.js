@@ -107,11 +107,10 @@ async function syncConfigFromDataCenter(env) {
     }
 
     try {
-        const response = await fetch(`${DATA_CENTER_CONFIG.url}/api/v1/config/export`, {
+        const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/config/export`, {
             method: 'GET',
             headers: {
                 'X-API-Key': DATA_CENTER_CONFIG.apiKey,
-                'X-Worker-ID': DATA_CENTER_CONFIG.workerId,
                 'Content-Type': 'application/json'
             }
         });
@@ -146,11 +145,10 @@ async function syncStatsToDataCenter(env) {
     try {
         const stats = await getWorkerStats(env);
 
-        const response = await fetch(`${DATA_CENTER_CONFIG.url}/api/v1/stats/import`, {
+        const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/sync/stats`, {
             method: 'POST',
             headers: {
                 'X-API-Key': DATA_CENTER_CONFIG.apiKey,
-                'X-Worker-ID': DATA_CENTER_CONFIG.workerId,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({

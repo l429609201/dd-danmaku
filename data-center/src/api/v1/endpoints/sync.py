@@ -19,6 +19,10 @@ class SyncResponse(BaseModel):
 class WorkerEndpoint(BaseModel):
     endpoint: str
 
+class StatsData(BaseModel):
+    worker_id: str
+    stats: Dict[str, Any]
+
 # 依赖注入
 def get_worker_sync_service() -> WorkerSyncService:
     return WorkerSyncService()
@@ -74,6 +78,32 @@ async def push_config_to_all_workers(
             message=f"配置同步完成: {results['success_count']}/{results['total_workers']} 成功",
             data=results
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/stats", response_model=SyncResponse)
+async def receive_worker_stats(
+    stats_data: StatsData,
+    worker_sync: WorkerSyncService = Depends(get_worker_sync_service)
+):
+    """接收Worker推送的统计数据"""
+    try:
+        # 处理Worker推送的统计数据
+        success = await worker_sync.process_worker_stats(
+            stats_data.worker_id,
+            stats_data.stats
+        )
+
+        if success:
+            return SyncResponse(
+                success=True,
+                message=f"接收Worker {stats_data.worker_id} 统计数据成功"
+            )
+        else:
+            return SyncResponse(
+                success=False,
+                message=f"处理Worker {stats_data.worker_id} 统计数据失败"
+            )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
