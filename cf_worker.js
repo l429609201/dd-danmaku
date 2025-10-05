@@ -232,24 +232,48 @@ async function syncConfigFromDataCenter() {
 
         if (response.ok) {
             const config = await response.json();
+            console.log('📥 从数据中心获取配置成功');
 
             // 优先使用数据中心配置，更新内存缓存
             if (config.ua_configs) {
                 memoryCache.configCache.uaConfigs = config.ua_configs;
-                console.log('✅ 从数据中心更新UA配置');
+                console.log(`✅ 从数据中心更新UA配置，共${config.ua_configs.length}条`);
+                addMemoryLog('INFO', '从数据中心更新UA配置', {
+                    count: config.ua_configs.length,
+                    data_center_url: DATA_CENTER_CONFIG.url
+                });
             }
 
             if (config.ip_blacklist) {
                 memoryCache.configCache.ipBlacklist = config.ip_blacklist;
-                console.log('✅ 从数据中心更新IP黑名单');
+                console.log(`✅ 从数据中心更新IP黑名单，共${config.ip_blacklist.length}条`);
+                addMemoryLog('INFO', '从数据中心更新IP黑名单', {
+                    count: config.ip_blacklist.length,
+                    data_center_url: DATA_CENTER_CONFIG.url
+                });
             }
 
             memoryCache.configCache.lastUpdate = now;
             DATA_CENTER_CONFIG.lastConfigSync = now;
             console.log('✅ 配置同步成功');
+            addMemoryLog('INFO', '配置同步成功', {
+                data_center_url: DATA_CENTER_CONFIG.url,
+                worker_id: DATA_CENTER_CONFIG.workerId
+            });
+        } else {
+            console.error('❌ 配置同步失败，HTTP状态:', response.status);
+            addMemoryLog('ERROR', `配置同步失败: HTTP ${response.status}`, {
+                data_center_url: DATA_CENTER_CONFIG.url,
+                status: response.status,
+                statusText: response.statusText
+            });
         }
     } catch (error) {
         console.error('❌ 配置同步失败，继续使用环境变量配置:', error);
+        addMemoryLog('ERROR', `配置同步异常: ${error.message}`, {
+            data_center_url: DATA_CENTER_CONFIG.url,
+            error: error.message
+        });
     }
 }
 
@@ -282,9 +306,25 @@ async function syncStatsToDataCenter() {
         if (response.ok) {
             DATA_CENTER_CONFIG.lastStatsSync = Date.now();
             console.log('✅ 统计数据和配置状态同步成功');
+            addMemoryLog('INFO', '统计数据同步成功', {
+                data_center_url: DATA_CENTER_CONFIG.url,
+                worker_id: DATA_CENTER_CONFIG.workerId,
+                stats_count: Object.keys(stats).length
+            });
+        } else {
+            console.error('❌ 统计数据同步失败，HTTP状态:', response.status);
+            addMemoryLog('ERROR', `统计数据同步失败: HTTP ${response.status}`, {
+                data_center_url: DATA_CENTER_CONFIG.url,
+                status: response.status,
+                statusText: response.statusText
+            });
         }
     } catch (error) {
         console.error('❌ 统计数据同步失败:', error);
+        addMemoryLog('ERROR', `统计数据同步异常: ${error.message}`, {
+            data_center_url: DATA_CENTER_CONFIG.url,
+            error: error.message
+        });
     }
 }
 
@@ -299,6 +339,12 @@ function verifyApiKey(request) {
 
 // 处理数据中心API请求
 async function handleDataCenterAPI(request, urlObj) {
+    // 获取客户端IP
+    const clientIP = request.headers.get('CF-Connecting-IP') ||
+                     request.headers.get('X-Forwarded-For') ||
+                     request.headers.get('X-Real-IP') ||
+                     'unknown';
+
     // 验证API密钥
     const authError = verifyApiKey(request);
     if (authError) return authError;
@@ -306,20 +352,38 @@ async function handleDataCenterAPI(request, urlObj) {
     const path = urlObj.pathname;
     const method = request.method;
 
+    // 记录数据交互端请求日志
+    console.log(`📥 [${clientIP}] 数据交互端请求: ${method} ${path}`);
+
     try {
         // 配置更新端点（接收数据中心主动推送）
         if (path === '/api/config/update' && method === 'POST') {
             const config = await request.json();
 
+            console.log(`📦 [${clientIP}] 收到数据中心配置推送`);
+            addMemoryLog('INFO', `数据中心配置推送`, {
+                source_ip: clientIP,
+                config_keys: Object.keys(config),
+                timestamp: Date.now()
+            });
+
             // 立即更新内存中的配置
             if (config.ua_configs) {
                 memoryCache.configCache.uaConfigs = config.ua_configs;
-                console.log('✅ 收到数据中心推送，已更新UA配置');
+                console.log(`✅ [${clientIP}] 已更新UA配置，共${config.ua_configs.length}条`);
+                addMemoryLog('INFO', `UA配置更新成功`, {
+                    source_ip: clientIP,
+                    count: config.ua_configs.length
+                });
             }
 
             if (config.ip_blacklist) {
                 memoryCache.configCache.ipBlacklist = config.ip_blacklist;
-                console.log('✅ 收到数据中心推送，已更新IP黑名单');
+                console.log(`✅ [${clientIP}] 已更新IP黑名单，共${config.ip_blacklist.length}条`);
+                addMemoryLog('INFO', `IP黑名单更新成功`, {
+                    source_ip: clientIP,
+                    count: config.ip_blacklist.length
+                });
             }
 
             memoryCache.configCache.lastUpdate = Date.now();
@@ -335,6 +399,9 @@ async function handleDataCenterAPI(request, urlObj) {
 
         // 统计数据导出端点
         if (path === '/api/stats/export' && method === 'GET') {
+            console.log(`📊 [${clientIP}] 数据中心请求统计数据导出`);
+            addMemoryLog('INFO', `统计数据导出请求`, { source_ip: clientIP });
+
             const stats = await getWorkerStats();
             return new Response(JSON.stringify(stats), {
                 headers: { 'Content-Type': 'application/json' }
@@ -343,6 +410,9 @@ async function handleDataCenterAPI(request, urlObj) {
 
         // 健康检查端点
         if (path === '/api/health' && method === 'GET') {
+            console.log(`💓 [${clientIP}] 数据中心健康检查请求`);
+            addMemoryLog('INFO', `健康检查请求`, { source_ip: clientIP });
+
             return new Response(JSON.stringify({
                 status: 'healthy',
                 worker_id: DATA_CENTER_CONFIG.workerId,
@@ -355,6 +425,8 @@ async function handleDataCenterAPI(request, urlObj) {
 
         // 内存日志查看端点
         if (path === '/api/logs' && method === 'GET') {
+            console.log(`📋 [${clientIP}] 数据中心请求日志查看`);
+
             const url = new URL(request.url);
             const limit = parseInt(url.searchParams.get('limit') || '100');
             const logs = getMemoryLogs(limit);
@@ -372,7 +444,14 @@ async function handleDataCenterAPI(request, urlObj) {
         return new Response('Not Found', { status: 404 });
 
     } catch (error) {
-        console.error(`❌ [${clientIP}] API处理错误:`, error);
+        console.error(`❌ [${clientIP}] 数据中心API处理错误:`, error);
+        addMemoryLog('ERROR', `数据中心API处理错误: ${error.message}`, {
+            source_ip: clientIP,
+            path: path,
+            method: method,
+            error: error.message
+        });
+
         return new Response(JSON.stringify({ error: error.message }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' }
