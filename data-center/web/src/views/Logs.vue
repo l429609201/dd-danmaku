@@ -185,33 +185,34 @@ export default {
 <style scoped>
 .logs-page {
   padding: 24px;
-  max-width: 1400px;
+  max-width: 1200px;
   margin: 0 auto;
-  height: calc(100vh - 48px);
+  height: calc(100vh - 64px);
   display: flex;
   flex-direction: column;
-  background: #0f0f0f;
+  background: #f5f5f5;
 }
 
 .page-header {
-  margin-bottom: 24px;
-  padding: 32px;
-  background: #1a1a1a;
-  border-radius: 16px;
-  border: 1px solid #2a2a2a;
+  margin-bottom: 20px;
+  padding: 24px;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
   text-align: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
 .page-header h1 {
-  color: #ffffff;
-  margin-bottom: 12px;
-  font-size: 32px;
-  font-weight: 700;
+  color: #333;
+  margin-bottom: 8px;
+  font-size: 28px;
+  font-weight: 600;
 }
 
 .page-header p {
-  color: #a0a0a0;
-  font-size: 18px;
+  color: #666;
+  font-size: 16px;
   margin: 0;
 }
 

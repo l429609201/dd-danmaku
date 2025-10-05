@@ -1,5 +1,4 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { isLoggedIn } from '../utils/api.js'
 
 // 路由配置
 const routes = [
@@ -59,23 +58,34 @@ const router = createRouter({
 })
 
 // 路由守卫
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   // 设置页面标题
   if (to.meta.title) {
     document.title = `${to.meta.title} - DanDanPlay 数据交互中心`
   }
 
+  console.log('🛣️ 路由守卫:', {
+    to: to.path,
+    from: from.path,
+    requiresAuth: to.meta.requiresAuth
+  })
+
   // 检查认证状态
   if (to.meta.requiresAuth !== false) {
-    if (!isLoggedIn()) {
-      // 未登录，跳转到登录页
+    const token = localStorage.getItem('access_token')
+    console.log('🔐 检查认证状态:', { hasToken: !!token })
+
+    if (!token) {
+      console.warn('⚠️ 未找到令牌，跳转到登录页')
       next('/login')
     } else {
       // 已登录，允许访问
+      console.log('✅ 令牌存在，允许访问')
       next()
     }
   } else {
     // 不需要认证的页面（如登录页）
+    console.log('🔓 无需认证的页面')
     next()
   }
 })

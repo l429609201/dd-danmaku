@@ -123,33 +123,34 @@ export default {
 <style scoped>
 .config-page {
   padding: 24px;
-  max-width: 1400px;
+  max-width: 1200px;
   margin: 0 auto;
-  background: #0f0f0f;
-  min-height: 100vh;
+  background: #f5f5f5;
+  min-height: calc(100vh - 64px);
 }
 
 /* 页面头部 */
 .page-header {
-  margin-bottom: 32px;
-  padding: 32px;
-  background: #1a1a1a;
-  border-radius: 16px;
-  border: 1px solid #2a2a2a;
+  margin-bottom: 24px;
+  padding: 24px;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
   text-align: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
 .header-content h1 {
-  font-size: 32px;
-  font-weight: 700;
-  color: #ffffff;
-  margin: 0 0 12px 0;
+  font-size: 28px;
+  font-weight: 600;
+  color: #333;
+  margin: 0 0 8px 0;
 }
 
 .header-content p {
-  color: #a0a0a0;
+  color: #666;
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .config-sections {
@@ -158,23 +159,25 @@ export default {
 }
 
 .config-card {
-  background: #1a1a1a;
-  padding: 28px;
-  border-radius: 16px;
-  border: 1px solid #2a2a2a;
+  background: white;
+  padding: 24px;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
   transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
 .config-card:hover {
-  background: #222222;
-  border-color: #3a3a3a;
-  transform: translateY(-2px);
+  background: #fafafa;
+  border-color: #d0d0d0;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
 
 .config-card h3 {
-  color: #ffffff;
-  margin-bottom: 24px;
-  font-size: 20px;
+  color: #333;
+  margin-bottom: 20px;
+  font-size: 18px;
   font-weight: 600;
 }
 

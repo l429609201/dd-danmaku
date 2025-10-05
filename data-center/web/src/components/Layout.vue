@@ -56,23 +56,31 @@
 
       <!-- 主内容区域 -->
       <main class="main-content">
-        <router-view :key="$route.fullPath" />
+        <keep-alive>
+          <router-view :key="routeKey" />
+        </keep-alive>
       </main>
     </div>
   </div>
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted, computed, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { logout as apiLogout, authFetch } from '../utils/api.js'
 
 export default {
   name: 'Layout',
   setup() {
     const router = useRouter()
+    const route = useRoute()
     const username = ref('')
     const showDropdown = ref(false)
+
+    // 创建一个响应式的路由key，确保组件正确重新渲染
+    const routeKey = computed(() => {
+      return route.fullPath + Date.now()
+    })
 
     const toggleDropdown = () => {
       showDropdown.value = !showDropdown.value
@@ -98,35 +106,58 @@ export default {
       }
     }
 
-    const handleNavClick = () => {
+    const handleNavClick = (event) => {
       // 强制关闭下拉菜单，确保路由切换时状态正确
       closeDropdown()
-      // 添加小延迟确保路由切换完成
-      setTimeout(() => {
-        // 可以在这里添加额外的清理逻辑
-      }, 100)
+
+      // 清理可能存在的定时器或异步操作
+      if (window.currentPageCleanup) {
+        window.currentPageCleanup()
+      }
+
+      // 强制垃圾回收（如果浏览器支持）
+      if (window.gc) {
+        setTimeout(() => window.gc(), 100)
+      }
     }
 
-    const loadUserInfo = async () => {
+    // 监听路由变化，确保每次切换都清理状态
+    watch(route, (newRoute, oldRoute) => {
+      if (newRoute.path !== oldRoute.path) {
+        closeDropdown()
+        // 清理之前页面的状态
+        if (window.currentPageCleanup) {
+          window.currentPageCleanup()
+        }
+      }
+    })
+
+
+
+    onMounted(async () => {
+      // 检查登录状态
+      const token = localStorage.getItem('access_token')
+      if (!token) {
+        console.warn('未找到访问令牌，跳转到登录页')
+        router.push('/login')
+        return
+      }
+
       try {
+        // 验证token是否有效
         const response = await authFetch('/api/v1/auth/me')
         if (response.ok) {
           const userInfo = await response.json()
           username.value = userInfo.username || ''
+        } else {
+          console.warn('令牌验证失败，跳转到登录页')
+          localStorage.removeItem('access_token')
+          localStorage.removeItem('token_type')
+          router.push('/login')
         }
       } catch (error) {
-        console.error('获取用户信息失败:', error)
-      }
-    }
-
-    onMounted(() => {
-      // 检查登录状态
-      const token = localStorage.getItem('access_token')
-      if (!token) {
+        console.error('验证用户信息失败:', error)
         router.push('/login')
-      } else {
-        // 加载用户信息
-        loadUserInfo()
       }
     })
     
@@ -142,6 +173,7 @@ export default {
     return {
       username,
       showDropdown,
+      routeKey,
       toggleDropdown,
       closeDropdown,
       changePassword,

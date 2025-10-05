@@ -161,10 +161,10 @@ export default {
 <style scoped>
 .worker-management {
   padding: 24px;
-  max-width: 1400px;
+  max-width: 1200px;
   margin: 0 auto;
-  background: #0f0f0f;
-  min-height: 100vh;
+  background: #f5f5f5;
+  min-height: calc(100vh - 64px);
 }
 
 /* 页面头部 */
@@ -172,24 +172,25 @@ export default {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 32px;
-  padding: 32px;
-  background: #1a1a1a;
-  border-radius: 16px;
-  border: 1px solid #2a2a2a;
+  margin-bottom: 24px;
+  padding: 24px;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
 .header-content h1 {
-  font-size: 32px;
-  font-weight: 700;
-  color: #ffffff;
-  margin: 0 0 12px 0;
+  font-size: 28px;
+  font-weight: 600;
+  color: #333;
+  margin: 0 0 8px 0;
 }
 
 .header-content p {
-  color: #a0a0a0;
+  color: #666;
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .header-actions {

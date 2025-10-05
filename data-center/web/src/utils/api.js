@@ -8,13 +8,22 @@
 export function getAuthHeaders() {
   const token = localStorage.getItem('access_token')
   const tokenType = localStorage.getItem('token_type') || 'bearer'
-  
+
+  console.log('🔍 获取认证头:', {
+    hasToken: !!token,
+    tokenLength: token ? token.length : 0,
+    tokenType: tokenType
+  })
+
   if (token) {
+    const authHeader = `${tokenType.charAt(0).toUpperCase() + tokenType.slice(1)} ${token}`
+    console.log('🔑 生成认证头:', authHeader.substring(0, 20) + '...')
     return {
-      'Authorization': `${tokenType.charAt(0).toUpperCase() + tokenType.slice(1)} ${token}`
+      'Authorization': authHeader
     }
   }
-  
+
+  console.warn('⚠️ 未找到访问令牌')
   return {}
 }
 
@@ -22,20 +31,34 @@ export function getAuthHeaders() {
  * 发送认证请求
  */
 export async function authFetch(url, options = {}) {
+  const authHeaders = getAuthHeaders()
   const headers = {
     'Content-Type': 'application/json',
-    ...getAuthHeaders(),
+    ...authHeaders,
     ...(options.headers || {})
   }
+
+  console.log('🌐 发送认证请求:', {
+    url,
+    method: options.method || 'GET',
+    hasAuth: !!authHeaders.Authorization,
+    headers: Object.keys(headers)
+  })
 
   const response = await fetch(url, {
     ...options,
     headers
   })
 
+  console.log('📡 收到响应:', {
+    url,
+    status: response.status,
+    statusText: response.statusText
+  })
+
   // 如果返回401，清除本地令牌并跳转到根路径
   if (response.status === 401) {
-    console.warn('JWT令牌已过期或无效，正在跳转到登录页...')
+    console.warn('🚫 JWT令牌已过期或无效，正在跳转到登录页...')
     localStorage.removeItem('access_token')
     localStorage.removeItem('token_type')
 
