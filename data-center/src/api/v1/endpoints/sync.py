@@ -1,7 +1,7 @@
 """
 同步管理API端点
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 
