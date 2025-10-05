@@ -27,7 +27,7 @@
         </div>
         <div class="setting-control">
           <input v-model="settings.email" type="email" placeholder="请输入邮箱"
-                 style="padding: 8px 12px; border: 1px solid #3a3a3a; border-radius: 6px; background: #0f0f0f; color: #ffffff;">
+                 style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; background: white; color: #333;">
         </div>
       </div>
 
@@ -85,7 +85,7 @@
         </div>
         <div class="setting-control">
           <select v-model="settings.logLevel"
-                  style="padding: 8px 12px; border: 1px solid #3a3a3a; border-radius: 6px; background: #0f0f0f; color: #ffffff;">
+                  style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; background: white; color: #333;">
             <option value="debug">Debug</option>
             <option value="info">Info</option>
             <option value="warning">Warning</option>
@@ -335,7 +335,7 @@ export default {
   justify-content: space-between;
   align-items: center;
   padding: 16px 0;
-  border-bottom: 1px solid #2a2a2a;
+  border-bottom: 1px solid #e0e0e0;
 }
 
 .setting-item:last-child {
@@ -343,13 +343,13 @@ export default {
 }
 
 .setting-label {
-  color: #ffffff;
+  color: #333;
   font-size: 15px;
   font-weight: 500;
 }
 
 .setting-description {
-  color: #a0a0a0;
+  color: #666;
   font-size: 13px;
   margin-top: 4px;
 }
@@ -371,22 +371,23 @@ export default {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: #1976d2;
   color: white;
 }
 
 .btn-primary:hover {
-  background: linear-gradient(135deg, #5b5bd6, #7c3aed);
+  background: #1565c0;
   transform: translateY(-1px);
 }
 
 .btn-secondary {
-  background: #3a3a3a;
-  color: white;
+  background: #f5f5f5;
+  color: #333;
+  border: 1px solid #ddd;
 }
 
 .btn-secondary:hover {
-  background: #4a4a4a;
+  background: #e0e0e0;
   transform: translateY(-1px);
 }
 

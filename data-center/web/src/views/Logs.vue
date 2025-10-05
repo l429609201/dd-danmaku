@@ -116,13 +116,27 @@ export default {
 
       try {
         // 调用真实API获取日志
+        console.log('📡 调用API: /logs?limit=100')
         const response = await authFetch('/logs?limit=100')
+
+        console.log('📡 API响应状态:', {
+          ok: response.ok,
+          status: response.status,
+          statusText: response.statusText,
+          headers: Object.fromEntries(response.headers.entries())
+        })
+
         if (response.ok) {
           const data = await response.json()
+          console.log('📦 收到原始数据:', data)
+
           logs.value = data.logs || []
-          console.log('📋 获取日志数据:', logs.value.length, '条')
+          console.log('📋 解析后的日志数据:', logs.value.length, '条')
+          console.log('📋 第一条日志示例:', logs.value[0])
         } else {
-          throw new Error(`API调用失败: ${response.status}`)
+          const errorText = await response.text()
+          console.error('❌ API错误响应:', errorText)
+          throw new Error(`API调用失败: ${response.status} - ${errorText}`)
         }
 
       } catch (error) {

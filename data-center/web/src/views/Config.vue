@@ -62,6 +62,11 @@
             暂无UA配置，点击上方按钮添加
           </div>
           <div v-for="(ua, index) in uaConfigs" :key="index" class="ua-config-item">
+            <div class="ua-config-header">
+              <h4>{{ ua.name || `配置 ${index + 1}` }}</h4>
+              <button @click="removeUAConfig(index)" class="btn btn-danger btn-sm">🗑️ 删除</button>
+            </div>
+
             <div class="form-row">
               <div class="form-group">
                 <label>配置名称</label>
@@ -69,20 +74,58 @@
               </div>
               <div class="form-group">
                 <label>User Agent</label>
-                <input v-model="ua.user_agent" type="text" placeholder="例如: MisakaDanmaku/1.0" class="form-input" />
+                <input v-model="ua.userAgent" type="text" placeholder="例如: misaka10876/v1.0.0" class="form-input" />
               </div>
+            </div>
+
+            <div class="form-row">
               <div class="form-group">
                 <label>每小时限制</label>
-                <input v-model.number="ua.hourly_limit" type="number" min="1" placeholder="100" class="form-input" />
+                <input v-model.number="ua.maxRequestsPerHour" type="number" min="-1" placeholder="100 (-1表示无限制)" class="form-input" />
               </div>
               <div class="form-group">
-                <label class="checkbox-wrapper">
-                  <input v-model="ua.enabled" type="checkbox" class="checkbox-input" />
-                  <span class="checkbox-custom"></span>
-                  <span class="checkbox-label">启用</span>
-                </label>
+                <label>每日限制</label>
+                <input v-model.number="ua.maxRequestsPerDay" type="number" min="-1" placeholder="1000 (-1表示无限制)" class="form-input" />
               </div>
-              <button @click="removeUAConfig(index)" class="btn btn-danger">🗑️</button>
+            </div>
+
+            <div class="form-group">
+              <label>描述</label>
+              <input v-model="ua.description" type="text" placeholder="例如: Misaka弹幕专用客户端" class="form-input" />
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-wrapper">
+                <input v-model="ua.enabled" type="checkbox" class="checkbox-input" />
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-label">启用此配置</span>
+              </label>
+            </div>
+
+            <!-- 路径限制配置 -->
+            <div class="path-limits-section">
+              <div class="section-header">
+                <label>路径限制</label>
+                <button @click="addPathLimit(index)" type="button" class="btn btn-secondary btn-sm">➕ 添加路径限制</button>
+              </div>
+
+              <div v-if="ua.pathLimits && ua.pathLimits.length === 0" class="empty-state-small">
+                暂无路径限制
+              </div>
+
+              <div v-for="(pathLimit, pathIndex) in ua.pathLimits" :key="pathIndex" class="path-limit-item">
+                <div class="form-row">
+                  <div class="form-group">
+                    <label>路径</label>
+                    <input v-model="pathLimit.path" type="text" placeholder="例如: /api/v2/comment/" class="form-input" />
+                  </div>
+                  <div class="form-group">
+                    <label>每小时限制</label>
+                    <input v-model.number="pathLimit.maxRequestsPerHour" type="number" min="1" placeholder="50" class="form-input" />
+                  </div>
+                  <button @click="removePathLimit(index, pathIndex)" class="btn btn-danger btn-sm">🗑️</button>
+                </div>
+              </div>
             </div>
           </div>
           <button @click="saveUAConfigs" class="btn btn-primary">💾 保存UA配置</button>
@@ -103,18 +146,7 @@
             <div class="form-row">
               <div class="form-group">
                 <label>IP地址/CIDR</label>
-                <input v-model="ip.ip_address" type="text" placeholder="例如: 192.168.1.1 或 192.168.1.0/24" class="form-input" />
-              </div>
-              <div class="form-group">
-                <label>封禁原因</label>
-                <input v-model="ip.reason" type="text" placeholder="例如: 恶意请求" class="form-input" />
-              </div>
-              <div class="form-group">
-                <label class="checkbox-wrapper">
-                  <input v-model="ip.enabled" type="checkbox" class="checkbox-input" />
-                  <span class="checkbox-custom"></span>
-                  <span class="checkbox-label">启用</span>
-                </label>
+                <input v-model="ipBlacklist[index]" type="text" placeholder="例如: 192.168.1.1 或 192.168.1.0/24" class="form-input" />
               </div>
               <button @click="removeIPBlacklist(index)" class="btn btn-danger">🗑️</button>
             </div>
@@ -186,14 +218,31 @@ export default {
     const addUAConfig = () => {
       uaConfigs.value.push({
         name: '',
-        user_agent: '',
-        hourly_limit: 100,
-        enabled: true
+        enabled: true,
+        userAgent: '',
+        maxRequestsPerHour: 100,
+        maxRequestsPerDay: 1000,
+        description: '',
+        pathLimits: []
       })
     }
 
     const removeUAConfig = (index) => {
       uaConfigs.value.splice(index, 1)
+    }
+
+    const addPathLimit = (uaIndex) => {
+      if (!uaConfigs.value[uaIndex].pathLimits) {
+        uaConfigs.value[uaIndex].pathLimits = []
+      }
+      uaConfigs.value[uaIndex].pathLimits.push({
+        path: '',
+        maxRequestsPerHour: 50
+      })
+    }
+
+    const removePathLimit = (uaIndex, pathIndex) => {
+      uaConfigs.value[uaIndex].pathLimits.splice(pathIndex, 1)
     }
 
     const saveUAConfigs = async () => {
@@ -215,11 +264,7 @@ export default {
 
     // IP黑名单方法
     const addIPBlacklist = () => {
-      ipBlacklist.value.push({
-        ip_address: '',
-        reason: '',
-        enabled: true
-      })
+      ipBlacklist.value.push('')
     }
 
     const removeIPBlacklist = (index) => {
@@ -276,6 +321,8 @@ export default {
       saveTelegramConfig,
       addUAConfig,
       removeUAConfig,
+      addPathLimit,
+      removePathLimit,
       saveUAConfigs,
       addIPBlacklist,
       removeIPBlacklist,
@@ -585,5 +632,62 @@ export default {
 .form-row .btn-danger {
   flex-shrink: 0;
   margin-bottom: 0;
+}
+
+/* UA配置特殊样式 */
+.ua-config-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.ua-config-header h4 {
+  margin: 0;
+  color: #333;
+  font-size: 16px;
+}
+
+.btn-sm {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.path-limits-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.section-header label {
+  margin: 0;
+  font-weight: 600;
+  color: #333;
+}
+
+.empty-state-small {
+  text-align: center;
+  color: #999;
+  padding: 20px;
+  background: #fafafa;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.path-limit-item {
+  background: #fafafa;
+  padding: 12px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  border: 1px solid #f0f0f0;
 }
 </style>

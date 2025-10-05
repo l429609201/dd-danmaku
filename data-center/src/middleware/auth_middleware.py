@@ -24,6 +24,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/api/auth/init-status",
             "/api/auth/init-admin"
         }
+
+        # 前端路由路径（需要特殊处理）
+        self.frontend_routes = {
+            "/dashboard",
+            "/logs",
+            "/stats",
+            "/config",
+            "/settings",
+            "/worker-management",
+            "/change-password",
+            "/login"
+        }
         
         # 静态文件路径
         self.static_prefixes = [
@@ -35,15 +47,37 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         """处理请求"""
         path = request.url.path
-        
+
         # 检查是否为公开路径
         if self._is_public_path(path):
             return await call_next(request)
-        
+
         # 检查是否为静态文件
         if self._is_static_path(path):
             return await call_next(request)
-        
+
+        # 检查是否为前端路由（直接访问Vue路由）
+        if self._is_frontend_route(path):
+            # 返回index.html，让前端路由守卫处理认证
+            from fastapi.responses import FileResponse
+            import os
+            from pathlib import Path
+
+            # 查找index.html文件
+            if os.getenv('DOCKER_ENV'):
+                # Docker环境
+                index_path = Path("/app/web/dist/index.html")
+            else:
+                # 开发环境
+                web_dir = Path(__file__).parent.parent.parent / "web" / "dist"
+                index_path = web_dir / "index.html"
+
+            if index_path.exists():
+                return FileResponse(str(index_path), media_type="text/html")
+            else:
+                # 如果找不到index.html，继续正常的认证流程
+                pass
+
         # JWT认证
         authorization = request.headers.get("authorization")
 
@@ -68,6 +102,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
     def _is_static_path(self, path: str) -> bool:
         """检查是否为静态文件路径"""
         return any(path.startswith(prefix) for prefix in self.static_prefixes)
+
+    def _is_frontend_route(self, path: str) -> bool:
+        """检查是否为前端路由"""
+        return path in self.frontend_routes
     
     def _unauthorized_response(self, message: str) -> JSONResponse:
         """返回未授权响应"""

@@ -226,9 +226,11 @@ def create_application() -> FastAPI:
     async def serve_spa(request: Request, full_path: str):
         # API路径让其他路由处理
         if (full_path.startswith("api/") or
+            full_path.startswith("worker-api/") or
             full_path.startswith("health") or
             full_path.startswith("docs") or
-            full_path.startswith("logs") or
+            full_path.startswith("openapi.json") or
+            full_path.startswith("redoc") or
             full_path.startswith("assets/") or
             full_path.startswith("images/")):
             raise HTTPException(status_code=404, detail="Not found")
