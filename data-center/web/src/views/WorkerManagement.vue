@@ -257,14 +257,12 @@ export default {
 
     async loadCurrentConfig() {
       try {
-        // 加载当前的UA配置
         const uaResponse = await authFetch('/api/v1/config/ua')
         if (uaResponse.ok) {
           const uaData = await uaResponse.json()
           this.pushConfigData.uaConfigsText = JSON.stringify(uaData.configs || {}, null, 2)
         }
 
-        // 加载当前的IP黑名单
         const ipResponse = await authFetch('/api/v1/config/ip-blacklist')
         if (ipResponse.ok) {
           const ipData = await ipResponse.json()

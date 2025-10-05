@@ -54,20 +54,14 @@ class JWTUtils:
         exp_timestamp = int(expire.timestamp())
         iat_timestamp = int(now.timestamp())
 
-        logger.info(f"🔐 JWT时间信息: now={now}, expire={expire}")
-        logger.info(f"🔐 JWT时间戳: iat={iat_timestamp}, exp={exp_timestamp}")
-
         to_encode.update({
             "exp": exp_timestamp,  # 转换为timestamp确保兼容性
             "iat": iat_timestamp,  # 转换为timestamp确保兼容性
             "type": "access"
         })
-        
+
         try:
-            logger.info(f"🔐 准备编码JWT数据: {to_encode}")
             encoded_jwt = jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
-            logger.info(f"✅ JWT令牌创建成功，过期时间: {expire} (本地时间)")
-            logger.info(f"✅ 生成的JWT令牌: {encoded_jwt[:50]}...")
             return encoded_jwt
         except Exception as e:
             logger.error(f"❌ JWT令牌创建失败: {e}")
@@ -84,18 +78,12 @@ class JWTUtils:
             解码后的数据，如果验证失败返回None
         """
         try:
-            logger.info(f"🔐 开始验证JWT令牌: {token[:20]}...")
-            logger.info(f"🔐 使用密钥: {self.secret_key[:10]}...")
-
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
-            logger.info(f"🔐 JWT解码成功: {payload}")
 
             # 检查令牌类型
             if payload.get("type") != "access":
-                logger.warning("⚠️ 令牌类型不正确")
                 return None
 
-            logger.info("✅ JWT令牌验证成功")
             return payload
         except JWTError as e:
             # python-jose的JWTError包含了所有JWT相关错误
@@ -227,7 +215,6 @@ def test_jwt_functionality():
     # 验证JWT令牌
     payload = verify_token(token)
     if payload:
-        logger.info(f"✅ JWT自测试成功: {payload}")
         return True
     else:
         logger.error("❌ JWT自测试失败")
