@@ -1,0 +1,101 @@
+version: '3.8'
+
+services:
+  data-center:
+    image: l429609201/dd-danmaku:latest
+    container_name: danmu-data-center
+    ports:
+      - "7759:7759"      # Web界面和API端口
+    environment:
+      # 基础配置
+      - DATABASE_TYPE=sqlite
+      - SQLITE_PATH=/app/config/database.db
+      - CONFIG_PATH=/app/config
+      - LOG_LEVEL=INFO
+      - LOG_FILE=/app/config/logs/app.log
+
+      # 服务配置
+      - HOST=0.0.0.0
+      - PORT=7759
+
+      # 管理员用户配置
+      - ADMIN_USERNAME=admin
+
+      # 可选：MySQL配置（如果使用MySQL，取消注释）
+      # - DATABASE_TYPE=mysql
+      # - MYSQL_HOST=mysql
+      # - MYSQL_PORT=3306
+      # - MYSQL_USER=root
+      # - MYSQL_PASSWORD=your_mysql_password
+      # - MYSQL_DATABASE=danmu_data_center
+
+      # 可选：PostgreSQL配置（如果使用PostgreSQL，取消注释）
+      # - DATABASE_TYPE=postgresql
+      # - POSTGRES_HOST=postgres
+      # - POSTGRES_PORT=5432
+      # - POSTGRES_USER=postgres
+      # - POSTGRES_PASSWORD=your_postgres_password
+      # - POSTGRES_DATABASE=danmu_data_center
+      
+    volumes:
+      # 配置和数据持久化
+      - ./config:/app/config
+      
+    restart: unless-stopped
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7759/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # 可选：MySQL数据库服务（如果使用MySQL，取消注释）
+  # mysql:
+  #   image: mysql:8.0
+  #   container_name: danmu-mysql
+  #   environment:
+  #     - MYSQL_ROOT_PASSWORD=your_mysql_password
+  #     - MYSQL_DATABASE=danmu_data_center
+  #     - MYSQL_USER=danmu_user
+  #     - MYSQL_PASSWORD=your_mysql_password
+  #   volumes:
+  #     - mysql_data:/var/lib/mysql
+  #   ports:
+  #     - "3306:3306"
+  #   restart: unless-stopped
+  #   networks:
+  #     - danmu-network
+
+  # 可选：PostgreSQL数据库服务（如果使用PostgreSQL，取消注释）
+  # postgres:
+  #   image: postgres:15
+  #   container_name: danmu-postgres
+  #   environment:
+  #     - POSTGRES_DB=danmu_data_center
+  #     - POSTGRES_USER=postgres
+  #     - POSTGRES_PASSWORD=your_postgres_password
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432"
+  #   restart: unless-stopped
+  #   networks:
+  #     - danmu-network
+
+volumes:
+  # mysql_data:
+  # postgres_data:
+
+networks:
+  danmu-network:
+    driver: bridge
