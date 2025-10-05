@@ -5,7 +5,6 @@ on:
     branches: [ main, master ]
     paths:
       - 'cf_worker.js'
-      - 'telegram_bot.js'
       - 'build.js'
       - 'wrangler.toml'
       - '.github/workflows/cloudflare-worker.yml'
@@ -13,7 +12,6 @@ on:
     branches: [ main, master ]
     paths:
       - 'cf_worker.js'
-      - 'telegram_bot.js'
       - 'build.js'
       - 'wrangler.toml'
       - '.github/workflows/cloudflare-worker.yml'
@@ -34,6 +32,15 @@ jobs:
 
     - name: Build Worker
       run: node build.js
+      env:
+        USER_AGENT_LIMITS_CONFIG: ${{ secrets.USER_AGENT_LIMITS_CONFIG }}
+        IP_BLACKLIST_CONFIG: ${{ secrets.IP_BLACKLIST_CONFIG }}
+        DATA_CENTER_URL: ${{ secrets.DATA_CENTER_URL }}
+        DATA_CENTER_API_KEY: ${{ secrets.DATA_CENTER_API_KEY }}
+        WORKER_ID: ${{ secrets.WORKER_ID }}
+        ENABLE_ASYMMETRIC_AUTH_ENV: ${{ secrets.ENABLE_ASYMMETRIC_AUTH_ENV }}
+        ENABLE_DETAILED_LOGGING: ${{ secrets.ENABLE_DETAILED_LOGGING }}
+        PRIVATE_KEY_HEX: ${{ secrets.PRIVATE_KEY_HEX }}
 
     - name: Deploy to Cloudflare Workers
       if: github.event_name != 'pull_request'
@@ -47,4 +54,4 @@ jobs:
       if: github.event_name != 'pull_request'
       run: |
         echo "Worker deployed successfully!"
-        echo "Worker URL: https://${{ secrets.WORKER_NAME || 'danmu-proxy' }}.${{ secrets.CLOUDFLARE_SUBDOMAIN || 'workers' }}.dev"
+        echo "Worker URL: https://danmu-api.${{ secrets.CLOUDFLARE_SUBDOMAIN || 'workers' }}.dev"
