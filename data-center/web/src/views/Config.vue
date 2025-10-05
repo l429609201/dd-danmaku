@@ -43,11 +43,7 @@
           <button type="submit" class="save-btn">🤖 保存机器人配置</button>
         </form>
       </div>
-
-
     </div>
-
-
   </div>
 </template>
 
@@ -103,12 +99,6 @@ export default {
         showMessage('保存失败', 'error')
       }
     }
-
-
-
-
-
-
 
     onMounted(() => {
       // 页面加载时的初始化
