@@ -114,7 +114,7 @@ export default {
 
     const loadUserInfo = async () => {
       try {
-        const response = await authFetch('/api/v1/auth/me')
+        const response = await authFetch('/auth/me')
         if (response.ok) {
           const userInfo = await response.json()
           settings.value.username = userInfo.username || ''

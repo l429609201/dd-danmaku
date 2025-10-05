@@ -142,7 +142,7 @@ export default {
       loading.value = true
       
       try {
-        const response = await authFetch('/api/v1/auth/change-password', {
+        const response = await authFetch('/auth/change-password', {
           method: 'POST',
           body: JSON.stringify({
             current_password: form.value.currentPassword,
