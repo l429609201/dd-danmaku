@@ -61,7 +61,7 @@ const router = createRouter({
 router.beforeEach(async (to, from, next) => {
   // 设置页面标题
   if (to.meta.title) {
-    document.title = `${to.meta.title} - DanDanPlay 数据交互中心`
+    document.title = `${to.meta.title} - Worker 数据交互中心`
   }
 
   console.log('🛣️ 路由守卫:', {

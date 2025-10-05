@@ -157,8 +157,14 @@ export default {
     },
 
     async generateApiKey() {
-      // 生成一个模拟的API密钥
-      this.currentApiKey = 'test-api-key-' + Date.now()
+      // 生成32位随机API密钥（大小写英文+数字）
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+      let apiKey = ''
+      for (let i = 0; i < 32; i++) {
+        apiKey += chars.charAt(Math.floor(Math.random() * chars.length))
+      }
+
+      this.currentApiKey = apiKey
       // 保存到sessionStorage，页面切换后不会丢失
       sessionStorage.setItem('worker_api_key', this.currentApiKey)
       this.showMessage('API密钥生成成功', 'success')
@@ -289,35 +295,37 @@ export default {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: #1976d2;
   color: white;
 }
 
 .btn-primary:hover {
-  background: linear-gradient(135deg, #5b5bd6, #7c3aed);
-  transform: translateY(-2px);
-  box-shadow: 0 8px 25px rgba(99, 102, 241, 0.3);
+  background: #1565c0;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(25, 118, 210, 0.3);
 }
 
 .btn-secondary {
-  background: #3a3a3a;
-  color: white;
+  background: #f5f5f5;
+  color: #333;
+  border: 1px solid #ddd;
 }
 
 .btn-secondary:hover {
-  background: #4a4a4a;
+  background: #e0e0e0;
+  border-color: #ccc;
   transform: translateY(-1px);
 }
 
 .btn-outline {
-  background: #2a2a2a;
-  color: #ffffff;
-  border: 1px solid #3a3a3a;
+  background: white;
+  color: #333;
+  border: 1px solid #ddd;
 }
 
 .btn-outline:hover {
-  background: #3a3a3a;
-  border-color: #4a4a4a;
+  background: #f5f5f5;
+  border-color: #ccc;
   transform: translateY(-1px);
 }
 
@@ -328,78 +336,81 @@ export default {
 
 /* API密钥卡片 */
 .api-key-card {
-  background: #1a1a1a;
-  border-radius: 16px;
-  border: 1px solid #2a2a2a;
-  margin-bottom: 24px;
-  border-left: 4px solid #10b981;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  margin-bottom: 20px;
+  border-left: 4px solid #4caf50;
   transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
 .api-key-card:hover {
-  background: #222222;
-  border-color: #3a3a3a;
+  background: #fafafa;
+  border-color: #d0d0d0;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
 
 .card-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 24px 28px 0;
+  padding: 20px 24px 0;
 }
 
 .card-header h3 {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 600;
-  color: #ffffff;
+  color: #333;
   margin: 0;
 }
 
 .close-btn {
   background: none;
   border: none;
-  font-size: 20px;
-  color: #a0a0a0;
+  font-size: 18px;
+  color: #666;
   cursor: pointer;
-  padding: 6px;
-  border-radius: 8px;
+  padding: 4px;
+  border-radius: 4px;
   transition: all 0.2s;
 }
 
 .close-btn:hover {
-  background: #3a3a3a;
-  color: #ffffff;
+  background: #f0f0f0;
+  color: #333;
 }
 
 .card-body {
-  padding: 24px 28px 28px;
+  padding: 20px 24px 24px;
 }
 
 .api-key-display {
   display: flex;
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 .api-key-input {
   flex: 1;
-  padding: 14px 18px;
-  border: 1px solid #3a3a3a;
-  border-radius: 12px;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
   font-family: 'Monaco', 'Menlo', monospace;
-  font-size: 14px;
-  background: #0f0f0f;
-  color: #ffffff;
+  font-size: 13px;
+  background: #f9f9f9;
+  color: #333;
 }
 
 .api-key-note {
-  color: #10b981;
-  font-size: 15px;
+  color: #4caf50;
+  font-size: 14px;
   margin: 0;
-  padding: 16px 20px;
-  background: rgba(16, 185, 129, 0.1);
-  border-radius: 12px;
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  padding: 12px 16px;
+  background: #f1f8e9;
+  border-radius: 6px;
+  border: 1px solid #c8e6c9;
 }
 
 /* Worker网格 */
@@ -410,34 +421,35 @@ export default {
 }
 
 .worker-card {
-  background: #1a1a1a;
-  border-radius: 16px;
-  border: 1px solid #2a2a2a;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
   transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
 .worker-card:hover {
-  background: #222222;
-  border-color: #3a3a3a;
-  transform: translateY(-4px);
-  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+  background: #fafafa;
+  border-color: #d0d0d0;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
 
 .worker-card .card-header {
-  padding: 24px 28px 20px;
-  border-bottom: 1px solid #2a2a2a;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid #e0e0e0;
 }
 
 .worker-info {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
 
 .worker-info h3 {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 600;
-  color: #ffffff;
+  color: #333;
   margin: 0;
 }
 
@@ -449,27 +461,27 @@ export default {
 }
 
 .status-badge.online {
-  background: rgba(16, 185, 129, 0.2);
-  color: #10b981;
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: #e8f5e8;
+  color: #4caf50;
+  border: 1px solid #c8e6c9;
 }
 
 .status-badge.offline {
-  background: rgba(239, 68, 68, 0.2);
-  color: #ef4444;
-  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: #ffebee;
+  color: #f44336;
+  border: 1px solid #ffcdd2;
 }
 
 .status-badge.error {
-  background: rgba(245, 158, 11, 0.2);
-  color: #f59e0b;
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: #fff3e0;
+  color: #ff9800;
+  border: 1px solid #ffcc02;
 }
 
 .status-badge.unknown {
-  background: rgba(156, 163, 175, 0.2);
-  color: #9ca3af;
-  border: 1px solid rgba(156, 163, 175, 0.3);
+  background: #f5f5f5;
+  color: #666;
+  border: 1px solid #ddd;
 }
 
 .worker-actions {
@@ -495,12 +507,12 @@ export default {
 }
 
 .worker-url code {
-  background: #0f0f0f;
+  background: #f5f5f5;
   padding: 6px 12px;
-  border-radius: 8px;
+  border-radius: 6px;
   font-size: 13px;
-  color: #ffffff;
-  border: 1px solid #3a3a3a;
+  color: #333;
+  border: 1px solid #ddd;
 }
 
 .worker-meta {
@@ -522,16 +534,19 @@ export default {
 .empty-state {
   grid-column: 1 / -1;
   text-align: center;
-  padding: 80px 32px;
-  background: #1a1a1a;
-  border-radius: 16px;
-  border: 1px solid #2a2a2a;
+  padding: 60px 32px;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
   transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
 .empty-state:hover {
-  background: #222222;
-  border-color: #3a3a3a;
+  background: #fafafa;
+  border-color: #d0d0d0;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
 
 .empty-icon {

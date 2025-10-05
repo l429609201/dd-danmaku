@@ -3,7 +3,7 @@
     <!-- 顶部导航栏 -->
     <header class="header">
       <div class="header-left">
-        <h2>🎯 DanDanPlay 数据交互中心</h2>
+        <h2>⚡ Worker 数据交互中心</h2>
       </div>
       <div class="header-right">
         <div class="user-dropdown">

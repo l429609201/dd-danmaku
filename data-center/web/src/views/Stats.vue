@@ -243,30 +243,38 @@ export default {
   align-items: center;
   gap: 16px;
   justify-content: center;
+  padding: 20px;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
 .refresh-btn {
-  padding: 12px 24px;
-  background: #409eff;
+  padding: 10px 20px;
+  background: #1976d2;
   color: white;
   border: none;
   border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
-  transition: background 0.3s;
+  font-weight: 500;
+  transition: all 0.3s;
 }
 
 .refresh-btn:hover:not(:disabled) {
-  background: #337ecc;
+  background: #1565c0;
+  transform: translateY(-1px);
 }
 
 .refresh-btn:disabled {
   background: #ccc;
   cursor: not-allowed;
+  transform: none;
 }
 
 .last-update {
-  color: #999;
-  font-size: 12px;
+  color: #666;
+  font-size: 14px;
 }
 </style>

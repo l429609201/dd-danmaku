@@ -128,10 +128,10 @@ export default {
           const data = await response.json()
           console.log('📋 获取到日志数据:', data.length, '条')
           logs.value = data.map((log, index) => ({
-            id: index + 1,
-            timestamp: log.timestamp || log.created_at,
-            level: log.level,
-            message: log.message
+            id: log.id || (index + 1),
+            timestamp: log.created_at || log.timestamp || new Date().toISOString(),
+            level: log.level || 'INFO',
+            message: log.message || '无消息内容'
           }))
         } else {
           console.error('❌ 获取日志失败:', response.status)
@@ -241,45 +241,46 @@ export default {
 
 .log-controls {
   display: flex;
-  gap: 24px;
+  gap: 20px;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
   flex-wrap: wrap;
-  padding: 24px;
-  background: #1a1a1a;
-  border-radius: 16px;
-  border: 1px solid #2a2a2a;
+  padding: 20px;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
 .filter-group {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 
 .filter-group label {
-  color: #ffffff;
+  color: #333;
   font-weight: 500;
   white-space: nowrap;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .filter-group select,
 .filter-group input {
-  padding: 10px 16px;
-  border: 1px solid #3a3a3a;
-  border-radius: 8px;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
   font-size: 14px;
-  background: #0f0f0f;
-  color: #ffffff;
+  background: white;
+  color: #333;
   transition: all 0.2s;
 }
 
 .filter-group select:focus,
 .filter-group input:focus {
   outline: none;
-  border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  border-color: #1976d2;
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
 }
 
 .action-group {
@@ -289,9 +290,9 @@ export default {
 }
 
 .refresh-btn, .clear-btn, .download-btn {
-  padding: 10px 20px;
+  padding: 8px 16px;
   border: none;
-  border-radius: 8px;
+  border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
   font-weight: 500;
@@ -299,18 +300,30 @@ export default {
 }
 
 .refresh-btn {
-  background: #409eff;
+  background: #1976d2;
   color: white;
+}
+
+.refresh-btn:hover {
+  background: #1565c0;
 }
 
 .clear-btn {
-  background: #f56c6c;
+  background: #f44336;
   color: white;
 }
 
+.clear-btn:hover {
+  background: #d32f2f;
+}
+
 .download-btn {
-  background: #67c23a;
+  background: #4caf50;
   color: white;
+}
+
+.download-btn:hover {
+  background: #388e3c;
 }
 
 .log-container {

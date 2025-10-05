@@ -164,14 +164,14 @@ export default {
 }
 
 .stat-icon {
-  font-size: 28px;
+  font-size: 24px;
   width: 56px;
   height: 56px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  border-radius: 16px;
+  background: #1976d2;
+  border-radius: 12px;
   color: white;
   flex-shrink: 0;
 }
@@ -181,15 +181,15 @@ export default {
 }
 
 .stat-value {
-  font-size: 32px;
+  font-size: 28px;
   font-weight: 700;
-  color: #ffffff;
-  margin-bottom: 6px;
+  color: #333;
+  margin-bottom: 4px;
 }
 
 .stat-label {
-  color: #a0a0a0;
-  font-size: 15px;
+  color: #666;
+  font-size: 14px;
   font-weight: 500;
 }
 
@@ -201,45 +201,47 @@ export default {
 }
 
 .chart-card {
-  background: #1a1a1a;
-  border-radius: 16px;
-  border: 1px solid #2a2a2a;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
   overflow: hidden;
   transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
 .chart-card:hover {
-  background: #222222;
-  border-color: #3a3a3a;
-  transform: translateY(-2px);
+  background: #fafafa;
+  border-color: #d0d0d0;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
 
 .card-header {
-  padding: 24px 28px;
-  border-bottom: 1px solid #2a2a2a;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e0e0e0;
 }
 
 .card-header h3 {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 600;
-  color: #ffffff;
+  color: #333;
   margin: 0;
 }
 
 .card-body {
-  padding: 28px;
+  padding: 24px;
 }
 
 .chart-placeholder {
-  height: 280px;
-  background: #0f0f0f;
-  border: 2px dashed #3a3a3a;
+  height: 240px;
+  background: #f9f9f9;
+  border: 2px dashed #ddd;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #a0a0a0;
-  border-radius: 12px;
-  font-size: 16px;
+  color: #666;
+  border-radius: 8px;
+  font-size: 14px;
   font-weight: 500;
 }
 
