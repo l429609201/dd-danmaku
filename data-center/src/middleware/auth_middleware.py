@@ -22,8 +22,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/redoc",
             "/api/v1/auth/login",
             "/api/v1/auth/init-status",
-            "/api/v1/auth/init-admin",
-            "/api/v1/auth/me"  # 临时添加，让JWT认证能正常工作
+            "/api/v1/auth/init-admin"
         }
         
         # 静态文件路径
@@ -45,15 +44,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if self._is_static_path(path):
             return await call_next(request)
         
-        # 验证会话
-        session_token = request.cookies.get("session_token")
-        
-        if not session_token:
-            return self._unauthorized_response("未登录")
-        
-        user = await self.auth_service.validate_session(session_token)
+        # JWT认证
+        authorization = request.headers.get("authorization")
+
+        if not authorization or not authorization.startswith("Bearer "):
+            return self._unauthorized_response("未提供认证令牌")
+
+        jwt_token = authorization.split(" ")[1]
+        user = await self.auth_service.validate_jwt_session(jwt_token)
+
         if not user:
-            return self._unauthorized_response("会话已过期，请重新登录")
+            return self._unauthorized_response("令牌无效或已过期")
         
         # 将用户信息添加到请求状态
         request.state.current_user = user
