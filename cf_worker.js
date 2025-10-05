@@ -644,8 +644,11 @@ async function handleRequest(request, env, ctx) {
     const urlObj = new URL(request.url);
     const ACCESS_CONFIG = getAccessConfig();
 
-    // 数据中心API端点处理
-    if (urlObj.pathname.startsWith('/api/')) {
+    // 数据中心API端点处理（只处理特定的数据中心API路径）
+    if (urlObj.pathname.startsWith('/api/config/') ||
+        urlObj.pathname.startsWith('/api/stats/') ||
+        urlObj.pathname === '/api/health' ||
+        urlObj.pathname.startsWith('/api/logs')) {
         return await handleDataCenterAPI(request, urlObj);
     }
 
@@ -755,8 +758,10 @@ async function handleRequest(request, env, ctx) {
     // 在内存中记录AppSecret使用次数
     if (memoryCache.appSecretUsage.current === '1') {
         memoryCache.appSecretUsage.count1++;
+        console.log(`🔢 AppSecret1计数增加: ${memoryCache.appSecretUsage.count1}`);
     } else {
         memoryCache.appSecretUsage.count2++;
+        console.log(`🔢 AppSecret2计数增加: ${memoryCache.appSecretUsage.count2}`);
     }
 
     // 增加待同步请求计数
