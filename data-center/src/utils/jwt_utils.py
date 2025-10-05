@@ -85,22 +85,9 @@ class JWTUtils:
                 return None
 
             return payload
-        except JWTError as e:
-            # python-jose的JWTError包含了所有JWT相关错误
-            error_msg = str(e)
-            logger.error(f"❌ JWT验证失败详情: {error_msg}")
-            logger.error(f"❌ 令牌内容: {token[:50]}...")
-            logger.error(f"❌ 使用的密钥: {self.secret_key[:10]}...")
-
-            if "expired" in error_msg.lower():
-                logger.warning(f"⚠️ JWT令牌已过期: {token[:20]}...")
-            elif "signature" in error_msg.lower():
-                logger.warning(f"⚠️ JWT令牌签名无效: {token[:20]}...")
-            else:
-                logger.warning(f"⚠️ JWT令牌格式无效: {error_msg}, token: {token[:20]}...")
+        except JWTError:
             return None
-        except Exception as e:
-            logger.error(f"❌ JWT令牌验证失败: {e}, token: {token[:20]}...")
+        except Exception:
             return None
     
     def decode_token_without_verification(self, token: str) -> Optional[Dict[str, Any]]:

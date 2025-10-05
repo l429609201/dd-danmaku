@@ -1,25 +1,99 @@
 <template>
   <div class="settings-page">
-    <h2>系统设置</h2>
-    <p>系统设置管理页面</p>
-    
-    <el-card>
-      <template #header>
-        <span>用户设置</span>
-      </template>
-      <el-form label-width="120px">
-        <el-form-item label="用户名">
-          <el-input v-model="settings.username" disabled />
-        </el-form-item>
-        <el-form-item label="邮箱">
-          <el-input v-model="settings.email" />
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary">保存设置</el-button>
-          <el-button type="danger">修改密码</el-button>
-        </el-form-item>
-      </el-form>
-    </el-card>
+    <!-- 页面头部 -->
+    <div class="page-header">
+      <h1>⚙️ 系统设置</h1>
+      <p>管理系统配置和用户偏好设置</p>
+    </div>
+
+    <!-- 用户设置卡片 -->
+    <div class="settings-card">
+      <h3>👤 用户设置</h3>
+
+      <div class="setting-item">
+        <div>
+          <div class="setting-label">用户名</div>
+          <div class="setting-description">当前登录用户名</div>
+        </div>
+        <div class="setting-control">
+          <span style="color: #a0a0a0;">{{ settings.username }}</span>
+        </div>
+      </div>
+
+      <div class="setting-item">
+        <div>
+          <div class="setting-label">邮箱地址</div>
+          <div class="setting-description">用于接收系统通知</div>
+        </div>
+        <div class="setting-control">
+          <input v-model="settings.email" type="email" placeholder="请输入邮箱"
+                 style="padding: 8px 12px; border: 1px solid #3a3a3a; border-radius: 6px; background: #0f0f0f; color: #ffffff;">
+        </div>
+      </div>
+
+      <div class="setting-item">
+        <div>
+          <div class="setting-label">密码管理</div>
+          <div class="setting-description">修改登录密码</div>
+        </div>
+        <div class="setting-control">
+          <button class="btn btn-secondary" @click="changePassword">修改密码</button>
+        </div>
+      </div>
+
+      <div class="setting-item">
+        <div>
+          <div class="setting-label">保存设置</div>
+          <div class="setting-description">保存当前配置更改</div>
+        </div>
+        <div class="setting-control">
+          <button class="btn btn-primary" @click="saveSettings">保存设置</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 系统设置卡片 -->
+    <div class="settings-card" style="margin-top: 24px;">
+      <h3>🔧 系统设置</h3>
+
+      <div class="setting-item">
+        <div>
+          <div class="setting-label">自动刷新</div>
+          <div class="setting-description">自动刷新统计数据</div>
+        </div>
+        <div class="setting-control">
+          <input type="checkbox" v-model="settings.autoRefresh"
+                 style="width: 18px; height: 18px;">
+        </div>
+      </div>
+
+      <div class="setting-item">
+        <div>
+          <div class="setting-label">深色主题</div>
+          <div class="setting-description">使用深色界面主题</div>
+        </div>
+        <div class="setting-control">
+          <input type="checkbox" v-model="settings.darkTheme" checked disabled
+                 style="width: 18px; height: 18px;">
+        </div>
+      </div>
+
+      <div class="setting-item">
+        <div>
+          <div class="setting-label">日志级别</div>
+          <div class="setting-description">系统日志记录级别</div>
+        </div>
+        <div class="setting-control">
+          <select v-model="settings.logLevel"
+                  style="padding: 8px 12px; border: 1px solid #3a3a3a; border-radius: 6px; background: #0f0f0f; color: #ffffff;">
+            <option value="debug">Debug</option>
+            <option value="info">Info</option>
+            <option value="warning">Warning</option>
+            <option value="error">Error</option>
+          </select>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -32,7 +106,10 @@ export default {
   setup() {
     const settings = ref({
       username: '',
-      email: ''
+      email: '',
+      autoRefresh: true,
+      darkTheme: true,
+      logLevel: 'info'
     })
 
     const loadUserInfo = async () => {
@@ -48,12 +125,29 @@ export default {
       }
     }
 
+    const saveSettings = async () => {
+      try {
+        // 这里可以添加保存设置的API调用
+        alert('设置已保存')
+      } catch (error) {
+        console.error('保存设置失败:', error)
+        alert('保存设置失败')
+      }
+    }
+
+    const changePassword = () => {
+      // 这里可以添加修改密码的逻辑
+      alert('修改密码功能')
+    }
+
     onMounted(() => {
       loadUserInfo()
     })
 
     return {
-      settings
+      settings,
+      saveSettings,
+      changePassword
     }
   }
 }
@@ -61,6 +155,113 @@ export default {
 
 <style scoped>
 .settings-page {
-  padding: 20px;
+  padding: 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+  background: #0f0f0f;
+  min-height: 100vh;
+}
+
+.page-header {
+  margin-bottom: 32px;
+  padding: 32px;
+  background: #1a1a1a;
+  border-radius: 16px;
+  border: 1px solid #2a2a2a;
+  text-align: center;
+}
+
+.page-header h1 {
+  color: #ffffff;
+  margin-bottom: 12px;
+  font-size: 32px;
+  font-weight: 700;
+}
+
+.page-header p {
+  color: #a0a0a0;
+  font-size: 18px;
+  margin: 0;
+}
+
+.settings-card {
+  background: #1a1a1a;
+  padding: 28px;
+  border-radius: 16px;
+  border: 1px solid #2a2a2a;
+  transition: all 0.3s ease;
+}
+
+.settings-card:hover {
+  background: #222222;
+  border-color: #3a3a3a;
+  transform: translateY(-2px);
+}
+
+.settings-card h3 {
+  color: #ffffff;
+  margin-bottom: 24px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.setting-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 0;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.setting-item:last-child {
+  border-bottom: none;
+}
+
+.setting-label {
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.setting-description {
+  color: #a0a0a0;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.setting-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.3s ease;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, #5b5bd6, #7c3aed);
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background: #3a3a3a;
+  color: white;
+}
+
+.btn-secondary:hover {
+  background: #4a4a4a;
+  transform: translateY(-1px);
 }
 </style>

@@ -123,81 +123,94 @@ export default {
 <style scoped>
 .config-page {
   padding: 24px;
-  max-width: 1200px;
+  max-width: 1400px;
   margin: 0 auto;
-  background: #f8fafc;
+  background: #0f0f0f;
   min-height: 100vh;
 }
 
 /* 页面头部 */
 .page-header {
   margin-bottom: 32px;
-  padding: 24px;
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  padding: 32px;
+  background: #1a1a1a;
+  border-radius: 16px;
+  border: 1px solid #2a2a2a;
   text-align: center;
 }
 
 .header-content h1 {
-  font-size: 28px;
+  font-size: 32px;
   font-weight: 700;
-  color: #1a202c;
-  margin: 0 0 8px 0;
+  color: #ffffff;
+  margin: 0 0 12px 0;
 }
 
 .header-content p {
-  color: #718096;
+  color: #a0a0a0;
   margin: 0;
-  font-size: 16px;
+  font-size: 18px;
 }
 
 .config-sections {
   display: grid;
-  gap: 20px;
+  gap: 24px;
 }
 
 .config-card {
-  background: white;
-  padding: 24px;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  background: #1a1a1a;
+  padding: 28px;
+  border-radius: 16px;
+  border: 1px solid #2a2a2a;
+  transition: all 0.3s ease;
+}
+
+.config-card:hover {
+  background: #222222;
+  border-color: #3a3a3a;
+  transform: translateY(-2px);
 }
 
 .config-card h3 {
-  color: #333;
-  margin-bottom: 20px;
-  font-size: 18px;
+  color: #ffffff;
+  margin-bottom: 24px;
+  font-size: 20px;
+  font-weight: 600;
 }
 
 .config-form {
   display: grid;
-  gap: 16px;
+  gap: 20px;
 }
 
 .form-group {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .form-group label {
-  color: #333;
+  color: #ffffff;
   font-weight: 500;
+  font-size: 15px;
 }
 
 .form-group input[type="text"],
 .form-group input[type="number"],
 .form-group input[type="password"] {
-  padding: 12px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  font-size: 14px;
+  padding: 14px 18px;
+  border: 1px solid #3a3a3a;
+  border-radius: 12px;
+  font-size: 15px;
+  background: #0f0f0f;
+  color: #ffffff;
+  transition: all 0.2s;
 }
 
 .form-group input:focus {
   outline: none;
-  border-color: #409eff;
-  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.1);
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  background: #1a1a1a;
 }
 
 .checkbox-label {
@@ -212,18 +225,21 @@ export default {
 }
 
 .save-btn, .add-btn {
-  padding: 12px 20px;
-  background: #409eff;
+  padding: 14px 28px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
   color: white;
   border: none;
-  border-radius: 6px;
+  border-radius: 12px;
   cursor: pointer;
-  font-size: 14px;
-  transition: background 0.3s;
+  font-size: 15px;
+  font-weight: 500;
+  transition: all 0.3s ease;
 }
 
 .save-btn:hover, .add-btn:hover {
-  background: #337ecc;
+  background: linear-gradient(135deg, #5b5bd6, #7c3aed);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(99, 102, 241, 0.3);
 }
 
 
@@ -239,21 +255,23 @@ export default {
 }
 
 .edit-btn {
-  background: #f3f4f6;
-  color: #374151;
+  background: #3a3a3a;
+  color: #ffffff;
 }
 
 .delete-btn {
-  background: #fee2e2;
-  color: #dc2626;
+  background: linear-gradient(135deg, #ef4444, #f87171);
+  color: white;
 }
 
 .edit-btn:hover {
-  background: #e5e7eb;
+  background: #4a4a4a;
+  transform: translateY(-1px);
 }
 
 .delete-btn:hover {
-  background: #fecaca;
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+  transform: translateY(-1px);
 }
 
 /* 对话框样式 */
@@ -263,25 +281,29 @@ export default {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.7);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
+  backdrop-filter: blur(4px);
 }
 
 .dialog {
-  background: white;
-  border-radius: 8px;
-  padding: 24px;
-  min-width: 400px;
-  max-width: 500px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 16px;
+  padding: 32px;
+  min-width: 450px;
+  max-width: 550px;
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
 }
 
 .dialog h3 {
-  margin: 0 0 20px 0;
-  color: #333;
+  margin: 0 0 24px 0;
+  color: #ffffff;
+  font-size: 20px;
+  font-weight: 600;
 }
 
 

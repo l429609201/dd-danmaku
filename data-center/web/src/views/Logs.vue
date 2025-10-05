@@ -184,68 +184,94 @@ export default {
 
 <style scoped>
 .logs-page {
-  padding: 20px;
+  padding: 24px;
   max-width: 1400px;
   margin: 0 auto;
-  height: calc(100vh - 40px);
+  height: calc(100vh - 48px);
   display: flex;
   flex-direction: column;
+  background: #0f0f0f;
 }
 
 .page-header {
-  margin-bottom: 20px;
+  margin-bottom: 24px;
+  padding: 32px;
+  background: #1a1a1a;
+  border-radius: 16px;
+  border: 1px solid #2a2a2a;
+  text-align: center;
 }
 
 .page-header h1 {
-  color: #333;
-  margin-bottom: 8px;
+  color: #ffffff;
+  margin-bottom: 12px;
+  font-size: 32px;
+  font-weight: 700;
 }
 
 .page-header p {
-  color: #666;
+  color: #a0a0a0;
+  font-size: 18px;
+  margin: 0;
 }
 
 .log-controls {
   display: flex;
-  gap: 20px;
+  gap: 24px;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
   flex-wrap: wrap;
+  padding: 24px;
+  background: #1a1a1a;
+  border-radius: 16px;
+  border: 1px solid #2a2a2a;
 }
 
 .filter-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 
 .filter-group label {
-  color: #333;
+  color: #ffffff;
   font-weight: 500;
   white-space: nowrap;
+  font-size: 15px;
 }
 
 .filter-group select,
 .filter-group input {
-  padding: 8px 12px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
+  padding: 10px 16px;
+  border: 1px solid #3a3a3a;
+  border-radius: 8px;
   font-size: 14px;
+  background: #0f0f0f;
+  color: #ffffff;
+  transition: all 0.2s;
+}
+
+.filter-group select:focus,
+.filter-group input:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
 }
 
 .action-group {
   display: flex;
-  gap: 8px;
+  gap: 12px;
   margin-left: auto;
 }
 
 .refresh-btn, .clear-btn, .download-btn {
-  padding: 8px 16px;
+  padding: 10px 20px;
   border: none;
-  border-radius: 4px;
+  border-radius: 8px;
   cursor: pointer;
   font-size: 14px;
-  transition: background 0.3s;
+  font-weight: 500;
+  transition: all 0.3s ease;
 }
 
 .refresh-btn {

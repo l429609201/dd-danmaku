@@ -148,55 +148,76 @@ export default {
 
 <style scoped>
 .stats-page {
-  padding: 20px;
-  max-width: 1200px;
+  padding: 24px;
+  max-width: 1400px;
   margin: 0 auto;
+  background: #0f0f0f;
+  min-height: 100vh;
 }
 
 .page-header {
-  margin-bottom: 30px;
+  margin-bottom: 32px;
+  padding: 32px;
+  background: #1a1a1a;
+  border-radius: 16px;
+  border: 1px solid #2a2a2a;
+  text-align: center;
 }
 
 .page-header h1 {
-  color: #333;
-  margin-bottom: 8px;
+  color: #ffffff;
+  margin-bottom: 12px;
+  font-size: 32px;
+  font-weight: 700;
 }
 
 .page-header p {
-  color: #666;
+  color: #a0a0a0;
+  font-size: 18px;
+  margin: 0;
 }
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 20px;
-  margin-bottom: 30px;
+  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+  gap: 24px;
+  margin-bottom: 32px;
 }
 
 .stat-card {
-  background: white;
-  padding: 24px;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  background: #1a1a1a;
+  padding: 28px;
+  border-radius: 16px;
+  border: 1px solid #2a2a2a;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.stat-card:hover {
+  background: #222222;
+  border-color: #3a3a3a;
+  transform: translateY(-4px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
 }
 
 .stat-card h3 {
-  color: #333;
-  margin-bottom: 20px;
-  font-size: 18px;
+  color: #ffffff;
+  margin-bottom: 24px;
+  font-size: 20px;
+  font-weight: 600;
 }
 
 .stat-list {
   display: grid;
-  gap: 12px;
+  gap: 16px;
 }
 
 .stat-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 0;
-  border-bottom: 1px solid #f0f0f0;
+  padding: 12px 0;
+  border-bottom: 1px solid #2a2a2a;
 }
 
 .stat-item:last-child {
@@ -204,14 +225,15 @@ export default {
 }
 
 .stat-label {
-  color: #666;
-  font-size: 14px;
+  color: #a0a0a0;
+  font-size: 15px;
+  font-weight: 500;
 }
 
 .stat-value {
-  color: #333;
-  font-weight: 600;
-  font-size: 16px;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 18px;
 }
 
 .refresh-section {

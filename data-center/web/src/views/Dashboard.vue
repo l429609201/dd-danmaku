@@ -105,68 +105,73 @@ export default {
 <style scoped>
 .dashboard {
   padding: 24px;
-  max-width: 1200px;
+  max-width: 1400px;
   margin: 0 auto;
-  background: #f8fafc;
+  background: #0f0f0f;
   min-height: 100vh;
 }
 
 /* 页面头部 */
 .page-header {
   margin-bottom: 32px;
-  padding: 24px;
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  padding: 32px;
+  background: #1a1a1a;
+  border-radius: 16px;
+  border: 1px solid #2a2a2a;
   text-align: center;
 }
 
 .header-content h1 {
-  font-size: 32px;
+  font-size: 36px;
   font-weight: 700;
-  color: #1a202c;
-  margin: 0 0 8px 0;
+  color: #ffffff;
+  margin: 0 0 12px 0;
 }
 
 .header-content p {
-  color: #718096;
+  color: #a0a0a0;
   margin: 0;
-  font-size: 16px;
+  font-size: 18px;
 }
 
 /* 统计卡片网格 */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
   margin-bottom: 32px;
 }
 
 .stat-card {
-  background: white;
-  padding: 24px;
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  background: #1a1a1a;
+  padding: 28px;
+  border-radius: 16px;
+  border: 1px solid #2a2a2a;
   display: flex;
   align-items: center;
-  gap: 16px;
-  transition: all 0.2s;
+  gap: 20px;
+  transition: all 0.3s ease;
+  cursor: pointer;
 }
 
 .stat-card:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  transform: translateY(-2px);
+  background: #222222;
+  border-color: #3a3a3a;
+  transform: translateY(-4px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
 }
 
 .stat-icon {
-  font-size: 32px;
-  width: 60px;
-  height: 60px;
+  font-size: 28px;
+  width: 56px;
+  height: 56px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f8fafc;
-  border-radius: 12px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  border-radius: 16px;
+  color: white;
+  flex-shrink: 0;
 }
 
 .stat-content {
@@ -174,57 +179,64 @@ export default {
 }
 
 .stat-value {
-  font-size: 28px;
+  font-size: 32px;
   font-weight: 700;
-  color: #1a202c;
-  margin-bottom: 4px;
+  color: #ffffff;
+  margin-bottom: 6px;
 }
 
 .stat-label {
-  color: #6b7280;
-  font-size: 14px;
+  color: #a0a0a0;
+  font-size: 15px;
   font-weight: 500;
 }
 
 /* 图表网格 */
 .charts-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
-  gap: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+  gap: 20px;
 }
 
 .chart-card {
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  background: #1a1a1a;
+  border-radius: 16px;
+  border: 1px solid #2a2a2a;
   overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.chart-card:hover {
+  background: #222222;
+  border-color: #3a3a3a;
+  transform: translateY(-2px);
 }
 
 .card-header {
-  padding: 20px 24px 0;
-  border-bottom: 1px solid #f3f4f6;
+  padding: 24px 28px;
+  border-bottom: 1px solid #2a2a2a;
 }
 
 .card-header h3 {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
-  color: #1a202c;
-  margin: 0 0 16px 0;
+  color: #ffffff;
+  margin: 0;
 }
 
 .card-body {
-  padding: 20px 24px 24px;
+  padding: 28px;
 }
 
 .chart-placeholder {
-  height: 250px;
-  background: #f8fafc;
-  border: 2px dashed #e2e8f0;
+  height: 280px;
+  background: #0f0f0f;
+  border: 2px dashed #3a3a3a;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #9ca3af;
-  border-radius: 8px;
+  color: #a0a0a0;
+  border-radius: 12px;
   font-size: 16px;
   font-weight: 500;
 }
@@ -236,26 +248,29 @@ export default {
   }
 
   .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: 1fr;
     gap: 16px;
   }
 
   .charts-grid {
     grid-template-columns: 1fr;
+    gap: 16px;
   }
 
   .stat-card {
-    padding: 16px;
+    padding: 24px;
   }
 
-  .stat-icon {
-    font-size: 24px;
-    width: 48px;
-    height: 48px;
+  .page-header {
+    padding: 24px;
   }
 
-  .stat-value {
-    font-size: 20px;
+  .header-content h1 {
+    font-size: 28px;
+  }
+
+  .header-content p {
+    font-size: 16px;
   }
 }
 </style>
