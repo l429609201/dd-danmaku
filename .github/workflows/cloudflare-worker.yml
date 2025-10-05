@@ -43,15 +43,12 @@ jobs:
         PRIVATE_KEY_HEX: ${{ secrets.PRIVATE_KEY_HEX }}
 
     - name: Deploy to Cloudflare Workers
-      if: github.event_name != 'pull_request'
       uses: cloudflare/wrangler-action@v3
       with:
         apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         command: deploy
 
-    - name: Test deployment (optional)
-      if: github.event_name != 'pull_request'
+    - name: Test deployment
       run: |
-        echo "Worker deployed successfully!"
-        echo "Worker URL: https://danmu-api.${{ secrets.CLOUDFLARE_SUBDOMAIN || 'workers' }}.dev"
+        echo "✅ Worker deployed successfully!"

@@ -2,13 +2,32 @@
 配置管理API端点
 """
 from typing import List, Dict, Any
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 
 from src.services.config_service import ConfigService
 from src.models.config import UAConfig, IPBlacklist
+from src.config import settings
 
 router = APIRouter()
+
+# API Key认证依赖项
+async def verify_api_key(x_api_key: str = Header(None)):
+    """验证API Key"""
+    valid_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
+
+    # 如果没有配置API Key，则允许所有请求通过
+    if not valid_api_keys:
+        return x_api_key
+
+    # 如果配置了API Key，则需要验证
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="缺少API Key")
+
+    if x_api_key not in valid_api_keys:
+        raise HTTPException(status_code=401, detail="无效的API Key")
+
+    return x_api_key
 
 # Pydantic模型
 class UAConfigCreate(BaseModel):
@@ -216,7 +235,10 @@ async def remove_ip_from_blacklist(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/export", response_model=Dict[str, Any])
-async def export_config_for_worker(config_service: ConfigService = Depends(get_config_service)):
+async def export_config_for_worker(
+    config_service: ConfigService = Depends(get_config_service),
+    api_key: str = Depends(verify_api_key)
+):
     """导出配置给Worker使用"""
     try:
         config_data = await config_service.export_config_for_worker()
