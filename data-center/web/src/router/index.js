@@ -42,6 +42,12 @@ const routes = [
         name: 'Logs',
         component: () => import('../views/Logs.vue'),
         meta: { title: '日志管理' }
+      },
+      {
+        path: 'workers',
+        name: 'WorkerManagement',
+        component: () => import('../views/WorkerManagement.vue'),
+        meta: { title: 'Worker管理' }
       }
     ]
   }

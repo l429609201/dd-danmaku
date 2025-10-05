@@ -9,10 +9,9 @@ try {
     console.log('\n🔑 关键变量状态:');
     console.log('- USER_AGENT_LIMITS_CONFIG:', process.env.USER_AGENT_LIMITS_CONFIG ? '已设置 (已隐藏)' : '未设置，使用默认值');
     console.log('- IP_BLACKLIST_CONFIG:', process.env.IP_BLACKLIST_CONFIG ? '已设置 (已隐藏)' : '未设置，使用默认值');
-    console.log('- TG_BOT_TOKEN:', process.env.TG_BOT_TOKEN ? '已设置 (已隐藏)' : '未设置，TG机器人将不可用');
-    console.log('- TG_ADMIN_USER_ID:', process.env.TG_ADMIN_USER_ID ? '已设置 (已隐藏)' : '未设置，TG机器人将不可用');
-    console.log('- WORKER_DOMAIN:', process.env.WORKER_DOMAIN ? '已设置 (已隐藏)' : '未设置，Webhook自动设置将不可用');
-  
+    console.log('- DATA_CENTER_URL:', process.env.DATA_CENTER_URL ? '已设置 (已隐藏)' : '未设置，数据中心集成将不可用');
+    console.log('- DATA_CENTER_API_KEY:', process.env.DATA_CENTER_API_KEY ? '已设置 (已隐藏)' : '未设置，数据中心集成将不可用');
+
     // 读取 wrangler.toml 文件
     console.log('\n📝 读取 wrangler.toml...');
     let config = fs.readFileSync('wrangler.toml', 'utf8');
@@ -21,9 +20,8 @@ try {
     console.log('🔄 替换占位符...');
     config = config.replace('{{USER_AGENT_LIMITS_CONFIG}}', process.env.USER_AGENT_LIMITS_CONFIG || '{}');
     config = config.replace('{{IP_BLACKLIST_CONFIG}}', process.env.IP_BLACKLIST_CONFIG || '[]');
-    config = config.replace('{{TG_BOT_TOKEN}}', process.env.TG_BOT_TOKEN || '');
-    config = config.replace('{{TG_ADMIN_USER_ID}}', process.env.TG_ADMIN_USER_ID || '');
-    config = config.replace('{{WORKER_DOMAIN}}', process.env.WORKER_DOMAIN || '');
+    config = config.replace('{{DATA_CENTER_URL}}', process.env.DATA_CENTER_URL || '');
+    config = config.replace('{{DATA_CENTER_API_KEY}}', process.env.DATA_CENTER_API_KEY || '');
 
     // 写回文件
     console.log('💾 写入配置文件...');

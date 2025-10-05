@@ -17,7 +17,13 @@ let memoryCache = {
     rateLimitCounts: new Map(), // 频率限制计数缓存
     appSecretUsage: { count1: 0, count2: 0, current: '1' }, // AppSecret使用缓存
     lastSyncTime: Date.now(),
-    pendingRequests: 0
+    pendingRequests: 0,
+    // 配置缓存（优先使用数据中心配置，否则使用环境变量）
+    configCache: {
+        uaConfigs: {},
+        ipBlacklist: [],
+        lastUpdate: 0
+    }
 };
 
 // 数据中心集成配置
@@ -44,16 +50,50 @@ const CLEANUP_INTERVAL_HOURS = 24; // 每24小时执行一次清理
 // 🔗 数据中心集成功能
 // ========================================
 
+// 初始化配置缓存（从环境变量加载默认配置）
+async function initializeConfigCache(env) {
+    try {
+        // 加载UA配置
+        if (env.USER_AGENT_LIMITS_CONFIG) {
+            memoryCache.configCache.uaConfigs = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
+            console.log('✅ 从环境变量加载UA配置');
+        }
+
+        // 加载IP黑名单
+        if (env.IP_BLACKLIST_CONFIG) {
+            memoryCache.configCache.ipBlacklist = JSON.parse(env.IP_BLACKLIST_CONFIG);
+            console.log('✅ 从环境变量加载IP黑名单');
+        }
+
+        memoryCache.configCache.lastUpdate = Date.now();
+    } catch (error) {
+        console.error('❌ 初始化配置缓存失败:', error);
+    }
+}
+
 // 初始化数据中心配置
 async function initializeDataCenterConfig(env) {
-    if (env.DATA_CENTER_URL && env.DATA_CENTER_API_KEY) {
-        DATA_CENTER_CONFIG.url = env.DATA_CENTER_URL;
-        DATA_CENTER_CONFIG.apiKey = env.DATA_CENTER_API_KEY;
-        DATA_CENTER_CONFIG.workerId = env.WORKER_ID || 'worker-1';
-        DATA_CENTER_CONFIG.enabled = true;
+    // 从环境变量读取配置
+    DATA_CENTER_CONFIG.url = env.DATA_CENTER_URL || '';
+    DATA_CENTER_CONFIG.apiKey = env.DATA_CENTER_API_KEY || '';
+    DATA_CENTER_CONFIG.workerId = env.WORKER_ID || 'worker-1';
+    DATA_CENTER_CONFIG.enabled = !!(env.DATA_CENTER_URL && env.DATA_CENTER_API_KEY);
 
-        // 启动时同步配置
+    // 初始化配置缓存（先加载环境变量配置）
+    await initializeConfigCache(env);
+
+    if (DATA_CENTER_CONFIG.enabled) {
+        console.log('✅ 数据中心集成已启用');
+        // 启动时尝试从数据中心同步配置（优先使用数据中心配置）
         await syncConfigFromDataCenter(env);
+
+        // 设置定时同步（每小时）
+        setInterval(async () => {
+            await syncConfigFromDataCenter(env);
+            await syncStatsToDataCenter(env);
+        }, DATA_CENTER_CONFIG.syncInterval);
+    } else {
+        console.log('⚠️ 数据中心集成未启用（缺少URL或API密钥）');
     }
 }
 
@@ -79,29 +119,33 @@ async function syncConfigFromDataCenter(env) {
         if (response.ok) {
             const config = await response.json();
 
-            // 更新UA配置
+            // 优先使用数据中心配置，更新内存缓存
             if (config.ua_configs) {
-                env.USER_AGENT_LIMITS_CONFIG = JSON.stringify(config.ua_configs);
+                memoryCache.configCache.uaConfigs = config.ua_configs;
+                console.log('✅ 从数据中心更新UA配置');
             }
 
-            // 更新IP黑名单
             if (config.ip_blacklist) {
-                env.IP_BLACKLIST_CONFIG = JSON.stringify(config.ip_blacklist);
+                memoryCache.configCache.ipBlacklist = config.ip_blacklist;
+                console.log('✅ 从数据中心更新IP黑名单');
             }
 
+            memoryCache.configCache.lastUpdate = now;
             DATA_CENTER_CONFIG.lastConfigSync = now;
             console.log('✅ 配置同步成功');
         }
     } catch (error) {
-        console.error('❌ 配置同步失败:', error);
+        console.error('❌ 配置同步失败，继续使用环境变量配置:', error);
     }
 }
 
 // 向数据中心发送统计数据
-async function syncStatsToDataCenter(env, stats) {
+async function syncStatsToDataCenter(env) {
     if (!DATA_CENTER_CONFIG.enabled) return;
 
     try {
+        const stats = await getWorkerStats(env);
+
         const response = await fetch(`${DATA_CENTER_CONFIG.url}/api/v1/stats/import`, {
             method: 'POST',
             headers: {
@@ -112,13 +156,19 @@ async function syncStatsToDataCenter(env, stats) {
             body: JSON.stringify({
                 worker_id: DATA_CENTER_CONFIG.workerId,
                 timestamp: Date.now(),
-                stats: stats
+                stats: stats,
+                // 同时上报当前配置状态
+                config_status: {
+                    ua_configs: memoryCache.configCache.uaConfigs,
+                    ip_blacklist: memoryCache.configCache.ipBlacklist,
+                    last_config_update: memoryCache.configCache.lastUpdate
+                }
             })
         });
 
         if (response.ok) {
             DATA_CENTER_CONFIG.lastStatsSync = Date.now();
-            console.log('✅ 统计数据同步成功');
+            console.log('✅ 统计数据和配置状态同步成功');
         }
     } catch (error) {
         console.error('❌ 统计数据同步失败:', error);
@@ -144,21 +194,28 @@ async function handleDataCenterAPI(request, env, urlObj) {
     const method = request.method;
 
     try {
-        // 配置更新端点
+        // 配置更新端点（接收数据中心主动推送）
         if (path === '/api/config/update' && method === 'POST') {
             const config = await request.json();
 
-            // 更新UA配置
+            // 立即更新内存中的配置
             if (config.ua_configs) {
-                env.USER_AGENT_LIMITS_CONFIG = JSON.stringify(config.ua_configs);
+                memoryCache.configCache.uaConfigs = config.ua_configs;
+                console.log('✅ 收到数据中心推送，已更新UA配置');
             }
 
-            // 更新IP黑名单
             if (config.ip_blacklist) {
-                env.IP_BLACKLIST_CONFIG = JSON.stringify(config.ip_blacklist);
+                memoryCache.configCache.ipBlacklist = config.ip_blacklist;
+                console.log('✅ 收到数据中心推送，已更新IP黑名单');
             }
 
-            return new Response(JSON.stringify({ success: true, message: '配置更新成功' }), {
+            memoryCache.configCache.lastUpdate = Date.now();
+
+            return new Response(JSON.stringify({
+                success: true,
+                message: '配置更新成功',
+                updated_at: memoryCache.configCache.lastUpdate
+            }), {
                 headers: { 'Content-Type': 'application/json' }
             });
         }
@@ -197,15 +254,20 @@ async function handleDataCenterAPI(request, env, urlObj) {
 // 获取Worker统计数据
 async function getWorkerStats(env) {
     try {
-        // 这里可以从Durable Object获取统计数据
-        // 暂时返回基本统计信息
         return {
             worker_id: DATA_CENTER_CONFIG.workerId,
             timestamp: Date.now(),
             requests_total: memoryCache.pendingRequests || 0,
             memory_cache_size: memoryCache.rateLimitCounts.size,
             last_sync_time: DATA_CENTER_CONFIG.lastConfigSync,
-            uptime: Date.now() - memoryCache.lastSyncTime
+            uptime: Date.now() - memoryCache.lastSyncTime,
+            // 秘钥轮换统计（直接使用内存缓存）
+            secret_rotation: {
+                secret1_count: memoryCache.appSecretUsage.count1,
+                secret2_count: memoryCache.appSecretUsage.count2,
+                current_secret: memoryCache.appSecretUsage.current,
+                rotation_limit: SECRET_ROTATION_LIMIT
+            }
         };
     } catch (error) {
         console.error('获取统计数据失败:', error);
@@ -217,21 +279,27 @@ async function getWorkerStats(env) {
     }
 }
 
-// 从环境变量获取IP黑名单配置
+// 获取IP黑名单配置（优先使用内存缓存）
 function getIpBlacklist(env) {
-    if (!env.IP_BLACKLIST_CONFIG) {
-        console.log('IP_BLACKLIST_CONFIG 环境变量未配置，不启用IP黑名单');
-        return [];
+    // 优先使用内存缓存中的配置
+    if (memoryCache.configCache.ipBlacklist && memoryCache.configCache.ipBlacklist.length > 0) {
+        console.log('使用内存缓存IP黑名单，包含', memoryCache.configCache.ipBlacklist.length, '个规则');
+        return memoryCache.configCache.ipBlacklist;
     }
 
-    try {
-        const blacklist = JSON.parse(env.IP_BLACKLIST_CONFIG);
-        console.log('IP黑名单配置加载成功，包含', blacklist.length, '个规则');
-        return blacklist;
-    } catch (error) {
-        console.error('解析IP黑名单配置失败:', error);
-        return [];
+    // 如果内存缓存为空，尝试从环境变量获取（兜底方案）
+    if (env.IP_BLACKLIST_CONFIG) {
+        try {
+            const blacklist = JSON.parse(env.IP_BLACKLIST_CONFIG);
+            console.log('使用环境变量IP黑名单（兜底），包含', blacklist.length, '个规则');
+            return blacklist;
+        } catch (error) {
+            console.error('解析IP黑名单配置失败:', error);
+        }
     }
+
+    console.log('无可用的IP黑名单配置');
+    return [];
 }
 
 // 检查IP是否在黑名单中
@@ -281,32 +349,47 @@ function isIpInCidr(ip, cidr) {
     }
 }
 
-// 从环境变量获取 User-Agent 限制配置
+// 获取 User-Agent 限制配置（优先使用内存缓存）
 function getUserAgentLimits(env) {
-    // 必须从环境变量获取配置
-    if (!env.USER_AGENT_LIMITS_CONFIG) {
-        console.error('USER_AGENT_LIMITS_CONFIG 环境变量未配置，拒绝所有请求');
-        return {};
-    }
-
-    try {
-        const limits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
-        console.log('使用环境变量配置');
+    // 优先使用内存缓存中的配置
+    if (memoryCache.configCache.uaConfigs && Object.keys(memoryCache.configCache.uaConfigs).length > 0) {
+        console.log('使用内存缓存配置');
 
         // 过滤出启用的客户端
         const enabledLimits = {};
-        Object.keys(limits).forEach(key => {
-            const config = limits[key];
+        Object.keys(memoryCache.configCache.uaConfigs).forEach(key => {
+            const config = memoryCache.configCache.uaConfigs[key];
             if (config && config.enabled !== false) { // 默认启用，除非明确设置为 false
                 enabledLimits[key] = config;
             }
         });
 
         return enabledLimits;
-    } catch (error) {
-        console.error('解析 USER_AGENT_LIMITS_CONFIG 失败，拒绝所有请求:', error);
-        return {};
     }
+
+    // 如果内存缓存为空，尝试从环境变量获取（兜底方案）
+    if (env.USER_AGENT_LIMITS_CONFIG) {
+        try {
+            const limits = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
+            console.log('使用环境变量配置（兜底）');
+
+            // 过滤出启用的客户端
+            const enabledLimits = {};
+            Object.keys(limits).forEach(key => {
+                const config = limits[key];
+                if (config && config.enabled !== false) {
+                    enabledLimits[key] = config;
+                }
+            });
+
+            return enabledLimits;
+        } catch (error) {
+            console.error('解析 USER_AGENT_LIMITS_CONFIG 失败:', error);
+        }
+    }
+
+    console.error('无可用的UA配置，拒绝所有请求');
+    return {};
 }
 
 
@@ -1371,6 +1454,21 @@ export class AppState {
 
     async fetch(request) {
         await this.initialized;
+
+        // 处理GET请求 - 获取秘钥统计
+        if (request.method === 'GET') {
+            const url = new URL(request.url);
+            if (url.pathname === '/get-secret-stats') {
+                return new Response(JSON.stringify({
+                    count1: this.appState.count1,
+                    count2: this.appState.count2,
+                    current: this.appState.current
+                }), {
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+        }
+
         if (request.method !== 'POST') {
             return new Response(JSON.stringify({
                 status: 405,

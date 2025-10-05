@@ -27,6 +27,11 @@
             📋 日志管理
           </router-link>
         </li>
+        <li>
+          <router-link to="/workers" class="nav-link" :class="{ active: $route.path === '/workers' }">
+            🔧 Worker管理
+          </router-link>
+        </li>
       </ul>
       
       <div class="user-section">
