@@ -92,8 +92,19 @@ export default {
 
     const changePassword = () => {
       closeDropdown()
-      // 跳转到设置页面并触发密码修改弹窗
-      router.push('/settings?action=change-password')
+      // 如果当前在设置页面，直接触发弹窗
+      if (route.path === '/settings') {
+        // 通过事件总线或者其他方式触发弹窗
+        window.dispatchEvent(new CustomEvent('show-password-modal'))
+      } else {
+        // 跳转到设置页面
+        router.push('/settings').then(() => {
+          // 等待页面加载后触发弹窗
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('show-password-modal'))
+          }, 100)
+        })
+      }
     }
 
     const logout = () => {

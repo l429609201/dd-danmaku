@@ -156,7 +156,7 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { authFetch } from '../utils/api.js'
 
@@ -262,10 +262,17 @@ export default {
     onMounted(() => {
       loadUserInfo()
 
-      // 检查URL参数，如果有change-password参数则自动打开密码修改弹窗
-      if (route.query.action === 'change-password') {
+      // 监听密码修改弹窗事件
+      const handleShowPasswordModal = () => {
         showPasswordModal.value = true
       }
+
+      window.addEventListener('show-password-modal', handleShowPasswordModal)
+
+      // 组件卸载时移除事件监听
+      onUnmounted(() => {
+        window.removeEventListener('show-password-modal', handleShowPasswordModal)
+      })
     })
 
     return {

@@ -157,3 +157,32 @@ async def cleanup_old_data(
             )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/summary")
+async def get_stats_summary(
+    stats_service: StatsService = Depends(get_stats_service)
+):
+    """获取统计数据摘要"""
+    try:
+        from src.services.auth_service import get_current_user
+        from src.models.auth import User
+
+        # 获取基础统计数据
+        summary = await stats_service.get_summary()
+
+        return {
+            "todayRequests": summary.get("today_requests", 0),
+            "totalRequests": summary.get("total_requests", 0),
+            "successRate": summary.get("success_rate", 0),
+            "onlineWorkers": summary.get("online_workers", 0),
+            "totalWorkers": summary.get("total_workers", 0),
+            "avgResponseTime": summary.get("avg_response_time", 0),
+            "blockedIPs": summary.get("blocked_ips", 0),
+            "todayBlocked": summary.get("today_blocked", 0),
+            "violationRequests": summary.get("violation_requests", 0),
+            "memoryUsage": summary.get("memory_usage", 0),
+            "cpuUsage": summary.get("cpu_usage", 0),
+            "uptime": summary.get("uptime", "0分钟")
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

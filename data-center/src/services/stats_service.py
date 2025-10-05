@@ -318,3 +318,87 @@ class StatsService:
         except Exception as e:
             logger.error(f"获取性能指标失败: {e}")
             return {}
+
+    async def get_summary(self) -> Dict[str, Any]:
+        """获取统计数据摘要"""
+        try:
+            db = self.db()
+
+            # 今日请求数
+            today = datetime.now().date()
+            today_requests = db.query(func.sum(RequestStats.total_requests)).filter(
+                func.date(RequestStats.created_at) == today
+            ).scalar() or 0
+
+            # 总请求数
+            total_requests = db.query(func.sum(RequestStats.total_requests)).scalar() or 0
+
+            # 成功率
+            successful_requests = db.query(func.sum(RequestStats.successful_requests)).scalar() or 0
+            success_rate = round((successful_requests / total_requests * 100) if total_requests > 0 else 0, 1)
+
+            # Worker状态 (模拟数据，实际应该从Worker API获取)
+            online_workers = 0
+            total_workers = 0
+
+            # 平均响应时间
+            avg_response_time = db.query(func.avg(RequestStats.avg_response_time)).scalar() or 0
+            avg_response_time = round(avg_response_time, 2)
+
+            # 被阻止的IP数量
+            blocked_ips = db.query(func.count(IPBlacklist.id)).scalar() or 0
+
+            # 今日阻止的请求数
+            today_blocked = db.query(func.sum(IPViolationStats.violation_count)).filter(
+                func.date(IPViolationStats.created_at) == today
+            ).scalar() or 0
+
+            # 违规请求数
+            violation_requests = db.query(func.sum(IPViolationStats.violation_count)).scalar() or 0
+
+            # 系统运行时间 (简单计算)
+            import psutil
+            uptime_seconds = psutil.boot_time()
+            current_time = datetime.now().timestamp()
+            uptime_minutes = int((current_time - uptime_seconds) / 60)
+
+            if uptime_minutes < 60:
+                uptime = f"{uptime_minutes}分钟"
+            elif uptime_minutes < 1440:
+                uptime = f"{uptime_minutes // 60}小时{uptime_minutes % 60}分钟"
+            else:
+                days = uptime_minutes // 1440
+                hours = (uptime_minutes % 1440) // 60
+                uptime = f"{days}天{hours}小时"
+
+            return {
+                "today_requests": today_requests,
+                "total_requests": total_requests,
+                "success_rate": success_rate,
+                "online_workers": online_workers,
+                "total_workers": total_workers,
+                "avg_response_time": avg_response_time,
+                "blocked_ips": blocked_ips,
+                "today_blocked": today_blocked,
+                "violation_requests": violation_requests,
+                "memory_usage": 0,  # 可以用psutil获取
+                "cpu_usage": 0,     # 可以用psutil获取
+                "uptime": uptime
+            }
+
+        except Exception as e:
+            logger.error(f"获取统计摘要失败: {e}")
+            return {
+                "today_requests": 0,
+                "total_requests": 0,
+                "success_rate": 0,
+                "online_workers": 0,
+                "total_workers": 0,
+                "avg_response_time": 0,
+                "blocked_ips": 0,
+                "today_blocked": 0,
+                "violation_requests": 0,
+                "memory_usage": 0,
+                "cpu_usage": 0,
+                "uptime": "0分钟"
+            }

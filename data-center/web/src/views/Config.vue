@@ -247,7 +247,7 @@ export default {
 
     const saveUAConfigs = async () => {
       try {
-        const response = await authFetch('/config/ua-configs', {
+        const response = await authFetch('/api/web-config/ua-configs', {
           method: 'POST',
           body: JSON.stringify(uaConfigs.value)
         })
@@ -273,7 +273,7 @@ export default {
 
     const saveIPBlacklist = async () => {
       try {
-        const response = await authFetch('/config/ip-blacklist', {
+        const response = await authFetch('/api/web-config/ip-blacklist', {
           method: 'POST',
           body: JSON.stringify(ipBlacklist.value)
         })
@@ -292,14 +292,14 @@ export default {
     const loadConfigs = async () => {
       try {
         // 加载UA配置
-        const uaResponse = await authFetch('/config/ua-configs')
+        const uaResponse = await authFetch('/api/web-config/ua-configs')
         if (uaResponse.ok) {
           const uaData = await uaResponse.json()
           uaConfigs.value = uaData || []
         }
 
         // 加载IP黑名单
-        const ipResponse = await authFetch('/config/ip-blacklist')
+        const ipResponse = await authFetch('/api/web-config/ip-blacklist')
         if (ipResponse.ok) {
           const ipData = await ipResponse.json()
           ipBlacklist.value = ipData || []
