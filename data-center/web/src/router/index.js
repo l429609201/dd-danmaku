@@ -8,12 +8,7 @@ const routes = [
     component: () => import('../views/Login.vue'),
     meta: { title: '登录', requiresAuth: false }
   },
-  {
-    path: '/change-password',
-    name: 'ChangePassword',
-    component: () => import('../views/ChangePassword.vue'),
-    meta: { title: '修改密码' }
-  },
+
   {
     path: '/',
     component: () => import('../components/Layout.vue'),

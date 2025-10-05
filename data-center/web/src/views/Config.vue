@@ -404,7 +404,7 @@ export default {
 }
 
 .form-group label {
-  color: #ffffff;
+  color: #333;
   font-weight: 500;
   font-size: 15px;
 }
@@ -517,7 +517,7 @@ export default {
 
 .dialog h3 {
   margin: 0 0 24px 0;
-  color: #ffffff;
+  color: #333;
   font-size: 20px;
   font-weight: 600;
 }

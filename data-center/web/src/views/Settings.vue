@@ -157,11 +157,13 @@
 
 <script>
 import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { authFetch } from '../utils/api.js'
 
 export default {
   name: 'Settings',
   setup() {
+    const route = useRoute()
     const settings = ref({
       username: '',
       email: '',
@@ -259,6 +261,11 @@ export default {
 
     onMounted(() => {
       loadUserInfo()
+
+      // 检查URL参数，如果有change-password参数则自动打开密码修改弹窗
+      if (route.query.action === 'change-password') {
+        showPasswordModal.value = true
+      }
     })
 
     return {
