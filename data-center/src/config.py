@@ -10,10 +10,10 @@ class Settings(BaseSettings):
     """应用配置"""
     
     # 基础配置
-    PROJECT_NAME: str = "DanDanPlay API 数据交互中心"
-    PROJECT_DESCRIPTION: str = "弹幕API代理系统的数据管理和监控中心"
+    PROJECT_NAME: str = "Worker 数据交互中心"
+    PROJECT_DESCRIPTION: str = "Worker API代理系统的数据管理和监控中心"
     VERSION: str = "1.0.0"
-    API_V1_STR: str = "/api/v1"
+    API_V1_STR: str = "/api"
     
     # 服务器配置
     HOST: str = "0.0.0.0"

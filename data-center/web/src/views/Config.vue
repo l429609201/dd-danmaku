@@ -200,20 +200,21 @@ export default {
 .form-group input[type="text"],
 .form-group input[type="number"],
 .form-group input[type="password"] {
-  padding: 14px 18px;
-  border: 1px solid #3a3a3a;
-  border-radius: 12px;
-  font-size: 15px;
-  background: #0f0f0f;
-  color: #ffffff;
+  padding: 12px 16px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  background: white;
+  color: #333;
   transition: all 0.2s;
+  box-sizing: border-box;
 }
 
 .form-group input:focus {
   outline: none;
-  border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
-  background: #1a1a1a;
+  border-color: #1976d2;
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
+  background: #fafafa;
 }
 
 .checkbox-label {
@@ -293,13 +294,13 @@ export default {
 }
 
 .dialog {
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
-  border-radius: 16px;
-  padding: 32px;
-  min-width: 450px;
-  max-width: 550px;
-  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 24px;
+  min-width: 400px;
+  max-width: 500px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
 
 .dialog h3 {

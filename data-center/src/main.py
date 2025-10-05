@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.database import init_db
 from src.utils import naive_now
-from src.api.v1.api import api_router
+from src.api.v1.api import web_api_router, worker_api_router
 from src.tasks.scheduler import TaskScheduler
 from src.telegram.bot import TelegramBot
 from src.middleware.auth_middleware import AuthMiddleware
@@ -132,8 +132,11 @@ def create_application() -> FastAPI:
 
         return response
 
-    # API路由
-    app.include_router(api_router, prefix=settings.API_V1_STR)
+    # Web界面API路由 - 需要JWT认证
+    app.include_router(web_api_router, prefix=settings.API_V1_STR)
+
+    # CF Worker API路由 - 需要API Key认证
+    app.include_router(worker_api_router, prefix="/worker-api")
 
     # 健康检查端点
     @app.get("/health")

@@ -31,6 +31,12 @@ export function getAuthHeaders() {
  * 发送认证请求
  */
 export async function authFetch(url, options = {}) {
+  // 自动添加API前缀
+  let finalUrl = url
+  if (url.startsWith('/') && !url.startsWith('/api/')) {
+    finalUrl = `/api${url}`
+  }
+
   const authHeaders = getAuthHeaders()
   const headers = {
     'Content-Type': 'application/json',
@@ -39,13 +45,14 @@ export async function authFetch(url, options = {}) {
   }
 
   console.log('🌐 发送认证请求:', {
-    url,
+    originalUrl: url,
+    finalUrl,
     method: options.method || 'GET',
     hasAuth: !!authHeaders.Authorization,
     headers: Object.keys(headers)
   })
 
-  const response = await fetch(url, {
+  const response = await fetch(finalUrl, {
     ...options,
     headers
   })

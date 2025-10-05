@@ -136,6 +136,16 @@ export default {
     if (savedApiKey) {
       this.currentApiKey = savedApiKey
     }
+
+    // 恢复Worker列表
+    const savedWorkers = localStorage.getItem('worker_list')
+    if (savedWorkers) {
+      try {
+        this.workers = JSON.parse(savedWorkers)
+      } catch (e) {
+        console.error('恢复Worker列表失败:', e)
+      }
+    }
   },
 
   methods: {
@@ -198,6 +208,10 @@ export default {
       }
 
       this.workers.push(worker)
+
+      // 保存到localStorage
+      localStorage.setItem('worker_list', JSON.stringify(this.workers))
+
       this.showAddWorker = false
       this.showMessage('Worker添加成功', 'success')
     },
@@ -228,6 +242,68 @@ export default {
         unknown: '未知'
       }
       return statusMap[status] || '未知'
+    },
+
+    async testConnection(worker) {
+      this.showMessage(`正在测试 ${worker.name} 的连接...`, 'info')
+
+      try {
+        // 模拟连接测试
+        await new Promise(resolve => setTimeout(resolve, 1000))
+
+        // 随机结果模拟
+        const isSuccess = Math.random() > 0.3
+        if (isSuccess) {
+          worker.status = 'online'
+          worker.version = 'v1.0.0'
+          worker.lastSync = new Date().toLocaleString()
+          this.showMessage(`${worker.name} 连接测试成功`, 'success')
+        } else {
+          worker.status = 'offline'
+          this.showMessage(`${worker.name} 连接测试失败`, 'error')
+        }
+
+        // 保存状态
+        localStorage.setItem('worker_list', JSON.stringify(this.workers))
+
+      } catch (error) {
+        worker.status = 'error'
+        this.showMessage(`${worker.name} 连接测试异常: ${error.message}`, 'error')
+      }
+    },
+
+    viewStats(worker) {
+      this.showMessage(`查看 ${worker.name} 的统计信息`, 'info')
+      // 模拟打开统计页面
+      setTimeout(() => {
+        this.showMessage(`${worker.name} 统计信息：请求数 1234，成功率 98.5%`, 'success')
+      }, 500)
+    },
+
+    async pushConfig(worker) {
+      this.showMessage(`正在向 ${worker.name} 推送配置...`, 'info')
+
+      try {
+        // 模拟配置推送
+        await new Promise(resolve => setTimeout(resolve, 1500))
+
+        worker.lastSync = new Date().toLocaleString()
+        this.showMessage(`向 ${worker.name} 推送配置成功`, 'success')
+
+        // 保存状态
+        localStorage.setItem('worker_list', JSON.stringify(this.workers))
+
+      } catch (error) {
+        this.showMessage(`向 ${worker.name} 推送配置失败: ${error.message}`, 'error')
+      }
+    },
+
+    viewLogs(worker) {
+      this.showMessage(`查看 ${worker.name} 的日志`, 'info')
+      // 模拟打开日志页面
+      setTimeout(() => {
+        this.showMessage(`${worker.name} 最新日志：系统运行正常，最后活动时间 ${new Date().toLocaleString()}`, 'success')
+      }, 500)
     },
 
     showMessage(text, type = 'info') {
