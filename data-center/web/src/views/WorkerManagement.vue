@@ -290,20 +290,31 @@ export default {
     },
 
     async pushConfig(worker) {
-      this.showMessage(`正在向 ${worker.name} 推送配置...`, 'info')
+      this.showMessage(`正在推送配置...`, 'info')
 
       try {
-        // 模拟配置推送
-        await new Promise(resolve => setTimeout(resolve, 1500))
+        // 通过后端API推送配置
+        const response = await fetch('/api/worker/push-config', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`,
+            'Content-Type': 'application/json'
+          }
+        })
 
-        worker.lastSync = new Date().toLocaleString()
-        this.showMessage(`向 ${worker.name} 推送配置成功`, 'success')
+        if (response.ok) {
+          const data = await response.json()
+          worker.lastSync = new Date().toLocaleString()
+          this.showMessage(data.message || '配置推送成功', 'success')
 
-        // 保存状态
-        localStorage.setItem('worker_list', JSON.stringify(this.workers))
+          // 保存状态
+          localStorage.setItem('worker_list', JSON.stringify(this.workers))
+        } else {
+          throw new Error(`HTTP ${response.status}`)
+        }
 
       } catch (error) {
-        this.showMessage(`向 ${worker.name} 推送配置失败: ${error.message}`, 'error')
+        this.showMessage(`配置推送失败: ${error.message}`, 'error')
       }
     },
 
@@ -311,11 +322,11 @@ export default {
       this.showMessage(`正在从 ${worker.name} 获取日志...`, 'info')
 
       try {
-        // 调用真实API获取Worker日志
-        const response = await fetch(`${worker.url}/api/logs?limit=50`, {
-          method: 'GET',
+        // 通过后端API获取Worker日志
+        const response = await fetch('/api/worker/fetch-logs', {
+          method: 'POST',
           headers: {
-            'X-API-Key': worker.apiKey || 'default-key',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`,
             'Content-Type': 'application/json'
           }
         })
@@ -323,10 +334,10 @@ export default {
         if (response.ok) {
           const data = await response.json()
           const logCount = data.logs ? data.logs.length : 0
-          this.showMessage(`从 ${worker.name} 获取到 ${logCount} 条日志`, 'success')
+          this.showMessage(`获取到 ${logCount} 条日志`, 'success')
 
-          // 可以在这里处理日志数据，比如存储到本地或显示在界面上
-          console.log(`${worker.name} 日志:`, data)
+          // 处理日志数据
+          console.log('Worker日志:', data)
         } else {
           throw new Error(`HTTP ${response.status}`)
         }
@@ -343,18 +354,18 @@ export default {
         // 1. 推送配置
         await this.pushConfig(worker)
 
-        // 2. 获取统计数据
-        const statsResponse = await fetch(`${worker.url}/api/stats/export`, {
-          method: 'GET',
+        // 2. 获取统计数据 - 通过后端API
+        const statsResponse = await fetch('/api/worker/fetch-stats', {
+          method: 'POST',
           headers: {
-            'X-API-Key': worker.apiKey || 'default-key',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`,
             'Content-Type': 'application/json'
           }
         })
 
         if (statsResponse.ok) {
           const statsData = await statsResponse.json()
-          console.log(`${worker.name} 统计数据:`, statsData)
+          console.log(`统计数据获取结果:`, statsData)
         }
 
         // 3. 获取日志
