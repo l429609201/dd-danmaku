@@ -59,6 +59,9 @@
             <button @click="fullSync(worker)" class="btn btn-sm btn-success" title="完整同步">
               🔄
             </button>
+            <button @click="removeWorker(worker)" class="btn btn-sm btn-danger" title="删除Worker">
+              🗑️
+            </button>
           </div>
         </div>
         <div class="card-body">
@@ -376,6 +379,17 @@ export default {
       }, 500)
     },
 
+    removeWorker(worker) {
+      if (confirm(`确定要删除Worker "${worker.name}" 吗？`)) {
+        const index = this.workers.findIndex(w => w.id === worker.id)
+        if (index > -1) {
+          this.workers.splice(index, 1)
+          localStorage.setItem('worker_list', JSON.stringify(this.workers))
+          this.showMessage(`Worker "${worker.name}" 已删除`, 'success')
+        }
+      }
+    },
+
     showMessage(text, type = 'info') {
       this.message = { text, type }
       setTimeout(() => {
@@ -460,6 +474,17 @@ export default {
   background: #5daf34;
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(103, 194, 58, 0.3);
+}
+
+.btn-danger {
+  background: #f44336;
+  color: white;
+}
+
+.btn-danger:hover {
+  background: #d32f2f;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(244, 67, 54, 0.3);
 }
 
 .btn-secondary {
