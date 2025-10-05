@@ -145,7 +145,7 @@ export default {
 
       try {
         // 验证token是否有效
-        const response = await authFetch('/api/v1/auth/me')
+        const response = await authFetch('/auth/me')
         if (response.ok) {
           const userInfo = await response.json()
           username.value = userInfo.username || ''
