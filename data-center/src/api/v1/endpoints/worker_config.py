@@ -15,6 +15,27 @@ from src.api.v1.endpoints.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 
+# Worker配置模型
+class WorkerConfigRequest(BaseModel):
+    worker_url: str
+    api_key: str
+
+class WorkerPushRequest(BaseModel):
+    worker_url: str
+    api_key: str
+    ua_configs: Dict[str, Any] = {}
+    ip_blacklist: List[str] = []
+
+class WorkerResponse(BaseModel):
+    success: bool
+    message: str
+    data: Dict[str, Any] = {}
+
+class ApiKeyResponse(BaseModel):
+    success: bool
+    api_key: str
+    message: str
+
 router = APIRouter()
 
 @router.post("/generate-api-key", response_model=ApiKeyResponse)
@@ -41,27 +62,6 @@ async def generate_api_key(
             api_key="",
             message=f"生成失败: {str(e)}"
         )
-
-# Worker配置模型
-class WorkerConfigRequest(BaseModel):
-    worker_url: str
-    api_key: str
-
-class WorkerPushRequest(BaseModel):
-    worker_url: str
-    api_key: str
-    ua_configs: Dict[str, Any] = {}
-    ip_blacklist: List[str] = []
-
-class WorkerResponse(BaseModel):
-    success: bool
-    message: str
-    data: Dict[str, Any] = {}
-
-class ApiKeyResponse(BaseModel):
-    success: bool
-    api_key: str
-    message: str
 
 @router.get("/workers", response_model=Dict[str, Any])
 async def get_worker_list(
