@@ -24,6 +24,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/api/auth/init-status",
             "/api/auth/init-admin"
         }
+
+        # Vue.js 前端路由路径（需要返回index.html）
+        self.frontend_routes = {
+            "/dashboard",
+            "/logs",
+            "/stats",
+            "/config",
+            "/settings",
+            "/worker-management",
+            "/change-password"
+        }
         
         # 静态文件路径
         self.static_prefixes = [
@@ -35,14 +46,34 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         """处理请求"""
         path = request.url.path
-        
+
         # 检查是否为公开路径
         if self._is_public_path(path):
             return await call_next(request)
-        
+
         # 检查是否为静态文件
         if self._is_static_path(path):
             return await call_next(request)
+
+        # 检查是否为前端路由（直接访问Vue路由）
+        if self._is_frontend_route(path):
+            # 返回index.html，让前端路由处理
+            from fastapi.responses import FileResponse
+            import os
+
+            # 查找index.html文件
+            web_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
+            index_path = os.path.join(web_dir, "index.html")
+
+            if os.path.exists(index_path):
+                return FileResponse(index_path, media_type="text/html")
+            else:
+                # 如果找不到index.html，返回404
+                from fastapi.responses import HTMLResponse
+                return HTMLResponse(
+                    content="<h1>404 Not Found</h1><p>Frontend files not found</p>",
+                    status_code=404
+                )
         
         # JWT认证
         authorization = request.headers.get("authorization")

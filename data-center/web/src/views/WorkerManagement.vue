@@ -50,8 +50,14 @@
             <button @click="viewStats(worker)" class="btn btn-sm btn-outline" title="查看统计">
               📊
             </button>
+            <button @click="fetchWorkerLogs(worker)" class="btn btn-sm btn-outline" title="获取日志">
+              📋
+            </button>
             <button @click="pushConfig(worker)" class="btn btn-sm btn-primary" title="推送配置">
               🚀
+            </button>
+            <button @click="fullSync(worker)" class="btn btn-sm btn-success" title="完整同步">
+              🔄
             </button>
           </div>
         </div>
@@ -298,6 +304,70 @@ export default {
       }
     },
 
+    async fetchWorkerLogs(worker) {
+      this.showMessage(`正在从 ${worker.name} 获取日志...`, 'info')
+
+      try {
+        // 调用真实API获取Worker日志
+        const response = await fetch(`${worker.url}/api/logs?limit=50`, {
+          method: 'GET',
+          headers: {
+            'X-API-Key': worker.apiKey || 'default-key',
+            'Content-Type': 'application/json'
+          }
+        })
+
+        if (response.ok) {
+          const data = await response.json()
+          const logCount = data.logs ? data.logs.length : 0
+          this.showMessage(`从 ${worker.name} 获取到 ${logCount} 条日志`, 'success')
+
+          // 可以在这里处理日志数据，比如存储到本地或显示在界面上
+          console.log(`${worker.name} 日志:`, data)
+        } else {
+          throw new Error(`HTTP ${response.status}`)
+        }
+
+      } catch (error) {
+        this.showMessage(`从 ${worker.name} 获取日志失败: ${error.message}`, 'error')
+      }
+    },
+
+    async fullSync(worker) {
+      this.showMessage(`正在与 ${worker.name} 执行完整同步...`, 'info')
+
+      try {
+        // 1. 推送配置
+        await this.pushConfig(worker)
+
+        // 2. 获取统计数据
+        const statsResponse = await fetch(`${worker.url}/api/stats/export`, {
+          method: 'GET',
+          headers: {
+            'X-API-Key': worker.apiKey || 'default-key',
+            'Content-Type': 'application/json'
+          }
+        })
+
+        if (statsResponse.ok) {
+          const statsData = await statsResponse.json()
+          console.log(`${worker.name} 统计数据:`, statsData)
+        }
+
+        // 3. 获取日志
+        await this.fetchWorkerLogs(worker)
+
+        worker.lastSync = new Date().toLocaleString()
+        this.showMessage(`与 ${worker.name} 完整同步成功`, 'success')
+
+        // 保存状态
+        localStorage.setItem('worker_list', JSON.stringify(this.workers))
+
+      } catch (error) {
+        this.showMessage(`与 ${worker.name} 完整同步失败: ${error.message}`, 'error')
+      }
+    },
+
     viewLogs(worker) {
       this.showMessage(`查看 ${worker.name} 的日志`, 'info')
       // 模拟打开日志页面
@@ -379,6 +449,17 @@ export default {
   background: #1565c0;
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(25, 118, 210, 0.3);
+}
+
+.btn-success {
+  background: #67c23a;
+  color: white;
+}
+
+.btn-success:hover {
+  background: #5daf34;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(103, 194, 58, 0.3);
 }
 
 .btn-secondary {
