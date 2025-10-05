@@ -22,18 +22,46 @@ try {
 
     // 替换占位符
     console.log('🔄 替换占位符...');
-    config = config.replace('{{USER_AGENT_LIMITS_CONFIG}}', process.env.USER_AGENT_LIMITS_CONFIG || '{}');
-    config = config.replace('{{IP_BLACKLIST_CONFIG}}', process.env.IP_BLACKLIST_CONFIG || '[]');
-    config = config.replace('{{DATA_CENTER_URL}}', process.env.DATA_CENTER_URL || '');
-    config = config.replace('{{DATA_CENTER_API_KEY}}', process.env.DATA_CENTER_API_KEY || '');
-    config = config.replace('{{WORKER_ID}}', process.env.WORKER_ID || 'worker-1');
-    config = config.replace('{{ENABLE_ASYMMETRIC_AUTH_ENV}}', process.env.ENABLE_ASYMMETRIC_AUTH_ENV || 'false');
-    config = config.replace('{{ENABLE_DETAILED_LOGGING}}', process.env.ENABLE_DETAILED_LOGGING || 'true');
-    config = config.replace('{{PRIVATE_KEY_HEX}}', process.env.PRIVATE_KEY_HEX || '');
+
+    // 安全替换函数，处理特殊字符
+    function safeReplace(str, placeholder, value) {
+        // 对于多行字符串值，确保正确转义
+        if (placeholder.includes('CONFIG')) {
+            return str.replace(placeholder, value || (placeholder.includes('BLACKLIST') ? '[]' : '{}'));
+        }
+        // 对于普通字符串值，转义引号
+        const escapedValue = (value || '').replace(/'/g, "\\'").replace(/"/g, '\\"');
+        return str.replace(placeholder, escapedValue);
+    }
+
+    config = safeReplace(config, '{{USER_AGENT_LIMITS_CONFIG}}', process.env.USER_AGENT_LIMITS_CONFIG);
+    config = safeReplace(config, '{{IP_BLACKLIST_CONFIG}}', process.env.IP_BLACKLIST_CONFIG);
+    config = safeReplace(config, '{{DATA_CENTER_URL}}', process.env.DATA_CENTER_URL);
+    config = safeReplace(config, '{{DATA_CENTER_API_KEY}}', process.env.DATA_CENTER_API_KEY);
+    config = safeReplace(config, '{{WORKER_ID}}', process.env.WORKER_ID || 'worker-1');
+    config = safeReplace(config, '{{ENABLE_ASYMMETRIC_AUTH_ENV}}', process.env.ENABLE_ASYMMETRIC_AUTH_ENV || 'false');
+    config = safeReplace(config, '{{ENABLE_DETAILED_LOGGING}}', process.env.ENABLE_DETAILED_LOGGING || 'true');
+    config = safeReplace(config, '{{PRIVATE_KEY_HEX}}', process.env.PRIVATE_KEY_HEX);
 
     // 写回文件
     console.log('💾 写入配置文件...');
     fs.writeFileSync('wrangler.toml', config);
+
+    // 验证生成的配置文件
+    console.log('🔍 验证生成的配置文件...');
+    const lines = config.split('\n');
+    let hasPlaceholders = false;
+    lines.forEach((line, index) => {
+        if (line.includes('{{') && line.includes('}}')) {
+            console.log(`⚠️  第${index + 1}行仍包含占位符: ${line.trim()}`);
+            hasPlaceholders = true;
+        }
+    });
+
+    if (hasPlaceholders) {
+        console.log('❌ 配置文件中仍有未替换的占位符');
+        process.exit(1);
+    }
 
     console.log('✅ wrangler.toml 占位符替换完成');
     console.log('🎯 准备开始 Worker 部署...\n');

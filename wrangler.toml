@@ -24,4 +24,9 @@ PRIVATE_KEY_HEX = "{{PRIVATE_KEY_HEX}}"
 [observability.logs]
 enabled = true
 
+# 迁移：删除Durable Objects类
+[[migrations]]
+tag = "v7"
+delete_classes = ["RateLimiter", "AppState"]
+
 

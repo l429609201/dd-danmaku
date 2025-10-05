@@ -41,7 +41,7 @@ jobs:
       with:
         apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        command: deploy --name ${{ secrets.WORKER_NAME || 'danmu-proxy' }}
+        command: deploy
 
     - name: Test deployment (optional)
       if: github.event_name != 'pull_request'
