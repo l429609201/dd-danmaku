@@ -5,12 +5,14 @@ compatibility_date = "2024-09-21"
 
 # 基础环境变量（公开配置）
 [vars]
-ENABLE_ASYMMETRIC_AUTH_ENV = "false"
-ENABLE_DETAILED_LOGGING = "true"
+ENABLE_ASYMMETRIC_AUTH_ENV = "{{ENABLE_ASYMMETRIC_AUTH_ENV}}"
+ENABLE_DETAILED_LOGGING = "{{ENABLE_DETAILED_LOGGING}}"
 USER_AGENT_LIMITS_CONFIG = '''{{USER_AGENT_LIMITS_CONFIG}}'''
 IP_BLACKLIST_CONFIG = '''{{IP_BLACKLIST_CONFIG}}'''
 DATA_CENTER_URL = '''{{DATA_CENTER_URL}}'''
 DATA_CENTER_API_KEY = '''{{DATA_CENTER_API_KEY}}'''
+WORKER_ID = "{{WORKER_ID}}"
+PRIVATE_KEY_HEX = "{{PRIVATE_KEY_HEX}}"
 
 #密钥配置 （一般有两个，两个都填会轮换使用，配置成密钥的类型）
 # APP_ID
@@ -22,13 +24,4 @@ DATA_CENTER_API_KEY = '''{{DATA_CENTER_API_KEY}}'''
 [observability.logs]
 enabled = true
 
-# Durable Object 绑定配置
-[durable_objects]
-bindings = [
-  { name = "RATE_LIMITER", class_name = "RateLimiter" },
-  { name = "APP_STATE", class_name = "AppState" }
-]
 
-[[migrations]]
-tag = "v6" # 添加AppState，不触碰已存在的RateLimiter
-new_sqlite_classes = ["AppState"]
