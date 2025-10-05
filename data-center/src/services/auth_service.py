@@ -7,6 +7,11 @@ from datetime import timedelta
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 from src.database import get_db_sync
+
+# 依赖注入函数
+def get_auth_service() -> "AuthService":
+    """获取AuthService实例"""
+    return AuthService()
 from src.models.auth import User, LoginSession
 from src.utils import naive_now
 
