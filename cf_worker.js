@@ -1000,7 +1000,5 @@ function Forbidden(url) {
     });
 }
 
-// Durable Objects已完全移除，改为纯内存管理
-
 // 导出函数供TG机器人模块使用
 export { getIpBlacklist, getAccessConfig, memoryCache };
