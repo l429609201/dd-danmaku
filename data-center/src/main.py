@@ -120,10 +120,7 @@ def create_application() -> FastAPI:
         logger = logging.getLogger(__name__)
 
         if request.url.path.startswith("/api/auth/me"):
-            logger.info(f"🔍 收到/me请求")
-            logger.info(f"🔍 请求方法: {request.method}")
-            logger.info(f"🔍 请求URL: {request.url}")
-            logger.info(f"🔍 请求头: {dict(request.headers)}")
+            logger.debug(f"🔍 /me请求: {request.method}")
 
         response = await call_next(request)
 

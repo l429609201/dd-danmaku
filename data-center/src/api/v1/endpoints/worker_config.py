@@ -301,7 +301,11 @@ async def push_config_to_worker(
         worker_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
 
         if not worker_endpoints:
-            raise HTTPException(status_code=400, detail="未配置Worker端点")
+            return {
+                "success": True,
+                "message": "未配置Worker端点，无需推送配置",
+                "results": []
+            }
 
         # 获取当前配置
         config_service = ConfigService()
@@ -377,7 +381,11 @@ async def fetch_worker_stats(
         worker_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
 
         if not worker_endpoints:
-            raise HTTPException(status_code=400, detail="未配置Worker端点")
+            return {
+                "success": True,
+                "message": "未配置Worker端点",
+                "stats": []
+            }
 
         # 从所有Worker端点获取统计数据
         endpoints = [ep.strip() for ep in worker_endpoints.split(',') if ep.strip()]
@@ -449,7 +457,11 @@ async def fetch_worker_logs(
         worker_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
 
         if not worker_endpoints:
-            raise HTTPException(status_code=400, detail="未配置Worker端点")
+            return {
+                "success": True,
+                "message": "未配置Worker端点",
+                "logs": []
+            }
 
         # 从所有Worker端点获取日志
         endpoints = [ep.strip() for ep in worker_endpoints.split(',') if ep.strip()]
