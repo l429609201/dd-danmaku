@@ -61,17 +61,10 @@ async def get_logs(
             "worker_id": f"worker-{i % 3 + 1}",
             "level": log_level,
             "message": f"{messages[i % len(messages)]} - 测试日志 {i + 1}",
-            "details": {
-                "request_id": f"req-{i + 1}",
-                "duration": f"{100 + i * 10}ms",
-                "source_ip": f"192.168.1.{100 + i % 50}"
-            },
             "category": "system",
             "source": "data-center",
-            "request_id": f"req-{i + 1}",
             "ip_address": f"192.168.1.{100 + i % 50}",
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
 
     return {

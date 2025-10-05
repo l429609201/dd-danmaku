@@ -669,6 +669,7 @@ export default {
 .worker-actions {
   display: flex;
   gap: 10px;
+  align-items: center;
 }
 
 .worker-card .card-body {

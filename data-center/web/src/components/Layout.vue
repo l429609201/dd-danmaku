@@ -92,11 +92,8 @@ export default {
 
     const changePassword = () => {
       closeDropdown()
-      const newPassword = prompt('请输入新密码:')
-      if (newPassword && newPassword.trim()) {
-        // 这里可以添加修改密码的API调用
-        alert('密码修改功能待实现')
-      }
+      // 跳转到设置页面并触发密码修改弹窗
+      router.push('/settings?action=change-password')
     }
 
     const logout = () => {
