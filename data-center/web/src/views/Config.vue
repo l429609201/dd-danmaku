@@ -50,6 +50,78 @@
           <button type="submit" class="save-btn">🤖 保存机器人配置</button>
         </form>
       </div>
+
+      <!-- UA配置卡片 -->
+      <div class="config-card">
+        <div class="card-header">
+          <h3>🌐 User Agent 配置</h3>
+          <button @click="addUAConfig" class="btn btn-secondary">➕ 添加UA配置</button>
+        </div>
+        <div class="card-body">
+          <div v-if="uaConfigs.length === 0" class="empty-state">
+            暂无UA配置，点击上方按钮添加
+          </div>
+          <div v-for="(ua, index) in uaConfigs" :key="index" class="ua-config-item">
+            <div class="form-row">
+              <div class="form-group">
+                <label>配置名称</label>
+                <input v-model="ua.name" type="text" placeholder="例如: MisakaDanmaku" class="form-input" />
+              </div>
+              <div class="form-group">
+                <label>User Agent</label>
+                <input v-model="ua.user_agent" type="text" placeholder="例如: MisakaDanmaku/1.0" class="form-input" />
+              </div>
+              <div class="form-group">
+                <label>每小时限制</label>
+                <input v-model.number="ua.hourly_limit" type="number" min="1" placeholder="100" class="form-input" />
+              </div>
+              <div class="form-group">
+                <label class="checkbox-wrapper">
+                  <input v-model="ua.enabled" type="checkbox" class="checkbox-input" />
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-label">启用</span>
+                </label>
+              </div>
+              <button @click="removeUAConfig(index)" class="btn btn-danger">🗑️</button>
+            </div>
+          </div>
+          <button @click="saveUAConfigs" class="btn btn-primary">💾 保存UA配置</button>
+        </div>
+      </div>
+
+      <!-- IP黑名单配置卡片 -->
+      <div class="config-card">
+        <div class="card-header">
+          <h3>🚫 IP黑名单配置</h3>
+          <button @click="addIPBlacklist" class="btn btn-secondary">➕ 添加IP</button>
+        </div>
+        <div class="card-body">
+          <div v-if="ipBlacklist.length === 0" class="empty-state">
+            暂无IP黑名单，点击上方按钮添加
+          </div>
+          <div v-for="(ip, index) in ipBlacklist" :key="index" class="ip-blacklist-item">
+            <div class="form-row">
+              <div class="form-group">
+                <label>IP地址/CIDR</label>
+                <input v-model="ip.ip_address" type="text" placeholder="例如: 192.168.1.1 或 192.168.1.0/24" class="form-input" />
+              </div>
+              <div class="form-group">
+                <label>封禁原因</label>
+                <input v-model="ip.reason" type="text" placeholder="例如: 恶意请求" class="form-input" />
+              </div>
+              <div class="form-group">
+                <label class="checkbox-wrapper">
+                  <input v-model="ip.enabled" type="checkbox" class="checkbox-input" />
+                  <span class="checkbox-custom"></span>
+                  <span class="checkbox-label">启用</span>
+                </label>
+              </div>
+              <button @click="removeIPBlacklist(index)" class="btn btn-danger">🗑️</button>
+            </div>
+          </div>
+          <button @click="saveIPBlacklist" class="btn btn-primary">💾 保存IP黑名单</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -68,6 +140,9 @@ export default {
       telegramToken: '',
       adminUserIds: ''
     })
+
+    const uaConfigs = ref([])
+    const ipBlacklist = ref([])
 
 
 
@@ -107,14 +182,104 @@ export default {
       }
     }
 
+    // UA配置方法
+    const addUAConfig = () => {
+      uaConfigs.value.push({
+        name: '',
+        user_agent: '',
+        hourly_limit: 100,
+        enabled: true
+      })
+    }
+
+    const removeUAConfig = (index) => {
+      uaConfigs.value.splice(index, 1)
+    }
+
+    const saveUAConfigs = async () => {
+      try {
+        const response = await authFetch('/config/ua-configs', {
+          method: 'POST',
+          body: JSON.stringify(uaConfigs.value)
+        })
+
+        if (response.ok) {
+          showMessage('UA配置保存成功', 'success')
+        } else {
+          throw new Error('保存失败')
+        }
+      } catch (error) {
+        showMessage('UA配置保存失败', 'error')
+      }
+    }
+
+    // IP黑名单方法
+    const addIPBlacklist = () => {
+      ipBlacklist.value.push({
+        ip_address: '',
+        reason: '',
+        enabled: true
+      })
+    }
+
+    const removeIPBlacklist = (index) => {
+      ipBlacklist.value.splice(index, 1)
+    }
+
+    const saveIPBlacklist = async () => {
+      try {
+        const response = await authFetch('/config/ip-blacklist', {
+          method: 'POST',
+          body: JSON.stringify(ipBlacklist.value)
+        })
+
+        if (response.ok) {
+          showMessage('IP黑名单保存成功', 'success')
+        } else {
+          throw new Error('保存失败')
+        }
+      } catch (error) {
+        showMessage('IP黑名单保存失败', 'error')
+      }
+    }
+
+    // 加载配置数据
+    const loadConfigs = async () => {
+      try {
+        // 加载UA配置
+        const uaResponse = await authFetch('/config/ua-configs')
+        if (uaResponse.ok) {
+          const uaData = await uaResponse.json()
+          uaConfigs.value = uaData || []
+        }
+
+        // 加载IP黑名单
+        const ipResponse = await authFetch('/config/ip-blacklist')
+        if (ipResponse.ok) {
+          const ipData = await ipResponse.json()
+          ipBlacklist.value = ipData || []
+        }
+      } catch (error) {
+        console.error('加载配置失败:', error)
+      }
+    }
+
     onMounted(() => {
-      // 页面加载时的初始化
+      loadConfigs()
     })
 
     return {
       config,
+      uaConfigs,
+      ipBlacklist,
       saveBasicConfig,
-      saveTelegramConfig
+      saveTelegramConfig,
+      addUAConfig,
+      removeUAConfig,
+      saveUAConfigs,
+      addIPBlacklist,
+      removeIPBlacklist,
+      saveIPBlacklist
     }
   }
 }
@@ -329,5 +494,96 @@ export default {
 
 .cancel-btn:hover {
   background: #f8f9fa;
+}
+
+/* 新增样式 */
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.card-header h3 {
+  margin: 0;
+  color: #333;
+  font-size: 18px;
+}
+
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-primary {
+  background: #1976d2;
+  color: white;
+}
+
+.btn-primary:hover {
+  background: #1565c0;
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background: #f5f5f5;
+  color: #333;
+  border: 1px solid #ddd;
+}
+
+.btn-secondary:hover {
+  background: #e0e0e0;
+}
+
+.btn-danger {
+  background: #f44336;
+  color: white;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.btn-danger:hover {
+  background: #d32f2f;
+}
+
+.empty-state {
+  text-align: center;
+  color: #666;
+  padding: 40px 20px;
+  background: #f9f9f9;
+  border-radius: 6px;
+  margin-bottom: 20px;
+}
+
+.ua-config-item,
+.ip-blacklist-item {
+  background: #f9f9f9;
+  padding: 20px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  border: 1px solid #e0e0e0;
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+  align-items: end;
+}
+
+.form-row .form-group {
+  flex: 1;
+}
+
+.form-row .btn-danger {
+  flex-shrink: 0;
+  margin-bottom: 0;
 }
 </style>

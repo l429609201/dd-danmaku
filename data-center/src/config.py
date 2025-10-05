@@ -54,7 +54,8 @@ class Settings(BaseSettings):
     
     # Worker端点配置
     WORKER_ENDPOINTS: Optional[str] = None  # 逗号分隔的Worker地址列表
-    
+    WORKER_API_KEYS: Optional[str] = None  # 逗号分隔的Worker API密钥列表
+
     # 同步配置
     SYNC_INTERVAL_HOURS: int = 1  # 同步间隔（小时）
     SYNC_RETRY_ATTEMPTS: int = 3  # 同步重试次数
@@ -81,6 +82,13 @@ class Settings(BaseSettings):
         if not v:
             return []
         return [endpoint.strip() for endpoint in v.split(",") if endpoint.strip()]
+
+    @validator("WORKER_API_KEYS")
+    def parse_worker_api_keys(cls, v):
+        """解析Worker API密钥列表"""
+        if not v:
+            return []
+        return [key.strip() for key in v.split(",") if key.strip()]
     
     @property
     def database_url(self) -> str:

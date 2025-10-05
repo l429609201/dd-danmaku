@@ -28,14 +28,14 @@ class SystemLogCreate(BaseModel):
 def get_stats_service() -> StatsService:
     return StatsService()
 
-@router.get("/system", response_model=List[Dict])
-async def get_system_logs(
-    limit: int = Query(50, description="返回记录数量"),
+@router.get("", response_model=Dict[str, Any])
+async def get_logs(
+    limit: int = Query(100, description="返回记录数量"),
     level: str = Query(None, description="日志级别过滤"),
     current_user: User = Depends(get_current_user),
     stats_service: StatsService = Depends(get_stats_service)
 ):
-    """获取系统日志"""
+    """获取日志"""
     try:
         # 先尝试从数据库获取
         if level:
@@ -77,24 +77,35 @@ async def get_system_logs(
                     "created_at": datetime.now().isoformat()
                 })
 
-            return mock_logs
+            return {
+                "logs": mock_logs,
+                "total": len(mock_logs)
+            }
 
-        return [log.to_dict() for log in logs]
+        log_list = [log.to_dict() for log in logs]
+        return {
+            "logs": log_list,
+            "total": len(log_list)
+        }
     except Exception as e:
         # 如果出现异常，返回错误日志
-        return [{
+        error_log = {
             "id": 1,
             "worker_id": "system",
             "level": "ERROR",
             "message": f"获取日志失败: {str(e)}",
-            "details": {"error": str(e)},
+            "details": {"error": str(e), "source_ip": "127.0.0.1"},
             "category": "system",
             "source": "data-center",
             "request_id": "error-1",
             "ip_address": "127.0.0.1",
             "user_agent": "System",
             "created_at": datetime.now().isoformat()
-        }]
+        }
+        return {
+            "logs": [error_log],
+            "total": 1
+        }
 
 @router.get("/telegram", response_model=List[Dict])
 async def get_telegram_logs(

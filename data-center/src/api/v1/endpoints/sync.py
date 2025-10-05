@@ -2,11 +2,12 @@
 同步管理API端点
 """
 from typing import List, Dict, Any
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 
 from src.services.worker_sync import WorkerSyncService
 from src.services.config_service import ConfigService
+from src.config import settings
 
 router = APIRouter()
 
@@ -29,6 +30,24 @@ def get_worker_sync_service() -> WorkerSyncService:
 
 def get_config_service() -> ConfigService:
     return ConfigService()
+
+# API Key认证依赖项
+async def verify_api_key(x_api_key: str = Header(None)):
+    """验证API Key"""
+    valid_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
+
+    # 如果没有配置API Key，则允许所有请求通过
+    if not valid_api_keys:
+        return x_api_key
+
+    # 如果配置了API Key，则需要验证
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="缺少API Key")
+
+    if x_api_key not in valid_api_keys:
+        raise HTTPException(status_code=401, detail="无效的API Key")
+
+    return x_api_key
 
 @router.post("/push-config", response_model=SyncResponse)
 async def push_config_to_worker(
@@ -84,7 +103,8 @@ async def push_config_to_all_workers(
 @router.post("/stats", response_model=SyncResponse)
 async def receive_worker_stats(
     stats_data: StatsData,
-    worker_sync: WorkerSyncService = Depends(get_worker_sync_service)
+    worker_sync: WorkerSyncService = Depends(get_worker_sync_service),
+    api_key: str = Depends(verify_api_key)
 ):
     """接收Worker推送的统计数据"""
     try:
