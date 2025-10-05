@@ -70,17 +70,9 @@ async def get_worker_list(
     """获取Worker列表"""
     try:
         # 这里可以从数据库获取已配置的Worker列表
-        # 暂时返回示例数据
-        workers = [
-            {
-                "id": "worker-1",
-                "name": "主Worker",
-                "url": "https://your-worker.workers.dev",
-                "status": "unknown",
-                "last_sync": None
-            }
-        ]
-        
+        # 暂时返回空列表，等待实际数据库实现
+        workers = []
+
         return {
             "success": True,
             "workers": workers
@@ -193,20 +185,20 @@ async def get_worker_stats(
     """获取Worker统计信息"""
     try:
         # 这里可以从数据库获取Worker统计信息
-        # 暂时返回示例数据
+        # 暂时返回空统计数据，等待实际数据库实现
         stats = {
             "worker_id": worker_id,
-            "timestamp": 1234567890,
-            "requests_total": 1000,
-            "memory_cache_size": 50,
+            "timestamp": 0,
+            "requests_total": 0,
+            "memory_cache_size": 0,
             "secret_rotation": {
-                "secret1_count": 250,
-                "secret2_count": 100,
+                "secret1_count": 0,
+                "secret2_count": 0,
                 "current_secret": "1",
-                "rotation_limit": 500
+                "rotation_limit": 0
             }
         }
-        
+
         return {
             "success": True,
             "stats": stats
