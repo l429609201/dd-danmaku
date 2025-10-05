@@ -22,10 +22,6 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
     confirm_password: str
 
-class ChangePasswordRequest(BaseModel):
-    old_password: str
-    new_password: str
-
 class AuthResponse(BaseModel):
     success: bool
     message: str
@@ -51,35 +47,22 @@ async def get_current_user(
     import logging
     logger = logging.getLogger(__name__)
 
-    logger.info(f"🔐 收到认证请求")
-    logger.info(f"🔐 Authorization头内容: {authorization}")
-    logger.info(f"🔐 Authorization头类型: {type(authorization)}")
-    logger.info(f"🔐 Authorization头长度: {len(authorization) if authorization else 0}")
-
-    if not authorization:
+    if not authorization or not authorization.startswith("Bearer "):
         logger.warning("🔐 认证失败: 未提供认证令牌")
         raise HTTPException(status_code=401, detail="未提供认证令牌")
 
-    # 检查Bearer格式
-    if not authorization.startswith("Bearer "):
-        logger.warning(f"🔐 认证失败: 令牌格式错误 - {authorization[:20]}...")
-        raise HTTPException(status_code=401, detail="认证令牌格式错误")
-
     token = authorization.split(" ")[1]
-    logger.info(f"🔐 正在验证JWT令牌: {token[:20]}...")
 
-    # 首先验证JWT令牌格式和签名
+    # 验证JWT令牌格式和签名
     payload = verify_token(token)
     if not payload:
-        logger.warning(f"🔐 认证失败: JWT令牌格式无效或签名错误 - {token[:20]}...")
+        logger.warning(f"🔐 认证失败: JWT令牌无效")
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
-
-    logger.info(f"🔐 JWT令牌格式验证成功: {payload}")
 
     # 从数据库验证会话
     user = await auth_service.validate_jwt_session(token)
     if not user:
-        logger.warning(f"🔐 认证失败: 会话不存在或已过期 - {token[:20]}...")
+        logger.warning(f"🔐 认证失败: 会话无效")
         raise HTTPException(status_code=401, detail="会话无效或已过期")
 
     logger.info(f"🔐 用户认证成功: {user.username}")
@@ -92,14 +75,20 @@ async def change_password(
     auth_service: AuthService = Depends(get_auth_service)
 ):
     """修改密码"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"🔐 修改密码请求: 用户={current_user.username}")
+    logger.info(f"🔐 密码数据: {password_data}")
+
     try:
         # 验证新密码确认
         if password_data.new_password != password_data.confirm_password:
             raise HTTPException(status_code=400, detail="新密码与确认密码不匹配")
 
-        # 验证新密码强度
-        if len(password_data.new_password) < 6:
-            raise HTTPException(status_code=400, detail="新密码长度至少6位")
+        # 验证新密码强度（允许纯数字）
+        if len(password_data.new_password) < 4:
+            raise HTTPException(status_code=400, detail="新密码长度至少4位")
 
         # 使用带验证的修改密码方法
         success = await auth_service.change_password(

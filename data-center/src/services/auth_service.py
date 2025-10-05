@@ -353,29 +353,11 @@ class AuthService:
         try:
             db = self.db()
 
-            logger.info(f"🔍 查找JWT会话: {jwt_token[:20]}...")
-            logger.info(f"🔍 当前时间: {naive_now()}")
-
-            # 先查找所有匹配的会话
-            all_sessions = db.query(LoginSession).filter(
-                LoginSession.jwt_token == jwt_token
-            ).all()
-
-            logger.info(f"🔍 找到 {len(all_sessions)} 个匹配的会话")
-
-            for s in all_sessions:
-                logger.info(f"🔍 会话详情: id={s.id}, active={s.is_active}, expires_at={s.expires_at}")
-
             session = db.query(LoginSession).filter(
                 LoginSession.jwt_token == jwt_token,
                 LoginSession.is_active == True,
                 LoginSession.expires_at > naive_now()
             ).first()
-
-            if session:
-                logger.info(f"✅ 找到有效会话: id={session.id}")
-            else:
-                logger.warning(f"❌ 未找到有效会话")
 
             db.close()
             return session
