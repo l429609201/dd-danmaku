@@ -25,7 +25,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/api/auth/init-admin"
         }
 
-        # Vue.js 前端路由路径（需要返回index.html）
+        # 前端路由路径（需要特殊处理）
         self.frontend_routes = {
             "/dashboard",
             "/logs",
@@ -33,7 +33,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/config",
             "/settings",
             "/worker-management",
-            "/change-password"
+            "/change-password",
+            "/login"
         }
         
         # 静态文件路径
@@ -57,24 +58,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # 检查是否为前端路由（直接访问Vue路由）
         if self._is_frontend_route(path):
-            # 返回index.html，让前端路由处理
+            # 返回index.html，让前端路由守卫处理认证
             from fastapi.responses import FileResponse
             import os
+            from pathlib import Path
 
             # 查找index.html文件
-            web_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
-            index_path = os.path.join(web_dir, "index.html")
-
-            if os.path.exists(index_path):
-                return FileResponse(index_path, media_type="text/html")
+            if os.getenv('DOCKER_ENV'):
+                # Docker环境
+                index_path = Path("/app/web/dist/index.html")
             else:
-                # 如果找不到index.html，返回404
-                from fastapi.responses import HTMLResponse
-                return HTMLResponse(
-                    content="<h1>404 Not Found</h1><p>Frontend files not found</p>",
-                    status_code=404
-                )
-        
+                # 开发环境
+                web_dir = Path(__file__).parent.parent.parent / "web" / "dist"
+                index_path = web_dir / "index.html"
+
+            if index_path.exists():
+                return FileResponse(str(index_path), media_type="text/html")
+            else:
+                # 如果找不到index.html，继续正常的认证流程
+                pass
+
         # JWT认证
         authorization = request.headers.get("authorization")
 
@@ -99,6 +102,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
     def _is_static_path(self, path: str) -> bool:
         """检查是否为静态文件路径"""
         return any(path.startswith(prefix) for prefix in self.static_prefixes)
+
+    def _is_frontend_route(self, path: str) -> bool:
+        """检查是否为前端路由"""
+        return path in self.frontend_routes
     
     def _unauthorized_response(self, message: str) -> JSONResponse:
         """返回未授权响应"""
