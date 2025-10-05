@@ -227,15 +227,15 @@ export default {
 }
 
 .stat-label {
-  color: #a0a0a0;
-  font-size: 15px;
+  color: #666;
+  font-size: 14px;
   font-weight: 500;
 }
 
 .stat-value {
-  color: #ffffff;
-  font-weight: 700;
-  font-size: 18px;
+  color: #333;
+  font-weight: 600;
+  font-size: 16px;
 }
 
 .refresh-section {

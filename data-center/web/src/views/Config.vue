@@ -228,21 +228,21 @@ export default {
 }
 
 .save-btn, .add-btn {
-  padding: 14px 28px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  padding: 10px 20px;
+  background: #1976d2;
   color: white;
   border: none;
-  border-radius: 12px;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 500;
   transition: all 0.3s ease;
 }
 
 .save-btn:hover, .add-btn:hover {
-  background: linear-gradient(135deg, #5b5bd6, #7c3aed);
-  transform: translateY(-2px);
-  box-shadow: 0 8px 25px rgba(99, 102, 241, 0.3);
+  background: #1565c0;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(25, 118, 210, 0.3);
 }
 
 
@@ -258,23 +258,23 @@ export default {
 }
 
 .edit-btn {
-  background: #3a3a3a;
-  color: #ffffff;
+  background: #f5f5f5;
+  color: #333;
+  border: 1px solid #ddd;
 }
 
 .delete-btn {
-  background: linear-gradient(135deg, #ef4444, #f87171);
+  background: #f44336;
   color: white;
 }
 
 .edit-btn:hover {
-  background: #4a4a4a;
-  transform: translateY(-1px);
+  background: #e0e0e0;
+  border-color: #ccc;
 }
 
 .delete-btn:hover {
-  background: linear-gradient(135deg, #dc2626, #ef4444);
-  transform: translateY(-1px);
+  background: #d32f2f;
 }
 
 /* 对话框样式 */

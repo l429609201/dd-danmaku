@@ -108,11 +108,25 @@ export default {
     }
 
     const refreshLogs = async () => {
+      if (loading.value) return // 防止重复调用
+
       loading.value = true
+      console.log('🔄 开始刷新日志...')
+
       try {
-        const response = await authFetch('/api/v1/logs/system?limit=100')
+        // 添加超时控制
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 5000) // 5秒超时
+
+        const response = await authFetch('/api/v1/logs/system?limit=100', {
+          signal: controller.signal
+        })
+
+        clearTimeout(timeoutId)
+
         if (response.ok) {
           const data = await response.json()
+          console.log('📋 获取到日志数据:', data.length, '条')
           logs.value = data.map((log, index) => ({
             id: index + 1,
             timestamp: log.timestamp || log.created_at,
@@ -120,12 +134,21 @@ export default {
             message: log.message
           }))
         } else {
-          console.error('获取日志失败:', response.status)
+          console.error('❌ 获取日志失败:', response.status)
+          // 使用模拟数据避免卡死
+          logs.value = [
+            { id: 1, timestamp: new Date().toISOString(), level: 'INFO', message: '日志加载失败，显示模拟数据' }
+          ]
         }
       } catch (error) {
-        console.error('刷新日志失败:', error)
+        console.error('❌ 获取日志异常:', error)
+        // 使用模拟数据避免卡死
+        logs.value = [
+          { id: 1, timestamp: new Date().toISOString(), level: 'ERROR', message: `日志加载异常: ${error.message}` }
+        ]
       } finally {
         loading.value = false
+        console.log('✅ 日志刷新完成')
       }
     }
 

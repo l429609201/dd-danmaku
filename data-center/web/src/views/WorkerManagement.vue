@@ -80,6 +80,29 @@
       </div>
     </div>
 
+    <!-- 添加Worker表单 -->
+    <div v-if="showAddWorker" class="dialog-overlay">
+      <div class="dialog">
+        <h3>添加Worker</h3>
+        <div class="form-group">
+          <label>Worker名称:</label>
+          <input v-model="newWorker.name" type="text" placeholder="请输入Worker名称" />
+        </div>
+        <div class="form-group">
+          <label>Worker URL:</label>
+          <input v-model="newWorker.url" type="text" placeholder="https://your-worker.domain.com" />
+        </div>
+        <div class="form-group">
+          <label>描述 (可选):</label>
+          <input v-model="newWorker.description" type="text" placeholder="Worker描述信息" />
+        </div>
+        <div class="dialog-actions">
+          <button @click="saveWorker" class="btn btn-primary">保存</button>
+          <button @click="cancelAddWorker" class="btn btn-secondary">取消</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 消息提示 -->
     <div v-if="message" :class="['toast', message.type]">
       {{ message.text }}
@@ -97,12 +120,22 @@ export default {
       workers: [],
       showAddWorker: false,
       currentApiKey: '',
-      message: null
+      message: null,
+      newWorker: {
+        name: '',
+        url: '',
+        description: ''
+      }
     }
   },
 
   mounted() {
     this.loadWorkers()
+    // 恢复API密钥状态
+    const savedApiKey = sessionStorage.getItem('worker_api_key')
+    if (savedApiKey) {
+      this.currentApiKey = savedApiKey
+    }
   },
 
   methods: {
@@ -126,7 +159,50 @@ export default {
     async generateApiKey() {
       // 生成一个模拟的API密钥
       this.currentApiKey = 'test-api-key-' + Date.now()
+      // 保存到sessionStorage，页面切换后不会丢失
+      sessionStorage.setItem('worker_api_key', this.currentApiKey)
       this.showMessage('API密钥生成成功', 'success')
+    },
+
+    addWorker() {
+      // 显示添加Worker的表单
+      this.showAddWorker = true
+      this.newWorker = {
+        name: '',
+        url: '',
+        description: ''
+      }
+    },
+
+    saveWorker() {
+      if (!this.newWorker.name || !this.newWorker.url) {
+        this.showMessage('请填写Worker名称和URL', 'error')
+        return
+      }
+
+      // 添加新的Worker
+      const worker = {
+        id: Date.now(),
+        name: this.newWorker.name,
+        url: this.newWorker.url,
+        description: this.newWorker.description,
+        status: 'unknown',
+        lastSync: '从未同步',
+        version: '未知'
+      }
+
+      this.workers.push(worker)
+      this.showAddWorker = false
+      this.showMessage('Worker添加成功', 'success')
+    },
+
+    cancelAddWorker() {
+      this.showAddWorker = false
+      this.newWorker = {
+        name: '',
+        url: '',
+        description: ''
+      }
     },
 
     async copyApiKey() {
@@ -538,5 +614,74 @@ export default {
     grid-template-columns: 1fr;
     gap: 16px;
   }
+}
+
+/* 对话框样式 */
+.dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.dialog {
+  background: white;
+  border-radius: 8px;
+  padding: 24px;
+  min-width: 400px;
+  max-width: 500px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.dialog h3 {
+  margin: 0 0 20px 0;
+  color: #333;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 6px;
+  color: #333;
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #1976d2;
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 24px;
+}
+
+.dialog-actions .btn {
+  padding: 8px 16px;
+  font-size: 14px;
 }
 </style>
