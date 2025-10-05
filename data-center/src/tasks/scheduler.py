@@ -81,14 +81,7 @@ class TaskScheduler:
             replace_existing=True
         )
         
-        # 3. 健康检查任务 - 每5分钟执行
-        self.scheduler.add_job(
-            self._health_check,
-            trigger=IntervalTrigger(minutes=5),
-            id='health_check',
-            name='系统健康检查',
-            replace_existing=True
-        )
+        # 3. 健康检查任务已移除
         
         # 4. 统计数据汇总任务 - 每小时执行
         self.scheduler.add_job(
@@ -108,7 +101,7 @@ class TaskScheduler:
             replace_existing=True
         )
         
-        logger.info("📋 已添加 5 个定时任务")
+        logger.info("📋 已添加 4 个定时任务")
     
     async def _cleanup_old_data(self):
         """清理旧数据任务"""
@@ -179,52 +172,7 @@ class TaskScheduler:
                 category="sync", source="scheduler"
             )
     
-    async def _health_check(self):
-        """健康检查任务"""
-        try:
-            logger.debug("🔍 执行系统健康检查...")
-            
-            # 检查数据库连接
-            from src.database import check_db_health
-            db_healthy = check_db_health()
-            
-            # 获取系统概览
-            system_stats = await self.stats_service.get_system_overview()
-            
-            # 获取性能指标
-            performance = await self.stats_service.get_performance_metrics()
-            
-            # 记录健康状态
-            health_status = {
-                "database": "healthy" if db_healthy else "unhealthy",
-                "system_stats": system_stats,
-                "performance": performance,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            # 如果有异常情况，记录警告日志
-            if not db_healthy:
-                await self.stats_service.record_system_log(
-                    "WARN", "数据库连接异常", 
-                    details=health_status,
-                    category="health", source="scheduler"
-                )
-            
-            # 检查错误率
-            error_rate = performance.get("error_rate_24h", 0)
-            if error_rate > 5:  # 错误率超过5%
-                await self.stats_service.record_system_log(
-                    "WARN", f"系统错误率过高: {error_rate}%", 
-                    details=health_status,
-                    category="health", source="scheduler"
-                )
-            
-        except Exception as e:
-            logger.error(f"❌ 健康检查任务异常: {e}")
-            await self.stats_service.record_system_log(
-                "ERROR", f"健康检查任务异常: {str(e)}", 
-                category="health", source="scheduler"
-            )
+    # 健康检查任务已移除
     
     async def _aggregate_stats(self):
         """统计数据汇总任务"""
