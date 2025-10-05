@@ -23,7 +23,10 @@ let memoryCache = {
         uaConfigs: {},
         ipBlacklist: [],
         lastUpdate: 0
-    }
+    },
+    // 内存日志存储（只保存1天）
+    logs: [],
+    lastLogCleanup: Date.now()
 };
 
 // 数据中心集成配置
@@ -43,29 +46,132 @@ let DATA_CENTER_CONFIG = {
 const ALARM_INTERVAL_SECONDS = 60; // 每60秒强制将内存中的计数写入存储，以确保在免费额度内
 
 // 数据清理配置
-const DATA_RETENTION_HOURS = 168; // 保留一周(7天×24小时)的数据
-const CLEANUP_INTERVAL_HOURS = 24; // 每24小时执行一次清理
+const DATA_RETENTION_HOURS = 24; // 内存日志只保留1天
+const CLEANUP_INTERVAL_HOURS = 6; // 每6小时执行一次清理
+
+// ========================================
+// 📝 内存日志管理
+// ========================================
+
+// 添加日志到内存
+function addMemoryLog(level, message, data = {}) {
+    const now = Date.now();
+
+    // 清理过期日志（每小时清理一次）
+    if (now - memoryCache.lastLogCleanup > 3600000) {
+        const cutoffTime = now - (DATA_RETENTION_HOURS * 60 * 60 * 1000);
+        memoryCache.logs = memoryCache.logs.filter(log => log.timestamp > cutoffTime);
+        memoryCache.lastLogCleanup = now;
+    }
+
+    // 添加新日志
+    memoryCache.logs.push({
+        timestamp: now,
+        level,
+        message,
+        data,
+        id: `${now}-${Math.random().toString(36).substr(2, 9)}`
+    });
+
+    // 限制日志数量（最多保存1000条）
+    if (memoryCache.logs.length > 1000) {
+        memoryCache.logs = memoryCache.logs.slice(-1000);
+    }
+}
+
+// 获取内存日志
+function getMemoryLogs(limit = 100) {
+    return memoryCache.logs
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, limit);
+}
+
+// ========================================
+// 🔄 内存频率限制
+// ========================================
+
+// 内存频率限制检查
+function checkMemoryRateLimit(clientIP, uaType, limits) {
+    const now = Date.now();
+    const key = `${uaType}-${clientIP}`;
+
+    // 获取或创建计数器
+    if (!memoryCache.rateLimitCounts.has(key)) {
+        memoryCache.rateLimitCounts.set(key, {
+            count: 0,
+            windowStart: now,
+            lastRequest: now
+        });
+    }
+
+    const counter = memoryCache.rateLimitCounts.get(key);
+    const windowDuration = limits.windowMs || 60000; // 默认1分钟窗口
+    const maxRequests = limits.maxRequests || 100;
+
+    // 检查是否需要重置窗口
+    if (now - counter.windowStart >= windowDuration) {
+        counter.count = 0;
+        counter.windowStart = now;
+    }
+
+    // 增加计数
+    counter.count++;
+    counter.lastRequest = now;
+
+    // 检查是否超限
+    if (counter.count > maxRequests) {
+        return {
+            allowed: false,
+            reason: `频率限制: ${counter.count}/${maxRequests} 在 ${Math.round(windowDuration/1000)}秒内`,
+            count: counter.count,
+            limit: maxRequests
+        };
+    }
+
+    return {
+        allowed: true,
+        count: counter.count,
+        limit: maxRequests
+    };
+}
+
+// 清理过期的频率限制计数器
+function cleanupRateLimitCounters() {
+    const now = Date.now();
+    const expireTime = 5 * 60 * 1000; // 5分钟过期
+
+    for (const [key, counter] of memoryCache.rateLimitCounts.entries()) {
+        if (now - counter.lastRequest > expireTime) {
+            memoryCache.rateLimitCounts.delete(key);
+        }
+    }
+}
 
 // ========================================
 // 🔗 数据中心集成功能
 // ========================================
 
-// 初始化配置缓存（从环境变量加载默认配置）
+// 初始化配置缓存（优先数据中心，环境变量兜底）
 async function initializeConfigCache(env) {
     try {
-        // 加载UA配置
+        // 加载UA配置（兜底方案）
         if (env.USER_AGENT_LIMITS_CONFIG) {
             memoryCache.configCache.uaConfigs = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
-            console.log('✅ 从环境变量加载UA配置');
+            console.log('✅ 从环境变量加载UA配置（兜底）');
         }
 
-        // 加载IP黑名单
+        // 加载IP黑名单（兜底方案）
         if (env.IP_BLACKLIST_CONFIG) {
             memoryCache.configCache.ipBlacklist = JSON.parse(env.IP_BLACKLIST_CONFIG);
-            console.log('✅ 从环境变量加载IP黑名单');
+            console.log('✅ 从环境变量加载IP黑名单（兜底）');
         }
 
         memoryCache.configCache.lastUpdate = Date.now();
+
+        // 清理过期的频率限制计数器
+        cleanupRateLimitCounters();
+
+        console.log('✅ 配置缓存初始化完成，将优先从数据中心同步');
     } catch (error) {
         console.error('❌ 初始化配置缓存失败:', error);
     }
@@ -238,6 +344,22 @@ async function handleDataCenterAPI(request, env, urlObj) {
             });
         }
 
+        // 内存日志查看端点
+        if (path === '/api/logs' && method === 'GET') {
+            const url = new URL(request.url);
+            const limit = parseInt(url.searchParams.get('limit') || '100');
+            const logs = getMemoryLogs(limit);
+
+            return new Response(JSON.stringify({
+                logs: logs,
+                total: memoryCache.logs.length,
+                worker_id: DATA_CENTER_CONFIG.workerId,
+                timestamp: Date.now()
+            }), {
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
         return new Response('Not Found', { status: 404 });
 
     } catch (error) {
@@ -292,7 +414,7 @@ function getIpBlacklist(env) {
             console.log('使用环境变量IP黑名单（兜底），包含', blacklist.length, '个规则');
             return blacklist;
         } catch (error) {
-            console.error('解析IP黑名单配置失败:', error);
+            console.error('解析环境变量IP黑名单失败:', error);
         }
     }
 
@@ -421,19 +543,10 @@ function getAccessConfig(env) {
 
 
 
-// 全局变量，标记是否已经设置过Webhook
-let webhookInitialized = false;
-
 export default {
   async fetch(request, env, ctx) {
     // 初始化数据中心配置
     await initializeDataCenterConfig(env);
-
-    // 只在第一次请求时设置Webhook
-    if (!webhookInitialized && env.TG_BOT_TOKEN && env.WORKER_DOMAIN) {
-      webhookInitialized = true;
-      ctx.waitUntil(setupWebhookOnce(env));
-    }
 
     return await handleRequest(request, env, ctx);
   }
@@ -467,32 +580,18 @@ async function handleRequest(request, env, ctx) {
     // IP黑名单和临时封禁检查
     const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
 
-    // 检查临时封禁
-    try {
-        const { isIpTempBanned } = await import('./telegram_bot.js');
-        if (isIpTempBanned(clientIP)) {
-            console.log(`IP ${clientIP} 被临时封禁，拒绝访问`);
-            return new Response(JSON.stringify({
-                status: 403,
-                type: "临时封禁",
-                message: `IP ${clientIP} 因违规行为被临时封禁`
-            }), {
-                status: 403,
-                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-            });
-        }
-    } catch (e) { /* 忽略临时封禁检查错误 */ }
+    // 临时封禁功能已移除
 
     // 检查永久黑名单
     const ipBlacklist = getIpBlacklist(env);
     if (isIpBlacklisted(clientIP, ipBlacklist)) {
         console.log(`IP ${clientIP} 在黑名单中，拒绝访问`);
 
-        // 记录到TG机器人日志
-        try {
-            const { logToBot } = await import('./telegram_bot.js');
-            logToBot('warn', `IP黑名单拦截`, { ip: clientIP, userAgent: request.headers.get('X-User-Agent') });
-        } catch (e) { /* 忽略日志记录错误 */ }
+        // 记录到内存日志
+        addMemoryLog('warn', 'IP黑名单拦截', {
+            ip: clientIP,
+            userAgent: request.headers.get('X-User-Agent')
+        });
 
         return new Response(JSON.stringify({
             status: 403,
@@ -509,22 +608,7 @@ async function handleRequest(request, env, ctx) {
         return handleAuthChallenge(request, env);
     }
 
-    // 新增：处理TG机器人webhook
-    if (urlObj.pathname === '/telegram-webhook') {
-        console.log('🎯 TG Webhook路由被触发!');
-        console.log('📍 请求路径:', urlObj.pathname);
-        console.log('🔧 开始导入telegram_bot.js模块...');
-
-        try {
-            const { handleTelegramWebhook } = await import('./telegram_bot.js');
-            console.log('✅ telegram_bot.js模块导入成功');
-            return handleTelegramWebhook(request, env);
-        } catch (error) {
-            console.log('❌ telegram_bot.js模块导入失败:', error.message);
-            console.log('错误堆栈:', error.stack);
-            return new Response('TG Bot module import failed: ' + error.message, { status: 500 });
-        }
-    }
+    // TG机器人功能已移除
 
     // 提取目标URL和API路径
     let url = urlObj.href.replace(urlObj.origin + '/cors/', '').trim();
@@ -558,92 +642,22 @@ async function handleRequest(request, env, ctx) {
         });
     }
 
-    // 同步进行频率限制检查和计数更新
-    if (ACCESS_CONFIG.logging.enabled) {
-        console.log(`开始频率限制检查: IP=${clientIP}, UA=${accessCheck.uaConfig.type}, 路径=${accessCheck.apiPath}`);
-    }
+    // 频率限制检查已在accessCheck中完成，这里直接使用结果
+    const rateLimitResult = { allowed: true }; // accessCheck已经通过，说明频率限制检查通过
 
-    const rateLimitCheck = await accessCheck.doStub.fetch(new Request('https://do.internal/checkAndIncrement', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            action: 'checkAndIncrement',
-            uaConfig: accessCheck.uaConfig,
-            apiPath: accessCheck.apiPath,
-            clientIP: clientIP,
-            uaType: accessCheck.uaConfig.type,
-            loggingEnabled: ACCESS_CONFIG.logging.enabled
-        })
-    }));
-
-    const rateLimitResult = await rateLimitCheck.json();
-    if (ACCESS_CONFIG.logging.enabled) {
-        console.log(`频率限制检查结果: ${JSON.stringify(rateLimitResult)}`);
-    }
-
-    // 检查路径满载情况（在频率限制通过后）
-    if (rateLimitResult.allowed && rateLimitResult.pathSpecificCount && rateLimitResult.pathLimit) {
-        try {
-            const { checkPathOverload } = await import('./telegram_bot.js');
-            const overloadResult = checkPathOverload(
-                clientIP,
-                tUrlObj.pathname,
-                rateLimitResult.pathSpecificCount,
-                rateLimitResult.pathLimit
-            );
-
-            if (overloadResult.shouldBan) {
-                console.log(`IP ${clientIP} 因路径满载被自动封禁`);
-                return new Response(JSON.stringify({
-                    status: 403,
-                    type: "路径满载封禁",
-                    message: `IP ${clientIP} 因${overloadResult.reason}被封禁3天`
-                }), {
-                    status: 403,
-                    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-                });
-            }
-        } catch (e) { /* 忽略路径满载检查错误 */ }
-    }
+    // 路径满载检查功能已移除
 
     if (!rateLimitResult.allowed) {
         const userAgent = request.headers.get('X-User-Agent') || '';
         const errorMessage = `IP:${clientIP} UA:${userAgent} 频率限制：${rateLimitResult.reason}`;
         console.log(errorMessage);
 
-        // 记录违规行为和日志
-        try {
-            const { logToBot, recordIpViolation } = await import('./telegram_bot.js');
-
-            // 记录IP违规
-            const violationResult = recordIpViolation(clientIP, '频率限制', {
-                userAgent,
-                reason: rateLimitResult.reason,
-                path: tUrlObj.pathname
-            });
-
-            // 记录日志
-            logToBot('warn', `频率限制触发`, {
-                ip: clientIP,
-                userAgent,
-                reason: rateLimitResult.reason,
-                path: tUrlObj.pathname,
-                violationCount: violationResult.currentCount,
-                autoBanned: violationResult.autoBanned
-            });
-
-            // 如果触发自动封禁，返回特殊消息
-            if (violationResult.autoBanned) {
-                return new Response(JSON.stringify({
-                    status: 403,
-                    type: "自动封禁",
-                    message: `IP ${clientIP} 因频繁违规已被自动封禁`
-                }), {
-                    status: 403,
-                    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-                });
-            }
-        } catch (e) { /* 忽略违规记录错误 */ }
+        // 记录到内存日志
+        addMemoryLog('warn', '频率限制触发', {
+            ip: clientIP,
+            userAgent,
+            reason: rateLimitResult.reason
+        });
 
         return new Response(JSON.stringify({
             status: 429,
@@ -872,30 +886,20 @@ async function checkAccess(request, env, targetApiPath) {
         return { allowed: false, reason: '禁止访问的UA', status: 403 };
     }
 
-    // 2. 基于Durable Object的频率限制
-    const doKey = `${uaConfig.type}-${clientIP}`;
-    const doId = env.RATE_LIMITER.idFromName(doKey);
-    const doStub = env.RATE_LIMITER.get(doId);
-
-    // 将配置和请求信息传递给Durable Object
-    const doRequest = new Request('https://do.internal/check', { // 使用内部URL，避免与外部请求混淆
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            action: 'check',
-            uaConfig: uaConfig,
-            apiPath: apiPath,
-            clientIP: clientIP, // 将IP和UA类型直接传递给DO
-            uaType: uaConfig.type,
-            loggingEnabled: ACCESS_CONFIG.logging.enabled,
-        }),
-    });
-
-    const doResponse = await doStub.fetch(doRequest);
-    const rateLimitCheck = await doResponse.json();
+    // 2. 基于内存的频率限制
+    const rateLimitCheck = checkMemoryRateLimit(clientIP, uaConfig.type, uaConfig);
 
     if (!rateLimitCheck.allowed) {
-        return { allowed: false, reason: `频率限制：${rateLimitCheck.reason}`, status: 429 };
+        // 记录频率限制日志
+        addMemoryLog('warn', '频率限制触发', {
+            ip: clientIP,
+            userAgent,
+            uaType: uaConfig.type,
+            reason: rateLimitCheck.reason,
+            path: apiPath
+        });
+
+        return { allowed: false, reason: rateLimitCheck.reason, status: 429 };
     }
 
     // 3. 非对称密钥验证（如果启用）
@@ -906,7 +910,7 @@ async function checkAccess(request, env, targetApiPath) {
         }
     }
 
-    return { allowed: true, uaConfig: uaConfig, doStub: doStub, apiPath: apiPath };
+    return { allowed: true, uaConfig: uaConfig, apiPath: apiPath };
 }
 
 // 新增：处理挑战-响应认证
@@ -1025,33 +1029,7 @@ function pemToArrayBuffer(pem) {
     return base64ToArrayBuffer(b64);
 }
 
-// 部署时一次性设置Telegram Webhook
-async function setupWebhookOnce(env) {
-    try {
-        const webhookUrl = `${env.WORKER_DOMAIN}/telegram-webhook`;
-        console.log('🚀 部署时自动设置TG Webhook:', webhookUrl);
-
-        const response = await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/setWebhook`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                url: webhookUrl,
-                allowed_updates: ['message', 'callback_query']
-            })
-        });
-
-        const result = await response.json();
-
-        if (result.ok) {
-            console.log('✅ TG Webhook设置成功! 机器人现在可以使用了');
-        } else {
-            console.log('❌ TG Webhook设置失败:', result.description);
-        }
-
-    } catch (error) {
-        console.log('❌ 设置TG Webhook异常:', error.message);
-    }
-}
+// TG Webhook功能已移除
 
 
 

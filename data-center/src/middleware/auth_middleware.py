@@ -20,9 +20,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/docs",
             "/openapi.json",
             "/redoc",
-            "/api/v1/auth/login",
-            "/api/v1/auth/init-status",
-            "/api/v1/auth/init-admin"
+            "/api/auth/login",
+            "/api/auth/init-status",
+            "/api/auth/init-admin"
         }
         
         # 静态文件路径

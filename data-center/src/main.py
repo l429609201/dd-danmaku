@@ -119,7 +119,7 @@ def create_application() -> FastAPI:
         import logging
         logger = logging.getLogger(__name__)
 
-        if request.url.path.startswith("/api/v1/auth/me"):
+        if request.url.path.startswith("/api/auth/me"):
             logger.info(f"🔍 收到/me请求")
             logger.info(f"🔍 请求方法: {request.method}")
             logger.info(f"🔍 请求URL: {request.url}")
@@ -127,7 +127,7 @@ def create_application() -> FastAPI:
 
         response = await call_next(request)
 
-        if request.url.path.startswith("/api/v1/auth/me"):
+        if request.url.path.startswith("/api/auth/me"):
             logger.info(f"🔍 /me响应状态: {response.status_code}")
 
         return response
@@ -150,7 +150,7 @@ def create_application() -> FastAPI:
     # 处理可能的日志路由请求
     @app.get("/logs")
     async def logs_redirect():
-        raise HTTPException(status_code=404, detail="Use /api/v1/logs/system instead")
+        raise HTTPException(status_code=404, detail="Use /api/logs/system instead")
 
     # 静态文件服务配置
     import os
@@ -279,7 +279,7 @@ def create_application() -> FastAPI:
                     <div class="links">
                         <a href="/docs">📖 API文档</a>
                         <a href="/health">🔍 健康检查</a>
-                        <a href="/api/v1/auth/init-status">⚙️ 初始化状态</a>
+                        <a href="/api/auth/init-status">⚙️ 初始化状态</a>
                     </div>
                 </div>
             </body>
