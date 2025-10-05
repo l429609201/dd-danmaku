@@ -299,31 +299,43 @@ async function syncStatsToDataCenter() {
                     ua_configs: memoryCache.configCache.uaConfigs,
                     ip_blacklist: memoryCache.configCache.ipBlacklist,
                     last_config_update: memoryCache.configCache.lastUpdate
-                }
+                },
+                // 同时上报内存日志
+                logs: memoryCache.logs.slice() // 发送日志副本
             })
         });
 
         if (response.ok) {
             DATA_CENTER_CONFIG.lastStatsSync = Date.now();
-            console.log('✅ 统计数据和配置状态同步成功');
-            addMemoryLog('INFO', '统计数据同步成功', {
+            const logCount = memoryCache.logs.length;
+            console.log(`✅ 统计数据、配置状态和日志同步成功 (${logCount}条日志)`);
+            addMemoryLog('INFO', '定时同步成功', {
                 data_center_url: DATA_CENTER_CONFIG.url,
                 worker_id: DATA_CENTER_CONFIG.workerId,
-                stats_count: Object.keys(stats).length
+                stats_count: Object.keys(stats).length,
+                logs_count: logCount
             });
+
+            // 同步成功后，清理已发送的日志（保留最近的一些日志）
+            if (memoryCache.logs.length > 100) {
+                memoryCache.logs = memoryCache.logs.slice(-50); // 只保留最近50条
+                console.log('🧹 已清理旧日志，保留最近50条');
+            }
         } else {
-            console.error('❌ 统计数据同步失败，HTTP状态:', response.status);
-            addMemoryLog('ERROR', `统计数据同步失败: HTTP ${response.status}`, {
+            console.error('❌ 定时同步失败，HTTP状态:', response.status);
+            addMemoryLog('ERROR', `定时同步失败: HTTP ${response.status}`, {
                 data_center_url: DATA_CENTER_CONFIG.url,
                 status: response.status,
-                statusText: response.statusText
+                statusText: response.statusText,
+                sync_type: 'scheduled'
             });
         }
     } catch (error) {
-        console.error('❌ 统计数据同步失败:', error);
-        addMemoryLog('ERROR', `统计数据同步异常: ${error.message}`, {
+        console.error('❌ 定时同步异常:', error);
+        addMemoryLog('ERROR', `定时同步异常: ${error.message}`, {
             data_center_url: DATA_CENTER_CONFIG.url,
-            error: error.message
+            error: error.message,
+            sync_type: 'scheduled'
         });
     }
 }
