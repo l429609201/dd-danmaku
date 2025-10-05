@@ -41,7 +41,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.static_prefixes = [
             "/static/",
             "/assets/",
-            "/favicon.ico"
+            "/images/",
+            "/favicon.ico",
+            "/favicon.svg",
+            "/favicon.png"
         ]
     
     async def dispatch(self, request: Request, call_next):

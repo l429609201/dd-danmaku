@@ -200,6 +200,33 @@ def create_application() -> FastAPI:
                 app.mount("/images", StaticFiles(directory=str(images_dir)), name="images")
                 logger.info("✅ 图片目录已挂载: /images")
 
+            # 添加favicon处理
+            from fastapi.responses import FileResponse
+
+            @app.get("/favicon.svg", include_in_schema=False)
+            async def favicon_svg():
+                favicon_path = static_dir / "favicon.svg"
+                if favicon_path.exists():
+                    return FileResponse(str(favicon_path), media_type="image/svg+xml")
+                else:
+                    # 返回默认的SVG favicon
+                    public_favicon = Path(__file__).parent.parent / "web" / "public" / "favicon.svg"
+                    if public_favicon.exists():
+                        return FileResponse(str(public_favicon), media_type="image/svg+xml")
+                    else:
+                        from fastapi import HTTPException
+                        raise HTTPException(status_code=404, detail="Favicon not found")
+
+            @app.get("/favicon.ico", include_in_schema=False)
+            async def favicon_ico():
+                favicon_path = static_dir / "favicon.ico"
+                if favicon_path.exists():
+                    return FileResponse(str(favicon_path), media_type="image/x-icon")
+                else:
+                    # 如果没有favicon.ico，返回404
+                    from fastapi import HTTPException
+                    raise HTTPException(status_code=404, detail="Favicon not found")
+
             # 不挂载整个dist目录，而是在SPA路由中直接返回文件
             logger.info("✅ 静态文件挂载完成，等待SPA路由配置")
 

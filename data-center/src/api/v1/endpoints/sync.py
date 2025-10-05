@@ -22,7 +22,10 @@ class WorkerEndpoint(BaseModel):
 
 class StatsData(BaseModel):
     worker_id: str
+    timestamp: int
     stats: Dict[str, Any]
+    config_status: Optional[Dict[str, Any]] = None
+    logs: Optional[List[Dict[str, Any]]] = None
 
 # 依赖注入
 def get_worker_sync_service() -> WorkerSyncService:
@@ -106,7 +109,7 @@ async def receive_worker_stats(
     worker_sync: WorkerSyncService = Depends(get_worker_sync_service),
     api_key: str = Depends(verify_api_key)
 ):
-    """接收Worker推送的统计数据"""
+    """接收Worker推送的统计数据和日志"""
     try:
         # 处理Worker推送的统计数据
         success = await worker_sync.process_worker_stats(
@@ -114,15 +117,32 @@ async def receive_worker_stats(
             stats_data.stats
         )
 
+        # 处理Worker推送的日志数据
+        if stats_data.logs:
+            log_success = await worker_sync.process_worker_logs(
+                stats_data.worker_id,
+                stats_data.logs
+            )
+            success = success and log_success
+
+        # 处理配置状态
+        if stats_data.config_status:
+            config_success = await worker_sync.process_worker_config_status(
+                stats_data.worker_id,
+                stats_data.config_status
+            )
+            success = success and config_success
+
         if success:
+            log_count = len(stats_data.logs) if stats_data.logs else 0
             return SyncResponse(
                 success=True,
-                message=f"接收Worker {stats_data.worker_id} 统计数据成功"
+                message=f"接收Worker {stats_data.worker_id} 数据成功 (统计+{log_count}条日志)"
             )
         else:
             return SyncResponse(
                 success=False,
-                message=f"处理Worker {stats_data.worker_id} 统计数据失败"
+                message=f"处理Worker {stats_data.worker_id} 数据失败"
             )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
