@@ -165,6 +165,23 @@ async def login(
 
         logger.info(f"🔐 会话创建成功: session_id={session.id}")
 
+        # 记录登录日志
+        from src.services.stats_service import StatsService
+        stats_service = StatsService()
+        await stats_service.record_system_log(
+            level="INFO",
+            message=f"用户 {user.username} 登录成功",
+            details={
+                "user_id": user.id,
+                "username": user.username,
+                "user_agent": user_agent,
+                "session_id": session.id
+            },
+            category="auth",
+            source="web-ui",
+            source_ip=client_ip
+        )
+
         return {
             "success": True,
             "message": "登录成功",
