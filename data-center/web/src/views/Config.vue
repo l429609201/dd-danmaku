@@ -1,32 +1,39 @@
 <template>
   <div class="config-page">
+    <!-- 页面头部 -->
     <div class="page-header">
-      <h1>⚙️ 配置管理</h1>
-      <p>管理系统基础配置</p>
+      <div class="header-content">
+        <h1>⚙️ 配置管理</h1>
+        <p>管理系统基础配置和服务设置</p>
+      </div>
     </div>
 
     <div class="config-sections">
+      <!-- 基本配置卡片 -->
       <div class="config-card">
-        <h3>🔧 基本配置</h3>
-        <form @submit.prevent="saveBasicConfig" class="config-form">
-          <div class="form-group">
-            <label>系统名称</label>
-            <input v-model="config.systemName" type="text" placeholder="DanDanPlay API 数据交互中心" />
-          </div>
-          <div class="form-group">
-            <label>API端口</label>
-            <input v-model.number="config.apiPort" type="number" min="1000" max="65535" placeholder="7759" />
-          </div>
-          <div class="form-group">
-            <label>调试模式</label>
-            <label class="checkbox-label">
-              <input v-model="config.debugMode" type="checkbox" />
-              <span class="checkmark"></span>
-              启用调试日志
-            </label>
-          </div>
-          <button type="submit" class="save-btn">💾 保存基本配置</button>
-        </form>
+        <div class="card-header">
+          <h3>🔧 基本配置</h3>
+        </div>
+        <div class="card-body">
+          <form @submit.prevent="saveBasicConfig" class="config-form">
+            <div class="form-group">
+              <label>系统名称</label>
+              <input v-model="config.systemName" type="text" placeholder="DanDanPlay API 数据交互中心" class="form-input" />
+            </div>
+            <div class="form-group">
+              <label>API端口</label>
+              <input v-model.number="config.apiPort" type="number" min="1000" max="65535" placeholder="7759" class="form-input" />
+            </div>
+            <div class="form-group">
+              <label class="checkbox-wrapper">
+                <input v-model="config.debugMode" type="checkbox" class="checkbox-input" />
+                <span class="checkbox-custom"></span>
+                <span class="checkbox-label">启用调试日志</span>
+              </label>
+            </div>
+            <button type="submit" class="btn btn-primary">💾 保存基本配置</button>
+          </form>
+        </div>
       </div>
 
       <div class="config-card">
@@ -115,22 +122,34 @@ export default {
 
 <style scoped>
 .config-page {
-  padding: 20px;
+  padding: 24px;
   max-width: 1200px;
   margin: 0 auto;
+  background: #f8fafc;
+  min-height: 100vh;
 }
 
+/* 页面头部 */
 .page-header {
-  margin-bottom: 30px;
+  margin-bottom: 32px;
+  padding: 24px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  text-align: center;
 }
 
-.page-header h1 {
-  color: #333;
-  margin-bottom: 8px;
+.header-content h1 {
+  font-size: 28px;
+  font-weight: 700;
+  color: #1a202c;
+  margin: 0 0 8px 0;
 }
 
-.page-header p {
-  color: #666;
+.header-content p {
+  color: #718096;
+  margin: 0;
+  font-size: 16px;
 }
 
 .config-sections {
