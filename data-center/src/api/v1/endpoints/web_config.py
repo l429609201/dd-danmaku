@@ -481,3 +481,77 @@ async def generate_new_api_key(
             return ConfigResponse(success=False, message="API密钥生成失败")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/ua-configs")
+async def get_ua_configs(
+    current_user: User = Depends(get_current_user)
+):
+    """获取UA配置"""
+    try:
+        from src.services.config_service import ConfigService
+        config_service = ConfigService()
+
+        # 获取UA配置
+        ua_configs = await config_service.get_ua_configs()
+        return ua_configs or []
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/ua-configs")
+async def save_ua_configs(
+    ua_configs: List[Dict[str, Any]],
+    current_user: User = Depends(get_current_user)
+):
+    """保存UA配置"""
+    try:
+        from src.services.config_service import ConfigService
+        config_service = ConfigService()
+
+        # 保存UA配置
+        success = await config_service.save_ua_configs(ua_configs)
+
+        if success:
+            return {"success": True, "message": "UA配置保存成功"}
+        else:
+            return {"success": False, "message": "UA配置保存失败"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/ip-blacklist")
+async def get_ip_blacklist(
+    current_user: User = Depends(get_current_user)
+):
+    """获取IP黑名单"""
+    try:
+        from src.services.config_service import ConfigService
+        config_service = ConfigService()
+
+        # 获取IP黑名单
+        ip_blacklist = await config_service.get_ip_blacklist()
+        return ip_blacklist or []
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/ip-blacklist")
+async def save_ip_blacklist(
+    ip_blacklist: List[str],
+    current_user: User = Depends(get_current_user)
+):
+    """保存IP黑名单"""
+    try:
+        from src.services.config_service import ConfigService
+        config_service = ConfigService()
+
+        # 保存IP黑名单
+        success = await config_service.save_ip_blacklist(ip_blacklist)
+
+        if success:
+            return {"success": True, "message": "IP黑名单保存成功"}
+        else:
+            return {"success": False, "message": "IP黑名单保存失败"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

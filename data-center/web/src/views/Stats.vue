@@ -115,18 +115,32 @@ export default {
     const refreshStats = async () => {
       loading.value = true
       try {
-        // TODO: 实现真实的API调用
-        // const response = await authFetch('/api/v1/stats/summary')
-        // if (response.ok) {
-        //   const data = await response.json()
-        //   stats.value = data
-        // }
-
-        // 暂时只更新时间戳，等待后端API实现
-        lastUpdate.value = new Date().toLocaleString()
-        console.log('统计数据API尚未实现，显示默认值')
+        // 调用统计数据API
+        const response = await authFetch('/api/stats/summary')
+        if (response.ok) {
+          const data = await response.json()
+          stats.value = {
+            todayRequests: data.todayRequests || 0,
+            totalRequests: data.totalRequests || 0,
+            successRate: data.successRate || 0,
+            onlineWorkers: data.onlineWorkers || 0,
+            totalWorkers: data.totalWorkers || 0,
+            avgResponseTime: data.avgResponseTime || 0,
+            blockedIPs: data.blockedIPs || 0,
+            todayBlocked: data.todayBlocked || 0,
+            violationRequests: data.violationRequests || 0,
+            memoryUsage: data.memoryUsage || 0,
+            cpuUsage: data.cpuUsage || 0,
+            uptime: data.uptime || '0分钟'
+          }
+          lastUpdate.value = new Date().toLocaleString()
+        } else {
+          throw new Error(`API调用失败: ${response.status}`)
+        }
       } catch (error) {
         console.error('刷新统计数据失败:', error)
+        // 如果API调用失败，保持当前数据不变
+        lastUpdate.value = new Date().toLocaleString()
       } finally {
         loading.value = false
       }
