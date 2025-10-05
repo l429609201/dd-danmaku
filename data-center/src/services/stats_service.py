@@ -202,12 +202,18 @@ class StatsService:
             logger.error(f"记录Worker统计数据失败: {e}")
             return False
     
-    async def record_system_log(self, level: str, message: str, details: Dict = None, 
-                               category: str = None, source: str = None) -> bool:
+    async def record_system_log(self, level: str, message: str, details: Dict = None,
+                               category: str = None, source: str = None, source_ip: str = None) -> bool:
         """记录系统日志"""
         try:
             db = self.db()
-            
+
+            # 如果提供了source_ip，添加到details中
+            if source_ip:
+                if details is None:
+                    details = {}
+                details['source_ip'] = source_ip
+
             log = SystemLog(
                 level=level.upper(),
                 message=message,
@@ -215,13 +221,13 @@ class StatsService:
                 category=category,
                 source=source or "data-center"
             )
-            
+
             db.add(log)
             db.commit()
             db.close()
-            
+
             return True
-            
+
         except Exception as e:
             logger.error(f"记录系统日志失败: {e}")
             return False

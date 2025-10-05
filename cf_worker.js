@@ -372,7 +372,7 @@ async function handleDataCenterAPI(request, urlObj) {
         return new Response('Not Found', { status: 404 });
 
     } catch (error) {
-        console.error('API处理错误:', error);
+        console.error(`❌ [${clientIP}] API处理错误:`, error);
         return new Response(JSON.stringify({ error: error.message }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' }
@@ -529,9 +529,15 @@ export default {
 
 
 async function handleRequest(request, env, ctx) {
-    // 添加请求日志
-    console.log('📥 收到请求:', request.method, new URL(request.url).pathname);
-    console.log('🌐 完整URL:', request.url);
+    // 获取客户端IP
+    const clientIP = request.headers.get('CF-Connecting-IP') ||
+                     request.headers.get('X-Forwarded-For') ||
+                     request.headers.get('X-Real-IP') ||
+                     'unknown';
+
+    // 添加请求日志（包含IP）
+    console.log(`📥 [${clientIP}] 收到请求:`, request.method, new URL(request.url).pathname);
+    console.log(`🌐 [${clientIP}] 完整URL:`, request.url);
 
     if (request.method === 'OPTIONS') {
         return new Response(null, {
@@ -553,14 +559,14 @@ async function handleRequest(request, env, ctx) {
     }
 
     // IP黑名单和临时封禁检查
-    const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+    // clientIP已在函数开头声明
 
     // 临时封禁功能已移除
 
     // 检查永久黑名单
     const ipBlacklist = getIpBlacklist();
     if (isIpBlacklisted(clientIP, ipBlacklist)) {
-        console.log(`IP ${clientIP} 在黑名单中，拒绝访问`);
+        console.log(`🚫 [${clientIP}] IP在黑名单中，拒绝访问`);
 
         // 记录到内存日志
         addMemoryLog('warn', 'IP黑名单拦截', {
@@ -604,7 +610,7 @@ async function handleRequest(request, env, ctx) {
         const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
 
         if (ACCESS_CONFIG.logging.enabled) {
-            console.log(`访问被拒绝: ${errorMessage}, 路径=${tUrlObj.pathname}`);
+            console.log(`🚫 [${clientIP}] 访问被拒绝: ${errorMessage}, 路径=${tUrlObj.pathname}`);
         }
 
         return new Response(JSON.stringify({
@@ -624,8 +630,8 @@ async function handleRequest(request, env, ctx) {
 
     if (!rateLimitResult.allowed) {
         const userAgent = request.headers.get('X-User-Agent') || '';
-        const errorMessage = `IP:${clientIP} UA:${userAgent} 频率限制：${rateLimitResult.reason}`;
-        console.log(errorMessage);
+        const errorMessage = `频率限制：${rateLimitResult.reason} UA:${userAgent}`;
+        console.log(`⚠️ [${clientIP}] ${errorMessage}`);
 
         // 记录到内存日志
         addMemoryLog('warn', '频率限制触发', {
@@ -671,10 +677,7 @@ async function handleRequest(request, env, ctx) {
     }
 
     if (ACCESS_CONFIG.logging.enabled) {
-        console.log('应用ID: ' + appId);
-        console.log('签名: ' + signature);
-        console.log('时间戳: ' + timestamp);
-        console.log('API路径: ' + apiPath);
+        console.log(`🔐 [${clientIP}] API路径: ${apiPath}`);
     }
     
     // 构建转发请求的头部，排除自定义头
@@ -696,7 +699,7 @@ async function handleRequest(request, env, ctx) {
 
     // 调试日志：显示最终的请求头
     if (ACCESS_CONFIG.logging.enabled) {
-        console.log('转发请求头:', JSON.stringify(finalHeaders, null, 2));
+        console.log(`📤 [${clientIP}] 转发请求头:`, JSON.stringify(finalHeaders, null, 2));
     }
 
     let response = await fetch(url, {
@@ -706,7 +709,7 @@ async function handleRequest(request, env, ctx) {
     });
 
     // 调试日志：显示dandanplay API响应内容
-    console.log('dandanplay API响应状态:', response.status, response.statusText);
+    console.log(`📥 [${clientIP}] dandanplay API响应状态:`, response.status, response.statusText);
 
     // 读取响应内容用于日志记录
     const responseText = await response.text();
@@ -715,16 +718,16 @@ async function handleRequest(request, env, ctx) {
         try {
             const jsonResponse = JSON.parse(responseText);
             if (jsonResponse && Array.isArray(jsonResponse.comments)) {
-                console.log(`dandanplay API响应内容: (路径=${apiPath}) 弹幕数量=${jsonResponse.comments.length}, comments数组内容已省略`);
+                console.log(`📄 [${clientIP}] dandanplay API响应内容: (路径=${apiPath}) 弹幕数量=${jsonResponse.comments.length}, comments数组内容已省略`);
             } else {
-                console.log('dandanplay API响应内容:', responseText);
+                console.log(`📄 [${clientIP}] dandanplay API响应内容:`, responseText);
             }
         } catch (e) {
             // 如果不是有效的JSON，则记录原始文本
-            console.log('dandanplay API响应内容 (非JSON):', responseText);
+            console.log(`📄 [${clientIP}] dandanplay API响应内容 (非JSON):`, responseText);
         }
     } else {
-        console.log('dandanplay API响应内容:', responseText);
+        console.log(`📄 [${clientIP}] dandanplay API响应内容:`, responseText);
     }
 
     // 重新创建Response对象（因为body已经被读取）

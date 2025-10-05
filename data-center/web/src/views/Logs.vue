@@ -47,8 +47,9 @@
           class="log-item"
           :class="log.level.toLowerCase()"
         >
-          <span class="log-time">{{ log.timestamp }}</span>
+          <span class="log-time">{{ formatTime(log.timestamp) }}</span>
           <span class="log-level">{{ log.level }}</span>
+          <span v-if="getLogIP(log)" class="log-ip">{{ getLogIP(log) }}</span>
           <span class="log-message">{{ log.message }}</span>
         </div>
 
@@ -114,7 +115,19 @@ export default {
       console.log('🔄 开始刷新日志...')
 
       try {
-        // 直接使用模拟数据，避免API调用卡死
+        // 调用真实API获取日志
+        const response = await authFetch('/logs?limit=100')
+        if (response.ok) {
+          const data = await response.json()
+          logs.value = data.logs || []
+          console.log('📋 获取日志数据:', logs.value.length, '条')
+        } else {
+          throw new Error(`API调用失败: ${response.status}`)
+        }
+
+      } catch (error) {
+        console.error('❌ 获取日志异常:', error)
+        // 如果API调用失败，使用模拟数据作为后备
         const mockLogs = []
         const levels = ['INFO', 'WARNING', 'ERROR', 'DEBUG']
         const messages = [
@@ -127,36 +140,26 @@ export default {
           '缓存清理完成',
           '定时任务执行',
           '数据库连接正常',
-          '内存使用率检查',
-          '网络连接测试',
-          '文件上传完成',
-          '权限验证通过',
-          '日志轮转执行',
-          '备份任务完成'
+          '内存使用率检查'
         ]
 
-        for (let i = 0; i < 50; i++) {
+        for (let i = 0; i < 20; i++) {
           const level = levels[i % levels.length]
           const message = messages[i % messages.length]
           const now = new Date()
-          now.setMinutes(now.getMinutes() - i * 2) // 每条日志间隔2分钟
+          now.setMinutes(now.getMinutes() - i * 2)
 
           mockLogs.push({
             id: i + 1,
             timestamp: now.toISOString(),
             level: level,
-            message: `${message} - 日志条目 ${i + 1}`
+            message: `${message} - 日志条目 ${i + 1}`,
+            source_ip: '127.0.0.1'
           })
         }
 
         logs.value = mockLogs
-        console.log('📋 生成模拟日志数据:', mockLogs.length, '条')
-
-      } catch (error) {
-        console.error('❌ 生成日志异常:', error)
-        logs.value = [
-          { id: 1, timestamp: new Date().toISOString(), level: 'ERROR', message: `日志生成异常: ${error.message}` }
-        ]
+        console.log('📋 使用模拟日志数据:', mockLogs.length, '条')
       } finally {
         loading.value = false
         console.log('✅ 日志刷新完成')
@@ -171,7 +174,7 @@ export default {
 
     const downloadLogs = () => {
       const logText = filteredLogs.value
-        .map(log => `${log.timestamp} [${log.level}] ${log.message}`)
+        .map(log => `${log.timestamp} [${log.level}] ${getLogIP(log) ? `[${getLogIP(log)}] ` : ''}${log.message}`)
         .join('\n')
 
       const blob = new Blob([logText], { type: 'text/plain' })
@@ -181,6 +184,33 @@ export default {
       a.download = `logs_${new Date().toISOString().split('T')[0]}.txt`
       a.click()
       URL.revokeObjectURL(url)
+    }
+
+    const formatTime = (timestamp) => {
+      try {
+        const date = new Date(timestamp)
+        return date.toLocaleString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        })
+      } catch (e) {
+        return timestamp
+      }
+    }
+
+    const getLogIP = (log) => {
+      // 从details中获取source_ip，或者直接从log.source_ip获取
+      if (log.details && log.details.source_ip) {
+        return log.details.source_ip
+      }
+      if (log.source_ip) {
+        return log.source_ip
+      }
+      return null
     }
 
     watch(filteredLogs, () => {
@@ -210,7 +240,9 @@ export default {
       filterLogs,
       refreshLogs,
       clearLogs,
-      downloadLogs
+      downloadLogs,
+      formatTime,
+      getLogIP
     }
   }
 }
@@ -401,6 +433,18 @@ export default {
 
 .log-item.error .log-level {
   color: #f56c6c;
+}
+
+.log-ip {
+  width: 120px;
+  flex-shrink: 0;
+  color: #666;
+  font-family: monospace;
+  font-size: 12px;
+  background: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 3px;
+  margin-right: 8px;
 }
 
 .log-message {
