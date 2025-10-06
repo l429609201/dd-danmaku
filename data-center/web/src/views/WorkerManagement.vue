@@ -294,12 +294,8 @@ export default {
 
       try {
         // 通过后端API推送配置
-        const response = await fetch('/api/worker/push-config', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token')}`,
-            'Content-Type': 'application/json'
-          }
+        const response = await authFetch('/api/worker/push-config', {
+          method: 'POST'
         })
 
         if (response.ok) {
@@ -323,12 +319,8 @@ export default {
 
       try {
         // 通过后端API获取Worker日志
-        const response = await fetch('/api/worker/fetch-logs', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token')}`,
-            'Content-Type': 'application/json'
-          }
+        const response = await authFetch('/api/worker/fetch-logs', {
+          method: 'POST'
         })
 
         if (response.ok) {
@@ -355,12 +347,8 @@ export default {
         await this.pushConfig(worker)
 
         // 2. 获取统计数据 - 通过后端API
-        const statsResponse = await fetch('/api/worker/fetch-stats', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token')}`,
-            'Content-Type': 'application/json'
-          }
+        const statsResponse = await authFetch('/api/worker/fetch-stats', {
+          method: 'POST'
         })
 
         if (statsResponse.ok) {

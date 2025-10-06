@@ -34,7 +34,7 @@ class LogBlock(BaseModel):
 
 def get_log_directory() -> str:
     """获取日志目录路径"""
-    # 假设日志存储在项目根目录的 logs 目录下
+    # 日志存储在项目根目录的 logs 目录下
     log_dir = os.path.join(os.getcwd(), "logs")
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)
@@ -58,9 +58,9 @@ async def list_log_files(
             if filename == 'app.log':
                 return -1
             parts = filename.split('.')
-            if len(parts) >= 3 and parts[0] == 'app' and parts[1] == 'log':
+            # 处理 app.log.1, app.log.2 等格式
+            if len(parts) == 3 and parts[0] == 'app' and parts[1] == 'log':
                 try:
-                    # 处理 app.log.1.gz 或 app.log.1 格式
                     return int(parts[2])
                 except ValueError:
                     pass
@@ -92,18 +92,14 @@ async def view_log_file(
         raise HTTPException(status_code=404, detail="文件未找到")
     
     try:
-        # 判断是否为压缩文件
-        if filename.endswith('.gz'):
-            with gzip.open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-        else:
-            with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-        
+        # 直接读取文件（不处理.gz压缩文件，简化实现）
+        with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+
         # 反转行顺序（最新的在前）
         lines.reverse()
         content = "".join(lines)
-        
+
         return PlainTextResponse(content)
         
     except Exception as e:
@@ -134,7 +130,7 @@ async def search_logs(
             if filename == 'app.log':
                 return -1
             parts = filename.split('.')
-            if len(parts) >= 3 and parts[0] == 'app' and parts[1] == 'log':
+            if len(parts) == 3 and parts[0] == 'app' and parts[1] == 'log':
                 try:
                     return int(parts[2])
                 except ValueError:
@@ -147,13 +143,8 @@ async def search_logs(
         for filename in log_files:
             full_path = os.path.join(log_dir, filename)
             try:
-                # 判断是否为压缩文件
-                if filename.endswith('.gz'):
-                    opener = lambda: gzip.open(full_path, 'rt', encoding='utf-8', errors='ignore')
-                else:
-                    opener = lambda: open(full_path, 'rt', encoding='utf-8', errors='ignore')
-                
-                with opener() as f:
+                # 直接读取文件（简化实现）
+                with open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
                     for line_num, line in enumerate(f, 1):
                         if q.lower() in line.lower():
                             match = TIMESTAMP_REGEX.search(line)
@@ -201,12 +192,8 @@ async def search_logs_with_context(
         for filename in log_files:
             full_path = os.path.join(log_dir, filename)
             try:
-                if filename.endswith('.gz'):
-                    opener = lambda: gzip.open(full_path, 'rt', encoding='utf-8', errors='ignore')
-                else:
-                    opener = lambda: open(full_path, 'rt', encoding='utf-8', errors='ignore')
-                
-                with opener() as f:
+                # 直接读取文件（简化实现）
+                with open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
                     current_block = []
                     for line in f:
                         line = line.strip()

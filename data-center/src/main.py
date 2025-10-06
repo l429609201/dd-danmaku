@@ -17,12 +17,18 @@ from src.tasks.scheduler import TaskScheduler
 from src.telegram.bot import TelegramBot
 from src.middleware.auth_middleware import AuthMiddleware
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# 配置日志系统
+from src.utils.logger_setup import setup_logging, create_test_logs
+
+# 初始化日志系统
+setup_logging()
 logger = logging.getLogger(__name__)
+
+# 创建一些测试日志（仅在开发环境）
+try:
+    create_test_logs()
+except Exception as e:
+    logger.warning(f"创建测试日志失败: {e}")
 
 # 全局变量存储服务实例
 telegram_bot = None
