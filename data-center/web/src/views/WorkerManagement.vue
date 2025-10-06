@@ -172,7 +172,42 @@ export default {
     },
 
     async viewStats(worker) {
-      this.showMessage('查看统计功能', 'info')
+      this.showMessage(`正在获取 ${worker.name} 的统计数据...`, 'info')
+
+      try {
+        const response = await authFetch('/api/worker/fetch-stats', {
+          method: 'POST'
+        })
+
+        if (response.ok) {
+          const result = await response.json()
+          console.log('统计数据获取结果:', result)
+
+          if (result.success && result.stats && result.stats.length > 0) {
+            // 显示第一个Worker的统计数据
+            const stats = result.stats[0].stats
+            if (stats) {
+              const message = `${worker.name} 统计信息：
+总请求数: ${stats.requests_total || 0}
+待处理请求: ${stats.pending_requests || 0}
+内存缓存大小: ${stats.memory_cache_size || 0}
+日志数量: ${stats.logs_count || 0}
+运行时间: ${Math.floor((stats.uptime || 0) / 1000 / 60)} 分钟
+配置统计: UA配置 ${stats.config_stats?.ua_configs_count || 0} 条，IP黑名单 ${stats.config_stats?.ip_blacklist_count || 0} 条
+秘钥轮换: Secret1=${stats.secret_rotation?.secret1_count || 0}, Secret2=${stats.secret_rotation?.secret2_count || 0}, 当前=${stats.secret_rotation?.current_secret || '1'}`
+              this.showMessage(message, 'success')
+            } else {
+              this.showMessage(`${worker.name} 统计数据为空`, 'warning')
+            }
+          } else {
+            this.showMessage(`获取 ${worker.name} 统计数据失败: ${result.message || '未知错误'}`, 'error')
+          }
+        } else {
+          this.showMessage(`获取 ${worker.name} 统计数据失败: HTTP ${response.status}`, 'error')
+        }
+      } catch (error) {
+        this.showMessage(`获取 ${worker.name} 统计数据异常: ${error.message}`, 'error')
+      }
     },
 
     async generateApiKey() {
@@ -281,13 +316,7 @@ export default {
       }
     },
 
-    viewStats(worker) {
-      this.showMessage(`查看 ${worker.name} 的统计信息`, 'info')
-      // 模拟打开统计页面
-      setTimeout(() => {
-        this.showMessage(`${worker.name} 统计信息：请求数 1234，成功率 98.5%`, 'success')
-      }, 500)
-    },
+
 
     async pushConfig(worker) {
       this.showMessage(`正在推送配置...`, 'info')
