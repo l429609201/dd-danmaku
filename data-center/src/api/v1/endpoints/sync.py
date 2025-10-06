@@ -37,17 +37,24 @@ def get_config_service() -> ConfigService:
 # API Key认证依赖项
 async def verify_api_key(x_api_key: str = Header(None)):
     """验证API Key"""
-    valid_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
+    from src.services.web_config_service import WebConfigService
 
-    # 如果没有配置API Key，则允许所有请求通过
-    if not valid_api_keys:
-        return x_api_key
-
-    # 如果配置了API Key，则需要验证
+    # 如果没有提供API Key
     if not x_api_key:
         raise HTTPException(status_code=401, detail="缺少API Key")
 
-    if x_api_key not in valid_api_keys:
+    # 从数据库获取配置的API Key
+    web_config_service = WebConfigService()
+    system_settings = await web_config_service.get_system_settings()
+
+    configured_api_key = system_settings.get('worker_api_key')
+
+    # 如果没有配置API Key，则拒绝请求
+    if not configured_api_key:
+        raise HTTPException(status_code=401, detail="服务器未配置API Key")
+
+    # 验证API Key
+    if x_api_key != configured_api_key:
         raise HTTPException(status_code=401, detail="无效的API Key")
 
     return x_api_key

@@ -60,7 +60,10 @@
       <div class="config-card">
         <div class="card-header">
           <h3>🌐 User Agent 配置</h3>
-          <button @click="addUAConfig" class="btn btn-secondary">➕ 添加UA配置</button>
+          <div class="header-buttons">
+            <button @click="showImportDialog" class="btn btn-secondary">📥 JSON导入</button>
+            <button @click="addUAConfig" class="btn btn-secondary">➕ 添加UA配置</button>
+          </div>
         </div>
         <div class="card-body">
           <div v-if="uaConfigs.length === 0" class="empty-state">
@@ -160,6 +163,37 @@
         </div>
       </div>
     </div>
+
+    <!-- JSON导入对话框 -->
+    <div v-if="showImportModal" class="modal-overlay" @click="closeImportDialog">
+      <div class="modal-content" @click.stop>
+        <div class="modal-header">
+          <h3>📥 导入UA配置JSON</h3>
+          <button @click="closeImportDialog" class="btn btn-secondary">✖️</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>请粘贴JSON配置：</label>
+            <textarea
+              v-model="importJsonText"
+              placeholder="请粘贴JSON配置..."
+              class="json-textarea"
+              rows="15"
+            ></textarea>
+          </div>
+          <div class="import-options">
+            <label class="checkbox-label">
+              <input type="checkbox" v-model="replaceExisting" />
+              替换现有配置（否则追加到现有配置）
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button @click="closeImportDialog" class="btn btn-secondary">取消</button>
+          <button @click="importUAConfigs" class="btn btn-primary">导入配置</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -180,6 +214,11 @@ export default {
 
     const uaConfigs = ref([])
     const ipBlacklist = ref([])
+
+    // JSON导入相关
+    const showImportModal = ref(false)
+    const importJsonText = ref('')
+    const replaceExisting = ref(false)
 
 
 
@@ -282,6 +321,67 @@ export default {
       uaConfigs.value[uaIndex].pathLimits.splice(pathIndex, 1)
     }
 
+    // JSON导入方法
+    const showImportDialog = () => {
+      showImportModal.value = true
+      importJsonText.value = ''
+      replaceExisting.value = false
+    }
+
+    const closeImportDialog = () => {
+      showImportModal.value = false
+      importJsonText.value = ''
+      replaceExisting.value = false
+    }
+
+    const importUAConfigs = () => {
+      try {
+        if (!importJsonText.value.trim()) {
+          showMessage('请输入JSON配置', 'error')
+          return
+        }
+
+        const jsonData = JSON.parse(importJsonText.value)
+        const importedConfigs = []
+
+        // 转换JSON格式到内部格式
+        for (const [name, config] of Object.entries(jsonData)) {
+          const uaConfig = {
+            name: name,
+            enabled: config.enabled || true,
+            userAgent: config.userAgent || '',
+            maxRequestsPerHour: config.maxRequestsPerHour || 100,
+            maxRequestsPerDay: config.maxRequestsPerDay || 1000,
+            description: config.description || '',
+            pathLimits: []
+          }
+
+          // 转换pathLimits格式
+          if (config.pathLimits && Array.isArray(config.pathLimits)) {
+            uaConfig.pathLimits = config.pathLimits.map(limit => ({
+              path: limit.path || '',
+              maxRequestsPerHour: limit.maxRequestsPerHour || 50
+            }))
+          }
+
+          importedConfigs.push(uaConfig)
+        }
+
+        // 根据选项决定是替换还是追加
+        if (replaceExisting.value) {
+          uaConfigs.value = importedConfigs
+          showMessage(`成功导入 ${importedConfigs.length} 个UA配置（已替换现有配置）`, 'success')
+        } else {
+          uaConfigs.value.push(...importedConfigs)
+          showMessage(`成功导入 ${importedConfigs.length} 个UA配置（已追加到现有配置）`, 'success')
+        }
+
+        closeImportDialog()
+      } catch (error) {
+        showMessage(`JSON解析失败: ${error.message}`, 'error')
+      }
+    }
+
     const saveUAConfigs = async () => {
       try {
         const response = await authFetch('/api/web-config/ua-configs', {
@@ -366,6 +466,9 @@ export default {
       config,
       uaConfigs,
       ipBlacklist,
+      showImportModal,
+      importJsonText,
+      replaceExisting,
       saveBasicConfig,
       saveTelegramConfig,
       createBotMenu,
@@ -374,6 +477,9 @@ export default {
       addPathLimit,
       removePathLimit,
       saveUAConfigs,
+      showImportDialog,
+      closeImportDialog,
+      importUAConfigs,
       addIPBlacklist,
       removeIPBlacklist,
       saveIPBlacklist
@@ -601,6 +707,11 @@ export default {
   margin-bottom: 20px;
 }
 
+.header-buttons {
+  display: flex;
+  gap: 8px;
+}
+
 .card-header h3 {
   margin: 0;
   color: #333;
@@ -739,5 +850,93 @@ export default {
   border-radius: 4px;
   margin-bottom: 8px;
   border: 1px solid #f0f0f0;
+}
+
+/* 模态框样式 */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: white;
+  border-radius: 8px;
+  padding: 0;
+  max-width: 600px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #f8f9fa;
+}
+
+.modal-header h3 {
+  margin: 0;
+  color: #333;
+}
+
+.modal-body {
+  padding: 20px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 20px;
+  border-top: 1px solid #e0e0e0;
+  background: #f8f9fa;
+}
+
+.json-textarea {
+  width: 100%;
+  min-height: 300px;
+  padding: 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+.json-textarea:focus {
+  outline: none;
+  border-color: #1976d2;
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.2);
+}
+
+.import-options {
+  margin-top: 16px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.checkbox-label input[type="checkbox"] {
+  margin: 0;
 }
 </style>
