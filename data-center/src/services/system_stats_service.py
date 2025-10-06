@@ -5,7 +5,7 @@ import psutil
 import logging
 from datetime import datetime
 from typing import Dict, Any
-from src.database import get_db_session
+from src.database import get_db_sync
 
 logger = logging.getLogger(__name__)
 
@@ -103,14 +103,18 @@ class SystemStatsService:
     async def _get_database_stats(self) -> Dict[str, Any]:
         """获取数据库统计"""
         try:
-            async with get_db_session() as session:
-                # 这里可以添加数据库特定的统计查询
-                # 例如：表行数、连接数等
+            # 使用同步数据库会话进行简单的连接测试
+            db = get_db_sync()
+            try:
+                # 简单的连接测试
+                db.execute("SELECT 1")
                 return {
                     "status": "connected",
                     "connection_pool_size": 10,  # 根据实际配置
                     "active_connections": 1
                 }
+            finally:
+                db.close()
         except Exception as e:
             logger.error(f"获取数据库统计失败: {e}")
             return {
