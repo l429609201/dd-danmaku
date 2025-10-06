@@ -24,10 +24,14 @@ FROM python:3.11-alpine AS runtime
 
 WORKDIR /app
 
-# 安装运行时依赖（最小化）
+# 安装运行时依赖和构建依赖（最小化）
 RUN apk add --no-cache \
     wget \
     su-exec \
+    gcc \
+    python3-dev \
+    musl-dev \
+    linux-headers \
     && rm -rf /var/cache/apk/*
 
 # 创建默认用户组和用户（将通过PUID/PGID动态调整）
