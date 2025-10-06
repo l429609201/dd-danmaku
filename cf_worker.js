@@ -27,9 +27,7 @@ let memoryCache = {
     },
     // 环境变量缓存（启动时复制，APP_ID/APP_SECRET除外）
     envCache: {
-        ENABLE_ASYMMETRIC_AUTH_ENV: false,
-        ENABLE_DETAILED_LOGGING: false,
-        PRIVATE_KEY_HEX: ''
+        ENABLE_DETAILED_LOGGING: false
     },
     // 内存日志存储（只保存1天）
     logs: [],
@@ -161,9 +159,7 @@ function cleanupRateLimitCounters() {
 async function initializeConfigCache(env) {
     try {
         // 复制环境变量到内存缓存（APP_ID/APP_SECRET始终从env读取）
-        memoryCache.envCache.ENABLE_ASYMMETRIC_AUTH_ENV = env.ENABLE_ASYMMETRIC_AUTH_ENV === 'true';
         memoryCache.envCache.ENABLE_DETAILED_LOGGING = env.ENABLE_DETAILED_LOGGING === 'true';
-        memoryCache.envCache.PRIVATE_KEY_HEX = env.PRIVATE_KEY_HEX || '';
         console.log('✅ 环境变量已复制到内存缓存（APP相关变量始终从env读取）');
 
         // 加载UA配置（兜底方案）
@@ -672,7 +668,6 @@ function getUserAgentLimits() {
 
 // 获取访问控制配置
 function getAccessConfig() {
-    const ENABLE_ASYMMETRIC_AUTH = memoryCache.envCache.ENABLE_ASYMMETRIC_AUTH_ENV;
     const ENABLE_DETAILED_LOGGING = memoryCache.envCache.ENABLE_DETAILED_LOGGING;
 
     return {
@@ -684,13 +679,6 @@ function getAccessConfig() {
         // 日志配置
         logging: {
             enabled: ENABLE_DETAILED_LOGGING
-        },
-
-        // 非对称密钥验证配置
-        asymmetricAuth: {
-            enabled: ENABLE_ASYMMETRIC_AUTH, // 从内存缓存控制是否启用
-            privateKeyHex: memoryCache.envCache.PRIVATE_KEY_HEX || null, // Worker端私钥（十六进制格式，从内存缓存获取）
-            challengeEndpoint: '/auth/challenge' // 挑战端点
         }
     };
 }
@@ -764,10 +752,7 @@ async function handleRequest(request, env, ctx) {
         });
     }
 
-    // 新增：处理挑战端点
-    if (ACCESS_CONFIG.asymmetricAuth.enabled && urlObj.pathname === ACCESS_CONFIG.asymmetricAuth.challengeEndpoint) {
-        return handleAuthChallenge(request);
-    }
+
 
     // TG机器人功能已移除
 
@@ -1073,124 +1058,12 @@ async function checkAccess(request, targetApiPath) {
         }
     }
 
-    // 4. 非对称密钥验证（如果启用）
-    if (ACCESS_CONFIG.asymmetricAuth.enabled) {
-        const authCheck = await verifyAsymmetricAuth(request);
-        if (!authCheck.allowed) {
-            return { allowed: false, reason: authCheck.reason, status: 401 };
-        }
-    }
+
 
     return { allowed: true, uaConfig: uaConfig, apiPath: apiPath };
 }
 
-// 新增：处理挑战-响应认证
-async function handleAuthChallenge(request) {
-    if (request.method !== 'POST') {
-        return new Response(JSON.stringify({
-            status: 405,
-            type: "方法不允许",
-            message: "请求方法不被允许"
-        }), {
-            status: 405,
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-        });
-    }
 
-    try {
-        const { challenge } = await request.json();
-        if (!challenge) {
-            return new Response(JSON.stringify({
-                status: 400,
-                type: "参数错误",
-                message: "缺少挑战参数"
-            }), {
-                status: 400,
-                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-            });
-        }
-
-        const ACCESS_CONFIG = getAccessConfig();
-        // 使用私钥对挑战进行签名
-        const signature = await signChallenge(challenge, ACCESS_CONFIG.asymmetricAuth.privateKeyHex);
-
-        return new Response(JSON.stringify({ signature }), {
-            headers: {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            }
-        });
-    } catch (error) {
-        console.error('挑战处理失败:', error);
-        return new Response(JSON.stringify({
-            status: 500,
-            type: "服务器错误",
-            message: "挑战处理错误"
-        }), {
-            status: 500,
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-        });
-    }
-}
-
-// 新增：非对称密钥验证（挑战-响应模式）
-async function verifyAsymmetricAuth(request) {
-    // 插件端需要先获取挑战，然后验证响应
-    const challengeResponse = request.headers.get('X-Challenge-Response');
-
-    if (!challengeResponse) {
-        return { allowed: false, reason: '缺少挑战响应' };
-    }
-
-    try {
-        // 这里可以实现更复杂的挑战验证逻辑
-        // 目前简化处理，实际应用中需要验证挑战的时效性和唯一性
-        return { allowed: true };
-    } catch (error) {
-        console.error('非对称认证验证失败:', error);
-        return { allowed: false, reason: '挑战验证错误' };
-    }
-}
-
-// 新增：RSA签名函数（Worker端使用私钥签名）
-async function signChallenge(challenge, privateKeyHex) {
-    if (!privateKeyHex) {
-        throw new Error('私钥未配置');
-    }
-
-    try {
-        // 将十六进制私钥转换为ArrayBuffer
-        const privateKeyBuffer = hexToArrayBuffer(privateKeyHex);
-
-        // 导入私钥
-        const privateKey = await crypto.subtle.importKey(
-            'pkcs8',
-            privateKeyBuffer,
-            {
-                name: 'RSA-PSS',
-                hash: 'SHA-256',
-            },
-            false,
-            ['sign']
-        );
-
-        // 签名挑战
-        const dataBuffer = new TextEncoder().encode(challenge);
-        const signatureBuffer = await crypto.subtle.sign(
-            {
-                name: 'RSA-PSS',
-                saltLength: 32,
-            },
-            privateKey,
-            dataBuffer
-        );
-
-        return arrayBufferToBase64(signatureBuffer);
-    } catch (error) {
-        console.error('挑战签名错误:', error);
-        throw error;
-    }
-}
 
 // pemToArrayBuffer函数已移除（未使用）
 
@@ -1198,21 +1071,7 @@ async function signChallenge(challenge, privateKeyHex) {
 
 
 
-// 工具函数：ArrayBuffer转Base64
-function arrayBufferToBase64(buffer) {
-    const bytes = new Uint8Array(buffer);
-    const binaryString = Array.from(bytes, byte => String.fromCharCode(byte)).join('');
-    return btoa(binaryString);
-}
 
-// 工具函数：十六进制转ArrayBuffer
-function hexToArrayBuffer(hex) {
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < hex.length; i += 2) {
-        bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
-    }
-    return bytes.buffer;
-}
 
 // base64ToArrayBuffer函数已移除（未使用）
 
