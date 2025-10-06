@@ -11,6 +11,7 @@ import string
 from datetime import datetime
 
 from src.services.auth_service import AuthService, get_auth_service
+from src.services.web_config_service import WebConfigService, get_web_config_service
 from src.models.auth import User
 from src.api.v1.endpoints.auth import get_current_user
 
