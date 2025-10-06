@@ -59,11 +59,19 @@ async def get_current_user(
         logger.warning(f"🔐 认证失败: JWT令牌无效")
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
 
-    # 从数据库验证会话
-    user = await auth_service.validate_jwt_session(token)
+    # 从JWT payload中获取用户信息
+    user_id = payload.get("user_id")
+    username = payload.get("username")
+
+    if not user_id or not username:
+        logger.warning(f"🔐 认证失败: JWT令牌缺少用户信息")
+        raise HTTPException(status_code=401, detail="令牌格式错误")
+
+    # 从数据库获取用户信息（验证用户是否仍然存在）
+    user = await auth_service.get_user_by_id(user_id)
     if not user:
-        logger.warning(f"🔐 认证失败: 会话无效")
-        raise HTTPException(status_code=401, detail="会话无效或已过期")
+        logger.warning(f"🔐 认证失败: 用户不存在 user_id={user_id}")
+        raise HTTPException(status_code=401, detail="用户不存在")
 
     logger.info(f"🔐 用户认证成功: {user.username}")
     return user

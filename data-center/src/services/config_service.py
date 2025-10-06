@@ -287,3 +287,57 @@ class ConfigService:
         except Exception as e:
             logger.error(f"导出配置失败: {e}")
             return {}
+
+    async def save_ua_configs(self, ua_configs: List[Dict[str, Any]]) -> bool:
+        """保存UA配置"""
+        try:
+            db = self.db()
+
+            # 清空现有配置
+            db.query(UAConfig).delete()
+
+            # 添加新配置
+            for config_data in ua_configs:
+                ua_config = UAConfig(
+                    name=config_data.get("name", ""),
+                    user_agent=config_data.get("userAgent", ""),
+                    enabled=config_data.get("enabled", True),
+                    max_requests_per_hour=config_data.get("maxRequestsPerHour", -1),
+                    max_requests_per_day=config_data.get("maxRequestsPerDay", -1),
+                    description=config_data.get("description", "")
+                )
+                db.add(ua_config)
+
+            db.commit()
+            db.close()
+            return True
+
+        except Exception as e:
+            logger.error(f"保存UA配置失败: {e}")
+            return False
+
+    async def save_ip_blacklist(self, ip_list: List[str]) -> bool:
+        """保存IP黑名单"""
+        try:
+            db = self.db()
+
+            # 清空现有黑名单
+            db.query(IPBlacklist).delete()
+
+            # 添加新IP
+            for ip in ip_list:
+                if ip.strip():  # 跳过空字符串
+                    ip_blacklist = IPBlacklist(
+                        ip_address=ip.strip(),
+                        reason="手动添加",
+                        enabled=True
+                    )
+                    db.add(ip_blacklist)
+
+            db.commit()
+            db.close()
+            return True
+
+        except Exception as e:
+            logger.error(f"保存IP黑名单失败: {e}")
+            return False

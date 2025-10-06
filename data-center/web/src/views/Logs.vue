@@ -1,60 +1,132 @@
 <template>
   <div class="logs-page">
     <div class="page-header">
-      <h1>📋 日志管理</h1>
-      <p>查看和管理系统日志</p>
+      <h1>日志管理</h1>
+      <p>查看和搜索系统日志</p>
     </div>
 
-    <div class="log-controls">
-      <div class="filter-group">
-        <label>日志级别:</label>
-        <select v-model="selectedLevel" @change="filterLogs">
-          <option value="">全部</option>
-          <option value="INFO">信息</option>
-          <option value="WARNING">警告</option>
-          <option value="ERROR">错误</option>
-          <option value="DEBUG">调试</option>
-        </select>
-      </div>
-
-      <div class="filter-group">
-        <label>搜索:</label>
-        <input v-model="searchQuery" @input="filterLogs" type="text" placeholder="搜索日志内容..." />
-      </div>
-
-      <div class="action-group">
-        <button @click="refreshLogs" class="refresh-btn" :disabled="loading">
-          {{ loading ? '刷新中...' : '🔄 刷新' }}
-        </button>
-        <button @click="clearLogs" class="clear-btn">🗑️ 清空日志</button>
-        <button @click="downloadLogs" class="download-btn">📥 下载日志</button>
-      </div>
-    </div>
-
-    <div class="log-container">
-      <div class="log-header">
-        <span class="log-count">共 {{ filteredLogs.length }} 条日志</span>
-        <label class="auto-scroll-label">
-          <input v-model="autoScroll" type="checkbox" />
-          自动滚动
-        </label>
-      </div>
-
-      <div ref="logList" class="log-list">
-        <div
-          v-for="log in filteredLogs"
-          :key="log.id"
-          class="log-item"
-          :class="log.level.toLowerCase()"
-        >
-          <span class="log-time">{{ formatTime(log.timestamp) }}</span>
-          <span class="log-level">{{ log.level }}</span>
-          <span v-if="getLogIP(log)" class="log-ip">{{ getLogIP(log) }}</span>
-          <span class="log-message">{{ log.message }}</span>
+    <div class="logs-container">
+      <!-- 搜索栏 -->
+      <div class="search-section">
+        <div class="search-controls">
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="在所有日志文件中搜索..."
+            class="search-input"
+            @keyup.enter="executeSearch"
+            :disabled="isLoading"
+          />
+          <button 
+            @click="executeSearch" 
+            :disabled="isSearching || !searchQuery.trim()"
+            class="search-btn"
+          >
+            {{ isSearching ? '搜索中...' : '搜索' }}
+          </button>
         </div>
 
-        <div v-if="filteredLogs.length === 0" class="no-logs">
-          暂无日志数据
+        <!-- 搜索模式切换 -->
+        <div class="search-mode">
+          <label>
+            <input 
+              type="radio" 
+              v-model="searchMode" 
+              value="filter" 
+              :disabled="isLoading"
+            />
+            筛选模式 (仅显示匹配行)
+          </label>
+          <label>
+            <input 
+              type="radio" 
+              v-model="searchMode" 
+              value="context" 
+              :disabled="isLoading"
+            />
+            定位模式 (显示完整处理过程)
+          </label>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- 加载状态 -->
+      <div v-if="isLoading" class="loading">
+        <div class="loading-spinner"></div>
+        <p>{{ loadingText }}</p>
+      </div>
+
+      <!-- 结果展示区 -->
+      <div v-else>
+        <!-- 搜索结果视图 -->
+        <div v-if="isSearchMode">
+          <button @click="clearSearch" class="back-btn">
+            ← 返回文件浏览
+          </button>
+          
+          <div v-if="hasSearchResults" class="log-viewer-container">
+            <div 
+              v-for="(line, index) in parsedLogResults" 
+              :key="index" 
+              class="log-line"
+              :class="line.type === 'log' ? line.level.toLowerCase() : 'raw'"
+            >
+              <template v-if="line.type === 'log'">
+                <span class="timestamp">{{ line.timestamp }}</span>
+                <span class="level">{{ line.level }}</span>
+                <span class="message">{{ line.message }}</span>
+              </template>
+              <template v-else>
+                {{ line.content }}
+              </template>
+            </div>
+          </div>
+          <div v-else class="empty-state">
+            <p>未找到匹配的日志记录。</p>
+          </div>
+        </div>
+
+        <!-- 文件浏览视图 (默认) -->
+        <div v-else>
+          <div class="file-selector">
+            <select 
+              v-model="selectedFile" 
+              @change="fetchLogContent"
+              :disabled="isLoadingFiles"
+              class="file-select"
+            >
+              <option value="">请选择一个日志文件</option>
+              <option 
+                v-for="file in logFiles" 
+                :key="file" 
+                :value="file"
+              >
+                {{ file }}
+              </option>
+            </select>
+          </div>
+
+          <div v-if="logContent" class="log-viewer-container">
+            <div 
+              v-for="(line, index) in parsedLogContent" 
+              :key="index" 
+              class="log-line"
+              :class="line.type === 'log' ? line.level.toLowerCase() : 'raw'"
+            >
+              <template v-if="line.type === 'log'">
+                <span class="timestamp">{{ line.timestamp }}</span>
+                <span class="level">{{ line.level }}</span>
+                <span class="message">{{ line.message }}</span>
+              </template>
+              <template v-else>
+                {{ line.content }}
+              </template>
+            </div>
+          </div>
+          <div v-else class="empty-state">
+            <p>请选择一个日志文件查看内容</p>
+          </div>
         </div>
       </div>
     </div>
@@ -62,202 +134,183 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { authFetch } from '../utils/api.js'
 
 export default {
   name: 'Logs',
-  setup() {
-    const loading = ref(false)
-    const selectedLevel = ref('')
-    const searchQuery = ref('')
-    const autoScroll = ref(true)
-    const logList = ref(null)
-
-    const logs = ref([])
-
-    const filteredLogs = computed(() => {
-      let result = logs.value
-
-      if (selectedLevel.value) {
-        result = result.filter(log => log.level === selectedLevel.value)
-      }
-
-      if (searchQuery.value) {
-        const query = searchQuery.value.toLowerCase()
-        result = result.filter(log =>
-          log.message.toLowerCase().includes(query) ||
-          log.level.toLowerCase().includes(query)
-        )
-      }
-
-      return result.reverse()
-    })
-
-    const filterLogs = () => {
-      nextTick(() => {
-        if (autoScroll.value) {
-          scrollToBottom()
-        }
-      })
-    }
-
-    const scrollToBottom = () => {
-      if (logList.value) {
-        logList.value.scrollTop = logList.value.scrollHeight
-      }
-    }
-
-    const refreshLogs = async () => {
-      if (loading.value) return // 防止重复调用
-
-      loading.value = true
-      console.log('🔄 开始刷新日志...')
-
-      try {
-        // 调用真实API获取日志
-        console.log('📡 调用API: /logs?limit=100')
-        const response = await authFetch('/logs?limit=100')
-
-        console.log('📡 API响应状态:', {
-          ok: response.ok,
-          status: response.status,
-          statusText: response.statusText,
-          headers: Object.fromEntries(response.headers.entries())
-        })
-
-        if (response.ok) {
-          const data = await response.json()
-          console.log('📦 收到原始数据:', data)
-
-          logs.value = data.logs || []
-          console.log('📋 解析后的日志数据:', logs.value.length, '条')
-          console.log('📋 第一条日志示例:', logs.value[0])
-        } else {
-          const errorText = await response.text()
-          console.error('❌ API错误响应:', errorText)
-          throw new Error(`API调用失败: ${response.status} - ${errorText}`)
-        }
-
-      } catch (error) {
-        console.error('❌ 获取日志异常:', error)
-        // 如果API调用失败，使用模拟数据作为后备
-        const mockLogs = []
-        const levels = ['INFO', 'WARNING', 'ERROR', 'DEBUG']
-        const messages = [
-          '系统启动成功',
-          'Worker连接建立',
-          '配置更新完成',
-          'API请求处理',
-          '数据同步完成',
-          '用户登录成功',
-          '缓存清理完成',
-          '定时任务执行',
-          '数据库连接正常',
-          '内存使用率检查'
-        ]
-
-        for (let i = 0; i < 20; i++) {
-          const level = levels[i % levels.length]
-          const message = messages[i % messages.length]
-          const now = new Date()
-          now.setMinutes(now.getMinutes() - i * 2)
-
-          mockLogs.push({
-            id: i + 1,
-            timestamp: now.toISOString(),
-            level: level,
-            message: `${message} - 日志条目 ${i + 1}`,
-            source_ip: '127.0.0.1'
-          })
-        }
-
-        logs.value = mockLogs
-        console.log('📋 使用模拟日志数据:', mockLogs.length, '条')
-      } finally {
-        loading.value = false
-        console.log('✅ 日志刷新完成')
-      }
-    }
-
-    const clearLogs = () => {
-      if (confirm('确定要清空所有日志吗？此操作不可恢复。')) {
-        logs.value = []
-      }
-    }
-
-    const downloadLogs = () => {
-      const logText = filteredLogs.value
-        .map(log => `${log.timestamp} [${log.level}] ${getLogIP(log) ? `[${getLogIP(log)}] ` : ''}${log.message}`)
-        .join('\n')
-
-      const blob = new Blob([logText], { type: 'text/plain' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `logs_${new Date().toISOString().split('T')[0]}.txt`
-      a.click()
-      URL.revokeObjectURL(url)
-    }
-
-    const formatTime = (timestamp) => {
-      try {
-        const date = new Date(timestamp)
-        return date.toLocaleString('zh-CN', {
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit'
-        })
-      } catch (e) {
-        return timestamp
-      }
-    }
-
-    const getLogIP = (log) => {
-      // 从details中获取source_ip，或者直接从log.source_ip获取
-      if (log.details && log.details.source_ip) {
-        return log.details.source_ip
-      }
-      if (log.source_ip) {
-        return log.source_ip
-      }
-      return null
-    }
-
-    watch(filteredLogs, () => {
-      if (autoScroll.value) {
-        nextTick(() => {
-          scrollToBottom()
-        })
-      }
-    })
-
-    onMounted(() => {
-      refreshLogs()
-      nextTick(() => {
-        if (autoScroll.value) {
-          scrollToBottom()
-        }
-      })
-    })
-
+  data() {
     return {
-      loading,
-      selectedLevel,
-      searchQuery,
-      autoScroll,
-      logList,
-      filteredLogs,
-      filterLogs,
-      refreshLogs,
-      clearLogs,
-      downloadLogs,
-      formatTime,
-      getLogIP
+      isLoadingFiles: false,
+      isLoadingContent: false,
+      isSearching: false,
+      logFiles: [],
+      selectedFile: '',
+      logContent: '',
+      searchQuery: '',
+      searchResults: [],
+      isSearchMode: false,
+      searchMode: 'context'
     }
+  },
+  computed: {
+    isLoading() {
+      return this.isLoadingFiles || this.isLoadingContent || this.isSearching
+    },
+    hasSearchResults() {
+      return this.searchResults.length > 0
+    },
+    loadingText() {
+      if (this.isLoadingFiles) return '正在获取文件列表...'
+      if (this.isLoadingContent) return '正在加载日志内容...'
+      if (this.isSearching) return `正在以 [${this.searchMode === 'context' ? '定位' : '筛选'}] 模式搜索...`
+      return ''
+    },
+    // 日志行解析
+    parsedLogContent() {
+      if (!this.logContent) return []
+      return this.logContent.split('\n').map(this.parseLogLine)
+    },
+    parsedLogResults() {
+      if (!this.hasSearchResults) return []
+
+      const finalLines = []
+
+      if (this.searchMode === 'context') {
+        // 定位模式
+        finalLines.push(`以"定位"模式找到 ${this.searchResults.length} 个完整处理过程:`)
+        
+        this.searchResults.forEach((block, index) => {
+          finalLines.push('')
+          const datePart = block.date && block.date.includes(' ') ? block.date.split(' ')[0] : block.date
+          finalLines.push(`--- [ 记录在 ${block.file} 于 ${datePart} ] ---`)
+          
+          block.lines.forEach(line => finalLines.push(line))
+          
+          if (index < this.searchResults.length - 1) {
+            finalLines.push('')
+            finalLines.push('========================================================')
+          }
+        })
+      } else {
+        // 筛选模式
+        finalLines.push(`以"筛选"模式找到 ${this.searchResults.length} 条结果:`)
+
+        let lastFile = ''
+        let lastDatePart = ''
+
+        this.searchResults.forEach(result => {
+          const currentDatePart = result.date ? result.date.split(' ')[0] : ''
+          
+          if (result.file !== lastFile || currentDatePart !== lastDatePart) {
+            if (finalLines.length > 1) {
+              finalLines.push('')
+            }
+            finalLines.push(`--- [ 记录在 ${result.file} 于 ${currentDatePart || '未知'} ] ---`)
+            lastFile = result.file
+            lastDatePart = currentDatePart
+          }
+          
+          finalLines.push(result.content)
+        })
+      }
+      
+      return finalLines.map(this.parseLogLine)
+    }
+  },
+  methods: {
+    parseLogLine(line) {
+      const match = line.match(/^(\d{4}-\d{2}-\d{2}\s(\d{2}:\d{2}:\d{2})),\d+\s-\s.+?\s-\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s-\s(.*)$/)
+      if (match) {
+        return {
+          type: 'log',
+          timestamp: match[2],
+          level: match[3],
+          message: match[4].trim(),
+        }
+      }
+      return { type: 'raw', content: line }
+    },
+    async fetchLogFiles() {
+      this.isLoadingFiles = true
+      try {
+        const response = await authFetch('/api/logs/list')
+        if (response.ok) {
+          this.logFiles = await response.json()
+          if (!this.isSearchMode && this.logFiles.length > 0) {
+            if (!this.selectedFile) {
+              this.selectedFile = this.logFiles[0]
+              await this.fetchLogContent()
+            }
+          }
+        } else {
+          throw new Error('获取日志文件列表失败')
+        }
+      } catch (error) {
+        console.error('获取日志文件列表失败:', error)
+        alert('获取日志文件列表失败！')
+      } finally {
+        this.isLoadingFiles = false
+      }
+    },
+    async fetchLogContent() {
+      if (!this.selectedFile) return
+      
+      this.isLoadingContent = true
+      this.logContent = `正在加载 ${this.selectedFile}...`
+      
+      try {
+        const response = await authFetch(`/api/logs/view?filename=${encodeURIComponent(this.selectedFile)}`)
+        if (response.ok) {
+          this.logContent = await response.text() || '（文件为空）'
+        } else {
+          throw new Error(`加载日志失败: ${response.status}`)
+        }
+      } catch (error) {
+        console.error(`加载日志 ${this.selectedFile} 失败:`, error)
+        this.logContent = `加载文件失败: ${error.message}`
+        alert(`加载日志 ${this.selectedFile} 失败！`)
+      } finally {
+        this.isLoadingContent = false
+      }
+    },
+    async executeSearch() {
+      if (!this.searchQuery.trim()) {
+        alert('请输入搜索关键词。')
+        return
+      }
+      
+      this.isSearching = true
+      this.isSearchMode = true
+      this.searchResults = []
+      
+      const endpoint = this.searchMode === 'context' ? '/api/logs/search_context' : '/api/logs/search'
+      
+      try {
+        const response = await authFetch(`${endpoint}?q=${encodeURIComponent(this.searchQuery)}`)
+        if (response.ok) {
+          this.searchResults = await response.json()
+        } else {
+          const errorData = await response.json().catch(() => ({}))
+          throw new Error(errorData.detail || '搜索失败')
+        }
+      } catch (error) {
+        console.error('搜索失败:', error)
+        alert(error.message || '搜索失败！')
+      } finally {
+        this.isSearching = false
+      }
+    },
+    clearSearch() {
+      this.isSearchMode = false
+      this.searchQuery = ''
+      this.searchResults = []
+      if (this.selectedFile && !this.logContent) {
+        this.fetchLogContent()
+      }
+    }
+  },
+  async mounted() {
+    await this.fetchLogFiles()
   }
 }
 </script>
@@ -265,214 +318,213 @@ export default {
 <style scoped>
 .logs-page {
   padding: 24px;
-  max-width: 1200px;
-  margin: 0 auto;
-  height: calc(100vh - 64px);
-  display: flex;
-  flex-direction: column;
   background: #f5f5f5;
+  min-height: 100vh;
 }
 
 .page-header {
-  margin-bottom: 20px;
-  padding: 24px;
-  background: white;
-  border-radius: 8px;
-  border: 1px solid #e0e0e0;
-  text-align: center;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  margin-bottom: 24px;
 }
 
 .page-header h1 {
   color: #333;
-  margin-bottom: 8px;
+  margin: 0 0 8px 0;
   font-size: 28px;
   font-weight: 600;
 }
 
 .page-header p {
   color: #666;
-  font-size: 16px;
   margin: 0;
+  font-size: 16px;
 }
 
-.log-controls {
-  display: flex;
-  gap: 20px;
-  align-items: center;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-  padding: 20px;
+.logs-container {
   background: white;
   border-radius: 8px;
-  border: 1px solid #e0e0e0;
+  padding: 24px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
-.filter-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.search-section {
+  margin-bottom: 20px;
 }
 
-.filter-group label {
-  color: #333;
-  font-weight: 500;
-  white-space: nowrap;
-  font-size: 14px;
-}
-
-.filter-group select,
-.filter-group input {
-  padding: 8px 12px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  font-size: 14px;
-  background: white;
-  color: #333;
-  transition: all 0.2s;
-}
-
-.filter-group select:focus,
-.filter-group input:focus {
-  outline: none;
-  border-color: #1976d2;
-  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
-}
-
-.action-group {
+.search-controls {
   display: flex;
   gap: 12px;
-  margin-left: auto;
+  margin-bottom: 16px;
 }
 
-.refresh-btn, .clear-btn, .download-btn {
-  padding: 8px 16px;
+.search-input {
+  flex: 1;
+  padding: 12px 16px;
+  border: 2px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 14px;
+  transition: border-color 0.3s ease;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: #1976d2;
+}
+
+.search-input:disabled {
+  background: #f5f5f5;
+  cursor: not-allowed;
+}
+
+.search-btn {
+  padding: 12px 24px;
+  background: #1976d2;
+  color: white;
   border: none;
   border-radius: 6px;
-  cursor: pointer;
   font-size: 14px;
   font-weight: 500;
+  cursor: pointer;
   transition: all 0.3s ease;
 }
 
-.refresh-btn {
-  background: #1976d2;
-  color: white;
-}
-
-.refresh-btn:hover {
+.search-btn:hover:not(:disabled) {
   background: #1565c0;
+  transform: translateY(-1px);
 }
 
-.clear-btn {
-  background: #f44336;
-  color: white;
+.search-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+  transform: none;
 }
 
-.clear-btn:hover {
-  background: #d32f2f;
-}
-
-.download-btn {
-  background: #4caf50;
-  color: white;
-}
-
-.download-btn:hover {
-  background: #388e3c;
-}
-
-.log-container {
-  flex: 1;
+.search-mode {
   display: flex;
-  flex-direction: column;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-  overflow: hidden;
+  gap: 20px;
 }
 
-.log-header {
+.search-mode label {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
-  background: #f8f9fa;
-  border-bottom: 1px solid #eee;
+  gap: 8px;
+  color: #666;
+  font-size: 14px;
+  cursor: pointer;
 }
 
-.log-list {
-  flex: 1;
-  overflow-y: auto;
-  font-family: 'Courier New', monospace;
-  font-size: 13px;
-  line-height: 1.4;
+.search-mode input[type="radio"] {
+  margin: 0;
 }
 
-.log-item {
-  display: flex;
+.divider {
+  height: 1px;
+  background: #e0e0e0;
+  margin: 20px 0;
+}
+
+.loading {
+  text-align: center;
+  padding: 40px;
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid #f3f3f3;
+  border-top: 4px solid #1976d2;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 16px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.back-btn {
   padding: 8px 16px;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.log-item.info {
-  border-left: 3px solid #409eff;
-}
-
-.log-item.warning {
-  border-left: 3px solid #e6a23c;
-}
-
-.log-item.error {
-  border-left: 3px solid #f56c6c;
-}
-
-.log-time {
-  color: #666;
-  width: 160px;
-  flex-shrink: 0;
-}
-
-.log-level {
-  width: 80px;
-  flex-shrink: 0;
-  font-weight: 600;
-  color: #409eff;
-}
-
-.log-item.warning .log-level {
-  color: #e6a23c;
-}
-
-.log-item.error .log-level {
-  color: #f56c6c;
-}
-
-.log-ip {
-  width: 120px;
-  flex-shrink: 0;
-  color: #666;
-  font-family: monospace;
-  font-size: 12px;
   background: #f5f5f5;
-  padding: 2px 6px;
-  border-radius: 3px;
-  margin-right: 8px;
+  color: #333;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  margin-bottom: 16px;
+  transition: all 0.3s ease;
 }
 
-.log-message {
-  flex: 1;
-  color: #333;
+.back-btn:hover {
+  background: #e0e0e0;
+}
+
+.file-selector {
+  margin-bottom: 16px;
+}
+
+.file-select {
+  width: 100%;
+  max-width: 400px;
+  padding: 12px 16px;
+  border: 2px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 14px;
+  background: white;
+  cursor: pointer;
+}
+
+.file-select:focus {
+  outline: none;
+  border-color: #1976d2;
+}
+
+.log-viewer-container {
+  background-color: #282c34;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 13px;
+  padding: 16px;
+  border-radius: 6px;
+  max-height: 600px;
+  overflow-y: auto;
+  white-space: pre-wrap;
   word-break: break-all;
 }
 
-.no-logs {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 200px;
-  color: #999;
+.log-line {
+  line-height: 1.6;
+  padding: 1px 0;
+  color: #abb2bf;
+}
+
+.log-line.info { color: #98c379; }
+.log-line.warning { color: #e5c07b; }
+.log-line.error,
+.log-line.critical { color: #e06c75; }
+.log-line.debug { color: #56b6c2; }
+.log-line.raw {
+  color: #95a5a6;
+  font-style: italic;
+}
+
+.timestamp {
+  color: #61afef;
+  margin-right: 1em;
+}
+
+.level {
+  font-weight: bold;
+  margin-right: 1em;
+  text-transform: uppercase;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 40px;
+  color: #666;
+}
+
+.empty-state p {
+  margin: 0;
   font-size: 16px;
 }
 </style>

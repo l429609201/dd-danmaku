@@ -1,44 +1,271 @@
 """
-日志管理API端点
+日志管理API端点 - 参考 emby-toolkit 简化版本
 """
-from typing import List, Dict, Any
-from fastapi import APIRouter, HTTPException, Depends, Query
+import os
+import re
+import gzip
+from typing import List, Dict, Any, Optional
+from datetime import datetime
+from fastapi import APIRouter, HTTPException, Depends, Query, Response
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from src.services.stats_service import StatsService
 from src.api.v1.endpoints.auth import get_current_user
 from src.models.auth import User
 
 router = APIRouter()
 
-# Pydantic模型
+# 响应模型
 class LogResponse(BaseModel):
     success: bool
     message: str
-    data: Any = None
+    data: Dict[str, Any] = None
 
-class SystemLogCreate(BaseModel):
-    level: str
-    message: str
-    details: Dict[str, Any] = {}
-    category: str = None
-    source: str = None
+class LogSearchResult(BaseModel):
+    file: str
+    line_num: int
+    content: str
+    date: str
 
-# 依赖注入
-def get_stats_service() -> StatsService:
-    return StatsService()
+class LogBlock(BaseModel):
+    file: str
+    date: str
+    lines: List[str]
 
+def get_log_directory() -> str:
+    """获取日志目录路径"""
+    # 假设日志存储在项目根目录的 logs 目录下
+    log_dir = os.path.join(os.getcwd(), "logs")
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+    return log_dir
+
+@router.get("/list", response_model=List[str])
+async def list_log_files(
+    current_user: User = Depends(get_current_user)
+):
+    """列出日志目录下的所有日志文件"""
+    try:
+        log_dir = get_log_directory()
+        if not os.path.exists(log_dir):
+            return []
+            
+        all_files = os.listdir(log_dir)
+        log_files = [f for f in all_files if f.startswith('app.log')]
+        
+        # 智能排序：app.log 在最前，然后是 .1, .2, .3...
+        def sort_key(filename):
+            if filename == 'app.log':
+                return -1
+            parts = filename.split('.')
+            if len(parts) >= 3 and parts[0] == 'app' and parts[1] == 'log':
+                try:
+                    # 处理 app.log.1.gz 或 app.log.1 格式
+                    return int(parts[2])
+                except ValueError:
+                    pass
+            return float('inf')
+        
+        log_files.sort(key=sort_key)
+        return log_files
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"无法读取日志文件列表: {str(e)}")
+
+@router.get("/view")
+async def view_log_file(
+    filename: str = Query(..., description="日志文件名"),
+    current_user: User = Depends(get_current_user)
+):
+    """查看指定日志文件的内容"""
+    # 安全检查：防止目录遍历攻击
+    if not filename or not filename.startswith('app.log') or '..' in filename:
+        raise HTTPException(status_code=403, detail="禁止访问非日志文件")
+    
+    log_dir = get_log_directory()
+    full_path = os.path.join(log_dir, filename)
+    
+    # 确认路径在日志目录内
+    if not os.path.abspath(full_path).startswith(os.path.abspath(log_dir)):
+        raise HTTPException(status_code=403, detail="检测到非法路径访问")
+    
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="文件未找到")
+    
+    try:
+        # 判断是否为压缩文件
+        if filename.endswith('.gz'):
+            with gzip.open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+        else:
+            with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+        
+        # 反转行顺序（最新的在前）
+        lines.reverse()
+        content = "".join(lines)
+        
+        return PlainTextResponse(content)
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取文件 '{filename}' 时发生错误: {str(e)}")
+
+@router.get("/search", response_model=List[LogSearchResult])
+async def search_logs(
+    q: str = Query(..., description="搜索关键词"),
+    current_user: User = Depends(get_current_user)
+):
+    """在所有日志文件中搜索关键词（筛选模式）"""
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="搜索关键词不能为空")
+    
+    TIMESTAMP_REGEX = re.compile(r"^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})")
+    search_results = []
+    
+    try:
+        log_dir = get_log_directory()
+        if not os.path.exists(log_dir):
+            return []
+            
+        all_files = os.listdir(log_dir)
+        log_files = [f for f in all_files if f.startswith('app.log')]
+        
+        # 排序文件（从新到旧）
+        def sort_key(filename):
+            if filename == 'app.log':
+                return -1
+            parts = filename.split('.')
+            if len(parts) >= 3 and parts[0] == 'app' and parts[1] == 'log':
+                try:
+                    return int(parts[2])
+                except ValueError:
+                    pass
+            return float('inf')
+        
+        log_files.sort(key=sort_key)
+        
+        # 搜索每个文件
+        for filename in log_files:
+            full_path = os.path.join(log_dir, filename)
+            try:
+                # 判断是否为压缩文件
+                if filename.endswith('.gz'):
+                    opener = lambda: gzip.open(full_path, 'rt', encoding='utf-8', errors='ignore')
+                else:
+                    opener = lambda: open(full_path, 'rt', encoding='utf-8', errors='ignore')
+                
+                with opener() as f:
+                    for line_num, line in enumerate(f, 1):
+                        if q.lower() in line.lower():
+                            match = TIMESTAMP_REGEX.search(line)
+                            line_date = match.group(1) if match else ""
+                            
+                            search_results.append(LogSearchResult(
+                                file=filename,
+                                line_num=line_num,
+                                content=line.strip(),
+                                date=line_date
+                            ))
+            except Exception as e:
+                # 单个文件读取失败，记录但继续
+                continue
+        
+        # 按日期排序（最新的在前）
+        search_results.sort(key=lambda x: x.date, reverse=True)
+        return search_results
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"搜索过程中发生错误: {str(e)}")
+
+@router.get("/search_context", response_model=List[LogBlock])
+async def search_logs_with_context(
+    q: str = Query(..., description="搜索关键词"),
+    current_user: User = Depends(get_current_user)
+):
+    """在所有日志文件中搜索完整的处理块（定位模式）"""
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="搜索关键词不能为空")
+    
+    # 这里简化处理，直接返回匹配的行作为块
+    TIMESTAMP_REGEX = re.compile(r"^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})")
+    found_blocks = []
+    
+    try:
+        log_dir = get_log_directory()
+        if not os.path.exists(log_dir):
+            return []
+            
+        all_files = os.listdir(log_dir)
+        log_files = [f for f in all_files if f.startswith('app.log')]
+        log_files.sort(reverse=True)  # 从新到旧
+        
+        for filename in log_files:
+            full_path = os.path.join(log_dir, filename)
+            try:
+                if filename.endswith('.gz'):
+                    opener = lambda: gzip.open(full_path, 'rt', encoding='utf-8', errors='ignore')
+                else:
+                    opener = lambda: open(full_path, 'rt', encoding='utf-8', errors='ignore')
+                
+                with opener() as f:
+                    current_block = []
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        
+                        # 如果包含搜索关键词，开始收集上下文
+                        if q.lower() in line.lower():
+                            if not current_block:
+                                current_block = [line]
+                            else:
+                                current_block.append(line)
+                        elif current_block:
+                            # 继续收集上下文（可以设置最大行数限制）
+                            current_block.append(line)
+                            if len(current_block) > 10:  # 限制块大小
+                                break
+                    
+                    if current_block:
+                        block_date = "Unknown Date"
+                        if current_block:
+                            match = TIMESTAMP_REGEX.search(current_block[0])
+                            if match:
+                                block_date = match.group(1).split(' ')[0]
+                        
+                        found_blocks.append(LogBlock(
+                            file=filename,
+                            date=block_date,
+                            lines=current_block
+                        ))
+                        
+            except Exception as e:
+                continue
+        
+        # 按日期排序
+        found_blocks.sort(key=lambda x: x.date, reverse=True)
+        return found_blocks
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"上下文搜索过程中发生错误: {str(e)}")
+
+@router.get("/levels", response_model=List[str])
+async def get_log_levels(
+    current_user: User = Depends(get_current_user)
+):
+    """获取可用的日志级别"""
+    return ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+# 保留原有的简单接口以保持兼容性
 @router.get("", response_model=Dict[str, Any])
-async def get_logs(
+async def get_logs_simple(
     limit: int = Query(100, description="返回记录数量"),
     level: str = Query(None, description="日志级别过滤"),
-    current_user: User = Depends(get_current_user),
-    stats_service: StatsService = Depends(get_stats_service)
+    current_user: User = Depends(get_current_user)
 ):
-    """获取日志"""
+    """获取简单日志数据（兼容性接口）"""
     from datetime import datetime
-
-    # 先返回一些简单的测试数据，确保API能正常工作
+    
+    # 返回简单的测试数据
     test_logs = []
     levels = ['INFO', 'WARNING', 'ERROR', 'DEBUG']
     messages = [
@@ -72,77 +299,3 @@ async def get_logs(
         "total": len(test_logs),
         "message": "测试数据 - API工作正常"
     }
-
-@router.get("/telegram", response_model=List[Dict])
-async def get_telegram_logs(
-    limit: int = Query(50, description="返回记录数量"),
-    stats_service: StatsService = Depends(get_stats_service)
-):
-    """获取Telegram机器人日志"""
-    try:
-        logs = await stats_service.get_telegram_logs(limit)
-        return [log.to_dict() for log in logs]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/sync", response_model=List[Dict])
-async def get_sync_logs(
-    limit: int = Query(50, description="返回记录数量"),
-    stats_service: StatsService = Depends(get_stats_service)
-):
-    """获取同步日志"""
-    try:
-        logs = await stats_service.get_sync_logs(limit)
-        return [log.to_dict() for log in logs]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/system", response_model=LogResponse)
-async def create_system_log(
-    log_data: SystemLogCreate,
-    stats_service: StatsService = Depends(get_stats_service)
-):
-    """创建系统日志"""
-    try:
-        success = await stats_service.record_system_log(
-            level=log_data.level,
-            message=log_data.message,
-            details=log_data.details,
-            category=log_data.category,
-            source=log_data.source
-        )
-        
-        if success:
-            return LogResponse(
-                success=True,
-                message="系统日志记录成功"
-            )
-        else:
-            return LogResponse(
-                success=False,
-                message="系统日志记录失败"
-            )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/export", response_model=Dict[str, Any])
-async def export_logs(
-    limit: int = Query(1000, description="导出记录数量"),
-    stats_service: StatsService = Depends(get_stats_service)
-):
-    """导出日志数据"""
-    try:
-        # 获取各种日志
-        system_logs = await stats_service.get_recent_logs(limit)
-        telegram_logs = await stats_service.get_telegram_logs(limit)
-        sync_logs = await stats_service.get_sync_logs(limit)
-        
-        return {
-            "system_logs": [log.to_dict() for log in system_logs],
-            "telegram_logs": [log.to_dict() for log in telegram_logs],
-            "sync_logs": [log.to_dict() for log in sync_logs],
-            "export_time": "now",
-            "total_records": len(system_logs) + len(telegram_logs) + len(sync_logs)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

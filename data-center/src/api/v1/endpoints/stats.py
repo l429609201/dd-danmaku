@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 
 from src.services.stats_service import StatsService
+from src.services.auth_service import get_current_user
+from src.models.auth import User
 
 router = APIRouter()
 
@@ -32,7 +34,10 @@ def get_stats_service() -> StatsService:
     return StatsService()
 
 @router.get("/overview", response_model=Dict[str, Any])
-async def get_system_overview(stats_service: StatsService = Depends(get_stats_service)):
+async def get_system_overview(
+    current_user: User = Depends(get_current_user),
+    stats_service: StatsService = Depends(get_stats_service)
+):
     """获取系统概览统计"""
     try:
         overview = await stats_service.get_system_overview()
@@ -41,7 +46,10 @@ async def get_system_overview(stats_service: StatsService = Depends(get_stats_se
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/performance", response_model=Dict[str, Any])
-async def get_performance_metrics(stats_service: StatsService = Depends(get_stats_service)):
+async def get_performance_metrics(
+    current_user: User = Depends(get_current_user),
+    stats_service: StatsService = Depends(get_stats_service)
+):
     """获取性能指标"""
     try:
         metrics = await stats_service.get_performance_metrics()
@@ -52,6 +60,7 @@ async def get_performance_metrics(stats_service: StatsService = Depends(get_stat
 @router.get("/requests", response_model=List[Dict])
 async def get_request_stats(
     hours: int = Query(24, description="统计时间范围（小时）"),
+    current_user: User = Depends(get_current_user),
     stats_service: StatsService = Depends(get_stats_service)
 ):
     """获取请求统计数据"""
@@ -64,6 +73,7 @@ async def get_request_stats(
 @router.get("/violations", response_model=List[Dict[str, Any]])
 async def get_violation_stats(
     limit: int = Query(10, description="返回记录数量"),
+    current_user: User = Depends(get_current_user),
     stats_service: StatsService = Depends(get_stats_service)
 ):
     """获取违规IP统计"""
@@ -76,6 +86,7 @@ async def get_violation_stats(
 @router.get("/ua-usage", response_model=List[Dict[str, Any]])
 async def get_ua_usage_stats(
     hours: int = Query(24, description="统计时间范围（小时）"),
+    current_user: User = Depends(get_current_user),
     stats_service: StatsService = Depends(get_stats_service)
 ):
     """获取UA使用统计"""
@@ -88,6 +99,7 @@ async def get_ua_usage_stats(
 @router.post("/worker", response_model=StatsResponse)
 async def record_worker_stats(
     stats_data: WorkerStatsData,
+    current_user: User = Depends(get_current_user),
     stats_service: StatsService = Depends(get_stats_service)
 ):
     """记录Worker统计数据"""
@@ -113,6 +125,7 @@ async def record_worker_stats(
 @router.get("/export", response_model=Dict[str, Any])
 async def export_stats_data(
     hours: int = Query(24, description="导出时间范围（小时）"),
+    current_user: User = Depends(get_current_user),
     stats_service: StatsService = Depends(get_stats_service)
 ):
     """导出统计数据"""
@@ -139,6 +152,7 @@ async def export_stats_data(
 @router.post("/cleanup", response_model=StatsResponse)
 async def cleanup_old_data(
     days: int = Query(30, description="清理多少天前的数据"),
+    current_user: User = Depends(get_current_user),
     stats_service: StatsService = Depends(get_stats_service)
 ):
     """清理旧统计数据"""
@@ -160,12 +174,11 @@ async def cleanup_old_data(
 
 @router.get("/summary")
 async def get_stats_summary(
-    stats_service: StatsService = Depends(get_stats_service)
+    stats_service: StatsService = Depends(get_stats_service),
+    current_user: User = Depends(get_current_user)
 ):
     """获取统计数据摘要"""
     try:
-        from src.services.auth_service import get_current_user
-        from src.models.auth import User
 
         # 获取基础统计数据
         summary = await stats_service.get_summary()
