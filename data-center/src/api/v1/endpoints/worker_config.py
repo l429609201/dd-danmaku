@@ -292,28 +292,35 @@ async def get_worker_status(
 
 @router.post("/fetch-stats")
 async def fetch_worker_stats(
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """从Worker获取统计数据"""
     try:
         from src.config import settings
 
-        worker_endpoints = getattr(settings, 'WORKER_ENDPOINTS', '')
-        worker_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
-
-        if not worker_endpoints:
+        # 从数据库获取Worker配置
+        system_settings = await web_config_service.get_system_settings()
+        if not system_settings or not system_settings.worker_endpoints:
             return {
                 "success": True,
                 "message": "未配置Worker端点",
                 "stats": []
             }
 
+        worker_endpoints = system_settings.worker_endpoints
+        # 优先使用数据库中的API密钥，如果没有则使用环境变量
+        worker_api_key = system_settings.worker_api_key
+        if not worker_api_key:
+            worker_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
+            worker_api_key = worker_api_keys[0] if worker_api_keys else ""
+
         # 从所有Worker端点获取统计数据
         endpoints = [ep.strip() for ep in worker_endpoints.split(',') if ep.strip()]
         all_stats = []
 
-        for i, worker_url in enumerate(endpoints):
-            api_key = worker_api_keys[i] if i < len(worker_api_keys) else ""
+        for worker_url in endpoints:
+            api_key = worker_api_key  # 所有Worker使用同一个API密钥
 
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:

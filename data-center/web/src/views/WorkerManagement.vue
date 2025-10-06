@@ -218,9 +218,10 @@ export default {
           console.log('统计数据获取结果:', result)
 
           if (result.success && result.stats && result.stats.length > 0) {
-            // 显示第一个Worker的统计数据
-            const stats = result.stats[0].stats
-            if (stats) {
+            // 根据Worker URL找到对应的统计数据
+            const workerStats = result.stats.find(s => s.worker_url === worker.url)
+            if (workerStats && workerStats.success && workerStats.stats) {
+              const stats = workerStats.stats
               const message = `${worker.name} 统计信息：
 总请求数: ${stats.requests_total || 0}
 待处理请求: ${stats.pending_requests || 0}
@@ -230,8 +231,10 @@ export default {
 配置统计: UA配置 ${stats.config_stats?.ua_configs_count || 0} 条，IP黑名单 ${stats.config_stats?.ip_blacklist_count || 0} 条
 秘钥轮换: Secret1=${stats.secret_rotation?.secret1_count || 0}, Secret2=${stats.secret_rotation?.secret2_count || 0}, 当前=${stats.secret_rotation?.current_secret || '1'}`
               this.showMessage(message, 'success')
+            } else if (workerStats && !workerStats.success) {
+              this.showMessage(`获取 ${worker.name} 统计数据失败: ${workerStats.error}`, 'error')
             } else {
-              this.showMessage(`${worker.name} 统计数据为空`, 'warning')
+              this.showMessage(`未找到 ${worker.name} 的统计数据`, 'warning')
             }
           } else {
             this.showMessage(`获取 ${worker.name} 统计数据失败: ${result.message || '未知错误'}`, 'error')
@@ -509,13 +512,9 @@ export default {
           if (response.ok) {
             const result = await response.json()
             if (result.success) {
-              // 后端删除成功，更新前端
-              const index = this.workers.findIndex(w => w.id === worker.id)
-              if (index > -1) {
-                this.workers.splice(index, 1)
-                localStorage.setItem('worker_list', JSON.stringify(this.workers))
-              }
               this.showMessage(`Worker "${worker.name}" 已删除`, 'success')
+              // 重新从服务器加载Worker列表以确保数据一致性
+              await this.loadWorkersFromServer()
             } else {
               this.showMessage(`删除失败: ${result.message}`, 'error')
             }

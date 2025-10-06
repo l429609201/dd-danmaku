@@ -524,7 +524,8 @@ async def get_ip_blacklist(
 
         # 获取IP黑名单
         ip_blacklist = await config_service.get_ip_blacklist()
-        return ip_blacklist or []
+        # 转换为字符串列表
+        return [ip.ip_address for ip in ip_blacklist if ip.enabled] if ip_blacklist else []
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
