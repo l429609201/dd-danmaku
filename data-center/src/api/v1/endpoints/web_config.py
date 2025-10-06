@@ -343,22 +343,15 @@ async def create_worker(
             endpoints.append(worker_data.endpoint)
             new_endpoints = ','.join(endpoints)
 
-            # 如果没有API密钥，生成一个
-            api_key = settings.worker_api_key
-            if not api_key:
-                api_key = generate_api_key()
-
-            # 更新设置
+            # 更新设置（不生成新的API密钥，使用现有的通用密钥）
             success = await web_config_service.update_system_settings({
-                "worker_endpoints": new_endpoints,
-                "worker_api_key": api_key
+                "worker_endpoints": new_endpoints
             })
 
             if success:
                 return ConfigResponse(
                     success=True,
-                    message="Worker配置创建成功",
-                    data={"api_key": api_key}
+                    message="Worker配置创建成功，请使用系统配置的通用Worker API密钥"
                 )
             else:
                 return ConfigResponse(

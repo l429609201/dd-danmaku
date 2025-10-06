@@ -311,13 +311,6 @@ export default {
 
           this.showAddWorker = false
           this.showMessage(`Worker保存成功: ${result.message}`, 'success')
-
-          // 如果返回了API密钥，显示给用户
-          if (result.data && result.data.api_key) {
-            this.currentApiKey = result.data.api_key
-            sessionStorage.setItem('worker_api_key', this.currentApiKey)
-            this.showMessage(`API密钥已生成: ${result.data.api_key}`, 'info')
-          }
         } else {
           this.showMessage(`保存失败: ${result.message || '未知错误'}`, 'error')
         }
@@ -518,13 +511,33 @@ export default {
       }, 500)
     },
 
-    removeWorker(worker) {
+    async removeWorker(worker) {
       if (confirm(`确定要删除Worker "${worker.name}" 吗？`)) {
-        const index = this.workers.findIndex(w => w.id === worker.id)
-        if (index > -1) {
-          this.workers.splice(index, 1)
-          localStorage.setItem('worker_list', JSON.stringify(this.workers))
-          this.showMessage(`Worker "${worker.name}" 已删除`, 'success')
+        try {
+          // 调用后端API删除Worker
+          const response = await authFetch(`/api/web-config/workers/${worker.id}`, {
+            method: 'DELETE'
+          })
+
+          if (response.ok) {
+            const result = await response.json()
+            if (result.success) {
+              // 后端删除成功，更新前端
+              const index = this.workers.findIndex(w => w.id === worker.id)
+              if (index > -1) {
+                this.workers.splice(index, 1)
+                localStorage.setItem('worker_list', JSON.stringify(this.workers))
+              }
+              this.showMessage(`Worker "${worker.name}" 已删除`, 'success')
+            } else {
+              this.showMessage(`删除失败: ${result.message}`, 'error')
+            }
+          } else {
+            this.showMessage(`删除失败: HTTP ${response.status}`, 'error')
+          }
+        } catch (error) {
+          console.error('删除Worker异常:', error)
+          this.showMessage(`删除异常: ${error.message}`, 'error')
         }
       }
     },

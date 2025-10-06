@@ -137,7 +137,7 @@ async def push_config_to_worker(
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                f"{push_request.worker_url}/api/config/update",
+                f"{push_request.worker_url}/worker-api/config/update",
                 headers={
                     "X-API-Key": push_request.api_key,
                     "Content-Type": "application/json"
@@ -288,86 +288,7 @@ async def get_worker_status(
             "error": str(e)
         }
 
-@router.post("/push-config")
-async def push_config_to_worker(
-    current_user: User = Depends(get_current_user)
-):
-    """推送配置到Worker"""
-    try:
-        from src.config import settings
-        from src.services.config_service import ConfigService
 
-        worker_endpoints = getattr(settings, 'WORKER_ENDPOINTS', '')
-        worker_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
-
-        if not worker_endpoints:
-            return {
-                "success": True,
-                "message": "未配置Worker端点，无需推送配置",
-                "results": []
-            }
-
-        # 获取当前配置
-        config_service = ConfigService()
-        config_data = await config_service.export_config_for_worker()
-
-        # 推送到所有Worker端点
-        endpoints = [ep.strip() for ep in worker_endpoints.split(',') if ep.strip()]
-        results = []
-
-        for i, worker_url in enumerate(endpoints):
-            api_key = worker_api_keys[i] if i < len(worker_api_keys) else ""
-
-            try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.post(
-                        f"{worker_url}/api/config/update",
-                        headers={
-                            "X-API-Key": api_key,
-                            "Content-Type": "application/json"
-                        },
-                        json=config_data
-                    )
-
-                    if response.status_code == 200:
-                        results.append({
-                            "worker_url": worker_url,
-                            "success": True,
-                            "message": "配置推送成功"
-                        })
-                    else:
-                        results.append({
-                            "worker_url": worker_url,
-                            "success": False,
-                            "message": f"推送失败: HTTP {response.status_code}"
-                        })
-
-            except httpx.TimeoutException:
-                results.append({
-                    "worker_url": worker_url,
-                    "success": False,
-                    "message": "推送超时"
-                })
-            except Exception as e:
-                results.append({
-                    "worker_url": worker_url,
-                    "success": False,
-                    "message": f"推送异常: {str(e)}"
-                })
-
-        # 统计结果
-        success_count = sum(1 for r in results if r["success"])
-        total_count = len(results)
-
-        return {
-            "success": success_count > 0,
-            "message": f"配置推送完成: {success_count}/{total_count} 成功",
-            "results": results
-        }
-
-    except Exception as e:
-        logger.error(f"推送配置失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/fetch-stats")
 async def fetch_worker_stats(
@@ -397,7 +318,7 @@ async def fetch_worker_stats(
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     response = await client.get(
-                        f"{worker_url}/api/stats/export",
+                        f"{worker_url}/worker-api/stats",
                         headers={
                             "X-API-Key": api_key,
                             "Content-Type": "application/json"
@@ -473,7 +394,7 @@ async def fetch_worker_logs(
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     response = await client.get(
-                        f"{worker_url}/api/logs?limit=100",
+                        f"{worker_url}/worker-api/logs?limit=100",
                         headers={
                             "X-API-Key": api_key,
                             "Content-Type": "application/json"
