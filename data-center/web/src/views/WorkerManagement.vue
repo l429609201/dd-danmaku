@@ -53,6 +53,9 @@
             <button @click="fetchWorkerLogs(worker)" class="btn btn-sm btn-outline" title="获取日志">
               📋
             </button>
+            <button @click="viewWorkerSyncLogs(worker)" class="btn btn-sm btn-outline" title="查看同步日志">
+              📄
+            </button>
             <button @click="pushConfig(worker)" class="btn btn-sm btn-primary" title="推送配置">
               🚀
             </button>
@@ -138,29 +141,60 @@ export default {
     }
   },
 
-  mounted() {
-    this.loadWorkers()
+  async mounted() {
+    // 优先从后端加载Worker列表
+    await this.loadWorkersFromServer()
+
     // 恢复API密钥状态
     const savedApiKey = sessionStorage.getItem('worker_api_key')
     if (savedApiKey) {
       this.currentApiKey = savedApiKey
     }
-
-    // 恢复Worker列表
-    const savedWorkers = localStorage.getItem('worker_list')
-    if (savedWorkers) {
-      try {
-        this.workers = JSON.parse(savedWorkers)
-      } catch (e) {
-        console.error('恢复Worker列表失败:', e)
-      }
-    }
   },
 
   methods: {
-    async loadWorkers() {
-      // 模拟数据，避免API调用问题
-      this.workers = []
+    async loadWorkersFromServer() {
+      try {
+        const response = await authFetch('/api/web-config/workers')
+
+        if (response.ok) {
+          const workers = await response.json()
+          console.log('从服务器加载Worker列表:', workers)
+
+          // 转换服务器数据格式到前端格式
+          this.workers = workers.map(worker => ({
+            id: worker.id,
+            name: worker.name,
+            url: worker.endpoint,
+            description: worker.description || '',
+            status: worker.status || 'unknown',
+            lastSync: worker.last_sync || '从未同步',
+            version: '未知'
+          }))
+
+          // 同时保存到localStorage作为缓存
+          localStorage.setItem('worker_list', JSON.stringify(this.workers))
+        } else {
+          console.warn('从服务器加载Worker列表失败，尝试从本地缓存加载')
+          this.loadWorkersFromCache()
+        }
+      } catch (error) {
+        console.error('加载Worker列表异常:', error)
+        this.loadWorkersFromCache()
+      }
+    },
+
+    loadWorkersFromCache() {
+      // 从localStorage加载Worker列表作为备用方案
+      const savedWorkers = localStorage.getItem('worker_list')
+      if (savedWorkers) {
+        try {
+          this.workers = JSON.parse(savedWorkers)
+          console.log('从本地缓存加载Worker列表')
+        } catch (e) {
+          console.error('恢复Worker列表失败:', e)
+        }
+      }
     },
 
     async testConnection(worker) {
@@ -234,30 +268,107 @@ export default {
       }
     },
 
-    saveWorker() {
+    async saveWorker() {
       if (!this.newWorker.name || !this.newWorker.url) {
         this.showMessage('请填写Worker名称和URL', 'error')
         return
       }
 
-      // 添加新的Worker
-      const worker = {
-        id: Date.now(),
-        name: this.newWorker.name,
-        url: this.newWorker.url,
-        description: this.newWorker.description,
-        status: 'unknown',
-        lastSync: '从未同步',
-        version: '未知'
+      this.showMessage('正在保存Worker配置...', 'info')
+
+      try {
+        const response = await authFetch('/api/web-config/workers', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            name: this.newWorker.name,
+            endpoint: this.newWorker.url,
+            description: this.newWorker.description
+          })
+        })
+
+        const result = await response.json()
+        console.log('保存Worker响应:', result)
+
+        if (response.ok && result.success) {
+          // 添加到本地列表
+          const worker = {
+            id: Date.now(),
+            name: this.newWorker.name,
+            url: this.newWorker.url,
+            description: this.newWorker.description,
+            status: 'unknown',
+            lastSync: '从未同步',
+            version: '未知'
+          }
+
+          this.workers.push(worker)
+
+          // 同时保存到localStorage作为缓存
+          localStorage.setItem('worker_list', JSON.stringify(this.workers))
+
+          this.showAddWorker = false
+          this.showMessage(`Worker保存成功: ${result.message}`, 'success')
+
+          // 如果返回了API密钥，显示给用户
+          if (result.data && result.data.api_key) {
+            this.currentApiKey = result.data.api_key
+            sessionStorage.setItem('worker_api_key', this.currentApiKey)
+            this.showMessage(`API密钥已生成: ${result.data.api_key}`, 'info')
+          }
+        } else {
+          this.showMessage(`保存失败: ${result.message || '未知错误'}`, 'error')
+        }
+      } catch (error) {
+        console.error('保存Worker异常:', error)
+        this.showMessage(`保存异常: ${error.message}`, 'error')
       }
+    },
 
-      this.workers.push(worker)
+    async viewWorkerSyncLogs(worker) {
+      this.showMessage(`正在获取 ${worker.name} 的同步日志...`, 'info')
 
-      // 保存到localStorage
-      localStorage.setItem('worker_list', JSON.stringify(this.workers))
+      try {
+        const response = await authFetch(`/api/logs/worker-logs?worker_id=${encodeURIComponent(worker.id)}&limit=50`)
 
-      this.showAddWorker = false
-      this.showMessage('Worker添加成功', 'success')
+        if (response.ok) {
+          const result = await response.json()
+          console.log('Worker同步日志:', result)
+
+          if (result.success && result.logs && result.logs.length > 0) {
+            // 格式化显示日志
+            let logText = `${worker.name} 同步日志 (最近50条):\n\n`
+
+            result.logs.forEach(log => {
+              const timestamp = new Date(log.created_at).toLocaleString()
+              logText += `[${timestamp}] ${log.level} - ${log.message}\n`
+
+              // 如果有详细信息，也显示
+              if (log.details && Object.keys(log.details).length > 0) {
+                logText += `  详情: ${JSON.stringify(log.details, null, 2)}\n`
+              }
+
+              if (log.ip_address) {
+                logText += `  IP: ${log.ip_address}\n`
+              }
+
+              logText += '\n'
+            })
+
+            // 使用alert显示日志（简单实现）
+            alert(logText)
+          } else {
+            this.showMessage(`${worker.name} 暂无同步日志`, 'warning')
+          }
+        } else {
+          this.showMessage(`获取 ${worker.name} 同步日志失败: HTTP ${response.status}`, 'error')
+        }
+      } catch (error) {
+        console.error('获取Worker同步日志异常:', error)
+        this.showMessage(`获取 ${worker.name} 同步日志异常: ${error.message}`, 'error')
+      }
     },
 
     cancelAddWorker() {

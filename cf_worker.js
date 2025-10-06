@@ -365,12 +365,14 @@ async function handleDataCenterAPI(request, urlObj) {
     const path = urlObj.pathname;
     const method = request.method;
 
-    // 记录数据交互端请求日志
-    console.log(`📥 [${clientIP}] 数据交互端请求: ${method} ${path}`);
+    // 只在调试模式下记录数据交互端请求日志
+    if (memoryCache.envCache.ENABLE_DETAILED_LOGGING) {
+        console.log(`📥 [${clientIP}] 数据交互端请求: ${method} ${path}`);
+    }
 
     try {
         // 配置更新端点（接收数据中心主动推送）
-        if (path === '/api/config/update' && method === 'POST') {
+        if (path === '/worker-api/config/update' && method === 'POST') {
             const config = await request.json();
 
             console.log(`📦 [${clientIP}] 收到数据中心配置推送`);
@@ -410,10 +412,9 @@ async function handleDataCenterAPI(request, urlObj) {
             });
         }
 
-        // 统计数据导出端点
-        if (path === '/api/stats/export' && method === 'GET') {
-            console.log(`📊 [${clientIP}] 数据中心请求统计数据导出`);
-            addMemoryLog('INFO', `统计数据导出请求`, { source_ip: clientIP });
+        // Worker API统计端点
+        if (path === '/worker-api/stats' && method === 'GET') {
+            addMemoryLog('INFO', `Worker统计数据请求`, { source_ip: clientIP });
 
             const stats = await getWorkerStats();
             return new Response(JSON.stringify(stats), {
@@ -422,8 +423,7 @@ async function handleDataCenterAPI(request, urlObj) {
         }
 
         // 健康检查端点
-        if (path === '/api/health' && method === 'GET') {
-            console.log(`💓 [${clientIP}] 数据中心健康检查请求`);
+        if (path === '/worker-api/health' && method === 'GET') {
             addMemoryLog('INFO', `健康检查请求`, { source_ip: clientIP });
 
             return new Response(JSON.stringify({
@@ -437,8 +437,7 @@ async function handleDataCenterAPI(request, urlObj) {
         }
 
         // 内存日志查看端点
-        if (path === '/api/logs' && method === 'GET') {
-            console.log(`📋 [${clientIP}] 数据中心请求日志查看`);
+        if (path === '/worker-api/logs' && method === 'GET') {
 
             const url = new URL(request.url);
             const limit = parseInt(url.searchParams.get('limit') || '100');
@@ -636,9 +635,10 @@ async function handleRequest(request, env, ctx) {
                      request.headers.get('X-Real-IP') ||
                      'unknown';
 
-    // 添加请求日志（包含IP）
-    console.log(`📥 [${clientIP}] 收到请求:`, request.method, new URL(request.url).pathname);
-    console.log(`🌐 [${clientIP}] 完整URL:`, request.url);
+    // 只在调试模式下记录请求日志
+    if (memoryCache.envCache.ENABLE_DETAILED_LOGGING) {
+        console.log(`📥 [${clientIP}] 收到请求:`, request.method, new URL(request.url).pathname);
+    }
 
     if (request.method === 'OPTIONS') {
         return new Response(null, {
@@ -654,11 +654,8 @@ async function handleRequest(request, env, ctx) {
     const urlObj = new URL(request.url);
     const ACCESS_CONFIG = getAccessConfig();
 
-    // 数据中心API端点处理（只处理特定的数据中心API路径）
-    if (urlObj.pathname.startsWith('/api/config/') ||
-        urlObj.pathname.startsWith('/api/stats/') ||
-        urlObj.pathname === '/api/health' ||
-        urlObj.pathname.startsWith('/api/logs')) {
+    // 数据中心API端点处理（只处理Worker API路径）
+    if (urlObj.pathname.startsWith('/worker-api/')) {
         return await handleDataCenterAPI(request, urlObj);
     }
 

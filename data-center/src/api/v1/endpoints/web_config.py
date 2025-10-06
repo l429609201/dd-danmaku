@@ -64,6 +64,7 @@ class WorkerConfig(BaseModel):
 class WorkerConfigCreate(BaseModel):
     name: str
     endpoint: str
+    description: str = None
 
 class WorkerConfigUpdate(BaseModel):
     name: str = None

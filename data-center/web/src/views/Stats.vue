@@ -1,8 +1,15 @@
 <template>
   <div class="stats-page">
     <div class="page-header">
-      <h1>📊 统计数据</h1>
-      <p>查看系统运行统计和性能指标</p>
+      <div class="header-content">
+        <h1>📊 统计数据</h1>
+        <p>查看系统运行统计和性能指标</p>
+      </div>
+      <div class="header-actions">
+        <button @click="refreshStats" :disabled="loading" class="btn btn-primary">
+          {{ loading ? '刷新中...' : '🔄 刷新数据' }}
+        </button>
+      </div>
     </div>
 
     <div class="stats-grid">
@@ -90,6 +97,7 @@
 
 <script>
 import { ref, onMounted } from 'vue'
+import { authFetch } from '@/utils/api'
 
 export default {
   name: 'Stats',
@@ -175,18 +183,35 @@ export default {
   background: white;
   border-radius: 8px;
   border: 1px solid #e0e0e0;
-  text-align: center;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
-.page-header h1 {
+.header-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.header-actions .btn {
+  white-space: nowrap;
+}
+
+.header-content {
+  text-align: left;
+}
+
+.header-content h1 {
   color: #333;
   margin-bottom: 8px;
   font-size: 28px;
   font-weight: 600;
+  margin: 0 0 8px 0;
 }
 
-.page-header p {
+.header-content p {
   color: #666;
   font-size: 16px;
   margin: 0;

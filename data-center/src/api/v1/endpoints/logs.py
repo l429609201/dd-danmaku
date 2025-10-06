@@ -290,3 +290,65 @@ async def get_logs_simple(
         "total": len(test_logs),
         "message": "测试数据 - API工作正常"
     }
+
+@router.get("/worker-logs", response_model=Dict[str, Any])
+async def get_worker_logs(
+    worker_id: str = Query(None, description="Worker ID过滤"),
+    limit: int = Query(100, description="返回记录数量"),
+    level: str = Query(None, description="日志级别过滤"),
+    current_user: User = Depends(get_current_user)
+):
+    """获取Worker同步过来的日志"""
+    try:
+        from src.models.logs import SystemLog
+        from src.database import get_db_sync
+        from sqlalchemy import desc
+
+        db = get_db_sync()
+
+        # 构建查询
+        query = db.query(SystemLog).filter(SystemLog.category == 'worker_sync')
+
+        if worker_id:
+            query = query.filter(SystemLog.worker_id == worker_id)
+
+        if level:
+            query = query.filter(SystemLog.level == level.upper())
+
+        # 按时间倒序，最新的在前
+        query = query.order_by(desc(SystemLog.created_at))
+
+        # 限制数量
+        logs = query.limit(limit).all()
+
+        # 转换为字典格式
+        log_list = []
+        for log in logs:
+            log_dict = {
+                "id": log.id,
+                "worker_id": log.worker_id,
+                "level": log.level,
+                "message": log.message,
+                "details": log.details or {},
+                "source": log.source,
+                "request_id": log.request_id,
+                "ip_address": log.ip_address,
+                "user_agent": log.user_agent,
+                "created_at": log.created_at.isoformat() if log.created_at else None
+            }
+            log_list.append(log_dict)
+
+        db.close()
+
+        return {
+            "success": True,
+            "logs": log_list,
+            "total": len(log_list),
+            "worker_id_filter": worker_id,
+            "level_filter": level,
+            "limit": limit
+        }
+
+    except Exception as e:
+        logger.error(f"获取Worker日志失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
