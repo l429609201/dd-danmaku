@@ -3,15 +3,18 @@
     <!-- 页面头部 -->
     <div class="page-header">
       <div class="header-content">
-        <h1>🔧 Worker管理</h1>
-        <p>管理和监控所有Worker节点</p>
+        <h1>🔧 Worker配置</h1>
+        <p>配置和监控主Worker节点</p>
       </div>
       <div class="header-actions">
         <button @click="generateApiKey" class="btn btn-secondary">
           🔑 生成API密钥
         </button>
-        <button @click="showAddWorker = true" class="btn btn-primary">
-          ➕ 添加Worker
+        <button v-if="!workers.length" @click="addWorker" class="btn btn-primary">
+          ➕ 配置Worker
+        </button>
+        <button v-else @click="addWorker" class="btn btn-secondary">
+          ✏️ 修改配置
         </button>
       </div>
     </div>
@@ -33,7 +36,7 @@
       </div>
     </div>
 
-    <!-- Worker列表 -->
+    <!-- Worker状态 -->
     <div class="workers-grid">
       <div v-for="worker in workers" :key="worker.id" class="worker-card">
         <div class="card-header">
@@ -62,7 +65,7 @@
             <button @click="fullSync(worker)" class="btn btn-sm btn-success" title="完整同步">
               🔄
             </button>
-            <button @click="removeWorker(worker)" class="btn btn-sm btn-danger" title="删除Worker">
+            <button @click="removeWorker(worker)" class="btn btn-sm btn-danger" title="清空Worker配置">
               🗑️
             </button>
           </div>
@@ -84,10 +87,10 @@
       <!-- 空状态 -->
       <div v-if="workers.length === 0" class="empty-state">
         <div class="empty-icon">🤖</div>
-        <h3>暂无Worker</h3>
-        <p>点击"添加Worker"开始配置您的第一个Worker节点</p>
-        <button @click="showAddWorker = true" class="btn btn-primary">
-          ➕ 添加Worker
+        <h3>暂未配置Worker</h3>
+        <p>点击"配置Worker"开始设置您的Worker节点</p>
+        <button @click="addWorker" class="btn btn-primary">
+          ➕ 配置Worker
         </button>
       </div>
     </div>
@@ -95,7 +98,7 @@
     <!-- 添加Worker表单 -->
     <div v-if="showAddWorker" class="dialog-overlay">
       <div class="dialog">
-        <h3>添加Worker</h3>
+        <h3>{{ workers.length ? '修改Worker配置' : '配置Worker' }}</h3>
         <div class="form-group">
           <label>Worker名称:</label>
           <input v-model="newWorker.name" type="text" placeholder="请输入Worker名称" />
@@ -218,9 +221,10 @@ export default {
           console.log('统计数据获取结果:', result)
 
           if (result.success && result.stats && result.stats.length > 0) {
-            // 显示第一个Worker的统计数据
-            const stats = result.stats[0].stats
-            if (stats) {
+            // 根据Worker URL找到对应的统计数据
+            const workerStats = result.stats.find(s => s.worker_url === worker.url)
+            if (workerStats && workerStats.success && workerStats.stats) {
+              const stats = workerStats.stats
               const message = `${worker.name} 统计信息：
 总请求数: ${stats.requests_total || 0}
 待处理请求: ${stats.pending_requests || 0}
@@ -230,8 +234,10 @@ export default {
 配置统计: UA配置 ${stats.config_stats?.ua_configs_count || 0} 条，IP黑名单 ${stats.config_stats?.ip_blacklist_count || 0} 条
 秘钥轮换: Secret1=${stats.secret_rotation?.secret1_count || 0}, Secret2=${stats.secret_rotation?.secret2_count || 0}, 当前=${stats.secret_rotation?.current_secret || '1'}`
               this.showMessage(message, 'success')
+            } else if (workerStats && !workerStats.success) {
+              this.showMessage(`获取 ${worker.name} 统计数据失败: ${workerStats.error}`, 'error')
             } else {
-              this.showMessage(`${worker.name} 统计数据为空`, 'warning')
+              this.showMessage(`未找到 ${worker.name} 的统计数据`, 'warning')
             }
           } else {
             this.showMessage(`获取 ${worker.name} 统计数据失败: ${result.message || '未知错误'}`, 'error')
@@ -259,12 +265,23 @@ export default {
     },
 
     addWorker() {
-      // 显示添加Worker的表单
+      // 显示Worker配置表单
       this.showAddWorker = true
-      this.newWorker = {
-        name: '',
-        url: '',
-        description: ''
+
+      // 如果已有Worker，预填充表单
+      if (this.workers.length > 0) {
+        const worker = this.workers[0]
+        this.newWorker = {
+          name: worker.name,
+          url: worker.url,
+          description: worker.description || ''
+        }
+      } else {
+        this.newWorker = {
+          name: '主Worker',
+          url: '',
+          description: ''
+        }
       }
     },
 
@@ -293,31 +310,11 @@ export default {
         console.log('保存Worker响应:', result)
 
         if (response.ok && result.success) {
-          // 添加到本地列表
-          const worker = {
-            id: Date.now(),
-            name: this.newWorker.name,
-            url: this.newWorker.url,
-            description: this.newWorker.description,
-            status: 'unknown',
-            lastSync: '从未同步',
-            version: '未知'
-          }
-
-          this.workers.push(worker)
-
-          // 同时保存到localStorage作为缓存
-          localStorage.setItem('worker_list', JSON.stringify(this.workers))
-
           this.showAddWorker = false
-          this.showMessage(`Worker保存成功: ${result.message}`, 'success')
+          this.showMessage(`Worker配置保存成功: ${result.message}`, 'success')
 
-          // 如果返回了API密钥，显示给用户
-          if (result.data && result.data.api_key) {
-            this.currentApiKey = result.data.api_key
-            sessionStorage.setItem('worker_api_key', this.currentApiKey)
-            this.showMessage(`API密钥已生成: ${result.data.api_key}`, 'info')
-          }
+          // 重新从服务器加载Worker列表以获取正确的ID
+          await this.loadWorkersFromServer()
         } else {
           this.showMessage(`保存失败: ${result.message || '未知错误'}`, 'error')
         }
@@ -518,13 +515,29 @@ export default {
       }, 500)
     },
 
-    removeWorker(worker) {
-      if (confirm(`确定要删除Worker "${worker.name}" 吗？`)) {
-        const index = this.workers.findIndex(w => w.id === worker.id)
-        if (index > -1) {
-          this.workers.splice(index, 1)
-          localStorage.setItem('worker_list', JSON.stringify(this.workers))
-          this.showMessage(`Worker "${worker.name}" 已删除`, 'success')
+    async removeWorker(worker) {
+      if (confirm(`确定要清空Worker配置吗？`)) {
+        try {
+          // 调用后端API删除Worker
+          const response = await authFetch(`/api/web-config/workers/${worker.id}`, {
+            method: 'DELETE'
+          })
+
+          if (response.ok) {
+            const result = await response.json()
+            if (result.success) {
+              this.showMessage(`Worker配置已清空`, 'success')
+              // 重新从服务器加载Worker列表以确保数据一致性
+              await this.loadWorkersFromServer()
+            } else {
+              this.showMessage(`清空配置失败: ${result.message}`, 'error')
+            }
+          } else {
+            this.showMessage(`清空配置失败: HTTP ${response.status}`, 'error')
+          }
+        } catch (error) {
+          console.error('清空配置异常:', error)
+          this.showMessage(`清空配置异常: ${error.message}`, 'error')
         }
       }
     },

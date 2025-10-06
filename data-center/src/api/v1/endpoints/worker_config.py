@@ -137,7 +137,7 @@ async def push_config_to_worker(
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                f"{push_request.worker_url}/api/config/update",
+                f"{push_request.worker_url}/worker-api/config/update",
                 headers={
                     "X-API-Key": push_request.api_key,
                     "Content-Type": "application/json"
@@ -288,158 +288,88 @@ async def get_worker_status(
             "error": str(e)
         }
 
-@router.post("/push-config")
-async def push_config_to_worker(
-    current_user: User = Depends(get_current_user)
-):
-    """推送配置到Worker"""
-    try:
-        from src.config import settings
-        from src.services.config_service import ConfigService
 
-        worker_endpoints = getattr(settings, 'WORKER_ENDPOINTS', '')
-        worker_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
-
-        if not worker_endpoints:
-            return {
-                "success": True,
-                "message": "未配置Worker端点，无需推送配置",
-                "results": []
-            }
-
-        # 获取当前配置
-        config_service = ConfigService()
-        config_data = await config_service.export_config_for_worker()
-
-        # 推送到所有Worker端点
-        endpoints = [ep.strip() for ep in worker_endpoints.split(',') if ep.strip()]
-        results = []
-
-        for i, worker_url in enumerate(endpoints):
-            api_key = worker_api_keys[i] if i < len(worker_api_keys) else ""
-
-            try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.post(
-                        f"{worker_url}/api/config/update",
-                        headers={
-                            "X-API-Key": api_key,
-                            "Content-Type": "application/json"
-                        },
-                        json=config_data
-                    )
-
-                    if response.status_code == 200:
-                        results.append({
-                            "worker_url": worker_url,
-                            "success": True,
-                            "message": "配置推送成功"
-                        })
-                    else:
-                        results.append({
-                            "worker_url": worker_url,
-                            "success": False,
-                            "message": f"推送失败: HTTP {response.status_code}"
-                        })
-
-            except httpx.TimeoutException:
-                results.append({
-                    "worker_url": worker_url,
-                    "success": False,
-                    "message": "推送超时"
-                })
-            except Exception as e:
-                results.append({
-                    "worker_url": worker_url,
-                    "success": False,
-                    "message": f"推送异常: {str(e)}"
-                })
-
-        # 统计结果
-        success_count = sum(1 for r in results if r["success"])
-        total_count = len(results)
-
-        return {
-            "success": success_count > 0,
-            "message": f"配置推送完成: {success_count}/{total_count} 成功",
-            "results": results
-        }
-
-    except Exception as e:
-        logger.error(f"推送配置失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/fetch-stats")
 async def fetch_worker_stats(
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
     """从Worker获取统计数据"""
     try:
         from src.config import settings
 
-        worker_endpoints = getattr(settings, 'WORKER_ENDPOINTS', '')
-        worker_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
-
-        if not worker_endpoints:
+        # 从数据库获取Worker配置
+        system_settings = await web_config_service.get_system_settings()
+        if not system_settings or not system_settings.worker_endpoints:
             return {
-                "success": True,
+                "success": False,
                 "message": "未配置Worker端点",
                 "stats": []
             }
 
-        # 从所有Worker端点获取统计数据
-        endpoints = [ep.strip() for ep in worker_endpoints.split(',') if ep.strip()]
-        all_stats = []
+        worker_endpoint = system_settings.worker_endpoints.strip()
+        # 只取第一个端点作为主Worker
+        worker_url = worker_endpoint.split(',')[0].strip() if ',' in worker_endpoint else worker_endpoint
 
-        for i, worker_url in enumerate(endpoints):
-            api_key = worker_api_keys[i] if i < len(worker_api_keys) else ""
+        # 优先使用数据库中的API密钥，如果没有则使用环境变量
+        worker_api_key = system_settings.worker_api_key
+        if not worker_api_key:
+            worker_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
+            worker_api_key = worker_api_keys[0] if worker_api_keys else ""
 
-            try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    response = await client.get(
-                        f"{worker_url}/api/stats/export",
-                        headers={
-                            "X-API-Key": api_key,
-                            "Content-Type": "application/json"
-                        }
-                    )
+        # 从单个Worker获取统计数据
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    f"{worker_url}/worker-api/stats",
+                    headers={
+                        "X-API-Key": worker_api_key,
+                        "Content-Type": "application/json"
+                    }
+                )
 
-                    if response.status_code == 200:
-                        stats_data = response.json()
-                        all_stats.append({
+                if response.status_code == 200:
+                    stats_data = response.json()
+                    return {
+                        "success": True,
+                        "message": "统计数据获取成功",
+                        "stats": [{
                             "worker_url": worker_url,
                             "success": True,
                             "stats": stats_data
-                        })
-                    else:
-                        all_stats.append({
+                        }]
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": f"Worker响应错误: HTTP {response.status_code}",
+                        "stats": [{
                             "worker_url": worker_url,
                             "success": False,
                             "error": f"HTTP {response.status_code}"
-                        })
-
-            except httpx.TimeoutException:
-                all_stats.append({
+                        }]
+                    }
+        except httpx.TimeoutException:
+            return {
+                "success": False,
+                "message": "Worker连接超时",
+                "stats": [{
                     "worker_url": worker_url,
                     "success": False,
-                    "error": "获取超时"
-                })
-            except Exception as e:
-                all_stats.append({
+                    "error": "连接超时"
+                }]
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Worker连接异常: {str(e)}",
+                "stats": [{
                     "worker_url": worker_url,
                     "success": False,
                     "error": str(e)
-                })
-
-        # 统计结果
-        success_count = sum(1 for s in all_stats if s["success"])
-        total_count = len(all_stats)
-
-        return {
-            "success": success_count > 0,
-            "message": f"统计数据获取完成: {success_count}/{total_count} 成功",
-            "stats": all_stats
-        }
+                }]
+            }
 
     except Exception as e:
         logger.error(f"获取Worker统计失败: {e}")
@@ -473,7 +403,7 @@ async def fetch_worker_logs(
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     response = await client.get(
-                        f"{worker_url}/api/logs?limit=100",
+                        f"{worker_url}/worker-api/logs?limit=100",
                         headers={
                             "X-API-Key": api_key,
                             "Content-Type": "application/json"

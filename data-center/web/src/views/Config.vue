@@ -253,12 +253,18 @@ export default {
         })
 
         if (response.ok) {
-          showMessage('UA配置保存成功', 'success')
+          const result = await response.json()
+          if (result.success) {
+            showMessage('UA配置保存成功', 'success')
+          } else {
+            showMessage(`UA配置保存失败: ${result.message}`, 'error')
+          }
         } else {
-          throw new Error('保存失败')
+          const errorText = await response.text()
+          showMessage(`UA配置保存失败: HTTP ${response.status} - ${errorText}`, 'error')
         }
       } catch (error) {
-        showMessage('UA配置保存失败', 'error')
+        showMessage(`UA配置保存异常: ${error.message}`, 'error')
       }
     }
 
@@ -279,12 +285,18 @@ export default {
         })
 
         if (response.ok) {
-          showMessage('IP黑名单保存成功', 'success')
+          const result = await response.json()
+          if (result.success) {
+            showMessage('IP黑名单保存成功', 'success')
+          } else {
+            showMessage(`IP黑名单保存失败: ${result.message}`, 'error')
+          }
         } else {
-          throw new Error('保存失败')
+          const errorText = await response.text()
+          showMessage(`IP黑名单保存失败: HTTP ${response.status} - ${errorText}`, 'error')
         }
       } catch (error) {
-        showMessage('IP黑名单保存失败', 'error')
+        showMessage(`IP黑名单保存异常: ${error.message}`, 'error')
       }
     }
 

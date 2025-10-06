@@ -302,73 +302,53 @@ async def get_workers(
         if not settings:
             return []
 
-        workers = []
-        worker_endpoints = settings.worker_endpoints or ""
+        # 只返回单个Worker配置
+        worker_endpoint = settings.worker_endpoints or ""
         worker_api_key = settings.worker_api_key or ""
 
-        if worker_endpoints:
-            endpoints = [ep.strip() for ep in worker_endpoints.split(',') if ep.strip()]
-            for i, endpoint in enumerate(endpoints):
-                workers.append({
-                    "id": f"worker_{i+1}",
-                    "name": f"Worker-{i+1}",
+        if worker_endpoint:
+            # 只取第一个端点作为主Worker
+            endpoint = worker_endpoint.split(',')[0].strip() if ',' in worker_endpoint else worker_endpoint.strip()
+            if endpoint:
+                return [{
+                    "id": "worker_1",
+                    "name": "主Worker",
                     "endpoint": endpoint,
                     "api_key": worker_api_key,
                     "status": "offline",
                     "last_sync": None
-                })
+                }]
 
-        return workers
+        return []
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/workers", response_model=ConfigResponse)
-async def create_worker(
+async def update_worker(
     worker_data: WorkerConfigCreate,
     current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
-    """创建新的Worker配置"""
+    """更新Worker配置"""
     try:
         settings = await web_config_service.get_system_settings()
         if not settings:
             settings = await web_config_service.create_default_system_settings()
 
-        # 获取现有endpoints
-        current_endpoints = settings.worker_endpoints or ""
-        endpoints = [ep.strip() for ep in current_endpoints.split(',') if ep.strip()]
+        # 直接设置单个Worker端点
+        success = await web_config_service.update_system_settings({
+            "worker_endpoints": worker_data.endpoint.strip()
+        })
 
-        # 添加新endpoint
-        if worker_data.endpoint not in endpoints:
-            endpoints.append(worker_data.endpoint)
-            new_endpoints = ','.join(endpoints)
-
-            # 如果没有API密钥，生成一个
-            api_key = settings.worker_api_key
-            if not api_key:
-                api_key = generate_api_key()
-
-            # 更新设置
-            success = await web_config_service.update_system_settings({
-                "worker_endpoints": new_endpoints,
-                "worker_api_key": api_key
-            })
-
-            if success:
-                return ConfigResponse(
-                    success=True,
-                    message="Worker配置创建成功",
-                    data={"api_key": api_key}
-                )
-            else:
-                return ConfigResponse(
-                    success=False,
-                    message="Worker配置创建失败"
-                )
+        if success:
+            return ConfigResponse(
+                success=True,
+                message="Worker配置更新成功"
+            )
         else:
             return ConfigResponse(
                 success=False,
-                message="Worker端点已存在"
+                message="Worker配置更新失败"
             )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -427,35 +407,17 @@ async def delete_worker(
     current_user: User = Depends(get_current_user),
     web_config_service: WebConfigService = Depends(get_web_config_service)
 ):
-    """删除Worker配置"""
+    """清空Worker配置"""
     try:
-        settings = await web_config_service.get_system_settings()
-        if not settings:
-            return ConfigResponse(success=False, message="系统设置不存在")
+        # 清空Worker端点配置
+        success = await web_config_service.update_system_settings({
+            "worker_endpoints": ""
+        })
 
-        current_endpoints = settings.worker_endpoints or ""
-        endpoints = [ep.strip() for ep in current_endpoints.split(',') if ep.strip()]
-
-        # 解析worker_id获取索引
-        try:
-            worker_index = int(worker_id.split('_')[1]) - 1
-        except (IndexError, ValueError):
-            return ConfigResponse(success=False, message="无效的Worker ID")
-
-        if 0 <= worker_index < len(endpoints):
-            # 删除endpoint
-            endpoints.pop(worker_index)
-
-            success = await web_config_service.update_system_settings({
-                "worker_endpoints": ','.join(endpoints)
-            })
-
-            if success:
-                return ConfigResponse(success=True, message="Worker配置删除成功")
-            else:
-                return ConfigResponse(success=False, message="Worker配置删除失败")
+        if success:
+            return ConfigResponse(success=True, message="Worker配置已清空")
         else:
-            return ConfigResponse(success=False, message="Worker不存在")
+            return ConfigResponse(success=False, message="Worker配置清空失败")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -531,7 +493,8 @@ async def get_ip_blacklist(
 
         # 获取IP黑名单
         ip_blacklist = await config_service.get_ip_blacklist()
-        return ip_blacklist or []
+        # 转换为字符串列表
+        return [ip.ip_address for ip in ip_blacklist if ip.enabled] if ip_blacklist else []
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
