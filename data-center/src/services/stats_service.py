@@ -357,19 +357,22 @@ class StatsService:
             violation_requests = db.query(func.sum(IPViolationStats.violation_count)).scalar() or 0
 
             # 系统运行时间 (简单计算)
-            import psutil
-            uptime_seconds = psutil.boot_time()
-            current_time = datetime.now().timestamp()
-            uptime_minutes = int((current_time - uptime_seconds) / 60)
+            try:
+                import psutil
+                uptime_seconds = psutil.boot_time()
+                current_time = datetime.now().timestamp()
+                uptime_minutes = int((current_time - uptime_seconds) / 60)
 
-            if uptime_minutes < 60:
-                uptime = f"{uptime_minutes}分钟"
-            elif uptime_minutes < 1440:
-                uptime = f"{uptime_minutes // 60}小时{uptime_minutes % 60}分钟"
-            else:
-                days = uptime_minutes // 1440
-                hours = (uptime_minutes % 1440) // 60
-                uptime = f"{days}天{hours}小时"
+                if uptime_minutes < 60:
+                    uptime = f"{uptime_minutes}分钟"
+                elif uptime_minutes < 1440:
+                    uptime = f"{uptime_minutes // 60}小时{uptime_minutes % 60}分钟"
+                else:
+                    days = uptime_minutes // 1440
+                    hours = (uptime_minutes % 1440) // 60
+                    uptime = f"{days}天{hours}小时"
+            except ImportError:
+                uptime = "未知"
 
             return {
                 "today_requests": today_requests,

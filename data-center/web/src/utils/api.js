@@ -63,14 +63,16 @@ export async function authFetch(url, options = {}) {
     statusText: response.statusText
   })
 
-  // 如果返回401，清除本地令牌并跳转到根路径
+  // 如果返回401，清除本地令牌并跳转到登录页
   if (response.status === 401) {
     console.warn('🚫 JWT令牌已过期或无效，正在跳转到登录页...')
+
+    // 清除本地令牌
     localStorage.removeItem('access_token')
     localStorage.removeItem('token_type')
 
-    // 跳转到根路径，让路由守卫处理重定向
-    window.location.href = '/'
+    // 直接跳转到登录页
+    window.location.href = '/login'
     return response
   }
 
@@ -81,7 +83,21 @@ export async function authFetch(url, options = {}) {
  * 检查是否已登录
  */
 export function isLoggedIn() {
-  return !!localStorage.getItem('access_token')
+  const token = localStorage.getItem('access_token')
+  if (!token) {
+    return false
+  }
+
+  // 简单检查token格式（JWT应该有3个部分）
+  const parts = token.split('.')
+  if (parts.length !== 3) {
+    console.warn('⚠️ Token格式无效')
+    localStorage.removeItem('access_token')
+    localStorage.removeItem('token_type')
+    return false
+  }
+
+  return true
 }
 
 /**
