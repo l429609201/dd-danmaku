@@ -44,7 +44,9 @@ let DATA_CENTER_CONFIG = {
     lastConfigSync: 0,
     lastStatsSync: 0,
     syncInterval: 3600000, // 1小时同步一次
-    enabled: false
+    enabled: false,
+    initialized: false, // 添加初始化标志
+    syncTimer: null // 添加定时器引用
 };
 
 // ========================================
@@ -189,6 +191,11 @@ async function initializeConfigCache(env) {
 
 // 初始化数据中心配置
 async function initializeDataCenterConfig(env) {
+    // 如果已经初始化过，直接返回
+    if (DATA_CENTER_CONFIG.initialized) {
+        return;
+    }
+
     // 从环境变量读取配置
     DATA_CENTER_CONFIG.url = env.DATA_CENTER_URL || '';
     DATA_CENTER_CONFIG.apiKey = env.DATA_CENTER_API_KEY || '';
@@ -203,14 +210,19 @@ async function initializeDataCenterConfig(env) {
         // 启动时尝试从数据中心同步配置（优先使用数据中心配置）
         await syncConfigFromDataCenter();
 
-        // 设置定时同步（每小时）
-        setInterval(async () => {
-            await syncConfigFromDataCenter();
-            await syncStatsToDataCenter();
-        }, DATA_CENTER_CONFIG.syncInterval);
+        // 设置定时同步（每小时），避免重复设置
+        if (!DATA_CENTER_CONFIG.syncTimer) {
+            DATA_CENTER_CONFIG.syncTimer = setInterval(async () => {
+                await syncConfigFromDataCenter();
+                await syncStatsToDataCenter();
+            }, DATA_CENTER_CONFIG.syncInterval);
+        }
     } else {
         console.log('⚠️ 数据中心集成未启用（缺少URL或API密钥）');
     }
+
+    // 标记为已初始化
+    DATA_CENTER_CONFIG.initialized = true;
 }
 
 // 从数据中心同步配置
@@ -218,7 +230,13 @@ async function syncConfigFromDataCenter() {
     if (!DATA_CENTER_CONFIG.enabled) return;
 
     const now = Date.now();
-    if (now - DATA_CENTER_CONFIG.lastConfigSync < DATA_CENTER_CONFIG.syncInterval) {
+    const timeSinceLastSync = now - DATA_CENTER_CONFIG.lastConfigSync;
+
+    // 添加调试信息
+    console.log(`🔄 同步检查: 距离上次同步 ${Math.round(timeSinceLastSync / 1000)} 秒, 同步间隔 ${Math.round(DATA_CENTER_CONFIG.syncInterval / 1000)} 秒`);
+
+    if (timeSinceLastSync < DATA_CENTER_CONFIG.syncInterval) {
+        console.log(`⏳ 跳过同步: 还需等待 ${Math.round((DATA_CENTER_CONFIG.syncInterval - timeSinceLastSync) / 1000)} 秒`);
         return; // 还没到同步时间
     }
 
