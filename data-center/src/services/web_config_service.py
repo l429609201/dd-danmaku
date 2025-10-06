@@ -304,3 +304,8 @@ class WebConfigService:
         except Exception as e:
             logger.error(f"初始化默认配置失败: {e}")
             raise
+
+
+def get_web_config_service() -> WebConfigService:
+    """获取Web配置服务实例"""
+    return WebConfigService()
