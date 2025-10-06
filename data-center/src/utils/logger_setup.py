@@ -15,13 +15,17 @@ DEFAULT_LOG_BACKUPS = 5
 def setup_logging(log_directory: str = None, log_level: str = "INFO"):
     """
     设置日志系统
-    
+
     Args:
-        log_directory: 日志目录路径，默认为项目根目录下的logs文件夹
+        log_directory: 日志目录路径，默认为/app/config/logs
         log_level: 日志级别，默认为INFO
     """
     if log_directory is None:
-        log_directory = os.path.join(os.getcwd(), "logs")
+        # 在Docker环境中使用/app/config/logs，本地开发使用./logs
+        if os.path.exists("/app/config"):
+            log_directory = "/app/config/logs"
+        else:
+            log_directory = os.path.join(os.getcwd(), "logs")
     
     # 确保日志目录存在
     if not os.path.exists(log_directory):
@@ -77,7 +81,11 @@ def create_test_logs(log_directory: str = None):
     创建一些测试日志数据
     """
     if log_directory is None:
-        log_directory = os.path.join(os.getcwd(), "logs")
+        # 在Docker环境中使用/app/config/logs，本地开发使用./logs
+        if os.path.exists("/app/config"):
+            log_directory = "/app/config/logs"
+        else:
+            log_directory = os.path.join(os.getcwd(), "logs")
     
     logger = logging.getLogger(__name__)
     

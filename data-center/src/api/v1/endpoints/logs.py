@@ -34,8 +34,12 @@ class LogBlock(BaseModel):
 
 def get_log_directory() -> str:
     """获取日志目录路径"""
-    # 日志存储在项目根目录的 logs 目录下
-    log_dir = os.path.join(os.getcwd(), "logs")
+    # 在Docker环境中使用/app/config/logs，本地开发使用./logs
+    if os.path.exists("/app/config"):
+        log_dir = "/app/config/logs"
+    else:
+        log_dir = os.path.join(os.getcwd(), "logs")
+
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)
     return log_dir
