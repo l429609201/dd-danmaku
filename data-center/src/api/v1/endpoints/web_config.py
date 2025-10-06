@@ -456,7 +456,30 @@ async def get_ua_configs(
 
         # 获取UA配置
         ua_configs = await config_service.get_ua_configs()
-        return ua_configs or []
+
+        # 转换为前端期望的格式
+        result = []
+        for config in ua_configs:
+            # 转换pathLimits格式
+            path_limits = []
+            if config.path_specific_limits:
+                for path, limit_data in config.path_specific_limits.items():
+                    path_limits.append({
+                        "path": path,
+                        "maxRequestsPerHour": limit_data.get("maxRequestsPerHour", 50)
+                    })
+
+            result.append({
+                "name": config.name,
+                "userAgent": config.user_agent,
+                "enabled": config.enabled,
+                "maxRequestsPerHour": config.hourly_limit,
+                "maxRequestsPerDay": 1000,  # 默认值，因为数据库中没有这个字段
+                "description": "",  # 默认值，因为数据库中没有这个字段
+                "pathLimits": path_limits
+            })
+
+        return result
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

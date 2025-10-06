@@ -73,7 +73,6 @@ async def get_current_user(
         logger.warning(f"🔐 认证失败: 用户不存在 user_id={user_id}")
         raise HTTPException(status_code=401, detail="用户不存在")
 
-    logger.info(f"🔐 用户认证成功: {user.username}")
     return user
 
 @router.post("/change-password", response_model=AuthResponse)

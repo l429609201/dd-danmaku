@@ -386,7 +386,6 @@ class AuthService:
                 logger.warning(f"🔐 会话对应的用户不存在: user_id={session.user_id}")
                 return None
 
-            logger.info(f"🔐 JWT会话验证成功: {user.username}")
             return user
 
         except Exception as e:
