@@ -4,6 +4,7 @@
 import os
 import re
 import gzip
+import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, Query, Response
@@ -12,6 +13,8 @@ from pydantic import BaseModel
 
 from src.api.v1.endpoints.auth import get_current_user
 from src.models.auth import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -198,36 +201,35 @@ async def search_logs_with_context(
             try:
                 # 直接读取文件（简化实现）
                 with open(full_path, 'rt', encoding='utf-8', errors='ignore') as f:
-                    current_block = []
-                    for line in f:
+                    lines = f.readlines()
+
+                    for i, line in enumerate(lines):
                         line = line.strip()
                         if not line:
                             continue
-                        
-                        # 如果包含搜索关键词，开始收集上下文
+
+                        # 如果包含搜索关键词，收集上下文
                         if q.lower() in line.lower():
-                            if not current_block:
-                                current_block = [line]
-                            else:
-                                current_block.append(line)
-                        elif current_block:
-                            # 继续收集上下文（可以设置最大行数限制）
-                            current_block.append(line)
-                            if len(current_block) > 10:  # 限制块大小
-                                break
-                    
-                    if current_block:
-                        block_date = "Unknown Date"
-                        if current_block:
-                            match = TIMESTAMP_REGEX.search(current_block[0])
-                            if match:
-                                block_date = match.group(1).split(' ')[0]
-                        
-                        found_blocks.append(LogBlock(
-                            file=filename,
-                            date=block_date,
-                            lines=current_block
-                        ))
+                            # 收集前后各5行作为上下文
+                            start_idx = max(0, i - 5)
+                            end_idx = min(len(lines), i + 6)
+                            context_lines = [lines[j].strip() for j in range(start_idx, end_idx) if lines[j].strip()]
+
+                            # 获取日期
+                            block_date = "Unknown Date"
+                            if context_lines:
+                                match = TIMESTAMP_REGEX.search(context_lines[0])
+                                if match:
+                                    block_date = match.group(1).split(' ')[0]
+
+                            found_blocks.append(LogBlock(
+                                file=filename,
+                                date=block_date,
+                                lines=context_lines
+                            ))
+
+                            # 避免重复添加相近的块
+                            break
                         
             except Exception as e:
                 continue
@@ -254,42 +256,57 @@ async def get_logs_simple(
     current_user: User = Depends(get_current_user)
 ):
     """获取简单日志数据（兼容性接口）"""
-    from datetime import datetime
-    
-    # 返回简单的测试数据
-    test_logs = []
-    levels = ['INFO', 'WARNING', 'ERROR', 'DEBUG']
-    messages = [
-        '系统启动成功',
-        'Worker连接建立',
-        '配置更新完成',
-        'API请求处理',
-        '数据同步完成',
-        '用户登录成功',
-        '缓存清理完成',
-        '定时任务执行'
-    ]
+    try:
+        from src.models.logs import SystemLog
+        from src.database import get_db_sync
+        from sqlalchemy import desc
 
-    for i in range(min(limit, 20)):
-        level_filter = level.upper() if level else None
-        log_level = level_filter if level_filter and level_filter in levels else levels[i % len(levels)]
+        db = get_db_sync()
 
-        test_logs.append({
-            "id": i + 1,
-            "worker_id": f"worker-{i % 3 + 1}",
-            "level": log_level,
-            "message": f"{messages[i % len(messages)]} - 测试日志 {i + 1}",
-            "category": "system",
-            "source": "data-center",
-            "ip_address": f"192.168.1.{100 + i % 50}",
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
+        # 构建查询
+        query = db.query(SystemLog)
 
-    return {
-        "logs": test_logs,
-        "total": len(test_logs),
-        "message": "测试数据 - API工作正常"
-    }
+        if level:
+            query = query.filter(SystemLog.level == level.upper())
+
+        # 按时间倒序，最新的在前
+        query = query.order_by(desc(SystemLog.created_at))
+
+        # 限制数量
+        logs = query.limit(limit).all()
+
+        # 转换为字典格式
+        log_list = []
+        for log in logs:
+            log_dict = {
+                "id": log.id,
+                "worker_id": log.worker_id,
+                "level": log.level,
+                "message": log.message,
+                "category": log.category,
+                "source": log.source,
+                "ip_address": log.ip_address,
+                "created_at": log.created_at.isoformat() if log.created_at else None
+            }
+            log_list.append(log_dict)
+
+        db.close()
+
+        return {
+            "logs": log_list,
+            "total": len(log_list),
+            "level_filter": level,
+            "limit": limit
+        }
+
+    except Exception as e:
+        logger.error(f"获取日志失败: {e}")
+        # 如果数据库查询失败，返回空数据而不是错误
+        return {
+            "logs": [],
+            "total": 0,
+            "message": f"日志查询失败: {str(e)}"
+        }
 
 @router.get("/worker-logs", response_model=Dict[str, Any])
 async def get_worker_logs(

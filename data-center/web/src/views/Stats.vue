@@ -86,6 +86,95 @@
       </div>
     </div>
 
+    <!-- Worker限制情况 -->
+    <div class="worker-limits-section" v-if="workerLimits">
+      <div class="section-header">
+        <h2>🚦 Worker限制情况</h2>
+        <button @click="refreshWorkerLimits" :disabled="loading" class="btn btn-secondary">
+          {{ loading ? '刷新中...' : '🔄 刷新限制数据' }}
+        </button>
+      </div>
+
+      <div class="limits-grid">
+        <div class="limit-card">
+          <h3>📊 总体统计</h3>
+          <div class="stat-list">
+            <div class="stat-item">
+              <span class="stat-label">活跃计数器</span>
+              <span class="stat-value">{{ workerLimits.total_counters }}</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">活跃IP数</span>
+              <span class="stat-value">{{ workerLimits.active_ips }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="limit-card">
+          <h3>🎯 UA类型限制</h3>
+          <div class="ua-limits">
+            <div v-for="(uaStats, uaType) in workerLimits.ua_type_stats" :key="uaType" class="ua-item">
+              <div class="ua-header">{{ uaType }}</div>
+              <div class="ua-stats">
+                <span>活跃IP: {{ uaStats.active_ips }}</span>
+                <span>总请求: {{ uaStats.total_requests }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="limit-card">
+          <h3>🛤️ 路径限制</h3>
+          <div class="path-limits">
+            <div v-for="(pathStats, pathPattern) in workerLimits.path_limit_stats" :key="pathPattern" class="path-item">
+              <div class="path-header">{{ pathPattern }}</div>
+              <div class="path-stats">
+                <span>活跃IP: {{ pathStats.active_ips }}</span>
+                <span>总请求: {{ pathStats.total_requests }}</span>
+                <span>UA类型: {{ pathStats.ua_types }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 日志切换显示 -->
+    <div class="logs-section">
+      <div class="section-header">
+        <h2>📋 系统日志</h2>
+        <div class="log-controls">
+          <select v-model="selectedLogType" @change="loadLogs" class="log-type-select">
+            <option value="all">所有日志</option>
+            <option value="worker">Worker日志</option>
+            <option value="system">系统日志</option>
+          </select>
+          <button @click="loadLogs" :disabled="loading" class="btn btn-secondary">
+            {{ loading ? '加载中...' : '🔄 刷新日志' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="logs-container">
+        <div v-if="logs.length === 0" class="no-logs">
+          暂无日志数据
+        </div>
+        <div v-else class="log-list">
+          <div v-for="log in logs" :key="log.id" class="log-item" :class="`log-${log.level.toLowerCase()}`">
+            <div class="log-header">
+              <span class="log-time">{{ formatTime(log.created_at) }}</span>
+              <span class="log-level">{{ log.level }}</span>
+              <span class="log-source">{{ log.source || log.worker_id }}</span>
+            </div>
+            <div class="log-message">{{ log.message }}</div>
+            <div v-if="log.details && Object.keys(log.details).length > 0" class="log-details">
+              <pre>{{ JSON.stringify(log.details, null, 2) }}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="refresh-section">
       <button @click="refreshStats" class="refresh-btn" :disabled="loading">
         {{ loading ? '刷新中...' : '🔄 刷新数据' }}
@@ -119,6 +208,13 @@ export default {
       cpuUsage: 0,
       uptime: '0分钟'
     })
+
+    // Worker限制数据
+    const workerLimits = ref(null)
+
+    // 日志相关
+    const logs = ref([])
+    const selectedLogType = ref('all')
 
     const refreshStats = async () => {
       loading.value = true
@@ -154,15 +250,67 @@ export default {
       }
     }
 
+    // 刷新Worker限制数据
+    const refreshWorkerLimits = async () => {
+      try {
+        const response = await authFetch('/api/web-config/worker/stats')
+        if (response.ok) {
+          const data = await response.json()
+          if (data.success && data.stats && data.stats.rate_limit_stats) {
+            workerLimits.value = data.stats.rate_limit_stats
+          }
+        }
+      } catch (error) {
+        console.error('获取Worker限制数据失败:', error)
+      }
+    }
+
+    // 加载日志
+    const loadLogs = async () => {
+      try {
+        let url = '/api/logs'
+        if (selectedLogType.value === 'worker') {
+          url = '/api/logs/worker-logs'
+        }
+
+        const response = await authFetch(url)
+        if (response.ok) {
+          const data = await response.json()
+          logs.value = data.logs || []
+        }
+      } catch (error) {
+        console.error('加载日志失败:', error)
+        logs.value = []
+      }
+    }
+
+    // 格式化时间
+    const formatTime = (timeStr) => {
+      if (!timeStr) return ''
+      try {
+        return new Date(timeStr).toLocaleString()
+      } catch {
+        return timeStr
+      }
+    }
+
     onMounted(() => {
       refreshStats()
+      refreshWorkerLimits()
+      loadLogs()
     })
 
     return {
       stats,
       loading,
       lastUpdate,
-      refreshStats
+      refreshStats,
+      workerLimits,
+      refreshWorkerLimits,
+      logs,
+      selectedLogType,
+      loadLogs,
+      formatTime
     }
   }
 }
@@ -315,5 +463,177 @@ export default {
 .last-update {
   color: #666;
   font-size: 14px;
+}
+
+/* Worker限制样式 */
+.worker-limits-section, .logs-section {
+  margin-top: 24px;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.section-header h2 {
+  margin: 0;
+  color: #333;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.limits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  padding: 24px;
+}
+
+.limit-card {
+  background: #f8f9fa;
+  border-radius: 6px;
+  padding: 16px;
+  border: 1px solid #e9ecef;
+}
+
+.limit-card h3 {
+  margin: 0 0 12px 0;
+  color: #333;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ua-limits, .path-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ua-item, .path-item {
+  background: white;
+  padding: 8px 12px;
+  border-radius: 4px;
+  border: 1px solid #dee2e6;
+}
+
+.ua-header, .path-header {
+  font-weight: 600;
+  color: #333;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.ua-stats, .path-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: #666;
+}
+
+/* 日志样式 */
+.log-controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.log-type-select {
+  padding: 6px 12px;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+  background: white;
+  font-size: 14px;
+}
+
+.logs-container {
+  max-height: 500px;
+  overflow-y: auto;
+  padding: 16px 24px;
+}
+
+.no-logs {
+  text-align: center;
+  color: #666;
+  padding: 40px;
+  font-style: italic;
+}
+
+.log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.log-item {
+  background: #f8f9fa;
+  border-radius: 6px;
+  padding: 12px;
+  border-left: 4px solid #dee2e6;
+}
+
+.log-item.log-error {
+  border-left-color: #dc3545;
+  background: #fff5f5;
+}
+
+.log-item.log-warning {
+  border-left-color: #ffc107;
+  background: #fffbf0;
+}
+
+.log-item.log-info {
+  border-left-color: #17a2b8;
+  background: #f0f9ff;
+}
+
+.log-header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.log-time {
+  color: #666;
+}
+
+.log-level {
+  background: #e9ecef;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.log-source {
+  color: #495057;
+  font-weight: 500;
+}
+
+.log-message {
+  color: #333;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.log-details {
+  background: #f1f3f4;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.log-details pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

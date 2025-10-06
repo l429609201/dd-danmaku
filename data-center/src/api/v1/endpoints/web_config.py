@@ -542,3 +542,61 @@ async def save_ip_blacklist(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/worker/stats")
+async def get_worker_stats(
+    current_user: User = Depends(get_current_user),
+    web_config_service: WebConfigService = Depends(get_web_config_service)
+):
+    """获取Worker统计数据"""
+    try:
+        import httpx
+
+        # 获取Worker配置
+        system_settings = await web_config_service.get_system_settings()
+        if not system_settings or not system_settings.worker_endpoints:
+            return {"success": False, "message": "未配置Worker端点"}
+
+        worker_endpoint = system_settings.worker_endpoints.strip()
+        if not worker_endpoint:
+            return {"success": False, "message": "Worker端点为空"}
+
+        # 请求Worker统计数据
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                stats_url = f"{worker_endpoint.rstrip('/')}/worker-api/stats"
+                headers = {}
+                if system_settings.worker_api_key:
+                    headers['X-API-Key'] = system_settings.worker_api_key
+
+                response = await client.get(stats_url, headers=headers)
+
+                if response.status_code == 200:
+                    stats_data = response.json()
+                    return {
+                        "success": True,
+                        "stats": stats_data,
+                        "worker_endpoint": worker_endpoint
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": f"Worker响应错误: HTTP {response.status_code}",
+                        "worker_endpoint": worker_endpoint
+                    }
+
+            except httpx.TimeoutException:
+                return {
+                    "success": False,
+                    "message": "Worker请求超时",
+                    "worker_endpoint": worker_endpoint
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "message": f"请求Worker失败: {str(e)}",
+                    "worker_endpoint": worker_endpoint
+                }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
