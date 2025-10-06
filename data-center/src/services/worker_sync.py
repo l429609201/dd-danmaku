@@ -41,7 +41,7 @@ class WorkerSyncService:
             
             async with httpx.AsyncClient(**self.client_config) as client:
                 # 构建推送URL
-                push_url = f"{worker_endpoint.rstrip('/')}/api/config/update"
+                push_url = f"{worker_endpoint.rstrip('/')}/worker-api/config/update"
                 
                 # 获取API密钥
                 from src.services.web_config_service import WebConfigService
@@ -114,7 +114,7 @@ class WorkerSyncService:
             
             async with httpx.AsyncClient(**self.client_config) as client:
                 # 构建拉取URL
-                stats_url = f"{worker_endpoint.rstrip('/')}/api/stats/export"
+                stats_url = f"{worker_endpoint.rstrip('/')}/worker-api/stats"
 
                 # 获取API密钥
                 from src.services.web_config_service import WebConfigService
@@ -314,6 +314,74 @@ class WorkerSyncService:
             
         except Exception as e:
             logger.error(f"完成同步日志失败: {e}")
+
+    async def process_worker_logs(self, worker_id: str, logs_data: List[Dict[str, Any]]) -> bool:
+        """处理Worker推送的日志数据"""
+        try:
+            if not logs_data:
+                return True
+
+            db = self.db()
+
+            # 导入SystemLog模型
+            from src.models.logs import SystemLog
+
+            # 批量保存日志
+            for log_entry in logs_data:
+                system_log = SystemLog(
+                    worker_id=worker_id,
+                    level=log_entry.get('level', 'INFO'),
+                    message=log_entry.get('message', ''),
+                    details=log_entry.get('data', {}),
+                    category='worker_sync',
+                    source=f'worker-{worker_id}',
+                    request_id=log_entry.get('id'),
+                    ip_address=log_entry.get('data', {}).get('source_ip'),
+                    user_agent=log_entry.get('data', {}).get('user_agent')
+                )
+                db.add(system_log)
+
+            db.commit()
+            db.close()
+
+            logger.info(f"✅ 处理Worker日志成功: {worker_id}, 共{len(logs_data)}条")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ 处理Worker日志失败: {e}")
+            return False
+
+    async def process_worker_stats(self, worker_id: str, stats_data: Dict[str, Any]) -> bool:
+        """处理Worker推送的统计数据"""
+        try:
+            # 使用统计服务记录数据
+            success = await self.stats_service.record_worker_stats(worker_id, stats_data)
+
+            if success:
+                logger.info(f"✅ 处理Worker统计数据成功: {worker_id}")
+            else:
+                logger.error(f"❌ 处理Worker统计数据失败: {worker_id}")
+
+            return success
+
+        except Exception as e:
+            logger.error(f"❌ 处理Worker统计数据异常: {e}")
+            return False
+
+    async def process_worker_config_status(self, worker_id: str, config_status: Dict[str, Any]) -> bool:
+        """处理Worker配置状态"""
+        try:
+            # 这里可以记录配置同步状态
+            logger.info(f"✅ 收到Worker配置状态: {worker_id}")
+            logger.debug(f"配置状态详情: {config_status}")
+
+            # 可以在这里保存配置状态到数据库
+            # 暂时只记录日志
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ 处理Worker配置状态失败: {e}")
+            return False
     
     async def get_worker_health_status(self, worker_endpoint: str) -> Dict[str, Any]:
         """获取Worker健康状态"""
