@@ -303,71 +303,73 @@ async def fetch_worker_stats(
         system_settings = await web_config_service.get_system_settings()
         if not system_settings or not system_settings.worker_endpoints:
             return {
-                "success": True,
+                "success": False,
                 "message": "未配置Worker端点",
                 "stats": []
             }
 
-        worker_endpoints = system_settings.worker_endpoints
+        worker_endpoint = system_settings.worker_endpoints.strip()
+        # 只取第一个端点作为主Worker
+        worker_url = worker_endpoint.split(',')[0].strip() if ',' in worker_endpoint else worker_endpoint
+
         # 优先使用数据库中的API密钥，如果没有则使用环境变量
         worker_api_key = system_settings.worker_api_key
         if not worker_api_key:
             worker_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
             worker_api_key = worker_api_keys[0] if worker_api_keys else ""
 
-        # 从所有Worker端点获取统计数据
-        endpoints = [ep.strip() for ep in worker_endpoints.split(',') if ep.strip()]
-        all_stats = []
+        # 从单个Worker获取统计数据
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    f"{worker_url}/worker-api/stats",
+                    headers={
+                        "X-API-Key": worker_api_key,
+                        "Content-Type": "application/json"
+                    }
+                )
 
-        for worker_url in endpoints:
-            api_key = worker_api_key  # 所有Worker使用同一个API密钥
-
-            try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    response = await client.get(
-                        f"{worker_url}/worker-api/stats",
-                        headers={
-                            "X-API-Key": api_key,
-                            "Content-Type": "application/json"
-                        }
-                    )
-
-                    if response.status_code == 200:
-                        stats_data = response.json()
-                        all_stats.append({
+                if response.status_code == 200:
+                    stats_data = response.json()
+                    return {
+                        "success": True,
+                        "message": "统计数据获取成功",
+                        "stats": [{
                             "worker_url": worker_url,
                             "success": True,
                             "stats": stats_data
-                        })
-                    else:
-                        all_stats.append({
+                        }]
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": f"Worker响应错误: HTTP {response.status_code}",
+                        "stats": [{
                             "worker_url": worker_url,
                             "success": False,
                             "error": f"HTTP {response.status_code}"
-                        })
-
-            except httpx.TimeoutException:
-                all_stats.append({
+                        }]
+                    }
+        except httpx.TimeoutException:
+            return {
+                "success": False,
+                "message": "Worker连接超时",
+                "stats": [{
                     "worker_url": worker_url,
                     "success": False,
-                    "error": "获取超时"
-                })
-            except Exception as e:
-                all_stats.append({
+                    "error": "连接超时"
+                }]
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Worker连接异常: {str(e)}",
+                "stats": [{
                     "worker_url": worker_url,
                     "success": False,
                     "error": str(e)
-                })
-
-        # 统计结果
-        success_count = sum(1 for s in all_stats if s["success"])
-        total_count = len(all_stats)
-
-        return {
-            "success": success_count > 0,
-            "message": f"统计数据获取完成: {success_count}/{total_count} 成功",
-            "stats": all_stats
-        }
+                }]
+            }
 
     except Exception as e:
         logger.error(f"获取Worker统计失败: {e}")

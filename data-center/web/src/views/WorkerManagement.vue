@@ -3,15 +3,18 @@
     <!-- 页面头部 -->
     <div class="page-header">
       <div class="header-content">
-        <h1>🔧 Worker管理</h1>
-        <p>管理和监控所有Worker节点</p>
+        <h1>🔧 Worker配置</h1>
+        <p>配置和监控主Worker节点</p>
       </div>
       <div class="header-actions">
         <button @click="generateApiKey" class="btn btn-secondary">
           🔑 生成API密钥
         </button>
-        <button @click="showAddWorker = true" class="btn btn-primary">
-          ➕ 添加Worker
+        <button v-if="!workers.length" @click="addWorker" class="btn btn-primary">
+          ➕ 配置Worker
+        </button>
+        <button v-else @click="addWorker" class="btn btn-secondary">
+          ✏️ 修改配置
         </button>
       </div>
     </div>
@@ -33,7 +36,7 @@
       </div>
     </div>
 
-    <!-- Worker列表 -->
+    <!-- Worker状态 -->
     <div class="workers-grid">
       <div v-for="worker in workers" :key="worker.id" class="worker-card">
         <div class="card-header">
@@ -62,7 +65,7 @@
             <button @click="fullSync(worker)" class="btn btn-sm btn-success" title="完整同步">
               🔄
             </button>
-            <button @click="removeWorker(worker)" class="btn btn-sm btn-danger" title="删除Worker">
+            <button @click="removeWorker(worker)" class="btn btn-sm btn-danger" title="清空Worker配置">
               🗑️
             </button>
           </div>
@@ -84,10 +87,10 @@
       <!-- 空状态 -->
       <div v-if="workers.length === 0" class="empty-state">
         <div class="empty-icon">🤖</div>
-        <h3>暂无Worker</h3>
-        <p>点击"添加Worker"开始配置您的第一个Worker节点</p>
-        <button @click="showAddWorker = true" class="btn btn-primary">
-          ➕ 添加Worker
+        <h3>暂未配置Worker</h3>
+        <p>点击"配置Worker"开始设置您的Worker节点</p>
+        <button @click="addWorker" class="btn btn-primary">
+          ➕ 配置Worker
         </button>
       </div>
     </div>
@@ -95,7 +98,7 @@
     <!-- 添加Worker表单 -->
     <div v-if="showAddWorker" class="dialog-overlay">
       <div class="dialog">
-        <h3>添加Worker</h3>
+        <h3>{{ workers.length ? '修改Worker配置' : '配置Worker' }}</h3>
         <div class="form-group">
           <label>Worker名称:</label>
           <input v-model="newWorker.name" type="text" placeholder="请输入Worker名称" />
@@ -262,12 +265,23 @@ export default {
     },
 
     addWorker() {
-      // 显示添加Worker的表单
+      // 显示Worker配置表单
       this.showAddWorker = true
-      this.newWorker = {
-        name: '',
-        url: '',
-        description: ''
+
+      // 如果已有Worker，预填充表单
+      if (this.workers.length > 0) {
+        const worker = this.workers[0]
+        this.newWorker = {
+          name: worker.name,
+          url: worker.url,
+          description: worker.description || ''
+        }
+      } else {
+        this.newWorker = {
+          name: '主Worker',
+          url: '',
+          description: ''
+        }
       }
     },
 
@@ -297,7 +311,7 @@ export default {
 
         if (response.ok && result.success) {
           this.showAddWorker = false
-          this.showMessage(`Worker保存成功: ${result.message}`, 'success')
+          this.showMessage(`Worker配置保存成功: ${result.message}`, 'success')
 
           // 重新从服务器加载Worker列表以获取正确的ID
           await this.loadWorkersFromServer()
@@ -502,7 +516,7 @@ export default {
     },
 
     async removeWorker(worker) {
-      if (confirm(`确定要删除Worker "${worker.name}" 吗？`)) {
+      if (confirm(`确定要清空Worker配置吗？`)) {
         try {
           // 调用后端API删除Worker
           const response = await authFetch(`/api/web-config/workers/${worker.id}`, {
@@ -512,18 +526,18 @@ export default {
           if (response.ok) {
             const result = await response.json()
             if (result.success) {
-              this.showMessage(`Worker "${worker.name}" 已删除`, 'success')
+              this.showMessage(`Worker配置已清空`, 'success')
               // 重新从服务器加载Worker列表以确保数据一致性
               await this.loadWorkersFromServer()
             } else {
-              this.showMessage(`删除失败: ${result.message}`, 'error')
+              this.showMessage(`清空配置失败: ${result.message}`, 'error')
             }
           } else {
-            this.showMessage(`删除失败: HTTP ${response.status}`, 'error')
+            this.showMessage(`清空配置失败: HTTP ${response.status}`, 'error')
           }
         } catch (error) {
-          console.error('删除Worker异常:', error)
-          this.showMessage(`删除异常: ${error.message}`, 'error')
+          console.error('清空配置异常:', error)
+          this.showMessage(`清空配置异常: ${error.message}`, 'error')
         }
       }
     },
