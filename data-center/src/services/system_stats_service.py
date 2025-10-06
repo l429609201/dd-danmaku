@@ -22,22 +22,22 @@ class SystemStatsService:
             cpu_percent = psutil.cpu_percent(interval=1)
             cpu_count = psutil.cpu_count()
             cpu_freq = psutil.cpu_freq()
-            
+
             # 内存统计
             memory = psutil.virtual_memory()
             swap = psutil.swap_memory()
-            
+
             # 磁盘统计
             disk = psutil.disk_usage('/')
-            
+
             # 网络统计
             network = psutil.net_io_counters()
-            
+
             # 进程统计
             process = psutil.Process()
             process_memory = process.memory_info()
             process_cpu = process.cpu_percent()
-            
+
             # 数据库统计
             db_stats = await self._get_database_stats()
             
@@ -85,7 +85,7 @@ class SystemStatsService:
                     "memory_mb": round(process_memory.rss / 1024 / 1024),
                     "memory_percent": process.memory_percent(),
                     "threads": process.num_threads(),
-                    "connections": len(process.connections())
+                    "connections": len(process.net_connections())
                 },
                 
                 # 数据库统计
