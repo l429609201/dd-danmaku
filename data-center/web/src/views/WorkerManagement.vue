@@ -293,24 +293,11 @@ export default {
         console.log('保存Worker响应:', result)
 
         if (response.ok && result.success) {
-          // 添加到本地列表
-          const worker = {
-            id: Date.now(),
-            name: this.newWorker.name,
-            url: this.newWorker.url,
-            description: this.newWorker.description,
-            status: 'unknown',
-            lastSync: '从未同步',
-            version: '未知'
-          }
-
-          this.workers.push(worker)
-
-          // 同时保存到localStorage作为缓存
-          localStorage.setItem('worker_list', JSON.stringify(this.workers))
-
           this.showAddWorker = false
           this.showMessage(`Worker保存成功: ${result.message}`, 'success')
+
+          // 重新从服务器加载Worker列表以获取正确的ID
+          await this.loadWorkersFromServer()
         } else {
           this.showMessage(`保存失败: ${result.message || '未知错误'}`, 'error')
         }
