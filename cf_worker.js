@@ -18,6 +18,7 @@ let memoryCache = {
     appSecretUsage: { count1: 0, count2: 0, current: '1' }, // AppSecret使用缓存
     lastSyncTime: Date.now(),
     pendingRequests: 0,
+    totalRequests: 0, // 总请求计数（不会重置）
     // 配置缓存（优先使用数据中心配置，否则使用环境变量）
     configCache: {
         uaConfigs: {},
@@ -474,13 +475,22 @@ async function handleDataCenterAPI(request, urlObj) {
 // 获取Worker统计数据
 async function getWorkerStats() {
     try {
+        const now = Date.now();
         return {
             worker_id: DATA_CENTER_CONFIG.workerId,
-            timestamp: Date.now(),
-            requests_total: memoryCache.pendingRequests || 0,
+            timestamp: now,
+            requests_total: memoryCache.totalRequests || 0,
+            pending_requests: memoryCache.pendingRequests || 0,
             memory_cache_size: memoryCache.rateLimitCounts.size,
+            logs_count: memoryCache.logs.length,
             last_sync_time: DATA_CENTER_CONFIG.lastConfigSync,
-            uptime: Date.now() - memoryCache.lastSyncTime,
+            uptime: now - memoryCache.lastSyncTime,
+            // 配置统计
+            config_stats: {
+                ua_configs_count: Object.keys(memoryCache.configCache.uaConfigs || {}).length,
+                ip_blacklist_count: (memoryCache.configCache.ipBlacklist || []).length,
+                last_config_update: memoryCache.configCache.lastUpdate
+            },
             // 秘钥轮换统计（直接使用内存缓存）
             secret_rotation: {
                 secret1_count: memoryCache.appSecretUsage.count1,
@@ -766,6 +776,7 @@ async function handleRequest(request, env, ctx) {
 
     // 增加待同步请求计数
     memoryCache.pendingRequests++;
+    memoryCache.totalRequests++;
 
     // 检查是否需要同步到存储
     if (await shouldSyncToStorage()) {
