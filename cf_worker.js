@@ -879,7 +879,15 @@ async function handleRequest(request, env, ctx) {
     // 调试日志：显示dandanplay API响应内容
     console.log(`📥 [${clientIP}] dandanplay API响应状态:`, response.status, response.statusText);
 
-
+    // 记录API请求到内存日志
+    addMemoryLog('INFO', 'API请求处理', {
+        ip: clientIP,
+        method: request.method,
+        path: apiPath,
+        userAgent: request.headers.get('X-User-Agent') || '',
+        responseStatus: response.status,
+        timestamp: Date.now()
+    });
 
     // 读取响应内容用于日志记录
     const responseText = await response.text();

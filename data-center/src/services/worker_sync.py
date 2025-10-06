@@ -326,25 +326,49 @@ class WorkerSyncService:
             # 导入SystemLog模型
             from src.models.logs import SystemLog
 
-            # 批量保存日志
+            # 批量保存日志（增量保存，避免重复）
+            saved_count = 0
             for log_entry in logs_data:
+                log_id = log_entry.get('id')
+                if not log_id:
+                    continue
+
+                # 检查是否已存在相同ID的日志（避免重复保存）
+                existing_log = db.query(SystemLog).filter(
+                    SystemLog.request_id == log_id,
+                    SystemLog.worker_id == worker_id
+                ).first()
+
+                if existing_log:
+                    continue  # 跳过已存在的日志
+
+                # 获取日志数据
+                log_data = log_entry.get('data', {})
+
+                # 处理IP地址字段（Worker可能使用ip或source_ip）
+                ip_address = log_data.get('ip') or log_data.get('source_ip')
+
+                # 处理User-Agent字段（Worker可能使用userAgent或user_agent）
+                user_agent = log_data.get('userAgent') or log_data.get('user_agent')
+
                 system_log = SystemLog(
                     worker_id=worker_id,
-                    level=log_entry.get('level', 'INFO'),
+                    level=log_entry.get('level', 'INFO').upper(),
                     message=log_entry.get('message', ''),
-                    details=log_entry.get('data', {}),
+                    details=log_data,
                     category='worker_sync',
                     source=f'worker-{worker_id}',
-                    request_id=log_entry.get('id'),
-                    ip_address=log_entry.get('data', {}).get('source_ip'),
-                    user_agent=log_entry.get('data', {}).get('user_agent')
+                    request_id=log_id,
+                    ip_address=ip_address,
+                    user_agent=user_agent
                 )
                 db.add(system_log)
+                saved_count += 1
 
             db.commit()
             db.close()
 
-            logger.info(f"✅ 处理Worker日志成功: {worker_id}, 共{len(logs_data)}条")
+            logger.info(f"✅ 处理Worker日志成功: {worker_id}, 接收{len(logs_data)}条, 新增{saved_count}条")
             return True
 
         except Exception as e:
