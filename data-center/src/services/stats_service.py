@@ -345,15 +345,27 @@ class StatsService:
                     total_requests = worker_stats.get('total_requests', 0)
                     success_rate = worker_stats.get('success_rate', 0)
 
-            # Worker状态 (从配置中获取)
+            # Worker状态 (从数据库配置中获取)
             try:
-                from src.config import settings
-                worker_endpoints = getattr(settings, 'WORKER_ENDPOINTS', '')
-                if worker_endpoints:
-                    endpoints = [ep.strip() for ep in worker_endpoints.split(',') if ep.strip()]
+                from src.services.web_config_service import WebConfigService
+                web_config_service = WebConfigService()
+                system_settings = await web_config_service.get_system_settings()
+
+                if system_settings and system_settings.worker_endpoints:
+                    endpoints = [ep.strip() for ep in system_settings.worker_endpoints.split(',') if ep.strip()]
                     total_workers = len(endpoints)
-                    # 简单假设所有配置的Worker都在线（实际应该通过健康检查确定）
-                    online_workers = total_workers
+                    # 尝试检查Worker在线状态
+                    online_workers = 0
+                    for endpoint in endpoints:
+                        try:
+                            # 简单的健康检查
+                            import aiohttp
+                            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
+                                async with session.get(f"{endpoint}/health") as resp:
+                                    if resp.status == 200:
+                                        online_workers += 1
+                        except:
+                            pass
                 else:
                     online_workers = 0
                     total_workers = 0
@@ -394,6 +406,24 @@ class StatsService:
             except ImportError:
                 uptime = "未知"
 
+            # 获取系统资源使用情况
+            memory_usage = 0
+            cpu_usage = 0
+            try:
+                import psutil
+                memory_usage = round(psutil.virtual_memory().percent, 1)
+                cpu_usage = round(psutil.cpu_percent(interval=1), 1)
+            except ImportError:
+                pass
+
+            # 如果从Worker获取到了实时数据，优先使用Worker数据
+            worker_stats = await self._get_real_time_worker_stats()
+            if worker_stats:
+                today_requests = max(today_requests, worker_stats.get('today_requests', today_requests))
+                total_requests = max(total_requests, worker_stats.get('total_requests', total_requests))
+                if worker_stats.get('success_rate', 0) > 0:
+                    success_rate = worker_stats.get('success_rate', success_rate)
+
             return {
                 "today_requests": today_requests,
                 "total_requests": total_requests,
@@ -404,8 +434,8 @@ class StatsService:
                 "blocked_ips": blocked_ips,
                 "today_blocked": today_blocked,
                 "violation_requests": violation_requests,
-                "memory_usage": 0,  # 可以用psutil获取
-                "cpu_usage": 0,     # 可以用psutil获取
+                "memory_usage": memory_usage,
+                "cpu_usage": cpu_usage,
                 "uptime": uptime
             }
 
@@ -439,14 +469,17 @@ class StatsService:
     async def _get_real_time_worker_stats(self) -> Dict[str, Any]:
         """从Worker实时获取统计数据"""
         try:
-            from src.config import settings
             import httpx
+            from src.services.web_config_service import WebConfigService
 
-            worker_endpoints = getattr(settings, 'WORKER_ENDPOINTS', '')
-            if not worker_endpoints:
+            # 从数据库获取Worker配置
+            web_config_service = WebConfigService()
+            system_settings = await web_config_service.get_system_settings()
+
+            if not system_settings or not system_settings.worker_endpoints:
                 return {}
 
-            endpoints = [ep.strip() for ep in worker_endpoints.split(',') if ep.strip()]
+            endpoints = [ep.strip() for ep in system_settings.worker_endpoints.split(',') if ep.strip()]
             if not endpoints:
                 return {}
 
@@ -455,7 +488,7 @@ class StatsService:
             success_count = 0
 
             # 获取API密钥
-            api_key = getattr(settings, 'WORKER_API_KEYS', '').split(',')[0] if getattr(settings, 'WORKER_API_KEYS', '') else None
+            api_key = system_settings.worker_api_key
 
             async with httpx.AsyncClient(timeout=10.0) as client:
                 for endpoint in endpoints:

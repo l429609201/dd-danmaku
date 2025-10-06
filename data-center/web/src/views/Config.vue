@@ -440,6 +440,19 @@ export default {
     // 加载配置数据
     const loadConfigs = async () => {
       try {
+        // 加载系统设置（包括TG机器人配置）
+        const systemResponse = await authFetch('/api/web-config/system-settings')
+        if (systemResponse.ok) {
+          const systemData = await systemResponse.json()
+          if (systemData) {
+            config.value.systemName = systemData.system_name || config.value.systemName
+            config.value.apiPort = systemData.api_port || config.value.apiPort
+            config.value.debugMode = systemData.debug_mode || config.value.debugMode
+            config.value.telegramToken = systemData.tg_bot_token || ''
+            config.value.adminUserIds = systemData.tg_admin_user_ids || ''
+          }
+        }
+
         // 加载UA配置
         const uaResponse = await authFetch('/api/web-config/ua-configs')
         if (uaResponse.ok) {

@@ -514,7 +514,9 @@ async function getWorkerStats() {
                 secret2_count: memoryCache.appSecretUsage.count2,
                 current_secret: memoryCache.appSecretUsage.current,
                 rotation_limit: SECRET_ROTATION_LIMIT
-            }
+            },
+            // 频率限制统计
+            rate_limit_stats: getRateLimitStats()
         };
     } catch (error) {
         console.error('获取统计数据失败:', error);
@@ -524,6 +526,65 @@ async function getWorkerStats() {
             error: error.message
         };
     }
+}
+
+// 获取频率限制统计信息
+function getRateLimitStats() {
+    const stats = {
+        total_counters: memoryCache.rateLimitCounts.size,
+        active_ips: new Set(),
+        ua_type_stats: {},
+        path_limit_stats: {}
+    };
+
+    // 分析当前的频率限制计数器
+    for (const [key, counter] of memoryCache.rateLimitCounts.entries()) {
+        const parts = key.split('-');
+        if (parts.length >= 2) {
+            const uaType = parts[0];
+            const ip = parts[parts.length - 1];
+
+            stats.active_ips.add(ip);
+
+            // UA类型统计
+            if (!stats.ua_type_stats[uaType]) {
+                stats.ua_type_stats[uaType] = {
+                    active_ips: new Set(),
+                    total_requests: 0
+                };
+            }
+            stats.ua_type_stats[uaType].active_ips.add(ip);
+            stats.ua_type_stats[uaType].total_requests += counter.count;
+
+            // 路径限制统计
+            if (key.includes('-path-')) {
+                const pathPattern = parts.slice(2, -1).join('-'); // 提取路径模式
+                if (!stats.path_limit_stats[pathPattern]) {
+                    stats.path_limit_stats[pathPattern] = {
+                        active_ips: new Set(),
+                        total_requests: 0,
+                        ua_types: new Set()
+                    };
+                }
+                stats.path_limit_stats[pathPattern].active_ips.add(ip);
+                stats.path_limit_stats[pathPattern].total_requests += counter.count;
+                stats.path_limit_stats[pathPattern].ua_types.add(uaType);
+            }
+        }
+    }
+
+    // 转换Set为数组长度
+    stats.active_ips = stats.active_ips.size;
+    Object.keys(stats.ua_type_stats).forEach(uaType => {
+        stats.ua_type_stats[uaType].active_ips = stats.ua_type_stats[uaType].active_ips.size;
+    });
+    Object.keys(stats.path_limit_stats).forEach(path => {
+        const pathStats = stats.path_limit_stats[path];
+        pathStats.active_ips = pathStats.active_ips.size;
+        pathStats.ua_types = pathStats.ua_types.size;
+    });
+
+    return stats;
 }
 
 // 获取IP黑名单配置（优先使用内存缓存）
@@ -959,7 +1020,7 @@ async function checkAccess(request, targetApiPath) {
         return { allowed: false, reason: '禁止访问的UA', status: 403 };
     }
 
-    // 2. 基于内存的频率限制
+    // 2. 基于内存的频率限制（全局限制）
     const rateLimitCheck = checkMemoryRateLimit(clientIP, uaConfig.type, uaConfig);
 
     if (!rateLimitCheck.allowed) {
@@ -975,7 +1036,44 @@ async function checkAccess(request, targetApiPath) {
         return { allowed: false, reason: rateLimitCheck.reason, status: 429 };
     }
 
-    // 3. 非对称密钥验证（如果启用）
+    // 3. 路径特定限制检查（基于IP+UA类型+路径的组合限制）
+    if (uaConfig.pathSpecificLimits && Object.keys(uaConfig.pathSpecificLimits).length > 0) {
+        for (const [pathPattern, pathLimit] of Object.entries(uaConfig.pathSpecificLimits)) {
+            if (apiPath.includes(pathPattern)) {
+                // 使用IP+UA类型+路径的组合作为限制键，确保每个IP在每个UA类型下的每个路径都有独立的限制
+                const pathRateLimitCheck = checkMemoryRateLimit(
+                    clientIP,
+                    `${uaConfig.type}-path-${pathPattern}`,
+                    {
+                        maxRequests: pathLimit.maxRequestsPerHour || 50,
+                        windowMs: 60 * 60 * 1000 // 1小时窗口
+                    }
+                );
+
+                if (!pathRateLimitCheck.allowed) {
+                    addMemoryLog('warn', '路径特定频率限制触发', {
+                        ip: clientIP,
+                        userAgent,
+                        uaType: uaConfig.type,
+                        path: apiPath,
+                        pathPattern: pathPattern,
+                        reason: pathRateLimitCheck.reason,
+                        pathLimit: pathLimit.maxRequestsPerHour,
+                        currentCount: pathRateLimitCheck.count
+                    });
+
+                    return {
+                        allowed: false,
+                        reason: `路径 ${pathPattern} 频率限制: ${pathRateLimitCheck.reason}`,
+                        status: 429
+                    };
+                }
+                break; // 只检查第一个匹配的路径模式
+            }
+        }
+    }
+
+    // 4. 非对称密钥验证（如果启用）
     if (ACCESS_CONFIG.asymmetricAuth.enabled) {
         const authCheck = await verifyAsymmetricAuth(request);
         if (!authCheck.allowed) {
