@@ -815,6 +815,8 @@ async function handleRequest(request, env, ctx) {
     // 调试日志：显示dandanplay API响应内容
     console.log(`📥 [${clientIP}] dandanplay API响应状态:`, response.status, response.statusText);
 
+
+
     // 读取响应内容用于日志记录
     const responseText = await response.text();
     // 新增：根据API路径选择性地记录响应内容，避免日志超限
@@ -870,6 +872,8 @@ async function syncCacheToStorage() {
         console.error('批量同步失败:', error);
     }
 }
+
+
 
 // 获取缓存的AppSecret信息（纯内存管理）
 async function getCachedAppSecret(env) {

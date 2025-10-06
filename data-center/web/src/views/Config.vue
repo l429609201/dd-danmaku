@@ -37,18 +37,23 @@
       </div>
 
       <div class="config-card">
-        <h3>🤖 Telegram机器人</h3>
-        <form @submit.prevent="saveTelegramConfig" class="config-form">
-          <div class="form-group">
-            <label>Bot Token</label>
-            <input v-model="config.telegramToken" type="password" placeholder="请输入Telegram Bot Token" />
-          </div>
-          <div class="form-group">
-            <label>管理员用户ID</label>
-            <input v-model="config.adminUserIds" type="text" placeholder="多个ID用逗号分隔" />
-          </div>
-          <button type="submit" class="save-btn">🤖 保存机器人配置</button>
-        </form>
+        <div class="card-header">
+          <h3>🤖 Telegram机器人</h3>
+          <button @click="createBotMenu" class="btn btn-secondary">📋 创建机器人菜单</button>
+        </div>
+        <div class="card-body">
+          <form @submit.prevent="saveTelegramConfig" class="config-form">
+            <div class="form-group">
+              <label>Bot Token</label>
+              <input v-model="config.telegramToken" type="password" placeholder="请输入Telegram Bot Token" />
+            </div>
+            <div class="form-group">
+              <label>管理员用户ID</label>
+              <input v-model="config.adminUserIds" type="text" placeholder="多个ID用逗号分隔" />
+            </div>
+            <button type="submit" class="save-btn">🤖 保存机器人配置</button>
+          </form>
+        </div>
       </div>
 
       <!-- UA配置卡片 -->
@@ -214,6 +219,38 @@ export default {
       }
     }
 
+    const createBotMenu = async () => {
+      if (!config.value.telegramToken) {
+        showMessage('请先配置Bot Token', 'error')
+        return
+      }
+
+      try {
+        showMessage('正在创建机器人菜单...', 'info')
+
+        const response = await authFetch('/api/telegram/create-menu', {
+          method: 'POST',
+          body: JSON.stringify({
+            bot_token: config.value.telegramToken
+          })
+        })
+
+        if (response.ok) {
+          const result = await response.json()
+          if (result.success) {
+            showMessage('机器人菜单创建成功！', 'success')
+          } else {
+            showMessage(`创建失败: ${result.message}`, 'error')
+          }
+        } else {
+          const errorText = await response.text()
+          showMessage(`创建失败: HTTP ${response.status} - ${errorText}`, 'error')
+        }
+      } catch (error) {
+        showMessage(`创建异常: ${error.message}`, 'error')
+      }
+    }
+
     // UA配置方法
     const addUAConfig = () => {
       uaConfigs.value.push({
@@ -331,6 +368,7 @@ export default {
       ipBlacklist,
       saveBasicConfig,
       saveTelegramConfig,
+      createBotMenu,
       addUAConfig,
       removeUAConfig,
       addPathLimit,
