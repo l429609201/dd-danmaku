@@ -12,6 +12,7 @@ from datetime import datetime
 
 from src.services.auth_service import AuthService, get_auth_service
 from src.services.web_config_service import WebConfigService, get_web_config_service
+from src.services.system_stats_service import SystemStatsService, get_system_stats_service
 from src.models.auth import User
 from src.api.v1.endpoints.auth import get_current_user
 
@@ -138,7 +139,7 @@ async def push_config_to_worker(
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                f"{push_request.worker_url}/worker-api/config/update",
+                f"{push_request.worker_url.rstrip('/')}/worker-api/config/update",
                 headers={
                     "X-API-Key": push_request.api_key,
                     "Content-Type": "application/json"
@@ -323,7 +324,7 @@ async def fetch_worker_stats(
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.get(
-                    f"{worker_url}/worker-api/stats",
+                    f"{worker_url.rstrip('/')}/worker-api/stats",
                     headers={
                         "X-API-Key": worker_api_key,
                         "Content-Type": "application/json"
@@ -404,7 +405,7 @@ async def fetch_worker_logs(
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     response = await client.get(
-                        f"{worker_url}/worker-api/logs?limit=100",
+                        f"{worker_url.rstrip('/')}/worker-api/logs?limit=100",
                         headers={
                             "X-API-Key": api_key,
                             "Content-Type": "application/json"
@@ -437,6 +438,24 @@ async def fetch_worker_logs(
 
     except Exception as e:
         logger.error(f"获取Worker日志失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/system-stats")
+async def get_system_stats(
+    current_user: User = Depends(get_current_user),
+    system_stats_service: SystemStatsService = Depends(get_system_stats_service)
+):
+    """获取数据中心系统统计"""
+    try:
+        stats = await system_stats_service.get_system_stats()
+        return {
+            "success": True,
+            "message": "系统统计获取成功",
+            "stats": stats
+        }
+    except Exception as e:
+        logger.error(f"获取系统统计失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/full-sync")

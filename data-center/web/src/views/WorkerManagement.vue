@@ -50,8 +50,11 @@
             <button @click="testConnection(worker)" class="btn btn-sm btn-outline" title="测试连接">
               🔗
             </button>
-            <button @click="viewStats(worker)" class="btn btn-sm btn-outline" title="查看统计">
+            <button @click="viewStats(worker)" class="btn btn-sm btn-outline" title="查看Worker统计">
               📊
+            </button>
+            <button @click="viewSystemStats" class="btn btn-sm btn-success" title="查看数据中心系统统计">
+              🖥️
             </button>
             <button @click="fetchWorkerLogs(worker)" class="btn btn-sm btn-outline" title="获取日志">
               📋
@@ -140,7 +143,8 @@ export default {
         name: '',
         url: '',
         description: ''
-      }
+      },
+      heartbeatTimer: null
     }
   },
 
@@ -152,6 +156,16 @@ export default {
     const savedApiKey = sessionStorage.getItem('worker_api_key')
     if (savedApiKey) {
       this.currentApiKey = savedApiKey
+    }
+
+    // 启动心跳检查
+    this.startHeartbeat()
+  },
+
+  beforeUnmount() {
+    // 清理心跳定时器
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer)
     }
   },
 
@@ -222,17 +236,30 @@ export default {
 
           if (result.success && result.stats && result.stats.length > 0) {
             // 根据Worker URL找到对应的统计数据
-            const workerStats = result.stats.find(s => s.worker_url === worker.url)
+            const workerStats = result.stats.find(s => s.worker_url === worker.url || s.worker_url.includes(worker.url) || worker.url.includes(s.worker_url))
             if (workerStats && workerStats.success && workerStats.stats) {
               const stats = workerStats.stats
               const message = `${worker.name} 统计信息：
-总请求数: ${stats.requests_total || 0}
-待处理请求: ${stats.pending_requests || 0}
-内存缓存大小: ${stats.memory_cache_size || 0}
-日志数量: ${stats.logs_count || 0}
-运行时间: ${Math.floor((stats.uptime || 0) / 1000 / 60)} 分钟
-配置统计: UA配置 ${stats.config_stats?.ua_configs_count || 0} 条，IP黑名单 ${stats.config_stats?.ip_blacklist_count || 0} 条
-秘钥轮换: Secret1=${stats.secret_rotation?.secret1_count || 0}, Secret2=${stats.secret_rotation?.secret2_count || 0}, 当前=${stats.secret_rotation?.current_secret || '1'}`
+
+🔧 Worker实例信息 (当前边缘节点):
+• 总请求数: ${stats.requests_total || 0} (仅当前实例)
+• 待处理请求: ${stats.pending_requests || 0}
+• 运行时间: ${Math.floor((stats.uptime || 0) / 1000 / 60)} 分钟
+• 内存缓存: ${stats.memory_cache_size || 0} 项
+• 日志数量: ${stats.logs_count || 0} 条
+
+⚙️ 配置信息:
+• UA配置: ${stats.config_stats?.ua_configs_count || 0} 条
+• IP黑名单: ${stats.config_stats?.ip_blacklist_count || 0} 条
+• 最后配置更新: ${stats.config_stats?.last_config_update ? new Date(stats.config_stats.last_config_update).toLocaleString() : '未更新'}
+
+🔐 秘钥轮换:
+• Secret1使用: ${stats.secret_rotation?.secret1_count || 0} 次
+• Secret2使用: ${stats.secret_rotation?.secret2_count || 0} 次
+• 当前使用: Secret${stats.secret_rotation?.current_secret || '1'}
+• 轮换阈值: ${stats.secret_rotation?.rotation_limit || 500} 次
+
+注意: Worker统计数据仅反映当前边缘节点实例的情况`
               this.showMessage(message, 'success')
             } else if (workerStats && !workerStats.success) {
               this.showMessage(`获取 ${worker.name} 统计数据失败: ${workerStats.error}`, 'error')
@@ -547,6 +574,102 @@ export default {
       setTimeout(() => {
         this.message = null
       }, 3000)
+    },
+
+    startHeartbeat() {
+      // 每30秒检查一次Worker状态
+      this.heartbeatTimer = setInterval(async () => {
+        await this.checkWorkerStatus()
+      }, 30000)
+
+      // 立即执行一次
+      this.checkWorkerStatus()
+    },
+
+    async checkWorkerStatus() {
+      if (this.workers.length === 0) return
+
+      for (const worker of this.workers) {
+        try {
+          const response = await authFetch('/api/worker/fetch-stats', {
+            method: 'POST'
+          })
+
+          if (response.ok) {
+            const result = await response.json()
+            if (result.success && result.stats && result.stats.length > 0) {
+              const workerStats = result.stats.find(s => s.worker_url === worker.url || s.worker_url.includes(worker.url) || worker.url.includes(s.worker_url))
+              if (workerStats && workerStats.success) {
+                worker.status = 'online'
+                worker.lastSync = new Date().toLocaleString()
+              } else {
+                worker.status = 'offline'
+              }
+            } else {
+              worker.status = 'offline'
+            }
+          } else {
+            worker.status = 'offline'
+          }
+        } catch (error) {
+          worker.status = 'offline'
+        }
+      }
+    },
+
+    async viewSystemStats() {
+      try {
+        const response = await authFetch('/api/worker/system-stats', {
+          method: 'GET'
+        })
+
+        if (response.ok) {
+          const result = await response.json()
+          if (result.success && result.stats) {
+            const stats = result.stats
+            const message = `数据中心系统统计：
+
+💻 CPU信息:
+• 使用率: ${stats.cpu?.usage_percent || 0}%
+• 核心数: ${stats.cpu?.core_count || 0}
+• 频率: ${stats.cpu?.frequency_mhz || 0} MHz
+
+🧠 内存信息:
+• 总内存: ${stats.memory?.total_mb || 0} MB
+• 已使用: ${stats.memory?.used_mb || 0} MB (${stats.memory?.usage_percent || 0}%)
+• 可用内存: ${stats.memory?.available_mb || 0} MB
+• 交换分区: ${stats.memory?.swap_used_mb || 0}/${stats.memory?.swap_total_mb || 0} MB (${stats.memory?.swap_percent || 0}%)
+
+💾 磁盘信息:
+• 总容量: ${stats.disk?.total_gb || 0} GB
+• 已使用: ${stats.disk?.used_gb || 0} GB (${stats.disk?.usage_percent || 0}%)
+• 可用空间: ${stats.disk?.free_gb || 0} GB
+
+🌐 网络统计:
+• 发送: ${Math.round((stats.network?.bytes_sent || 0) / 1024 / 1024)} MB
+• 接收: ${Math.round((stats.network?.bytes_recv || 0) / 1024 / 1024)} MB
+
+🔧 进程信息:
+• CPU使用: ${stats.process?.cpu_percent || 0}%
+• 内存使用: ${stats.process?.memory_mb || 0} MB (${stats.process?.memory_percent || 0}%)
+• 线程数: ${stats.process?.threads || 0}
+• 连接数: ${stats.process?.connections || 0}
+
+🗄️ 数据库:
+• 状态: ${stats.database?.status || '未知'}
+
+⏱️ 运行时间: ${Math.floor((stats.uptime_seconds || 0) / 60)} 分钟`
+
+            this.showMessage(message, 'info')
+          } else {
+            this.showMessage(`获取系统统计失败: ${result.message}`, 'error')
+          }
+        } else {
+          this.showMessage(`获取系统统计失败: HTTP ${response.status}`, 'error')
+        }
+      } catch (error) {
+        this.showMessage(`获取系统统计异常: ${error.message}`, 'error')
+      }
     }
   }
 }
