@@ -24,14 +24,10 @@ FROM python:3.11-alpine AS runtime
 
 WORKDIR /app
 
-# 安装运行时依赖和构建依赖（最小化）
+# 安装运行时依赖（最小化）
 RUN apk add --no-cache \
     wget \
     su-exec \
-    gcc \
-    python3-dev \
-    musl-dev \
-    linux-headers \
     && rm -rf /var/cache/apk/*
 
 # 创建默认用户组和用户（将通过PUID/PGID动态调整）
@@ -41,16 +37,20 @@ RUN addgroup -g 1000 appgroup && \
 # 复制Python依赖文件
 COPY requirements/ requirements/
 
-# 安装Python依赖（使用Alpine的优化）
-RUN pip install --no-cache-dir --no-compile --disable-pip-version-check -r requirements/prod.txt && \
-    # 清理pip缓存和临时文件
-    pip cache purge && \
-    rm -rf /root/.cache/pip && \
-    rm -rf /tmp/* && \
-    rm -rf requirements/ && \
-    # 移除不需要的包管理工具
-    find /usr/local -name '*.pyc' -delete && \
-    find /usr/local -name '*.pyo' -delete
+# 安装Python依赖（使用构建依赖，完成后清理）
+RUN apk add --no-cache --virtual .build-deps \
+        gcc \
+        python3-dev \
+        musl-dev \
+        linux-headers \
+    && pip install --no-cache-dir --no-compile --disable-pip-version-check -r requirements/prod.txt \
+    && apk del .build-deps \
+    && pip cache purge \
+    && rm -rf /root/.cache/pip \
+    && rm -rf /tmp/* \
+    && rm -rf requirements/ \
+    && find /usr/local -name '*.pyc' -delete \
+    && find /usr/local -name '*.pyo' -delete
 
 # 复制后端源码
 COPY --chown=appuser:appuser src/ ./src/
