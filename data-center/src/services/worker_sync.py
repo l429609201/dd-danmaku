@@ -43,7 +43,7 @@ class WorkerSyncService:
                 # 构建推送URL
                 push_url = f"{worker_endpoint.rstrip('/')}/worker-api/config/update"
                 
-                # 获取API密钥
+                # 获取数据中心API密钥（统一使用同一个密钥进行双向认证）
                 from src.services.config_manager import config_manager
                 api_key = config_manager.get_data_center_api_key()
 
@@ -114,7 +114,7 @@ class WorkerSyncService:
                 # 构建拉取URL
                 stats_url = f"{worker_endpoint.rstrip('/')}/worker-api/stats"
 
-                # 获取API密钥
+                # 获取数据中心API密钥（统一使用同一个密钥进行双向认证）
                 from src.services.config_manager import config_manager
                 api_key = config_manager.get_data_center_api_key()
 
@@ -413,7 +413,7 @@ class WorkerSyncService:
             async with httpx.AsyncClient(**self.client_config) as client:
                 health_url = f"{worker_endpoint.rstrip('/')}/health"
 
-                # 获取API密钥
+                # 获取数据中心API密钥（统一使用同一个密钥进行双向认证）
                 from src.services.config_manager import config_manager
                 api_key = config_manager.get_data_center_api_key()
 

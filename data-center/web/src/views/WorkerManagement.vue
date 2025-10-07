@@ -386,10 +386,15 @@ export default {
     // 优先从后端加载Worker列表
     await this.loadWorkersFromServer()
 
-    // 恢复API密钥状态
-    const savedApiKey = sessionStorage.getItem('worker_api_key')
-    if (savedApiKey) {
-      this.currentApiKey = savedApiKey
+    // 从服务器加载当前API密钥
+    await this.loadCurrentApiKey()
+
+    // 如果服务器没有API密钥，尝试从sessionStorage恢复
+    if (!this.currentApiKey) {
+      const savedApiKey = sessionStorage.getItem('worker_api_key')
+      if (savedApiKey) {
+        this.currentApiKey = savedApiKey
+      }
     }
 
     // 进入页面时立即请求一次Worker状态
@@ -646,18 +651,55 @@ export default {
       }
     },
 
-    async generateApiKey() {
-      // 生成32位随机API密钥（大小写英文+数字）
-      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-      let apiKey = ''
-      for (let i = 0; i < 32; i++) {
-        apiKey += chars.charAt(Math.floor(Math.random() * chars.length))
-      }
+    async loadCurrentApiKey() {
+      try {
+        // 从服务器获取当前的API密钥
+        const response = await fetch('/api/web-config/system-settings/with-secrets', {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders()
+          }
+        })
 
-      this.currentApiKey = apiKey
-      // 保存到sessionStorage，页面切换后不会丢失
-      sessionStorage.setItem('worker_api_key', this.currentApiKey)
-      this.showMessage('API密钥生成成功', 'success')
+        if (response.ok) {
+          const settings = await response.json()
+          if (settings.worker_api_key) {
+            this.currentApiKey = settings.worker_api_key
+            // 同步到sessionStorage
+            sessionStorage.setItem('worker_api_key', this.currentApiKey)
+          }
+        }
+      } catch (error) {
+        console.error('加载API密钥失败:', error)
+      }
+    },
+
+    async generateApiKey() {
+      try {
+        // 调用后端API生成并保存API密钥
+        const response = await fetch('/api/web-config/workers/generate-api-key', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders()
+          }
+        })
+
+        const result = await response.json()
+
+        if (result.success) {
+          this.currentApiKey = result.data.api_key
+          // 保存到sessionStorage，页面切换后不会丢失
+          sessionStorage.setItem('worker_api_key', this.currentApiKey)
+          this.showMessage('API密钥生成并保存成功', 'success')
+        } else {
+          this.showMessage(`生成API密钥失败: ${result.message}`, 'error')
+        }
+      } catch (error) {
+        console.error('生成API密钥失败:', error)
+        this.showMessage('生成API密钥失败', 'error')
+      }
     },
 
     addWorker() {
@@ -674,7 +716,7 @@ export default {
         }
       } else {
         this.newWorker = {
-          name: '主Worker',
+          name: '主Worker节点 (Primary Worker Node)',
           url: '',
           description: ''
         }
@@ -1276,6 +1318,11 @@ export default {
   font-weight: 600;
   color: #333;
   margin: 0;
+  min-width: 280px;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-badge {

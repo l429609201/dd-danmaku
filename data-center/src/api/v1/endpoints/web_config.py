@@ -312,7 +312,7 @@ async def get_workers(
             if endpoint:
                 return [{
                     "id": "worker_1",
-                    "name": "主Worker",
+                    "name": "主Worker节点 (Primary Worker Node)",
                     "endpoint": endpoint,
                     "api_key": worker_api_key,
                     "status": "offline",
@@ -624,7 +624,7 @@ async def get_worker_realtime_stats(
         if not worker_endpoint.startswith('http'):
             worker_endpoint = f"https://{worker_endpoint}"
 
-        # 获取Worker API Key（使用配置管理器）
+        # 获取数据中心API Key（统一使用同一个密钥进行双向认证）
         from src.services.config_manager import config_manager
         worker_api_key = config_manager.get_data_center_api_key()
 
