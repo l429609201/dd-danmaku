@@ -7,9 +7,6 @@
         <p>配置和监控主Worker节点</p>
       </div>
       <div class="header-actions">
-        <button @click="generateApiKey" class="btn btn-secondary">
-          🔑 生成API密钥
-        </button>
         <button v-if="!workers.length" @click="addWorker" class="btn btn-primary">
           ➕ 配置Worker
         </button>
@@ -19,20 +16,45 @@
       </div>
     </div>
 
-    <!-- API密钥显示卡片 -->
-    <div v-if="currentApiKey" class="api-key-card">
+    <!-- API密钥管理卡片 -->
+    <div class="config-card">
       <div class="card-header">
-        <h3>🔑 Worker API密钥</h3>
-        <button @click="currentApiKey = ''" class="close-btn">✕</button>
+        <h3>🔑 Worker API密钥管理</h3>
+        <button @click="generateApiKey" class="btn btn-primary">🎲 生成新密钥</button>
       </div>
       <div class="card-body">
-        <div class="api-key-display">
-          <input :value="currentApiKey" readonly class="api-key-input">
-          <button @click="copyApiKey" class="btn btn-outline">📋 复制</button>
+        <div class="form-group">
+          <label>Worker API密钥</label>
+          <div class="api-key-input">
+            <input
+              :value="currentApiKey"
+              :type="showApiKey ? 'text' : 'password'"
+              placeholder="点击生成API密钥"
+              readonly
+            />
+            <button @click="toggleApiKeyVisibility" class="btn btn-outline">
+              {{ showApiKey ? '🙈' : '👁️' }}
+            </button>
+            <button @click="copyApiKey" class="btn btn-outline" :disabled="!currentApiKey">
+              📋 复制
+            </button>
+          </div>
+          <small class="help-text">
+            此密钥用于Worker与数据中心之间的双向认证通信
+          </small>
         </div>
-        <p class="api-key-note">
-          ⚠️ 请妥善保存此API密钥，用于Worker与数据中心的通信验证
-        </p>
+
+        <div v-if="currentApiKey" class="current-key-info">
+          <h4>当前密钥信息</h4>
+          <div class="key-info">
+            <span class="label">密钥长度:</span>
+            <span class="value">{{ currentApiKey.length }} 字符</span>
+          </div>
+          <div class="key-info">
+            <span class="label">生成时间:</span>
+            <span class="value">{{ new Date().toLocaleString() }}</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -360,6 +382,7 @@ export default {
       workers: [],
       showAddWorker: false,
       currentApiKey: '',
+      showApiKey: false,
       message: null,
       newWorker: {
         name: '',
@@ -824,6 +847,10 @@ export default {
       }
     },
 
+    toggleApiKeyVisibility() {
+      this.showApiKey = !this.showApiKey
+    },
+
     getStatusText(status) {
       const statusMap = {
         online: '在线',
@@ -1201,65 +1228,62 @@ export default {
   font-size: 13px;
 }
 
-/* API密钥卡片 */
-.api-key-card {
+/* 配置卡片样式 */
+.config-card {
   background: white;
+  padding: 24px;
   border-radius: 8px;
   border: 1px solid #e0e0e0;
-  margin-bottom: 20px;
-  border-left: 4px solid #4caf50;
   transition: all 0.3s ease;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  margin-bottom: 24px;
 }
 
-.api-key-card:hover {
+.config-card:hover {
   background: #fafafa;
   border-color: #d0d0d0;
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
 
-.card-header {
+.config-card .card-header {
+  padding: 0 0 16px 0;
+  border-bottom: 1px solid #e0e0e0;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 20px 24px 0;
+  margin-bottom: 20px;
 }
 
-.card-header h3 {
+.config-card .card-header h3 {
+  color: #333;
   font-size: 18px;
   font-weight: 600;
-  color: #333;
   margin: 0;
 }
 
-.close-btn {
-  background: none;
-  border: none;
-  font-size: 18px;
-  color: #666;
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
-  transition: all 0.2s;
+.config-card .card-body {
+  padding: 0;
 }
 
-.close-btn:hover {
-  background: #f0f0f0;
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
   color: #333;
 }
 
-.card-body {
-  padding: 20px 24px 24px;
-}
-
-.api-key-display {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
 .api-key-input {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.api-key-input input {
   flex: 1;
   padding: 10px 12px;
   border: 1px solid #ddd;
@@ -1270,14 +1294,48 @@ export default {
   color: #333;
 }
 
-.api-key-note {
-  color: #4caf50;
-  font-size: 14px;
-  margin: 0;
-  padding: 12px 16px;
-  background: #f1f8e9;
+.help-text {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  color: #666;
+  line-height: 1.4;
+}
+
+.current-key-info {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f8f9fa;
   border-radius: 6px;
-  border: 1px solid #c8e6c9;
+  border: 1px solid #e9ecef;
+}
+
+.current-key-info h4 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+.key-info {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.key-info:last-child {
+  margin-bottom: 0;
+}
+
+.key-info .label {
+  font-weight: 500;
+  color: #666;
+}
+
+.key-info .value {
+  color: #333;
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 13px;
 }
 
 /* Worker网格 */
