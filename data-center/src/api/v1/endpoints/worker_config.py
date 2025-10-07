@@ -314,11 +314,9 @@ async def fetch_worker_stats(
         # 只取第一个端点作为主Worker
         worker_url = worker_endpoint.split(',')[0].strip() if ',' in worker_endpoint else worker_endpoint
 
-        # 优先使用数据库中的API密钥，如果没有则使用环境变量
-        worker_api_key = system_settings.worker_api_key
-        if not worker_api_key:
-            worker_api_keys = getattr(settings, 'WORKER_API_KEYS', [])
-            worker_api_key = worker_api_keys[0] if worker_api_keys else ""
+        # 使用config_manager统一获取API密钥
+        from src.services.config_manager import config_manager
+        worker_api_key = config_manager.get_data_center_api_key() or ""
 
         # 从单个Worker获取统计数据
         try:

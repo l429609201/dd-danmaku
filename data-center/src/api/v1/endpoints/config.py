@@ -15,25 +15,38 @@ router = APIRouter()
 async def verify_api_key(x_api_key: str = Header(None)):
     """验证API Key"""
     from src.services.web_config_service import WebConfigService
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"🔐 Worker配置API Key验证开始")
+    logger.info(f"   - 提供的Key: {x_api_key[:8] + '...' if x_api_key else '未提供'}")
 
     # 如果没有提供API Key
     if not x_api_key:
+        logger.warning("❌ Worker请求缺少X-API-Key头部")
         raise HTTPException(status_code=401, detail="缺少API Key")
 
-    # 从数据库获取配置的API Key
-    web_config_service = WebConfigService()
-    system_settings = await web_config_service.get_system_settings()
+    # 从配置管理器获取API Key（统一使用config_manager）
+    from src.services.config_manager import config_manager
+    configured_api_key = config_manager.get_data_center_api_key()
 
-    configured_api_key = system_settings.get('worker_api_key')
+    logger.info(f"   - 配置的Key: {configured_api_key[:8] + '...' if configured_api_key else '未配置'}")
 
-    # 如果没有配置API Key，则拒绝请求
+    # 如果没有配置API Key，记录警告但允许通过（兼容模式）
     if not configured_api_key:
-        raise HTTPException(status_code=401, detail="服务器未配置API Key")
+        logger.warning("⚠️ 服务器未配置Worker API Key，允许通过（兼容模式）")
+        return x_api_key
 
     # 验证API Key
     if x_api_key != configured_api_key:
+        logger.error(f"❌ API Key验证失败:")
+        logger.error(f"   - 提供的Key: {x_api_key[:8]}...")
+        logger.error(f"   - 配置的Key: {configured_api_key[:8]}...")
+        logger.error(f"   - Key长度: 提供={len(x_api_key)}, 配置={len(configured_api_key)}")
         raise HTTPException(status_code=401, detail="无效的API Key")
 
+    logger.info("✅ API Key验证成功")
     return x_api_key
 
 # Pydantic模型

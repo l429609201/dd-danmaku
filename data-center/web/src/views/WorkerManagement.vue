@@ -676,8 +676,8 @@ export default {
 
     async loadCurrentApiKey() {
       try {
-        // 从服务器获取当前的API密钥
-        const response = await fetch('/api/web-config/system-settings/with-secrets', {
+        // 从config_manager获取当前API密钥
+        const response = await fetch('/api/web-config/workers/current-api-key', {
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
@@ -686,9 +686,9 @@ export default {
         })
 
         if (response.ok) {
-          const settings = await response.json()
-          if (settings.worker_api_key) {
-            this.currentApiKey = settings.worker_api_key
+          const result = await response.json()
+          if (result.success && result.data.api_key) {
+            this.currentApiKey = result.data.api_key
             // 同步到sessionStorage
             sessionStorage.setItem('worker_api_key', this.currentApiKey)
           }
