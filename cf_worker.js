@@ -100,8 +100,13 @@ function checkMemoryRateLimit(clientIP, uaType, limits) {
     const now = Date.now();
     const key = `${uaType}-${clientIP}`;
 
+    console.log(`🔢 频率限制检查详情:`);
+    console.log(`   - 限制键: ${key}`);
+    console.log(`   - 限制配置: ${JSON.stringify(limits)}`);
+
     // 获取或创建计数器
     if (!memoryCache.rateLimitCounts.has(key)) {
+        console.log(`   - 创建新计数器`);
         memoryCache.rateLimitCounts.set(key, {
             count: 0,
             windowStart: now,
@@ -113,8 +118,16 @@ function checkMemoryRateLimit(clientIP, uaType, limits) {
     const windowDuration = limits.windowMs || 60000; // 默认1分钟窗口
     const maxRequests = limits.maxRequests || 100;
 
+    console.log(`   - 窗口持续时间: ${windowDuration}ms (${Math.round(windowDuration/1000)}秒)`);
+    console.log(`   - 最大请求数: ${maxRequests}`);
+    console.log(`   - 当前计数器: ${JSON.stringify(counter)}`);
+
     // 检查是否需要重置窗口
-    if (now - counter.windowStart >= windowDuration) {
+    const timeSinceWindowStart = now - counter.windowStart;
+    console.log(`   - 距离窗口开始时间: ${timeSinceWindowStart}ms`);
+
+    if (timeSinceWindowStart >= windowDuration) {
+        console.log(`   - 重置窗口 (超过${Math.round(windowDuration/1000)}秒)`);
         counter.count = 0;
         counter.windowStart = now;
     }
@@ -122,6 +135,8 @@ function checkMemoryRateLimit(clientIP, uaType, limits) {
     // 增加计数
     counter.count++;
     counter.lastRequest = now;
+
+    console.log(`   - 更新后计数: ${counter.count}/${maxRequests}`);
 
     // 检查是否超限
     if (counter.count > maxRequests) {
@@ -812,14 +827,14 @@ async function handleRequest(request, env, ctx) {
     }
 
     // 访问控制检查，传递正确的API路径
+    console.log(`🔍 [${clientIP}] 开始访问控制检查，目标路径: ${tUrlObj.pathname}`);
+
     const accessCheck = await checkAccess(request, tUrlObj.pathname);
     if (!accessCheck.allowed) {
         const userAgent = request.headers.get('X-User-Agent') || '';
         const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
 
-        if (ACCESS_CONFIG.logging.enabled) {
-            console.log(`🚫 [${clientIP}] 访问被拒绝: ${errorMessage}, 路径=${tUrlObj.pathname}`);
-        }
+        console.log(`🚫 [${clientIP}] 访问被拒绝: ${errorMessage}, 路径=${tUrlObj.pathname}`);
 
         return new Response(JSON.stringify({
             status: accessCheck.status,
@@ -830,6 +845,11 @@ async function handleRequest(request, env, ctx) {
             headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
     }
+
+    // 访问控制检查通过
+    console.log(`✅ [${clientIP}] 访问控制检查通过，继续处理请求`);
+    console.log(`   - UA类型: ${accessCheck.uaConfig?.type || 'unknown'}`);
+    console.log(`   - 目标路径: ${tUrlObj.pathname}`);
 
     // 频率限制检查已在accessCheck中完成，这里直接使用结果
     const rateLimitResult = { allowed: true }; // accessCheck已经通过，说明频率限制检查通过
