@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from src.services.config_manager import config_manager
 from src.api.v1.endpoints.auth import get_current_user
-from src.models.user import User
+from src.models.auth import User
 
 router = APIRouter()
 
