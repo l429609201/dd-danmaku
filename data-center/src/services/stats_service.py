@@ -170,34 +170,68 @@ class StatsService:
         """记录Worker统计数据"""
         try:
             db = self.db()
-            
+
             # 获取当前小时
             current_hour = datetime.now().replace(minute=0, second=0, microsecond=0)
-            
+
             # 查找或创建统计记录
             stats = db.query(RequestStats).filter(
                 RequestStats.worker_id == worker_id,
                 RequestStats.date_hour == current_hour
             ).first()
-            
+
             if not stats:
                 stats = RequestStats(
                     worker_id=worker_id,
                     date_hour=current_hour
                 )
                 db.add(stats)
-            
-            # 更新统计数据
+
+            # 更新基础统计数据
             for key, value in stats_data.items():
-                if hasattr(stats, key):
+                if hasattr(stats, key) and not isinstance(value, dict):
                     setattr(stats, key, value)
-            
+
+            # 处理密钥轮换统计（嵌套数据）
+            if 'secret_rotation' in stats_data:
+                secret_rotation = stats_data['secret_rotation']
+                if isinstance(secret_rotation, dict):
+                    if 'secret1_count' in secret_rotation:
+                        stats.secret1_count = secret_rotation['secret1_count']
+                    if 'secret2_count' in secret_rotation:
+                        stats.secret2_count = secret_rotation['secret2_count']
+                    if 'current_secret' in secret_rotation:
+                        stats.current_secret = str(secret_rotation['current_secret'])
+
+            # 处理配置统计（嵌套数据）
+            if 'config_stats' in stats_data:
+                config_stats = stats_data['config_stats']
+                if isinstance(config_stats, dict):
+                    if 'ua_configs_count' in config_stats:
+                        stats.ua_configs_count = config_stats['ua_configs_count']
+                    if 'ip_blacklist_count' in config_stats:
+                        stats.ip_blacklist_count = config_stats['ip_blacklist_count']
+
+            # 处理频率限制统计（嵌套数据）
+            if 'rate_limit_stats' in stats_data:
+                rate_limit_stats = stats_data['rate_limit_stats']
+                if isinstance(rate_limit_stats, dict):
+                    if 'total_counters' in rate_limit_stats:
+                        stats.rate_limit_counters = rate_limit_stats['total_counters']
+                    if 'active_ips' in rate_limit_stats:
+                        # active_ips 可能是 Set 或数字
+                        active_ips = rate_limit_stats['active_ips']
+                        if isinstance(active_ips, (set, list)):
+                            stats.active_ips_count = len(active_ips)
+                        elif isinstance(active_ips, int):
+                            stats.active_ips_count = active_ips
+
             db.commit()
             db.close()
-            
+
             logger.info(f"记录Worker统计数据成功: {worker_id}")
             return True
-            
+
         except Exception as e:
             logger.error(f"记录Worker统计数据失败: {e}")
             return False
