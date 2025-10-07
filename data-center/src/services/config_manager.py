@@ -157,16 +157,29 @@ class ConfigManager:
     
     def get_data_center_api_key(self) -> Optional[str]:
         """获取数据中心API Key"""
-        return self.get_config("data_center_api_key")
+        api_key = self.get_config("data_center_api_key")
+        logger.info(f"🔑 config_manager获取API Key:")
+        logger.info(f"   - 键: data_center_api_key")
+        logger.info(f"   - 值: {api_key[:8] + '...' if api_key else '未找到'}")
+        logger.info(f"   - 长度: {len(api_key) if api_key else 0}")
+        return api_key
     
     def set_data_center_api_key(self, api_key: str) -> bool:
         """设置数据中心API Key"""
-        return self.set_config(
+        logger.info(f"🔑 config_manager设置API Key:")
+        logger.info(f"   - 键: data_center_api_key")
+        logger.info(f"   - 值: {api_key[:8] + '...' if api_key else '空值'}")
+        logger.info(f"   - 长度: {len(api_key) if api_key else 0}")
+
+        result = self.set_config(
             "data_center_api_key",
             api_key,
             "Worker向数据中心推送数据时使用的API密钥",
             "string"
         )
+
+        logger.info(f"   - 保存结果: {'成功' if result else '失败'}")
+        return result
     
     def get_telegram_bot_token(self) -> Optional[str]:
         """获取Telegram Bot Token"""

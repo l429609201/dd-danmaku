@@ -43,9 +43,14 @@ class WorkerSyncService:
                 # 构建推送URL
                 push_url = f"{worker_endpoint.rstrip('/')}/worker-api/config/update"
                 
-                # 获取数据中心API密钥（统一使用同一个密钥进行双向认证）
+                # 获取API密钥
                 from src.services.config_manager import config_manager
                 api_key = config_manager.get_data_center_api_key()
+
+                logger.info(f"🔑 数据中心向Worker推送配置:")
+                logger.info(f"   - Worker端点: {worker_endpoint}")
+                logger.info(f"   - API Key: {api_key[:8] + '...' if api_key else '未配置'}")
+                logger.info(f"   - API Key长度: {len(api_key) if api_key else 0}")
 
                 # 构建请求头
                 headers = {
@@ -55,6 +60,9 @@ class WorkerSyncService:
 
                 if api_key:
                     headers["X-API-Key"] = api_key
+                    logger.info(f"✅ 已添加X-API-Key头部")
+                else:
+                    logger.warning(f"⚠️ 未配置API Key，请求将不包含X-API-Key头部")
 
                 # 发送配置数据
                 response = await client.post(
@@ -114,14 +122,22 @@ class WorkerSyncService:
                 # 构建拉取URL
                 stats_url = f"{worker_endpoint.rstrip('/')}/worker-api/stats"
 
-                # 获取数据中心API密钥（统一使用同一个密钥进行双向认证）
+                # 获取API密钥
                 from src.services.config_manager import config_manager
                 api_key = config_manager.get_data_center_api_key()
+
+                logger.info(f"📊 数据中心向Worker拉取统计:")
+                logger.info(f"   - Worker端点: {worker_endpoint}")
+                logger.info(f"   - API Key: {api_key[:8] + '...' if api_key else '未配置'}")
+                logger.info(f"   - API Key长度: {len(api_key) if api_key else 0}")
 
                 # 构建请求头
                 headers = {"User-Agent": "DataCenter-Sync/1.0"}
                 if api_key:
                     headers["X-API-Key"] = api_key
+                    logger.info(f"✅ 已添加X-API-Key头部")
+                else:
+                    logger.warning(f"⚠️ 未配置API Key，请求将不包含X-API-Key头部")
 
                 response = await client.get(stats_url, headers=headers)
                 
@@ -413,7 +429,7 @@ class WorkerSyncService:
             async with httpx.AsyncClient(**self.client_config) as client:
                 health_url = f"{worker_endpoint.rstrip('/')}/health"
 
-                # 获取数据中心API密钥（统一使用同一个密钥进行双向认证）
+                # 获取API密钥
                 from src.services.config_manager import config_manager
                 api_key = config_manager.get_data_center_api_key()
 
