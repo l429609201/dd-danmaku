@@ -36,6 +36,49 @@
         </div>
       </div>
 
+      <!-- API密钥管理 -->
+      <div class="config-card">
+        <div class="card-header">
+          <h3>🔑 API密钥管理</h3>
+          <button @click="generateApiKey" class="btn btn-primary">🎲 生成新密钥</button>
+        </div>
+        <div class="card-body">
+          <div class="form-group">
+            <label>数据中心API密钥</label>
+            <div class="api-key-input">
+              <input
+                v-model="apiKeyConfig.dataCenterApiKey"
+                type="password"
+                placeholder="请输入或生成API密钥"
+                :readonly="apiKeyConfig.isReadonly"
+              />
+              <button @click="toggleApiKeyVisibility" class="btn btn-outline">
+                {{ apiKeyConfig.showKey ? '🙈' : '👁️' }}
+              </button>
+            </div>
+            <small class="help-text">
+              此密钥用于Worker与数据中心之间的双向认证通信
+            </small>
+          </div>
+
+          <div v-if="apiKeyConfig.currentKey" class="current-key-info">
+            <h4>当前密钥信息</h4>
+            <div class="key-info">
+              <span class="label">密钥（脱敏）:</span>
+              <span class="value">{{ apiKeyConfig.currentKey.masked }}</span>
+            </div>
+            <div class="key-info">
+              <span class="label">密钥长度:</span>
+              <span class="value">{{ apiKeyConfig.currentKey.length }} 字符</span>
+            </div>
+          </div>
+
+          <button @click="saveApiKey" class="save-btn" :disabled="!apiKeyConfig.dataCenterApiKey">
+            🔑 保存API密钥
+          </button>
+        </div>
+      </div>
+
       <div class="config-card">
         <div class="card-header">
           <h3>🤖 Telegram机器人</h3>
@@ -215,10 +258,20 @@ export default {
     const uaConfigs = ref([])
     const ipBlacklist = ref([])
 
+    // API密钥配置
+    const apiKeyConfig = ref({
+      dataCenterApiKey: '',
+      showKey: false,
+      isReadonly: false,
+      currentKey: null
+    })
+
     // JSON导入相关
     const showImportModal = ref(false)
     const importJsonText = ref('')
     const replaceExisting = ref(false)
+
+
 
 
 
@@ -291,6 +344,81 @@ export default {
     }
 
 
+
+
+
+
+
+    // IP黑名单方法
+    const addIPBlacklist = () => {
+      ipBlacklist.value.push('')
+    }
+
+    const removeIPBlacklist = (index) => {
+      ipBlacklist.value.splice(index, 1)
+    }
+
+    const saveIPBlacklist = async () => {
+      try {
+        const response = await authFetch('/api/web-config/ip-blacklist', {
+          method: 'POST',
+          body: JSON.stringify(ipBlacklist.value)
+        })
+
+        if (response.ok) {
+          const result = await response.json()
+          if (result.success) {
+            showMessage('IP黑名单保存成功', 'success')
+          } else {
+            showMessage(`IP黑名单保存失败: ${result.message}`, 'error')
+          }
+        } else {
+          const errorText = await response.text()
+          showMessage(`IP黑名单保存失败: HTTP ${response.status} - ${errorText}`, 'error')
+        }
+      } catch (error) {
+        showMessage(`IP黑名单保存异常: ${error.message}`, 'error')
+      }
+    }
+
+    // 加载配置数据
+    const loadConfigs = async () => {
+      try {
+        // 加载系统设置（包括TG机器人配置）
+        const systemResponse = await authFetch('/api/web-config/system-settings')
+        if (systemResponse.ok) {
+          const systemData = await systemResponse.json()
+          if (systemData) {
+            config.value.systemName = systemData.system_name || config.value.systemName
+            config.value.apiPort = systemData.api_port || config.value.apiPort
+            config.value.debugMode = systemData.debug_mode || config.value.debugMode
+            config.value.telegramToken = systemData.tg_bot_token || ''
+            config.value.adminUserIds = systemData.tg_admin_user_ids || ''
+          }
+        }
+
+        // 加载UA配置
+        const uaResponse = await authFetch('/api/web-config/ua-configs')
+        if (uaResponse.ok) {
+          const uaData = await uaResponse.json()
+          uaConfigs.value = uaData || []
+        }
+
+        // 加载IP黑名单
+        const ipResponse = await authFetch('/api/web-config/ip-blacklist')
+        if (ipResponse.ok) {
+          const ipData = await ipResponse.json()
+          ipBlacklist.value = ipData || []
+        }
+      } catch (error) {
+        console.error('加载配置失败:', error)
+      }
+    }
+
+    onMounted(() => {
+      loadConfigs()
+      loadCurrentApiKey()
+    })
 
     // UA配置方法
     const addUAConfig = () => {
@@ -407,86 +535,96 @@ export default {
       }
     }
 
-    // IP黑名单方法
-    const addIPBlacklist = () => {
-      ipBlacklist.value.push('')
-    }
 
-    const removeIPBlacklist = (index) => {
-      ipBlacklist.value.splice(index, 1)
-    }
 
-    const saveIPBlacklist = async () => {
+    // API密钥管理方法
+    const generateApiKey = async () => {
       try {
-        const response = await authFetch('/api/web-config/ip-blacklist', {
+        const response = await authFetch('/api/system-config/generate-api-key', {
           method: 'POST',
-          body: JSON.stringify(ipBlacklist.value)
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ length: 32 })
         })
 
         if (response.ok) {
           const result = await response.json()
-          if (result.success) {
-            showMessage('IP黑名单保存成功', 'success')
-          } else {
-            showMessage(`IP黑名单保存失败: ${result.message}`, 'error')
-          }
+          apiKeyConfig.value.dataCenterApiKey = result.api_key
+          showMessage('API密钥生成成功', 'success')
         } else {
-          const errorText = await response.text()
-          showMessage(`IP黑名单保存失败: HTTP ${response.status} - ${errorText}`, 'error')
+          showMessage('API密钥生成失败', 'error')
         }
       } catch (error) {
-        showMessage(`IP黑名单保存异常: ${error.message}`, 'error')
+        showMessage(`API密钥生成异常: ${error.message}`, 'error')
       }
     }
 
-    // 加载配置数据
-    const loadConfigs = async () => {
+    const saveApiKey = async () => {
+      if (!apiKeyConfig.value.dataCenterApiKey) {
+        showMessage('请输入API密钥', 'error')
+        return
+      }
+
       try {
-        // 加载系统设置（包括TG机器人配置）
-        const systemResponse = await authFetch('/api/web-config/system-settings')
-        if (systemResponse.ok) {
-          const systemData = await systemResponse.json()
-          if (systemData) {
-            config.value.systemName = systemData.system_name || config.value.systemName
-            config.value.apiPort = systemData.api_port || config.value.apiPort
-            config.value.debugMode = systemData.debug_mode || config.value.debugMode
-            config.value.telegramToken = systemData.tg_bot_token || ''
-            config.value.adminUserIds = systemData.tg_admin_user_ids || ''
+        const response = await authFetch('/api/system-config/set-data-center-api-key', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ api_key: apiKeyConfig.value.dataCenterApiKey })
+        })
+
+        if (response.ok) {
+          showMessage('API密钥保存成功', 'success')
+          await loadCurrentApiKey()
+        } else {
+          showMessage('API密钥保存失败', 'error')
+        }
+      } catch (error) {
+        showMessage(`API密钥保存异常: ${error.message}`, 'error')
+      }
+    }
+
+    const loadCurrentApiKey = async () => {
+      try {
+        const response = await authFetch('/api/system-config/data-center-api-key')
+        if (response.ok) {
+          const result = await response.json()
+          apiKeyConfig.value.currentKey = {
+            masked: result.api_key_masked,
+            length: result.key_length,
+            hasKey: result.has_key
           }
         }
-
-        // 加载UA配置
-        const uaResponse = await authFetch('/api/web-config/ua-configs')
-        if (uaResponse.ok) {
-          const uaData = await uaResponse.json()
-          uaConfigs.value = uaData || []
-        }
-
-        // 加载IP黑名单
-        const ipResponse = await authFetch('/api/web-config/ip-blacklist')
-        if (ipResponse.ok) {
-          const ipData = await ipResponse.json()
-          ipBlacklist.value = ipData || []
-        }
       } catch (error) {
-        console.error('加载配置失败:', error)
+        console.error('加载当前API密钥失败:', error)
       }
     }
 
-    onMounted(() => {
-      loadConfigs()
-    })
+    const toggleApiKeyVisibility = () => {
+      apiKeyConfig.value.showKey = !apiKeyConfig.value.showKey
+      const input = document.querySelector('.api-key-input input')
+      if (input) {
+        input.type = apiKeyConfig.value.showKey ? 'text' : 'password'
+      }
+    }
 
     return {
       config,
       uaConfigs,
       ipBlacklist,
+      apiKeyConfig,
       showImportModal,
       importJsonText,
       replaceExisting,
       saveBasicConfig,
       saveTelegramConfig,
       createBotMenu,
+      generateApiKey,
+      saveApiKey,
+      loadCurrentApiKey,
+      toggleApiKeyVisibility,
       addUAConfig,
       removeUAConfig,
       addPathLimit,
@@ -953,6 +1091,57 @@ export default {
 
 .checkbox-label input[type="checkbox"] {
   margin: 0;
+}
+
+/* API密钥管理样式 */
+.api-key-input {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.api-key-input input {
+  flex: 1;
+}
+
+.current-key-info {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  border: 1px solid #e9ecef;
+}
+
+.current-key-info h4 {
+  margin: 0 0 12px 0;
+  color: #333;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.key-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.key-info .label {
+  font-weight: 500;
+  color: #666;
+}
+
+.key-info .value {
+  color: #333;
+  font-family: monospace;
+  font-size: 14px;
+}
+
+.help-text {
+  color: #666;
+  font-size: 12px;
+  margin-top: 4px;
+  display: block;
 }
 
 </style>

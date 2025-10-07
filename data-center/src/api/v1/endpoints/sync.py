@@ -47,18 +47,9 @@ async def verify_api_key(x_api_key: str = Header(None)):
         logger.warning("Worker请求缺少API Key")
         raise HTTPException(status_code=401, detail="缺少API Key")
 
-    # 从数据库获取配置的API Key
-    web_config_service = WebConfigService()
-    system_settings = await web_config_service.get_system_settings()
-
-    # 支持多种API Key字段名
-    configured_api_key = None
-    if system_settings:
-        configured_api_key = (
-            system_settings.worker_api_key or
-            getattr(system_settings, 'data_center_api_key', None) or
-            getattr(system_settings, 'api_key', None)
-        )
+    # 从配置管理器获取API Key
+    from src.services.config_manager import config_manager
+    configured_api_key = config_manager.get_data_center_api_key()
 
     # 如果没有配置API Key，记录警告但允许通过（兼容模式）
     if not configured_api_key:
