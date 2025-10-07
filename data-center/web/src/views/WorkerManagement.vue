@@ -373,7 +373,7 @@
 </template>
 
 <script>
-import { authFetch } from '../utils/api.js'
+import { authFetch, getAuthHeaders } from '../utils/api.js'
 
 export default {
   name: 'WorkerManagement',
