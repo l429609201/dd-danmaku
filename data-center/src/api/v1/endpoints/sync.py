@@ -38,25 +38,39 @@ def get_config_service() -> ConfigService:
 async def verify_api_key(x_api_key: str = Header(None)):
     """验证API Key"""
     from src.services.web_config_service import WebConfigService
+    import logging
+
+    logger = logging.getLogger(__name__)
 
     # 如果没有提供API Key
     if not x_api_key:
+        logger.warning("Worker请求缺少API Key")
         raise HTTPException(status_code=401, detail="缺少API Key")
 
     # 从数据库获取配置的API Key
     web_config_service = WebConfigService()
     system_settings = await web_config_service.get_system_settings()
 
-    configured_api_key = system_settings.get('worker_api_key')
+    # 支持多种API Key字段名
+    configured_api_key = None
+    if system_settings:
+        configured_api_key = (
+            system_settings.worker_api_key or
+            getattr(system_settings, 'data_center_api_key', None) or
+            getattr(system_settings, 'api_key', None)
+        )
 
-    # 如果没有配置API Key，则拒绝请求
+    # 如果没有配置API Key，记录警告但允许通过（兼容模式）
     if not configured_api_key:
-        raise HTTPException(status_code=401, detail="服务器未配置API Key")
+        logger.warning("服务器未配置Worker API Key，允许通过（兼容模式）")
+        return x_api_key
 
     # 验证API Key
     if x_api_key != configured_api_key:
+        logger.error(f"API Key验证失败: 提供的Key={x_api_key[:8]}..., 配置的Key={configured_api_key[:8]}...")
         raise HTTPException(status_code=401, detail="无效的API Key")
 
+    logger.info("API Key验证成功")
     return x_api_key
 
 @router.post("/push-config", response_model=SyncResponse)

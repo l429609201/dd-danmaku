@@ -319,7 +319,11 @@ class WorkerSyncService:
         """处理Worker推送的日志数据"""
         try:
             if not logs_data:
+                logger.info(f"Worker {worker_id} 没有日志数据")
                 return True
+
+            logger.info(f"开始处理Worker {worker_id} 的 {len(logs_data)} 条日志")
+            logger.debug(f"日志数据示例: {logs_data[:2] if len(logs_data) > 0 else '无'}")
 
             db = self.db()
 

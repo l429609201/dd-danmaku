@@ -38,20 +38,27 @@ class SystemStatsService:
             process_memory = process.memory_info()
             process_cpu = process.cpu_percent()
 
+            # 安全获取网络连接数
+            try:
+                connections_count = len(process.net_connections())
+            except (psutil.AccessDenied, AttributeError):
+                # 在某些环境下可能没有权限或方法不可用
+                connections_count = 0
+
             # 数据库统计
             db_stats = await self._get_database_stats()
-            
+
             return {
                 "timestamp": datetime.now().isoformat(),
                 "uptime_seconds": (datetime.now() - self.start_time).total_seconds(),
-                
+
                 # CPU信息
                 "cpu": {
                     "usage_percent": cpu_percent,
                     "core_count": cpu_count,
                     "frequency_mhz": cpu_freq.current if cpu_freq else 0
                 },
-                
+
                 # 内存信息
                 "memory": {
                     "total_mb": round(memory.total / 1024 / 1024),
@@ -62,7 +69,7 @@ class SystemStatsService:
                     "swap_used_mb": round(swap.used / 1024 / 1024),
                     "swap_percent": swap.percent
                 },
-                
+
                 # 磁盘信息
                 "disk": {
                     "total_gb": round(disk.total / 1024 / 1024 / 1024, 2),
@@ -70,7 +77,7 @@ class SystemStatsService:
                     "free_gb": round(disk.free / 1024 / 1024 / 1024, 2),
                     "usage_percent": round((disk.used / disk.total) * 100, 2)
                 },
-                
+
                 # 网络信息
                 "network": {
                     "bytes_sent": network.bytes_sent,
@@ -78,16 +85,16 @@ class SystemStatsService:
                     "packets_sent": network.packets_sent,
                     "packets_recv": network.packets_recv
                 },
-                
+
                 # 进程信息
                 "process": {
                     "cpu_percent": process_cpu,
                     "memory_mb": round(process_memory.rss / 1024 / 1024),
                     "memory_percent": process.memory_percent(),
                     "threads": process.num_threads(),
-                    "connections": len(process.net_connections())
+                    "connections": connections_count
                 },
-                
+
                 # 数据库统计
                 "database": db_stats
             }
@@ -104,10 +111,11 @@ class SystemStatsService:
         """获取数据库统计"""
         try:
             # 使用同步数据库会话进行简单的连接测试
+            from sqlalchemy import text
             db = get_db_sync()
             try:
-                # 简单的连接测试
-                db.execute("SELECT 1")
+                # 简单的连接测试 - 使用text()包装原始SQL
+                db.execute(text("SELECT 1"))
                 return {
                     "status": "connected",
                     "connection_pool_size": 10,  # 根据实际配置
