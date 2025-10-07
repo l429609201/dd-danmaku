@@ -428,14 +428,18 @@ async def delete_worker(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/workers/current-api-key", response_model=ConfigResponse)
-async def get_current_api_key(
-    current_user: User = Depends(get_current_user)
-):
+async def get_current_api_key():
     """获取当前的API密钥"""
+    import logging
+    logger = logging.getLogger(__name__)
+
     try:
+        logger.info("🔑 开始获取当前API密钥")
+
         from src.services.config_manager import config_manager
 
         current_api_key = config_manager.get_data_center_api_key() or ""
+        logger.info(f"🔑 获取到的API密钥: {current_api_key[:8] + '...' if current_api_key else '未配置'} (长度: {len(current_api_key)})")
 
         return ConfigResponse(
             success=True,
@@ -443,20 +447,26 @@ async def get_current_api_key(
             data={"api_key": current_api_key}
         )
     except Exception as e:
+        logger.error(f"❌ 获取API密钥异常: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/workers/generate-api-key", response_model=ConfigResponse)
-async def generate_new_api_key(
-    current_user: User = Depends(get_current_user)
-):
+async def generate_new_api_key():
     """生成新的API密钥"""
+    import logging
+    logger = logging.getLogger(__name__)
+
     try:
+        logger.info("🔑 开始生成新的API密钥")
+
         from src.services.config_manager import config_manager
 
         new_api_key = generate_api_key()
+        logger.info(f"🔑 生成的API密钥: {new_api_key[:8]}... (长度: {len(new_api_key)})")
 
         # 使用config_manager统一管理API Key
         success = config_manager.set_data_center_api_key(new_api_key)
+        logger.info(f"🔑 API密钥保存结果: {'成功' if success else '失败'}")
 
         if success:
             return ConfigResponse(
@@ -467,6 +477,7 @@ async def generate_new_api_key(
         else:
             return ConfigResponse(success=False, message="API密钥生成失败")
     except Exception as e:
+        logger.error(f"❌ 生成API密钥异常: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/ua-configs")

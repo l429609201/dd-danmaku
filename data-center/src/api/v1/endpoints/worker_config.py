@@ -318,6 +318,11 @@ async def fetch_worker_stats(
         from src.services.config_manager import config_manager
         worker_api_key = config_manager.get_data_center_api_key() or ""
 
+        logger.info(f"📊 Worker统计API请求:")
+        logger.info(f"   - Worker URL: {worker_url}")
+        logger.info(f"   - API Key: {worker_api_key[:8] + '...' if worker_api_key else '未配置'}")
+        logger.info(f"   - API Key长度: {len(worker_api_key) if worker_api_key else 0}")
+
         # 从单个Worker获取统计数据
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
