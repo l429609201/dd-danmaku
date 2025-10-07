@@ -413,6 +413,25 @@ export default {
   },
 
   async mounted() {
+    // 导入认证检查函数
+    const { isLoggedIn } = await import('@/utils/api')
+
+    // 等待一小段时间确保认证状态已经恢复
+    await new Promise(resolve => setTimeout(resolve, 200))
+
+    // 检查是否已登录，如果未登录则不发起API请求
+    if (!isLoggedIn()) {
+      console.warn('用户未登录，跳过API请求，从本地缓存加载数据')
+      this.loadWorkersFromCache()
+
+      // 尝试从sessionStorage恢复API密钥
+      const savedApiKey = sessionStorage.getItem('worker_api_key')
+      if (savedApiKey) {
+        this.currentApiKey = savedApiKey
+      }
+      return
+    }
+
     // 优先从后端加载Worker列表
     await this.loadWorkersFromServer()
 
@@ -463,6 +482,10 @@ export default {
 
           // 同时保存到localStorage作为缓存
           localStorage.setItem('worker_list', JSON.stringify(this.workers))
+        } else if (response.status === 401) {
+          // 认证失败，静默处理，不显示错误
+          console.warn('认证失败，从本地缓存加载Worker列表')
+          this.loadWorkersFromCache()
         } else {
           console.warn('从服务器加载Worker列表失败，尝试从本地缓存加载')
           this.loadWorkersFromCache()
@@ -695,6 +718,9 @@ export default {
             // 同步到sessionStorage
             sessionStorage.setItem('worker_api_key', this.currentApiKey)
           }
+        } else if (response.status === 401) {
+          // 认证失败，静默处理
+          console.warn('认证失败，无法加载API密钥')
         }
       } catch (error) {
         console.error('加载API密钥失败:', error)
