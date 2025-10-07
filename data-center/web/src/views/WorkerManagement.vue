@@ -373,7 +373,7 @@
 </template>
 
 <script>
-import { authFetch, getAuthHeaders } from '../utils/api.js'
+import { authFetch } from '../utils/api.js'
 
 export default {
   name: 'WorkerManagement',
@@ -676,13 +676,9 @@ export default {
 
     async loadCurrentApiKey() {
       try {
-        // 从config_manager获取当前API密钥
-        const response = await fetch('/api/web-config/workers/current-api-key', {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-            ...getAuthHeaders()
-          }
+        // 使用authFetch获取当前API密钥
+        const response = await authFetch('/api/web-config/workers/current-api-key', {
+          method: 'GET'
         })
 
         if (response.ok) {
@@ -700,13 +696,9 @@ export default {
 
     async generateApiKey() {
       try {
-        // 调用后端API生成并保存API密钥
-        const response = await fetch('/api/web-config/workers/generate-api-key', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...getAuthHeaders()
-          }
+        // 使用authFetch调用后端API生成并保存API密钥
+        const response = await authFetch('/api/web-config/workers/generate-api-key', {
+          method: 'POST'
         })
 
         const result = await response.json()
