@@ -86,89 +86,75 @@
       </div>
     </div>
 
-    <!-- Worker限制情况 -->
-    <div class="worker-limits-section" v-if="workerLimits">
-      <div class="section-header">
-        <h2>🚦 Worker限制情况</h2>
-        <button @click="refreshWorkerLimits" :disabled="loading" class="btn btn-secondary">
-          {{ loading ? '刷新中...' : '🔄 刷新限制数据' }}
-        </button>
-      </div>
-
-      <div class="limits-grid">
-        <div class="limit-card">
-          <h3>📊 总体统计</h3>
-          <div class="stat-list">
-            <div class="stat-item">
-              <span class="stat-label">活跃计数器</span>
-              <span class="stat-value">{{ workerLimits.total_counters }}</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-label">活跃IP数</span>
-              <span class="stat-value">{{ workerLimits.active_ips }}</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="limit-card">
-          <h3>🎯 UA类型限制</h3>
-          <div class="ua-limits">
-            <div v-for="(uaStats, uaType) in workerLimits.ua_type_stats" :key="uaType" class="ua-item">
-              <div class="ua-header">{{ uaType }}</div>
-              <div class="ua-stats">
-                <span>活跃IP: {{ uaStats.active_ips }}</span>
-                <span>总请求: {{ uaStats.total_requests }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="limit-card">
-          <h3>🛤️ 路径限制</h3>
-          <div class="path-limits">
-            <div v-for="(pathStats, pathPattern) in workerLimits.path_limit_stats" :key="pathPattern" class="path-item">
-              <div class="path-header">{{ pathPattern }}</div>
-              <div class="path-stats">
-                <span>活跃IP: {{ pathStats.active_ips }}</span>
-                <span>总请求: {{ pathStats.total_requests }}</span>
-                <span>UA类型: {{ pathStats.ua_types }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 日志切换显示 -->
+    <!-- 系统日志预览 -->
     <div class="logs-section">
       <div class="section-header">
         <h2>📋 系统日志</h2>
         <div class="log-controls">
-          <select v-model="selectedLogType" @change="loadLogs" class="log-type-select">
-            <option value="all">所有日志</option>
-            <option value="worker">Worker日志</option>
-            <option value="system">系统日志</option>
-          </select>
-          <button @click="loadLogs" :disabled="loading" class="btn btn-secondary">
-            {{ loading ? '加载中...' : '🔄 刷新日志' }}
+          <button @click="showLogsModal = true" class="btn btn-primary">
+            📊 查看详细日志
           </button>
         </div>
       </div>
 
-      <div class="logs-container">
-        <div v-if="logs.length === 0" class="no-logs">
-          暂无日志数据
+      <div class="logs-preview">
+        <div v-if="recentLogs.length === 0" class="no-logs">
+          暂无最近日志
         </div>
         <div v-else class="log-list">
-          <div v-for="log in logs" :key="log.id" class="log-item" :class="`log-${log.level.toLowerCase()}`">
+          <div v-for="log in recentLogs.slice(0, 5)" :key="log.id" class="log-item" :class="`log-${log.level.toLowerCase()}`">
             <div class="log-header">
               <span class="log-time">{{ formatTime(log.created_at) }}</span>
               <span class="log-level">{{ log.level }}</span>
               <span class="log-source">{{ log.source || log.worker_id }}</span>
             </div>
             <div class="log-message">{{ log.message }}</div>
-            <div v-if="log.details && Object.keys(log.details).length > 0" class="log-details">
-              <pre>{{ JSON.stringify(log.details, null, 2) }}</pre>
+          </div>
+          <div v-if="recentLogs.length > 5" class="more-logs">
+            还有 {{ recentLogs.length - 5 }} 条日志，点击上方按钮查看全部
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 详细日志弹窗 -->
+    <div v-if="showLogsModal" class="modal-overlay" @click="showLogsModal = false">
+      <div class="modal-content" @click.stop>
+        <div class="modal-header">
+          <h2>📋 详细日志与参数</h2>
+          <button @click="showLogsModal = false" class="close-btn">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <!-- 日志控制 -->
+          <div class="log-controls">
+            <select v-model="selectedLogType" @change="loadLogs" class="log-type-select">
+              <option value="all">所有日志</option>
+              <option value="worker">Worker日志</option>
+              <option value="system">系统日志</option>
+            </select>
+            <button @click="loadLogs" :disabled="loading" class="btn btn-secondary">
+              {{ loading ? '加载中...' : '🔄 刷新日志' }}
+            </button>
+          </div>
+
+          <!-- 日志列表 -->
+          <div class="logs-container">
+            <div v-if="logs.length === 0" class="no-logs">
+              暂无日志数据
+            </div>
+            <div v-else class="log-list">
+              <div v-for="log in logs" :key="log.id" class="log-item" :class="`log-${log.level.toLowerCase()}`">
+                <div class="log-header">
+                  <span class="log-time">{{ formatTime(log.created_at) }}</span>
+                  <span class="log-level">{{ log.level }}</span>
+                  <span class="log-source">{{ log.source || log.worker_id }}</span>
+                </div>
+                <div class="log-message">{{ log.message }}</div>
+                <div v-if="log.details && Object.keys(log.details).length > 0" class="log-details">
+                  <pre>{{ JSON.stringify(log.details, null, 2) }}</pre>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -209,12 +195,11 @@ export default {
       uptime: '0分钟'
     })
 
-    // Worker限制数据
-    const workerLimits = ref(null)
-
     // 日志相关
     const logs = ref([])
+    const recentLogs = ref([])
     const selectedLogType = ref('all')
+    const showLogsModal = ref(false)
 
     const refreshStats = async () => {
       loading.value = true
@@ -250,21 +235,6 @@ export default {
       }
     }
 
-    // 刷新Worker限制数据
-    const refreshWorkerLimits = async () => {
-      try {
-        const response = await authFetch('/api/web-config/worker/stats')
-        if (response.ok) {
-          const data = await response.json()
-          if (data.success && data.stats && data.stats.rate_limit_stats) {
-            workerLimits.value = data.stats.rate_limit_stats
-          }
-        }
-      } catch (error) {
-        console.error('获取Worker限制数据失败:', error)
-      }
-    }
-
     // 加载日志
     const loadLogs = async () => {
       try {
@@ -284,6 +254,20 @@ export default {
       }
     }
 
+    // 加载最近日志（用于预览）
+    const loadRecentLogs = async () => {
+      try {
+        const response = await authFetch('/api/logs?limit=10')
+        if (response.ok) {
+          const data = await response.json()
+          recentLogs.value = data.logs || []
+        }
+      } catch (error) {
+        console.error('加载最近日志失败:', error)
+        recentLogs.value = []
+      }
+    }
+
     // 格式化时间
     const formatTime = (timeStr) => {
       if (!timeStr) return ''
@@ -296,7 +280,7 @@ export default {
 
     onMounted(() => {
       refreshStats()
-      refreshWorkerLimits()
+      loadRecentLogs()
       loadLogs()
     })
 
@@ -305,11 +289,12 @@ export default {
       loading,
       lastUpdate,
       refreshStats,
-      workerLimits,
-      refreshWorkerLimits,
       logs,
+      recentLogs,
       selectedLogType,
+      showLogsModal,
       loadLogs,
+      loadRecentLogs,
       formatTime
     }
   }
@@ -465,8 +450,8 @@ export default {
   font-size: 14px;
 }
 
-/* Worker限制样式 */
-.worker-limits-section, .logs-section {
+/* 日志样式 */
+.logs-section {
   margin-top: 24px;
   background: white;
   border-radius: 8px;
@@ -489,59 +474,89 @@ export default {
   font-weight: 600;
 }
 
-.limits-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 20px;
-  padding: 24px;
+.logs-preview {
+  padding: 16px 24px;
+  max-height: 300px;
+  overflow-y: auto;
 }
 
-.limit-card {
-  background: #f8f9fa;
-  border-radius: 6px;
-  padding: 16px;
-  border: 1px solid #e9ecef;
-}
-
-.limit-card h3 {
-  margin: 0 0 12px 0;
-  color: #333;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.ua-limits, .path-limits {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ua-item, .path-item {
-  background: white;
-  padding: 8px 12px;
-  border-radius: 4px;
-  border: 1px solid #dee2e6;
-}
-
-.ua-header, .path-header {
-  font-weight: 600;
-  color: #333;
-  font-size: 13px;
-  margin-bottom: 4px;
-}
-
-.ua-stats, .path-stats {
-  display: flex;
-  gap: 12px;
-  font-size: 12px;
+.more-logs {
+  text-align: center;
   color: #666;
+  font-style: italic;
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 4px;
+  margin-top: 8px;
 }
 
-/* 日志样式 */
+/* 弹窗样式 */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: white;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 1000px;
+  max-height: 80vh;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #f8f9fa;
+}
+
+.modal-header h2 {
+  margin: 0;
+  color: #333;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #666;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.close-btn:hover {
+  background: #e9ecef;
+  color: #333;
+}
+
+.modal-body {
+  padding: 24px;
+  overflow-y: auto;
+  max-height: calc(80vh - 80px);
+}
+
 .log-controls {
   display: flex;
   gap: 12px;
   align-items: center;
+  margin-bottom: 16px;
 }
 
 .log-type-select {
@@ -553,9 +568,12 @@ export default {
 }
 
 .logs-container {
-  max-height: 500px;
+  max-height: 400px;
   overflow-y: auto;
-  padding: 16px 24px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #f8f9fa;
+  padding: 16px;
 }
 
 .no-logs {
@@ -572,10 +590,11 @@ export default {
 }
 
 .log-item {
-  background: #f8f9fa;
+  background: white;
   border-radius: 6px;
   padding: 12px;
   border-left: 4px solid #dee2e6;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .log-item.log-error {

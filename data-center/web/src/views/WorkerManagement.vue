@@ -53,6 +53,9 @@
             <button @click="viewStats(worker)" class="btn btn-sm btn-outline" title="查看Worker统计">
               📊
             </button>
+            <button @click="viewWorkerLimits(worker)" class="btn btn-sm btn-info" title="查看Worker限制统计">
+              🚦
+            </button>
             <button @click="viewSystemStats" class="btn btn-sm btn-success" title="查看数据中心系统统计">
               🖥️
             </button>
@@ -121,6 +124,70 @@
       </div>
     </div>
 
+    <!-- Worker限制统计弹窗 -->
+    <div v-if="showWorkerLimitsModal" class="modal-overlay" @click="showWorkerLimitsModal = false">
+      <div class="modal-content large" @click.stop>
+        <div class="modal-header">
+          <h2>🚦 Worker限制统计 - {{ selectedWorker?.name }}</h2>
+          <button @click="showWorkerLimitsModal = false" class="close-btn">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="stats-controls">
+            <button @click="refreshWorkerLimits" :disabled="loading" class="btn btn-primary">
+              {{ loading ? '刷新中...' : '🔄 刷新限制数据' }}
+            </button>
+          </div>
+
+          <div v-if="workerLimits" class="limits-grid">
+            <div class="limit-card">
+              <h3>📊 总体统计</h3>
+              <div class="stat-list">
+                <div class="stat-item">
+                  <span class="stat-label">活跃计数器</span>
+                  <span class="stat-value">{{ workerLimits.total_counters }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-label">活跃IP数</span>
+                  <span class="stat-value">{{ workerLimits.active_ips }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="limit-card">
+              <h3>🎯 UA类型限制</h3>
+              <div class="ua-limits">
+                <div v-for="(uaStats, uaType) in workerLimits.ua_type_stats" :key="uaType" class="ua-item">
+                  <div class="ua-header">{{ uaType }}</div>
+                  <div class="ua-stats">
+                    <span>活跃IP: {{ uaStats.active_ips }}</span>
+                    <span>总请求: {{ uaStats.total_requests }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="limit-card">
+              <h3>🛤️ 路径限制</h3>
+              <div class="path-limits">
+                <div v-for="(pathStats, pathPattern) in workerLimits.path_limit_stats" :key="pathPattern" class="path-item">
+                  <div class="path-header">{{ pathPattern }}</div>
+                  <div class="path-stats">
+                    <span>活跃IP: {{ pathStats.active_ips }}</span>
+                    <span>总请求: {{ pathStats.total_requests }}</span>
+                    <span>UA类型: {{ pathStats.ua_types }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="no-data">
+            暂无Worker限制数据
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 消息提示 -->
     <div v-if="message" :class="['toast', message.type]">
       {{ message.text }}
@@ -144,7 +211,12 @@ export default {
         url: '',
         description: ''
       },
-      heartbeatTimer: null
+      heartbeatTimer: null,
+      // Worker限制统计相关
+      showWorkerLimitsModal: false,
+      selectedWorker: null,
+      workerLimits: null,
+      loading: false
     }
   },
 
@@ -274,6 +346,37 @@ export default {
         }
       } catch (error) {
         this.showMessage(`获取 ${worker.name} 统计数据异常: ${error.message}`, 'error')
+      }
+    },
+
+    // 查看Worker限制统计
+    async viewWorkerLimits(worker) {
+      this.selectedWorker = worker
+      this.showWorkerLimitsModal = true
+      await this.refreshWorkerLimits()
+    },
+
+    // 刷新Worker限制数据
+    async refreshWorkerLimits() {
+      this.loading = true
+      try {
+        const response = await authFetch('/api/web-config/worker/stats')
+        if (response.ok) {
+          const data = await response.json()
+          if (data.success && data.stats && data.stats.rate_limit_stats) {
+            this.workerLimits = data.stats.rate_limit_stats
+            this.showMessage('Worker限制数据刷新成功', 'success')
+          } else {
+            this.showMessage('获取Worker限制数据失败', 'error')
+          }
+        } else {
+          this.showMessage(`获取Worker限制数据失败: HTTP ${response.status}`, 'error')
+        }
+      } catch (error) {
+        console.error('获取Worker限制数据失败:', error)
+        this.showMessage(`获取Worker限制数据异常: ${error.message}`, 'error')
+      } finally {
+        this.loading = false
       }
     },
 
@@ -1156,5 +1259,152 @@ export default {
 .dialog-actions .btn {
   padding: 8px 16px;
   font-size: 14px;
+}
+
+/* Worker限制统计弹窗样式 */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: white;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 800px;
+  max-height: 80vh;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.modal-content.large {
+  max-width: 1000px;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #f8f9fa;
+}
+
+.modal-header h2 {
+  margin: 0;
+  color: #333;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #666;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.close-btn:hover {
+  background: #e9ecef;
+  color: #333;
+}
+
+.modal-body {
+  padding: 24px;
+  overflow-y: auto;
+  max-height: calc(80vh - 80px);
+}
+
+.stats-controls {
+  margin-bottom: 20px;
+}
+
+.limits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.limit-card {
+  background: #f8f9fa;
+  border-radius: 6px;
+  padding: 16px;
+  border: 1px solid #e9ecef;
+}
+
+.limit-card h3 {
+  margin: 0 0 12px 0;
+  color: #333;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.stat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stat-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+}
+
+.stat-label {
+  color: #666;
+  font-size: 13px;
+}
+
+.stat-value {
+  font-weight: 600;
+  color: #333;
+}
+
+.ua-limits, .path-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ua-item, .path-item {
+  background: white;
+  padding: 8px 12px;
+  border-radius: 4px;
+  border: 1px solid #dee2e6;
+}
+
+.ua-header, .path-header {
+  font-weight: 600;
+  color: #333;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.ua-stats, .path-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: #666;
+}
+
+.no-data {
+  text-align: center;
+  color: #666;
+  padding: 40px;
+  font-style: italic;
 }
 </style>

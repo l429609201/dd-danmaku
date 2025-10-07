@@ -299,6 +299,11 @@ async function syncStatsToDataCenter() {
     try {
         const stats = await getWorkerStats();
 
+        console.log('📊 开始定时同步统计数据到数据中心...');
+        console.log('📋 当前内存日志数量:', memoryCache.logs.length);
+        console.log('🔑 使用API Key:', DATA_CENTER_CONFIG.apiKey ? `${DATA_CENTER_CONFIG.apiKey.substring(0, 8)}...` : '未设置');
+        console.log('🎯 数据中心URL:', DATA_CENTER_CONFIG.url);
+
         const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/sync/stats`, {
             method: 'POST',
             headers: {
@@ -321,6 +326,9 @@ async function syncStatsToDataCenter() {
         });
 
         if (response.ok) {
+            const responseData = await response.json();
+            console.log('📥 数据中心响应:', responseData);
+
             DATA_CENTER_CONFIG.lastStatsSync = Date.now();
             const logCount = memoryCache.logs.length;
             console.log(`✅ 统计数据、配置状态和日志同步成功 (${logCount}条日志)`);
@@ -328,13 +336,14 @@ async function syncStatsToDataCenter() {
                 data_center_url: DATA_CENTER_CONFIG.url,
                 worker_id: DATA_CENTER_CONFIG.workerId,
                 stats_count: Object.keys(stats).length,
-                logs_count: logCount
+                logs_count: logCount,
+                response: responseData
             });
 
             // 同步成功后，清理已发送的日志（保留最近的一些日志）
-            if (memoryCache.logs.length > 100) {
-                memoryCache.logs = memoryCache.logs.slice(-50); // 只保留最近50条
-                console.log('🧹 已清理旧日志，保留最近50条');
+            if (memoryCache.logs.length > 200) {
+                memoryCache.logs = memoryCache.logs.slice(-100); // 保留最近100条
+                console.log('🧹 已清理旧日志，保留最近100条');
             }
         } else {
             console.error('❌ 定时同步失败，HTTP状态:', response.status);
