@@ -86,36 +86,7 @@
       </div>
     </div>
 
-    <!-- 系统日志预览 -->
-    <div class="logs-section">
-      <div class="section-header">
-        <h2>📋 系统日志</h2>
-        <div class="log-controls">
-          <button @click="showLogsModal = true" class="btn btn-primary">
-            📊 查看详细日志
-          </button>
-        </div>
-      </div>
 
-      <div class="logs-preview">
-        <div v-if="recentLogs.length === 0" class="no-logs">
-          暂无最近日志
-        </div>
-        <div v-else class="log-list">
-          <div v-for="log in recentLogs.slice(0, 5)" :key="log.id" class="log-item" :class="`log-${log.level.toLowerCase()}`">
-            <div class="log-header">
-              <span class="log-time">{{ formatTime(log.created_at) }}</span>
-              <span class="log-level">{{ log.level }}</span>
-              <span class="log-source">{{ log.source || log.worker_id }}</span>
-            </div>
-            <div class="log-message">{{ log.message }}</div>
-          </div>
-          <div v-if="recentLogs.length > 5" class="more-logs">
-            还有 {{ recentLogs.length - 5 }} 条日志，点击上方按钮查看全部
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- 详细日志弹窗 -->
     <div v-if="showLogsModal" class="modal-overlay" @click="showLogsModal = false">
@@ -197,7 +168,6 @@ export default {
 
     // 日志相关
     const logs = ref([])
-    const recentLogs = ref([])
     const selectedLogType = ref('all')
     const showLogsModal = ref(false)
 
@@ -254,19 +224,7 @@ export default {
       }
     }
 
-    // 加载最近日志（用于预览）
-    const loadRecentLogs = async () => {
-      try {
-        const response = await authFetch('/api/logs?limit=10')
-        if (response.ok) {
-          const data = await response.json()
-          recentLogs.value = data.logs || []
-        }
-      } catch (error) {
-        console.error('加载最近日志失败:', error)
-        recentLogs.value = []
-      }
-    }
+
 
     // 格式化时间
     const formatTime = (timeStr) => {
@@ -280,7 +238,6 @@ export default {
 
     onMounted(() => {
       refreshStats()
-      loadRecentLogs()
       loadLogs()
     })
 
@@ -290,11 +247,9 @@ export default {
       lastUpdate,
       refreshStats,
       logs,
-      recentLogs,
       selectedLogType,
       showLogsModal,
       loadLogs,
-      loadRecentLogs,
       formatTime
     }
   }
@@ -450,45 +405,7 @@ export default {
   font-size: 14px;
 }
 
-/* 日志样式 */
-.logs-section {
-  margin-top: 24px;
-  background: white;
-  border-radius: 8px;
-  border: 1px solid #e0e0e0;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-}
 
-.section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px 24px;
-  border-bottom: 1px solid #e0e0e0;
-}
-
-.section-header h2 {
-  margin: 0;
-  color: #333;
-  font-size: 18px;
-  font-weight: 600;
-}
-
-.logs-preview {
-  padding: 16px 24px;
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.more-logs {
-  text-align: center;
-  color: #666;
-  font-style: italic;
-  padding: 12px;
-  background: #f8f9fa;
-  border-radius: 4px;
-  margin-top: 8px;
-}
 
 /* 弹窗样式 */
 .modal-overlay {
