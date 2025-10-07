@@ -42,26 +42,34 @@ async def verify_api_key(x_api_key: str = Header(None)):
 
     logger = logging.getLogger(__name__)
 
+    logger.info(f"🔐 Worker API Key验证开始")
+    logger.info(f"   - 提供的Key: {x_api_key[:8] + '...' if x_api_key else '未提供'}")
+
     # 如果没有提供API Key
     if not x_api_key:
-        logger.warning("Worker请求缺少API Key")
+        logger.warning("❌ Worker请求缺少X-API-Key头部")
         raise HTTPException(status_code=401, detail="缺少API Key")
 
-    # 从配置管理器获取Worker API Key（用于验证Worker访问数据中心的请求）
+    # 从配置管理器获取API Key
     from src.services.config_manager import config_manager
     configured_api_key = config_manager.get_data_center_api_key()
 
+    logger.info(f"   - 配置的Key: {configured_api_key[:8] + '...' if configured_api_key else '未配置'}")
+
     # 如果没有配置API Key，记录警告但允许通过（兼容模式）
     if not configured_api_key:
-        logger.warning("服务器未配置Worker API Key，允许通过（兼容模式）")
+        logger.warning("⚠️ 服务器未配置Worker API Key，允许通过（兼容模式）")
         return x_api_key
 
     # 验证API Key
     if x_api_key != configured_api_key:
-        logger.error(f"API Key验证失败: 提供的Key={x_api_key[:8]}..., 配置的Key={configured_api_key[:8]}...")
+        logger.error(f"❌ API Key验证失败:")
+        logger.error(f"   - 提供的Key: {x_api_key[:8]}...")
+        logger.error(f"   - 配置的Key: {configured_api_key[:8]}...")
+        logger.error(f"   - Key长度: 提供={len(x_api_key)}, 配置={len(configured_api_key)}")
         raise HTTPException(status_code=401, detail="无效的API Key")
 
-    logger.info("API Key验证成功")
+    logger.info("✅ API Key验证成功")
     return x_api_key
 
 @router.post("/push-config", response_model=SyncResponse)

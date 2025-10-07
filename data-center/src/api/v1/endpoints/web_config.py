@@ -297,6 +297,8 @@ async def get_workers(
 ):
     """获取所有Worker配置"""
     try:
+        from src.services.config_manager import config_manager
+
         # 从系统设置中获取worker配置
         settings = await web_config_service.get_system_settings()
         if not settings:
@@ -304,7 +306,8 @@ async def get_workers(
 
         # 只返回单个Worker配置
         worker_endpoint = settings.worker_endpoints or ""
-        worker_api_key = settings.worker_api_key or ""
+        # 使用config_manager统一获取API Key
+        worker_api_key = config_manager.get_data_center_api_key() or ""
 
         if worker_endpoint:
             # 只取第一个端点作为主Worker
@@ -383,8 +386,11 @@ async def update_worker(
             update_data = {"worker_endpoints": ','.join(endpoints)}
 
             # 如果需要重新生成API密钥
+            new_api_key = None
             if worker_data.api_key == "regenerate":
-                update_data["worker_api_key"] = generate_api_key()
+                from src.services.config_manager import config_manager
+                new_api_key = generate_api_key()
+                config_manager.set_data_center_api_key(new_api_key)
 
             success = await web_config_service.update_system_settings(update_data)
 
@@ -392,7 +398,7 @@ async def update_worker(
                 return ConfigResponse(
                     success=True,
                     message="Worker配置更新成功",
-                    data={"api_key": update_data.get("worker_api_key")}
+                    data={"api_key": new_api_key} if new_api_key else {}
                 )
             else:
                 return ConfigResponse(success=False, message="Worker配置更新失败")
@@ -421,18 +427,36 @@ async def delete_worker(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/workers/current-api-key", response_model=ConfigResponse)
+async def get_current_api_key(
+    current_user: User = Depends(get_current_user)
+):
+    """获取当前的API密钥"""
+    try:
+        from src.services.config_manager import config_manager
+
+        current_api_key = config_manager.get_data_center_api_key() or ""
+
+        return ConfigResponse(
+            success=True,
+            message="API密钥获取成功",
+            data={"api_key": current_api_key}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/workers/generate-api-key", response_model=ConfigResponse)
 async def generate_new_api_key(
-    current_user: User = Depends(get_current_user),
-    web_config_service: WebConfigService = Depends(get_web_config_service)
+    current_user: User = Depends(get_current_user)
 ):
     """生成新的API密钥"""
     try:
+        from src.services.config_manager import config_manager
+
         new_api_key = generate_api_key()
 
-        success = await web_config_service.update_system_settings({
-            "worker_api_key": new_api_key
-        })
+        # 使用config_manager统一管理API Key
+        success = config_manager.set_data_center_api_key(new_api_key)
 
         if success:
             return ConfigResponse(

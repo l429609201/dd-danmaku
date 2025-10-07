@@ -1070,16 +1070,35 @@ async function checkAccess(request, targetApiPath) {
     const apiPath = targetApiPath; // 使用传入的目标API路径
     const ACCESS_CONFIG = getAccessConfig();
 
+    // 打印访问控制检查开始信息
+    console.log(`🔍 [${clientIP}] 访问控制检查开始:`);
+    console.log(`   - User-Agent: ${userAgent}`);
+    console.log(`   - API路径: ${apiPath}`);
+    console.log(`   - 可用UA配置: ${Object.keys(ACCESS_CONFIG.userAgentLimits).join(', ')}`);
+
     // 1. 识别User-Agent类型并获取对应限制
     const uaConfig = identifyUserAgent(userAgent, ACCESS_CONFIG);
     if (!uaConfig) {
+        console.log(`❌ [${clientIP}] UA识别失败: 未找到匹配的UA配置`);
+        console.log(`   - 请求UA: ${userAgent}`);
+        console.log(`   - 配置的UA列表:`);
+        Object.entries(ACCESS_CONFIG.userAgentLimits).forEach(([key, config]) => {
+            console.log(`     * ${key}: ${config.userAgent || 'N/A'}`);
+        });
         return { allowed: false, reason: '禁止访问的UA', status: 403 };
     }
 
+    console.log(`✅ [${clientIP}] UA识别成功: ${uaConfig.type}`);
+    console.log(`   - 匹配的UA配置: ${JSON.stringify(uaConfig)}`);
+    console.log(`   - 最大请求数: ${uaConfig.maxRequests || 'N/A'}`);
+    console.log(`   - 时间窗口: ${uaConfig.windowMs || 'N/A'}ms`);
+
     // 2. 基于内存的频率限制（全局限制）
+    console.log(`🔄 [${clientIP}] 开始频率限制检查 (UA类型: ${uaConfig.type})`);
     const rateLimitCheck = checkMemoryRateLimit(clientIP, uaConfig.type, uaConfig);
 
     if (!rateLimitCheck.allowed) {
+        console.log(`❌ [${clientIP}] 频率限制检查失败: ${rateLimitCheck.reason}`);
         // 记录频率限制日志
         addMemoryLog('warn', '频率限制触发', {
             ip: clientIP,
@@ -1092,10 +1111,16 @@ async function checkAccess(request, targetApiPath) {
         return { allowed: false, reason: rateLimitCheck.reason, status: 429 };
     }
 
+    console.log(`📊 [${clientIP}] 频率限制检查结果: 通过 (${rateLimitCheck.count}/${rateLimitCheck.limit})`);
+
     // 3. 路径特定限制检查（基于IP+UA类型+路径的组合限制）
+    console.log(`🛣️ [${clientIP}] 开始路径特定限制检查`);
     if (uaConfig.pathSpecificLimits && Object.keys(uaConfig.pathSpecificLimits).length > 0) {
+        console.log(`   - 路径特定限制配置: ${JSON.stringify(uaConfig.pathSpecificLimits)}`);
         for (const [pathPattern, pathLimit] of Object.entries(uaConfig.pathSpecificLimits)) {
+            console.log(`   - 检查路径模式: ${pathPattern} (当前路径: ${apiPath})`);
             if (apiPath.includes(pathPattern)) {
+                console.log(`   - 路径匹配! 应用路径特定限制: ${pathLimit.maxRequestsPerHour || 50}/小时`);
                 // 使用IP+UA类型+路径的组合作为限制键，确保每个IP在每个UA类型下的每个路径都有独立的限制
                 const pathRateLimitCheck = checkMemoryRateLimit(
                     clientIP,
@@ -1107,6 +1132,7 @@ async function checkAccess(request, targetApiPath) {
                 );
 
                 if (!pathRateLimitCheck.allowed) {
+                    console.log(`❌ [${clientIP}] 路径特定频率限制失败: ${pathRateLimitCheck.reason}`);
                     addMemoryLog('warn', '路径特定频率限制触发', {
                         ip: clientIP,
                         userAgent,
@@ -1124,13 +1150,17 @@ async function checkAccess(request, targetApiPath) {
                         status: 429
                     };
                 }
+                console.log(`✅ [${clientIP}] 路径特定频率限制检查通过: ${pathRateLimitCheck.count}/${pathRateLimitCheck.limit}`);
                 break; // 只检查第一个匹配的路径模式
             }
         }
+    } else {
+        console.log(`   - 无路径特定限制配置`);
     }
 
 
 
+    console.log(`🎉 [${clientIP}] 访问控制检查全部通过!`);
     return { allowed: true, uaConfig: uaConfig, apiPath: apiPath };
 }
 
