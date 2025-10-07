@@ -230,6 +230,9 @@ export default {
       this.currentApiKey = savedApiKey
     }
 
+    // 进入页面时立即请求一次Worker状态
+    await this.checkWorkerStatus()
+
     // 启动心跳检查
     this.startHeartbeat()
   },
@@ -680,13 +683,12 @@ export default {
     },
 
     startHeartbeat() {
-      // 每30秒检查一次Worker状态
+      // 每10分钟检查一次Worker状态
       this.heartbeatTimer = setInterval(async () => {
         await this.checkWorkerStatus()
-      }, 30000)
+      }, 600000) // 10分钟 = 600000毫秒
 
-      // 立即执行一次
-      this.checkWorkerStatus()
+      // 注意：不在这里立即执行，因为mounted中已经执行过了
     },
 
     async checkWorkerStatus() {
