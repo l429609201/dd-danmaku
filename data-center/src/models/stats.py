@@ -29,7 +29,26 @@ class RequestStats(Base):
     # 流量统计
     total_bytes_sent = Column(BigInteger, default=0, comment="发送字节数")
     total_bytes_received = Column(BigInteger, default=0, comment="接收字节数")
-    
+
+    # 密钥使用统计
+    secret1_count = Column(BigInteger, default=0, comment="密钥1使用次数")
+    secret2_count = Column(BigInteger, default=0, comment="密钥2使用次数")
+    current_secret = Column(String(10), default='1', comment="当前使用的密钥")
+
+    # Worker运行状态统计
+    pending_requests = Column(BigInteger, default=0, comment="待处理请求数")
+    memory_cache_size = Column(BigInteger, default=0, comment="内存缓存大小")
+    logs_count = Column(BigInteger, default=0, comment="日志数量")
+    uptime = Column(BigInteger, default=0, comment="运行时间（毫秒）")
+
+    # 配置统计
+    ua_configs_count = Column(Integer, default=0, comment="UA配置数量")
+    ip_blacklist_count = Column(Integer, default=0, comment="IP黑名单数量")
+
+    # 频率限制统计
+    rate_limit_counters = Column(Integer, default=0, comment="频率限制计数器数量")
+    active_ips_count = Column(Integer, default=0, comment="活跃IP数量")
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), comment="更新时间")
     
@@ -51,6 +70,17 @@ class RequestStats(Base):
             "min_response_time": self.min_response_time,
             "total_bytes_sent": self.total_bytes_sent,
             "total_bytes_received": self.total_bytes_received,
+            "secret1_count": self.secret1_count,
+            "secret2_count": self.secret2_count,
+            "current_secret": self.current_secret,
+            "pending_requests": self.pending_requests,
+            "memory_cache_size": self.memory_cache_size,
+            "logs_count": self.logs_count,
+            "uptime": self.uptime,
+            "ua_configs_count": self.ua_configs_count,
+            "ip_blacklist_count": self.ip_blacklist_count,
+            "rate_limit_counters": self.rate_limit_counters,
+            "active_ips_count": self.active_ips_count,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }

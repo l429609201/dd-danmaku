@@ -591,6 +591,26 @@ function getRateLimitStats() {
         path_limit_stats: {}
     };
 
+    // 首先从配置中添加所有配置的路径限制（即使没有实际请求）
+    if (memoryCache.configCache.uaConfigs) {
+        Object.values(memoryCache.configCache.uaConfigs).forEach(uaConfig => {
+            if (uaConfig.pathLimits && Array.isArray(uaConfig.pathLimits)) {
+                uaConfig.pathLimits.forEach(pathLimit => {
+                    const pathPattern = pathLimit.path;
+                    if (pathPattern && !stats.path_limit_stats[pathPattern]) {
+                        stats.path_limit_stats[pathPattern] = {
+                            active_ips: new Set(),
+                            total_requests: 0,
+                            ua_types: new Set(),
+                            configured_limit: pathLimit.maxRequestsPerHour || 50,
+                            ua_type: uaConfig.type || 'Unknown'
+                        };
+                    }
+                });
+            }
+        });
+    }
+
     // 分析当前的频率限制计数器
     for (const [key, counter] of memoryCache.rateLimitCounts.entries()) {
         const parts = key.split('-');
@@ -617,7 +637,9 @@ function getRateLimitStats() {
                     stats.path_limit_stats[pathPattern] = {
                         active_ips: new Set(),
                         total_requests: 0,
-                        ua_types: new Set()
+                        ua_types: new Set(),
+                        configured_limit: 50, // 默认限制
+                        ua_type: uaType
                     };
                 }
                 stats.path_limit_stats[pathPattern].active_ips.add(ip);
@@ -636,6 +658,7 @@ function getRateLimitStats() {
         const pathStats = stats.path_limit_stats[path];
         pathStats.active_ips = pathStats.active_ips.size;
         pathStats.ua_types = pathStats.ua_types.size;
+        // 保留 configured_limit 和 ua_type 字段
     });
 
     return stats;

@@ -192,13 +192,20 @@
               <h3>🛤️ 路径限制</h3>
               <div class="path-limits">
                 <div v-for="(pathStats, pathPattern) in workerLimits.path_limit_stats" :key="pathPattern" class="path-item">
-                  <div class="path-header">{{ pathPattern }}</div>
+                  <div class="path-header">
+                    {{ pathPattern }}
+                    <span class="path-limit-badge">{{ pathStats.configured_limit || 50 }}/小时</span>
+                  </div>
                   <div class="path-stats">
                     <span>活跃IP: {{ pathStats.active_ips }}</span>
                     <span>总请求: {{ pathStats.total_requests }}</span>
                     <span>UA类型: {{ pathStats.ua_types }}</span>
+                    <span v-if="pathStats.ua_type">类型: {{ pathStats.ua_type }}</span>
                   </div>
                 </div>
+              </div>
+              <div v-if="Object.keys(workerLimits.path_limit_stats || {}).length === 0" class="no-path-limits">
+                暂无配置的路径限制
               </div>
             </div>
           </div>
@@ -1754,6 +1761,28 @@ export default {
   color: #333;
   font-size: 13px;
   margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.path-limit-badge {
+  background: #007bff;
+  color: white;
+  padding: 2px 6px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.no-path-limits {
+  text-align: center;
+  padding: 20px;
+  color: #666;
+  font-style: italic;
+  background: #f8f9fa;
+  border-radius: 4px;
+  border: 1px dashed #dee2e6;
 }
 
 .ua-stats, .path-stats {
