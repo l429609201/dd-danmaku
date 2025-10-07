@@ -521,7 +521,9 @@ async function getWorkerStats() {
                 rotation_limit: SECRET_ROTATION_LIMIT
             },
             // 频率限制统计
-            rate_limit_stats: getRateLimitStats()
+            rate_limit_stats: getRateLimitStats(),
+            // 内存日志（最近的日志）
+            logs: memoryCache.logs.slice(-20) // 返回最近20条日志
         };
     } catch (error) {
         console.error('获取统计数据失败:', error);

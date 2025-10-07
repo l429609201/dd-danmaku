@@ -600,3 +600,59 @@ async def get_worker_stats(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/worker/realtime-stats", response_model=Dict[str, Any])
+async def get_worker_realtime_stats(
+    current_user: User = Depends(get_current_user),
+    web_config_service: WebConfigService = Depends(get_web_config_service)
+):
+    """获取Worker实时统计数据（用于弹窗显示）"""
+    try:
+        import httpx
+        import asyncio
+
+        # 从系统设置中获取worker配置
+        settings = await web_config_service.get_system_settings()
+        if not settings or not settings.worker_endpoints:
+            return {
+                "success": False,
+                "message": "未配置Worker端点"
+            }
+
+        # 获取第一个Worker端点
+        worker_endpoint = settings.worker_endpoints.split(',')[0].strip()
+        if not worker_endpoint.startswith('http'):
+            worker_endpoint = f"https://{worker_endpoint}"
+
+        # 直接从Worker获取实时统计数据
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{worker_endpoint}/worker-api/stats")
+
+            if response.status_code == 200:
+                stats_data = response.json()
+                return {
+                    "success": True,
+                    "stats": stats_data,
+                    "worker_endpoint": worker_endpoint,
+                    "timestamp": stats_data.get("timestamp"),
+                    "last_update": "实时数据"
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": f"Worker响应错误: HTTP {response.status_code}",
+                    "worker_endpoint": worker_endpoint
+                }
+
+    except asyncio.TimeoutError:
+        return {
+            "success": False,
+            "message": "Worker响应超时",
+            "worker_endpoint": worker_endpoint
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"获取实时统计数据失败: {str(e)}",
+            "worker_endpoint": worker_endpoint
+        }
