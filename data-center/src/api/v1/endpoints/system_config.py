@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from src.services.config_manager import config_manager
-from src.middleware.auth_middleware import get_current_user
+from src.api.v1.endpoints.auth import get_current_user
 from src.models.user import User
 
 router = APIRouter()
