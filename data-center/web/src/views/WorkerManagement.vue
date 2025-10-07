@@ -50,7 +50,7 @@
             <button @click="testConnection(worker)" class="btn btn-sm btn-outline" title="测试连接">
               🔗
             </button>
-            <button @click="viewStats(worker)" class="btn btn-sm btn-outline" title="查看Worker统计">
+            <button @click="viewRealtimeStats(worker)" class="btn btn-sm btn-outline" title="查看Worker实时统计">
               📊
             </button>
             <button @click="viewWorkerLimits(worker)" class="btn btn-sm btn-info" title="查看Worker限制统计">
@@ -188,6 +188,161 @@
       </div>
     </div>
 
+    <!-- Worker实时统计弹窗 -->
+    <div v-if="showRealtimeStatsModal" class="modal-overlay" @click="showRealtimeStatsModal = false">
+      <div class="modal-content large" @click.stop>
+        <div class="modal-header">
+          <h2>📊 Worker实时统计 - {{ selectedWorker?.name }}</h2>
+          <button @click="showRealtimeStatsModal = false" class="close-btn">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="stats-controls">
+            <button @click="refreshRealtimeStats" :disabled="realtimeLoading" class="btn btn-primary">
+              {{ realtimeLoading ? '获取中...' : '🔄 刷新实时数据' }}
+            </button>
+            <span v-if="realtimeStats" class="last-update">
+              最后更新: {{ realtimeStats.last_update }}
+            </span>
+          </div>
+
+          <div v-if="realtimeStats && realtimeStats.success" class="realtime-stats-grid">
+            <!-- 基础统计 -->
+            <div class="stats-section">
+              <h3>📈 基础统计</h3>
+              <div class="stats-row">
+                <div class="stat-item">
+                  <span class="label">Worker ID:</span>
+                  <span class="value">{{ realtimeStats.stats.worker_id }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="label">总请求数:</span>
+                  <span class="value">{{ realtimeStats.stats.requests_total || 0 }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="label">待处理请求:</span>
+                  <span class="value">{{ realtimeStats.stats.pending_requests || 0 }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="label">内存缓存大小:</span>
+                  <span class="value">{{ realtimeStats.stats.memory_cache_size || 0 }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 秘钥轮换统计 -->
+            <div v-if="realtimeStats.stats.secret_rotation" class="stats-section">
+              <h3>🔑 秘钥轮换统计</h3>
+              <div class="stats-row">
+                <div class="stat-item">
+                  <span class="label">秘钥1使用次数:</span>
+                  <span class="value">{{ realtimeStats.stats.secret_rotation.secret1_count || 0 }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="label">秘钥2使用次数:</span>
+                  <span class="value">{{ realtimeStats.stats.secret_rotation.secret2_count || 0 }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="label">当前使用秘钥:</span>
+                  <span class="value">{{ realtimeStats.stats.secret_rotation.current || 'N/A' }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="label">轮换限制:</span>
+                  <span class="value">{{ realtimeStats.stats.secret_rotation.rotation_limit || 0 }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 频率限制统计 -->
+            <div v-if="realtimeStats.stats.rate_limit_stats" class="stats-section">
+              <h3>⏱️ 频率限制统计</h3>
+              <div class="stats-row">
+                <div class="stat-item">
+                  <span class="label">总计数器:</span>
+                  <span class="value">{{ realtimeStats.stats.rate_limit_stats.total_counters || 0 }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="label">活跃IP数:</span>
+                  <span class="value">{{ Object.keys(realtimeStats.stats.rate_limit_stats.active_ips || {}).length }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 配置统计 -->
+            <div v-if="realtimeStats.stats.config_stats" class="stats-section">
+              <h3>⚙️ 配置统计</h3>
+              <div class="stats-row">
+                <div class="stat-item">
+                  <span class="label">UA配置数量:</span>
+                  <span class="value">{{ realtimeStats.stats.config_stats.ua_configs_count || 0 }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="label">IP黑名单数量:</span>
+                  <span class="value">{{ realtimeStats.stats.config_stats.ip_blacklist_count || 0 }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="label">最后配置更新:</span>
+                  <span class="value">{{ formatTimestamp(realtimeStats.stats.config_stats.last_config_update) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 日志统计和实时日志 -->
+            <div class="stats-section">
+              <h3>📋 日志统计和实时日志</h3>
+              <div class="stats-row">
+                <div class="stat-item">
+                  <span class="label">日志数量:</span>
+                  <span class="value">{{ realtimeStats.stats.logs_count || 0 }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="label">运行时间:</span>
+                  <span class="value">{{ formatDuration(realtimeStats.stats.uptime) }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="label">最后同步:</span>
+                  <span class="value">{{ formatTimestamp(realtimeStats.stats.last_sync_time) }}</span>
+                </div>
+              </div>
+
+              <!-- 实时日志显示 -->
+              <div class="realtime-logs">
+                <div class="logs-header">
+                  <h4>🔄 实时日志 (最近10条)</h4>
+                  <button @click="refreshRealtimeLogs" :disabled="logsLoading" class="btn btn-sm btn-outline">
+                    {{ logsLoading ? '获取中...' : '刷新日志' }}
+                  </button>
+                </div>
+
+                <div v-if="realtimeLogs && realtimeLogs.length > 0" class="logs-container">
+                  <div v-for="(log, index) in realtimeLogs" :key="index" :class="['log-entry', `log-${log.level.toLowerCase()}`]">
+                    <span class="log-time">{{ formatLogTime(log.timestamp) }}</span>
+                    <span class="log-level">{{ log.level }}</span>
+                    <span class="log-message">{{ log.message }}</span>
+                    <div v-if="log.data && Object.keys(log.data).length > 0" class="log-data">
+                      {{ JSON.stringify(log.data) }}
+                    </div>
+                  </div>
+                </div>
+
+                <div v-else-if="!logsLoading" class="no-logs">
+                  暂无日志数据
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else-if="realtimeStats && !realtimeStats.success" class="error-message">
+            <p>❌ {{ realtimeStats.message }}</p>
+            <p v-if="realtimeStats.worker_endpoint">Worker端点: {{ realtimeStats.worker_endpoint }}</p>
+          </div>
+
+          <div v-else-if="!realtimeLoading" class="no-data">
+            <p>点击"刷新实时数据"获取Worker统计信息</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 消息提示 -->
     <div v-if="message" :class="['toast', message.type]">
       {{ message.text }}
@@ -216,7 +371,14 @@ export default {
       showWorkerLimitsModal: false,
       selectedWorker: null,
       workerLimits: null,
-      loading: false
+      loading: false,
+      // Worker实时统计相关
+      showRealtimeStatsModal: false,
+      realtimeStats: null,
+      realtimeLoading: false,
+      // Worker实时日志相关
+      realtimeLogs: [],
+      logsLoading: false
     }
   },
 
@@ -380,6 +542,107 @@ export default {
         this.showMessage(`获取Worker限制数据异常: ${error.message}`, 'error')
       } finally {
         this.loading = false
+      }
+    },
+
+    // 查看Worker实时统计
+    async viewRealtimeStats(worker) {
+      this.selectedWorker = worker
+      this.showRealtimeStatsModal = true
+      await this.refreshRealtimeStats()
+      await this.refreshRealtimeLogs()
+    },
+
+    // 刷新Worker实时统计数据
+    async refreshRealtimeStats() {
+      this.realtimeLoading = true
+      try {
+        const response = await authFetch('/api/web-config/worker/realtime-stats')
+        if (response.ok) {
+          const result = await response.json()
+          this.realtimeStats = result
+          if (result.success) {
+            this.showMessage('实时统计数据获取成功', 'success')
+          } else {
+            this.showMessage(result.message || '实时统计数据获取失败', 'error')
+          }
+        } else {
+          this.realtimeStats = {
+            success: false,
+            message: `HTTP ${response.status} 错误`
+          }
+          this.showMessage(`获取实时统计数据失败: HTTP ${response.status}`, 'error')
+        }
+      } catch (error) {
+        this.realtimeStats = {
+          success: false,
+          message: `请求异常: ${error.message}`
+        }
+        this.showMessage(`获取实时统计数据异常: ${error.message}`, 'error')
+      } finally {
+        this.realtimeLoading = false
+      }
+    },
+
+    // 格式化时间戳
+    formatTimestamp(timestamp) {
+      if (!timestamp) return 'N/A'
+      try {
+        return new Date(timestamp).toLocaleString()
+      } catch (e) {
+        return 'N/A'
+      }
+    },
+
+    // 格式化持续时间
+    formatDuration(ms) {
+      if (!ms) return 'N/A'
+      const seconds = Math.floor(ms / 1000)
+      const minutes = Math.floor(seconds / 60)
+      const hours = Math.floor(minutes / 60)
+      const days = Math.floor(hours / 24)
+
+      if (days > 0) return `${days}天 ${hours % 24}小时`
+      if (hours > 0) return `${hours}小时 ${minutes % 60}分钟`
+      if (minutes > 0) return `${minutes}分钟 ${seconds % 60}秒`
+      return `${seconds}秒`
+    },
+
+    // 刷新Worker实时日志
+    async refreshRealtimeLogs() {
+      this.logsLoading = true
+      try {
+        // 直接从Worker获取日志
+        const response = await authFetch('/api/web-config/worker/realtime-stats')
+        if (response.ok) {
+          const result = await response.json()
+          if (result.success && result.stats && result.stats.logs) {
+            // 获取最近10条日志并按时间倒序排列
+            this.realtimeLogs = result.stats.logs
+              .slice(-10)
+              .reverse()
+          } else {
+            this.realtimeLogs = []
+          }
+        } else {
+          this.realtimeLogs = []
+          this.showMessage(`获取实时日志失败: HTTP ${response.status}`, 'error')
+        }
+      } catch (error) {
+        this.realtimeLogs = []
+        this.showMessage(`获取实时日志异常: ${error.message}`, 'error')
+      } finally {
+        this.logsLoading = false
+      }
+    },
+
+    // 格式化日志时间
+    formatLogTime(timestamp) {
+      if (!timestamp) return 'N/A'
+      try {
+        return new Date(timestamp).toLocaleTimeString()
+      } catch (e) {
+        return 'N/A'
       }
     },
 
@@ -1408,5 +1671,215 @@ export default {
   color: #666;
   padding: 40px;
   font-style: italic;
+}
+
+/* Worker实时统计弹窗样式 */
+.realtime-stats-grid {
+  display: grid;
+  gap: 20px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.stats-section {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 16px;
+  border: 1px solid #e9ecef;
+}
+
+.stats-section h3 {
+  margin: 0 0 12px 0;
+  color: #333;
+  font-size: 16px;
+  font-weight: 600;
+  border-bottom: 2px solid #007bff;
+  padding-bottom: 8px;
+}
+
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.stat-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: white;
+  border-radius: 6px;
+  border: 1px solid #dee2e6;
+}
+
+.stat-item .label {
+  font-weight: 500;
+  color: #666;
+  font-size: 14px;
+}
+
+.stat-item .value {
+  color: #333;
+  font-weight: 600;
+  font-family: monospace;
+  font-size: 14px;
+}
+
+.stats-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 6px;
+}
+
+.last-update {
+  color: #666;
+  font-size: 14px;
+  font-style: italic;
+}
+
+.error-message {
+  text-align: center;
+  padding: 40px 20px;
+  color: #dc3545;
+  background: #f8d7da;
+  border-radius: 8px;
+  border: 1px solid #f5c6cb;
+}
+
+.realtime-stats-grid .no-data {
+  text-align: center;
+  padding: 40px 20px;
+  color: #666;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e9ecef;
+}
+
+/* 实时日志样式 */
+.realtime-logs {
+  margin-top: 16px;
+  border-top: 1px solid #dee2e6;
+  padding-top: 16px;
+}
+
+.logs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.logs-header h4 {
+  margin: 0;
+  color: #333;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.logs-container {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.log-entry {
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f3f4;
+  font-family: monospace;
+  font-size: 12px;
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.log-entry:last-child {
+  border-bottom: none;
+}
+
+.log-entry.log-info {
+  background: #f8f9fa;
+}
+
+.log-entry.log-warning {
+  background: #fff3cd;
+  border-left: 3px solid #ffc107;
+}
+
+.log-entry.log-error {
+  background: #f8d7da;
+  border-left: 3px solid #dc3545;
+}
+
+.log-entry.log-debug {
+  background: #d1ecf1;
+  border-left: 3px solid #17a2b8;
+}
+
+.log-time {
+  color: #666;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.log-level {
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  text-align: center;
+  min-width: 50px;
+}
+
+.log-entry.log-info .log-level {
+  background: #d4edda;
+  color: #155724;
+}
+
+.log-entry.log-warning .log-level {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.log-entry.log-error .log-level {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.log-entry.log-debug .log-level {
+  background: #d1ecf1;
+  color: #0c5460;
+}
+
+.log-message {
+  color: #333;
+  word-break: break-word;
+}
+
+.log-data {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: #f8f9fa;
+  border-radius: 3px;
+  color: #666;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.no-logs {
+  text-align: center;
+  padding: 20px;
+  color: #666;
+  font-style: italic;
+  background: #f8f9fa;
+  border-radius: 6px;
 }
 </style>
