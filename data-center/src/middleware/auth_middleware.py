@@ -32,7 +32,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/stats",
             "/config",
             "/settings",
-            "/worker-management",
+            "/workers",
             "/change-password",
             "/login"
         }
