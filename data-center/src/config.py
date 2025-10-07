@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     # Worker端点配置
     WORKER_ENDPOINTS: Optional[str] = None  # 逗号分隔的Worker地址列表
     WORKER_API_KEYS: Optional[str] = None  # 逗号分隔的Worker API密钥列表
+    WORKER_API_KEY: Optional[str] = None  # 数据中心访问Worker时使用的API Key
 
     # 同步配置
     SYNC_INTERVAL_HOURS: int = 1  # 同步间隔（小时）

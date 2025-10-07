@@ -80,31 +80,10 @@ async def init_db():
 async def init_default_data():
     """初始化默认数据"""
     try:
-        from src.models.config import UAConfig
-        
-        db = SessionLocal()
-        
-        # 检查是否已有默认UA配置
-        existing_config = db.query(UAConfig).filter(UAConfig.name == "default").first()
-        
-        if not existing_config:
-            logger.info("🔧 创建默认UA配置...")
-            
-            default_ua = UAConfig(
-                name="default",
-                user_agent="default",
-                hourly_limit=50,
-                enabled=True,
-                path_specific_limits={}
-            )
-            
-            db.add(default_ua)
-            db.commit()
-            
-            logger.info("✅ 默认UA配置创建完成")
-        
-        db.close()
-        
+        # 不再创建默认UA配置，让用户自己配置
+        logger.info("ℹ️ 跳过默认数据初始化，用户需要自行配置UA")
+        pass
+
     except Exception as e:
         logger.error(f"❌ 初始化默认数据失败: {e}")
 

@@ -40,6 +40,19 @@ async def lifespan(app: FastAPI):
     # 初始化数据库
     logger.info("📊 初始化数据库...")
     await init_db()
+
+    # 初始化默认配置
+    logger.info("⚙️ 初始化系统配置...")
+    from src.services.config_manager import config_manager
+    from src.config import settings
+
+    # 如果没有配置数据中心API Key，从环境变量初始化
+    if not config_manager.get_data_center_api_key():
+        if hasattr(settings, 'DATA_CENTER_API_KEY') and settings.DATA_CENTER_API_KEY:
+            config_manager.set_data_center_api_key(settings.DATA_CENTER_API_KEY)
+            logger.info("✅ 从环境变量初始化数据中心API Key")
+        else:
+            logger.info("ℹ️ 未配置数据中心API Key，请通过Web界面配置")
     
     # 启动TG机器人（轮询模式）
     from src.services.web_config_service import WebConfigService

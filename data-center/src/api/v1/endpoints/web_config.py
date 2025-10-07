@@ -624,9 +624,18 @@ async def get_worker_realtime_stats(
         if not worker_endpoint.startswith('http'):
             worker_endpoint = f"https://{worker_endpoint}"
 
+        # 获取Worker API Key（使用配置管理器）
+        from src.services.config_manager import config_manager
+        worker_api_key = config_manager.get_data_center_api_key()
+
+        # 准备请求头
+        headers = {}
+        if worker_api_key:
+            headers['X-API-Key'] = worker_api_key
+
         # 直接从Worker获取实时统计数据
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{worker_endpoint}/worker-api/stats")
+            response = await client.get(f"{worker_endpoint}/worker-api/stats", headers=headers)
 
             if response.status_code == 200:
                 stats_data = response.json()
@@ -638,9 +647,10 @@ async def get_worker_realtime_stats(
                     "last_update": "实时数据"
                 }
             else:
+                error_text = response.text if response.status_code != 200 else "Unknown error"
                 return {
                     "success": False,
-                    "message": f"Worker响应错误: HTTP {response.status_code}",
+                    "message": f"Worker响应错误: HTTP {response.status_code} - {error_text}",
                     "worker_endpoint": worker_endpoint
                 }
 

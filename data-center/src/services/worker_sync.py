@@ -44,10 +44,8 @@ class WorkerSyncService:
                 push_url = f"{worker_endpoint.rstrip('/')}/worker-api/config/update"
                 
                 # 获取API密钥
-                from src.services.web_config_service import WebConfigService
-                web_config_service = WebConfigService()
-                settings = await web_config_service.get_system_settings()
-                api_key = settings.worker_api_key if settings else None
+                from src.services.config_manager import config_manager
+                api_key = config_manager.get_data_center_api_key()
 
                 # 构建请求头
                 headers = {
@@ -117,10 +115,8 @@ class WorkerSyncService:
                 stats_url = f"{worker_endpoint.rstrip('/')}/worker-api/stats"
 
                 # 获取API密钥
-                from src.services.web_config_service import WebConfigService
-                web_config_service = WebConfigService()
-                settings = await web_config_service.get_system_settings()
-                api_key = settings.worker_api_key if settings else None
+                from src.services.config_manager import config_manager
+                api_key = config_manager.get_data_center_api_key()
 
                 # 构建请求头
                 headers = {"User-Agent": "DataCenter-Sync/1.0"}
@@ -418,10 +414,8 @@ class WorkerSyncService:
                 health_url = f"{worker_endpoint.rstrip('/')}/health"
 
                 # 获取API密钥
-                from src.services.web_config_service import WebConfigService
-                web_config_service = WebConfigService()
-                settings = await web_config_service.get_system_settings()
-                api_key = settings.worker_api_key if settings else None
+                from src.services.config_manager import config_manager
+                api_key = config_manager.get_data_center_api_key()
 
                 # 构建请求头
                 headers = {"User-Agent": "DataCenter-Health/1.0"}

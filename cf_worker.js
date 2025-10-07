@@ -44,7 +44,8 @@ let DATA_CENTER_CONFIG = {
     syncInterval: 3600000, // 1小时同步一次
     enabled: false,
     initialized: false, // 添加初始化标志
-    syncTimer: null // 添加定时器引用
+    syncTimer: null, // 添加定时器引用
+    workerApiKey: '' // 数据中心访问Worker时使用的API Key
 };
 
 // ========================================
@@ -196,6 +197,8 @@ async function initializeDataCenterConfig(env) {
     DATA_CENTER_CONFIG.url = env.DATA_CENTER_URL || '';
     DATA_CENTER_CONFIG.apiKey = env.DATA_CENTER_API_KEY || '';
     DATA_CENTER_CONFIG.workerId = env.WORKER_ID || 'worker-1';
+    // 使用同一个API Key进行双向认证
+    DATA_CENTER_CONFIG.workerApiKey = env.DATA_CENTER_API_KEY || '';
     DATA_CENTER_CONFIG.enabled = !!(env.DATA_CENTER_URL && env.DATA_CENTER_API_KEY);
 
     // 初始化配置缓存（先加载环境变量配置）
@@ -276,11 +279,15 @@ async function syncConfigFromDataCenter() {
                 worker_id: DATA_CENTER_CONFIG.workerId
             });
         } else {
+            const errorText = await response.text();
             console.error('❌ 配置同步失败，HTTP状态:', response.status);
+            console.error('❌ 错误详情:', errorText);
             addMemoryLog('ERROR', `配置同步失败: HTTP ${response.status}`, {
                 data_center_url: DATA_CENTER_CONFIG.url,
                 status: response.status,
-                statusText: response.statusText
+                statusText: response.statusText,
+                errorDetail: errorText,
+                apiKey: DATA_CENTER_CONFIG.apiKey ? `${DATA_CENTER_CONFIG.apiKey.substring(0, 8)}...` : '未设置'
             });
         }
     } catch (error) {
@@ -346,12 +353,16 @@ async function syncStatsToDataCenter() {
                 console.log('🧹 已清理旧日志，保留最近100条');
             }
         } else {
+            const errorText = await response.text();
             console.error('❌ 定时同步失败，HTTP状态:', response.status);
+            console.error('❌ 错误详情:', errorText);
             addMemoryLog('ERROR', `定时同步失败: HTTP ${response.status}`, {
                 data_center_url: DATA_CENTER_CONFIG.url,
                 status: response.status,
                 statusText: response.statusText,
-                sync_type: 'scheduled'
+                errorDetail: errorText,
+                sync_type: 'scheduled',
+                apiKey: DATA_CENTER_CONFIG.apiKey ? `${DATA_CENTER_CONFIG.apiKey.substring(0, 8)}...` : '未设置'
             });
         }
     } catch (error) {
@@ -364,12 +375,33 @@ async function syncStatsToDataCenter() {
     }
 }
 
-// API密钥验证中间件
+// API密钥验证中间件（验证来自数据中心的请求）
 function verifyApiKey(request) {
-    const apiKey = request.headers.get('X-API-Key');
-    if (!apiKey || apiKey !== DATA_CENTER_CONFIG.apiKey) {
-        return new Response('Unauthorized', { status: 401 });
+    // 获取请求中的API Key
+    const requestApiKey = request.headers.get('X-API-Key');
+
+    // 从全局配置获取Worker API Key（数据中心访问Worker时使用的密钥）
+    const workerApiKey = DATA_CENTER_CONFIG.workerApiKey;
+
+    // 如果没有配置Worker API Key，允许通过（兼容模式）
+    if (!workerApiKey) {
+        console.log('⚠️ Worker API Key未配置，允许通过（兼容模式）');
+        return null;
     }
+
+    // 验证API Key
+    if (!requestApiKey || requestApiKey !== workerApiKey) {
+        console.log(`❌ Worker API Key验证失败: 请求Key=${requestApiKey ? requestApiKey.substring(0, 8) + '...' : '未提供'}, 配置Key=${workerApiKey.substring(0, 8)}...`);
+        return new Response(JSON.stringify({
+            error: 'Unauthorized',
+            message: 'Invalid or missing API Key'
+        }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+
+    console.log('✅ Worker API Key验证成功');
     return null;
 }
 
@@ -381,7 +413,7 @@ async function handleDataCenterAPI(request, urlObj) {
                      request.headers.get('X-Real-IP') ||
                      'unknown';
 
-    // 验证API密钥
+    // 验证API密钥（验证数据中心访问Worker的权限）
     const authError = verifyApiKey(request);
     if (authError) return authError;
 
