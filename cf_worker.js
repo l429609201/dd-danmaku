@@ -545,7 +545,11 @@ async function handleDataCenterAPI(request, urlObj) {
 async function getWorkerStats() {
     try {
         const now = Date.now();
-        return {
+
+        // 获取频率限制统计
+        const rateLimitStats = getRateLimitStats();
+
+        const statsData = {
             worker_id: DATA_CENTER_CONFIG.workerId,
             timestamp: now,
             requests_total: memoryCache.totalRequests || 0,
@@ -568,10 +572,38 @@ async function getWorkerStats() {
                 rotation_limit: SECRET_ROTATION_LIMIT
             },
             // 频率限制统计
-            rate_limit_stats: getRateLimitStats(),
+            rate_limit_stats: rateLimitStats,
             // 内存日志（最近的日志）
             logs: memoryCache.logs.slice(-20) // 返回最近20条日志
         };
+
+        // 详细日志打印返回的数据
+        console.log('📊 Worker统计数据生成完成:');
+        console.log('   - Worker ID:', statsData.worker_id);
+        console.log('   - 总请求数:', statsData.requests_total);
+        console.log('   - 待处理请求:', statsData.pending_requests);
+        console.log('   - 内存缓存大小:', statsData.memory_cache_size);
+        console.log('   - 日志数量:', statsData.logs_count);
+        console.log('   - 运行时间:', statsData.uptime, 'ms');
+        console.log('   - 配置统计:', JSON.stringify(statsData.config_stats));
+        console.log('   - 密钥轮换统计:', JSON.stringify(statsData.secret_rotation));
+        console.log('   - 频率限制统计:');
+        console.log('     * 总计数器:', rateLimitStats.total_counters);
+        console.log('     * 活跃IP数:', rateLimitStats.active_ips);
+        console.log('     * UA类型统计:', Object.keys(rateLimitStats.ua_type_stats).length, '种类型');
+        console.log('     * 路径限制统计:', Object.keys(rateLimitStats.path_limit_stats).length, '个路径');
+
+        // 打印路径限制的详细信息
+        if (Object.keys(rateLimitStats.path_limit_stats).length > 0) {
+            console.log('   - 路径限制详情:');
+            Object.entries(rateLimitStats.path_limit_stats).forEach(([path, stats]) => {
+                console.log(`     * ${path}: 活跃IP=${stats.active_ips}, 总请求=${stats.total_requests}, UA类型=${stats.ua_types}, 配置限制=${stats.configured_limit || '未知'}`);
+            });
+        }
+
+        console.log('   - 最近日志数量:', statsData.logs.length);
+
+        return statsData;
     } catch (error) {
         console.error('获取统计数据失败:', error);
         return {
