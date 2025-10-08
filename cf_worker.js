@@ -118,7 +118,7 @@ function checkMemoryRateLimit(clientIP, uaType, limits) {
     const windowDuration = limits.windowMs || 60000; // 默认1分钟窗口
 
     // 正确获取最大请求数，支持-1表示无限制
-    let maxRequests = limits.maxRequestsPerHour;
+    let maxRequests = limits.hourlyLimit || limits.maxRequestsPerHour;
     if (maxRequests === undefined || maxRequests === null) {
         maxRequests = limits.maxRequests || 100; // 兼容旧字段名
     }
@@ -239,6 +239,10 @@ async function initializeDataCenterConfig(env) {
 
     if (DATA_CENTER_CONFIG.enabled) {
         console.log('✅ 数据中心集成已启用');
+
+        // 启动时尝试从数据中心恢复上次的计数状态
+        await restoreCountersFromDataCenter();
+
         // 启动时尝试从数据中心同步配置（优先使用数据中心配置）
         await syncConfigFromDataCenter();
 
@@ -255,6 +259,69 @@ async function initializeDataCenterConfig(env) {
 
     // 标记为已初始化
     DATA_CENTER_CONFIG.initialized = true;
+}
+
+// 从数据中心恢复计数状态
+async function restoreCountersFromDataCenter() {
+    if (!DATA_CENTER_CONFIG.enabled) return;
+
+    try {
+        console.log('🔄 尝试从数据中心恢复计数状态...');
+
+        const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/stats/restore`, {
+            method: 'GET',
+            headers: {
+                'X-API-Key': DATA_CENTER_CONFIG.apiKey,
+                'Content-Type': 'application/json',
+                'X-Worker-ID': DATA_CENTER_CONFIG.workerId
+            }
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            console.log('📥 从数据中心获取计数状态成功');
+
+            if (data.success && data.counters) {
+                // 恢复AppSecret使用计数
+                if (data.counters.secret1_count !== undefined) {
+                    memoryCache.appSecretUsage.count1 = data.counters.secret1_count;
+                }
+                if (data.counters.secret2_count !== undefined) {
+                    memoryCache.appSecretUsage.count2 = data.counters.secret2_count;
+                }
+                if (data.counters.current_secret) {
+                    memoryCache.appSecretUsage.current = data.counters.current_secret;
+                }
+                if (data.counters.total_requests !== undefined) {
+                    memoryCache.totalRequests = data.counters.total_requests;
+                }
+
+                console.log('✅ 计数状态恢复成功:');
+                console.log(`   - Secret1计数: ${memoryCache.appSecretUsage.count1}`);
+                console.log(`   - Secret2计数: ${memoryCache.appSecretUsage.count2}`);
+                console.log(`   - 当前Secret: ${memoryCache.appSecretUsage.current}`);
+                console.log(`   - 总请求数: ${memoryCache.totalRequests}`);
+
+                addMemoryLog('INFO', '从数据中心恢复计数状态成功', {
+                    secret1_count: memoryCache.appSecretUsage.count1,
+                    secret2_count: memoryCache.appSecretUsage.count2,
+                    total_requests: memoryCache.totalRequests
+                });
+            } else {
+                console.log('ℹ️ 数据中心没有可恢复的计数状态，使用默认值');
+            }
+        } else {
+            console.log(`⚠️ 从数据中心恢复计数状态失败: HTTP ${response.status}`);
+            console.log('ℹ️ 将使用默认计数状态（从0开始）');
+        }
+    } catch (error) {
+        console.error('❌ 恢复计数状态异常:', error);
+        console.log('ℹ️ 将使用默认计数状态（从0开始）');
+        addMemoryLog('ERROR', `恢复计数状态异常: ${error.message}`, {
+            data_center_url: DATA_CENTER_CONFIG.url,
+            error: error.message
+        });
+    }
 }
 
 // 从数据中心同步配置
@@ -567,21 +634,20 @@ async function getWorkerStats() {
         // 获取频率限制统计
         const rateLimitStats = getRateLimitStats();
 
-        // 计算总请求数（基于AppSecret使用次数，更可靠）
-        const calculatedTotalRequests = memoryCache.appSecretUsage.count1 + memoryCache.appSecretUsage.count2;
-        const reportedTotalRequests = Math.max(memoryCache.totalRequests || 0, calculatedTotalRequests);
+        // 使用简单可靠的计数方式（本实例的计数）
+        const currentInstanceRequests = memoryCache.totalRequests || 0;
 
-        console.log(`📊 请求计数计算详情:`);
-        console.log(`   - count1: ${memoryCache.appSecretUsage.count1}`);
-        console.log(`   - count2: ${memoryCache.appSecretUsage.count2}`);
-        console.log(`   - 计算总数: ${calculatedTotalRequests}`);
-        console.log(`   - 内存总数: ${memoryCache.totalRequests || 0}`);
-        console.log(`   - 报告总数: ${reportedTotalRequests}`);
+        console.log(`📊 当前实例统计详情:`);
+        console.log(`   - Secret1计数: ${memoryCache.appSecretUsage.count1}`);
+        console.log(`   - Secret2计数: ${memoryCache.appSecretUsage.count2}`);
+        console.log(`   - 当前Secret: ${memoryCache.appSecretUsage.current}`);
+        console.log(`   - 本实例请求数: ${currentInstanceRequests}`);
+        console.log(`   - 待处理请求: ${memoryCache.pendingRequests || 0}`);
 
         const statsData = {
             worker_id: DATA_CENTER_CONFIG.workerId,
             timestamp: now,
-            requests_total: reportedTotalRequests,
+            requests_total: currentInstanceRequests,
             pending_requests: memoryCache.pendingRequests || 0,
             memory_cache_size: memoryCache.rateLimitCounts.size,
             logs_count: memoryCache.logs.length,
