@@ -116,10 +116,18 @@ function checkMemoryRateLimit(clientIP, uaType, limits) {
 
     const counter = memoryCache.rateLimitCounts.get(key);
     const windowDuration = limits.windowMs || 60000; // 默认1分钟窗口
-    const maxRequests = limits.maxRequests || 100;
+
+    // 正确获取最大请求数，支持-1表示无限制
+    let maxRequests = limits.maxRequestsPerHour;
+    if (maxRequests === undefined || maxRequests === null) {
+        maxRequests = limits.maxRequests || 100; // 兼容旧字段名
+    }
+
+    // 如果是-1，表示无限制
+    const isUnlimited = maxRequests === -1;
 
     console.log(`   - 窗口持续时间: ${windowDuration}ms (${Math.round(windowDuration/1000)}秒)`);
-    console.log(`   - 最大请求数: ${maxRequests}`);
+    console.log(`   - 最大请求数: ${isUnlimited ? '无限制' : maxRequests}`);
     console.log(`   - 当前计数器: ${JSON.stringify(counter)}`);
 
     // 检查是否需要重置窗口
@@ -136,7 +144,17 @@ function checkMemoryRateLimit(clientIP, uaType, limits) {
     counter.count++;
     counter.lastRequest = now;
 
-    console.log(`   - 更新后计数: ${counter.count}/${maxRequests}`);
+    console.log(`   - 更新后计数: ${counter.count}/${isUnlimited ? '无限制' : maxRequests}`);
+
+    // 如果是无限制，直接通过
+    if (isUnlimited) {
+        return {
+            allowed: true,
+            reason: '无限制',
+            count: counter.count,
+            limit: '无限制'
+        };
+    }
 
     // 检查是否超限
     if (counter.count > maxRequests) {
@@ -549,10 +567,21 @@ async function getWorkerStats() {
         // 获取频率限制统计
         const rateLimitStats = getRateLimitStats();
 
+        // 计算总请求数（基于AppSecret使用次数，更可靠）
+        const calculatedTotalRequests = memoryCache.appSecretUsage.count1 + memoryCache.appSecretUsage.count2;
+        const reportedTotalRequests = Math.max(memoryCache.totalRequests || 0, calculatedTotalRequests);
+
+        console.log(`📊 请求计数计算详情:`);
+        console.log(`   - count1: ${memoryCache.appSecretUsage.count1}`);
+        console.log(`   - count2: ${memoryCache.appSecretUsage.count2}`);
+        console.log(`   - 计算总数: ${calculatedTotalRequests}`);
+        console.log(`   - 内存总数: ${memoryCache.totalRequests || 0}`);
+        console.log(`   - 报告总数: ${reportedTotalRequests}`);
+
         const statsData = {
             worker_id: DATA_CENTER_CONFIG.workerId,
             timestamp: now,
-            requests_total: memoryCache.totalRequests || 0,
+            requests_total: reportedTotalRequests,
             pending_requests: memoryCache.pendingRequests || 0,
             memory_cache_size: memoryCache.rateLimitCounts.size,
             logs_count: memoryCache.logs.length,
@@ -956,6 +985,10 @@ async function handleRequest(request, env, ctx) {
     // 增加待同步请求计数
     memoryCache.pendingRequests++;
     memoryCache.totalRequests++;
+
+    console.log(`📊 [${clientIP}] 请求计数更新:`);
+    console.log(`   - 待处理请求: ${memoryCache.pendingRequests}`);
+    console.log(`   - 总请求数: ${memoryCache.totalRequests}`);
 
     // 检查是否需要同步到存储
     if (await shouldSyncToStorage()) {
