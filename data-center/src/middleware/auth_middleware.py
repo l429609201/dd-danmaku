@@ -59,6 +59,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if self._is_static_path(path):
             return await call_next(request)
 
+        # 检查是否为Worker API路径（使用API Key认证，跳过JWT认证）
+        if path.startswith("/worker-api/"):
+            return await call_next(request)
+
         # 检查是否为前端路由（直接访问Vue路由）
         if self._is_frontend_route(path):
             # 返回index.html，让前端路由守卫处理认证
