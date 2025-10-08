@@ -3,6 +3,7 @@ Web界面配置管理API端点
 """
 import secrets
 import string
+import logging
 from typing import Dict, Any, List
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -10,6 +11,8 @@ from pydantic import BaseModel
 from src.services.web_config_service import WebConfigService
 from src.api.v1.endpoints.auth import get_current_user
 from src.models.auth import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
