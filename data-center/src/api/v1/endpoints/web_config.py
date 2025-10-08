@@ -659,10 +659,31 @@ async def get_worker_realtime_stats(
 
         # 直接从Worker获取实时统计数据
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{worker_endpoint}/worker-api/stats", headers=headers)
+            stats_url = f"{worker_endpoint}/worker-api/stats"
+            logger.info(f"📊 数据中心请求Worker实时统计:")
+            logger.info(f"   - 请求URL: {stats_url}")
+            logger.info(f"   - 请求头: {headers}")
+
+            response = await client.get(stats_url, headers=headers)
+            logger.info(f"   - 响应状态: {response.status_code}")
 
             if response.status_code == 200:
                 stats_data = response.json()
+                logger.info(f"📊 Worker实时统计数据获取成功:")
+                logger.info(f"   - Worker ID: {stats_data.get('worker_id', '未知')}")
+                logger.info(f"   - 时间戳: {stats_data.get('timestamp', '未知')}")
+                logger.info(f"   - 总请求数: {stats_data.get('requests_total', 0)}")
+                logger.info(f"   - 日志数量: {stats_data.get('logs_count', 0)}")
+                logger.info(f"   - 频率限制统计: {bool(stats_data.get('rate_limit_stats'))}")
+
+                # 检查路径限制统计
+                rate_limit_stats = stats_data.get('rate_limit_stats', {})
+                path_limit_stats = rate_limit_stats.get('path_limit_stats', {})
+                logger.info(f"   - 路径限制数量: {len(path_limit_stats)}")
+                if path_limit_stats:
+                    for path, stats in path_limit_stats.items():
+                        logger.info(f"     * {path}: 活跃IP={stats.get('active_ips', 0)}, 总请求={stats.get('total_requests', 0)}")
+
                 return {
                     "success": True,
                     "stats": stats_data,
@@ -672,6 +693,7 @@ async def get_worker_realtime_stats(
                 }
             else:
                 error_text = response.text if response.status_code != 200 else "Unknown error"
+                logger.error(f"❌ Worker响应错误: HTTP {response.status_code} - {error_text}")
                 return {
                     "success": False,
                     "message": f"Worker响应错误: HTTP {response.status_code} - {error_text}",

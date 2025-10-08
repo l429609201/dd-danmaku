@@ -584,39 +584,61 @@ export default {
     async viewRealtimeStats(worker) {
       this.selectedWorker = worker
       this.showRealtimeStatsModal = true
-      await this.refreshRealtimeStats()
-      await this.refreshRealtimeLogs()
+      // 只调用一次API，同时获取统计数据和日志
+      await this.refreshRealtimeData()
     },
 
-    // 刷新Worker实时统计数据
-    async refreshRealtimeStats() {
+    // 刷新Worker实时数据（统计数据和日志）
+    async refreshRealtimeData() {
       this.realtimeLoading = true
+      this.logsLoading = true
       try {
         const response = await authFetch('/api/web-config/worker/realtime-stats')
         if (response.ok) {
           const result = await response.json()
+
+          // 设置统计数据
           this.realtimeStats = result
-          if (result.success) {
-            this.showMessage('实时统计数据获取成功', 'success')
+
+          // 设置日志数据
+          if (result.success && result.stats && result.stats.logs) {
+            // 获取最近10条日志并按时间倒序排列
+            this.realtimeLogs = result.stats.logs
+              .slice(-10)
+              .reverse()
           } else {
-            this.showMessage(result.message || '实时统计数据获取失败', 'error')
+            this.realtimeLogs = []
+          }
+
+          if (result.success) {
+            this.showMessage('实时数据获取成功', 'success')
+          } else {
+            this.showMessage(result.message || '实时数据获取失败', 'error')
           }
         } else {
           this.realtimeStats = {
             success: false,
             message: `HTTP ${response.status} 错误`
           }
-          this.showMessage(`获取实时统计数据失败: HTTP ${response.status}`, 'error')
+          this.realtimeLogs = []
+          this.showMessage(`获取实时数据失败: HTTP ${response.status}`, 'error')
         }
       } catch (error) {
         this.realtimeStats = {
           success: false,
           message: `请求异常: ${error.message}`
         }
-        this.showMessage(`获取实时统计数据异常: ${error.message}`, 'error')
+        this.realtimeLogs = []
+        this.showMessage(`获取实时数据异常: ${error.message}`, 'error')
       } finally {
         this.realtimeLoading = false
+        this.logsLoading = false
       }
+    },
+
+    // 单独刷新统计数据（保留给按钮调用）
+    async refreshRealtimeStats() {
+      await this.refreshRealtimeData()
     },
 
     // 格式化时间戳
@@ -643,32 +665,9 @@ export default {
       return `${seconds}秒`
     },
 
-    // 刷新Worker实时日志
+    // 单独刷新日志（保留给按钮调用）
     async refreshRealtimeLogs() {
-      this.logsLoading = true
-      try {
-        // 直接从Worker获取日志
-        const response = await authFetch('/api/web-config/worker/realtime-stats')
-        if (response.ok) {
-          const result = await response.json()
-          if (result.success && result.stats && result.stats.logs) {
-            // 获取最近10条日志并按时间倒序排列
-            this.realtimeLogs = result.stats.logs
-              .slice(-10)
-              .reverse()
-          } else {
-            this.realtimeLogs = []
-          }
-        } else {
-          this.realtimeLogs = []
-          this.showMessage(`获取实时日志失败: HTTP ${response.status}`, 'error')
-        }
-      } catch (error) {
-        this.realtimeLogs = []
-        this.showMessage(`获取实时日志异常: ${error.message}`, 'error')
-      } finally {
-        this.logsLoading = false
-      }
+      await this.refreshRealtimeData()
     },
 
     // 格式化日志时间
