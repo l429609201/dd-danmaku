@@ -78,44 +78,52 @@ async def get_current_user(
 @router.post("/change-password", response_model=AuthResponse)
 async def change_password(
     password_data: ChangePasswordRequest,
-    current_user: User = Depends(get_current_user),
-    auth_service: AuthService = Depends(get_auth_service)
+    current_user: User = Depends(get_current_user)
 ):
     """修改密码"""
     import logging
     logger = logging.getLogger(__name__)
 
     logger.info(f"🔐 修改密码请求: 用户={current_user.username}")
-    logger.info(f"🔐 密码数据: {password_data}")
 
     try:
         # 验证新密码确认
         if password_data.new_password != password_data.confirm_password:
+            logger.warning(f"⚠️ 新密码与确认密码不匹配")
             raise HTTPException(status_code=400, detail="新密码与确认密码不匹配")
 
         # 验证新密码强度（允许纯数字）
         if len(password_data.new_password) < 4:
+            logger.warning(f"⚠️ 新密码长度不足4位")
             raise HTTPException(status_code=400, detail="新密码长度至少4位")
 
+        logger.info(f"🔐 开始修改密码: 用户ID={current_user.id}")
+
         # 使用带验证的修改密码方法
-        success = await auth_service.change_password(
+        from src.services.auth_service import AuthService
+        auth_svc = AuthService()
+
+        success = await auth_svc.change_password(
             user_id=current_user.id,
             old_password=password_data.current_password,
             new_password=password_data.new_password
         )
 
         if success:
+            logger.info(f"✅ 密码修改成功: {current_user.username}")
             return AuthResponse(
                 success=True,
                 message="密码修改成功"
             )
         else:
+            logger.warning(f"⚠️ 当前密码错误: {current_user.username}")
             raise HTTPException(status_code=400, detail="当前密码错误")
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ 修改密码异常: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"修改密码失败: {str(e)}")
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
