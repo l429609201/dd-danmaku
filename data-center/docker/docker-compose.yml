@@ -40,17 +40,9 @@ services:
     volumes:
       # 配置和数据持久化
       - ./config:/app/config
-      
+
     restart: unless-stopped
-    
-    # 健康检查
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7759/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    
+
     # 资源限制
     deploy:
       resources:
