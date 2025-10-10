@@ -190,6 +190,71 @@ async def pull_stats_from_worker(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/stats/restore", response_model=Dict[str, Any])
+async def restore_worker_stats(
+    x_worker_id: str = Header(None, alias="X-Worker-ID"),
+    api_key: str = Depends(verify_api_key)
+):
+    """恢复Worker计数状态（Worker启动时调用）"""
+    import logging
+    from src.services.stats_service import StatsService
+    from datetime import datetime
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        worker_id = x_worker_id or "worker-1"
+        logger.info(f"🔄 Worker请求恢复计数状态: {worker_id}")
+
+        # 从数据库获取最近的统计数据
+        stats_service = StatsService()
+
+        # 获取当前小时的统计数据
+        from src.models.stats import RequestStats
+        from src.database import get_db
+
+        db = next(get_db())
+        current_hour = datetime.now().replace(minute=0, second=0, microsecond=0)
+
+        # 查找最近的统计记录
+        recent_stats = db.query(RequestStats).filter(
+            RequestStats.worker_id == worker_id
+        ).order_by(RequestStats.date_hour.desc()).first()
+
+        if recent_stats:
+            counters = {
+                "secret1_count": recent_stats.secret1_count or 0,
+                "secret2_count": recent_stats.secret2_count or 0,
+                "current_secret": recent_stats.current_secret or "1",
+                "total_requests": recent_stats.requests_total or 0
+            }
+
+            logger.info(f"✅ 找到Worker计数状态: {worker_id}")
+            logger.info(f"   - Secret1计数: {counters['secret1_count']}")
+            logger.info(f"   - Secret2计数: {counters['secret2_count']}")
+            logger.info(f"   - 总请求数: {counters['total_requests']}")
+
+            return {
+                "success": True,
+                "message": "计数状态恢复成功",
+                "counters": counters
+            }
+        else:
+            logger.info(f"ℹ️ 没有找到Worker的历史计数状态: {worker_id}")
+            return {
+                "success": False,
+                "message": "没有可恢复的计数状态",
+                "counters": None
+            }
+
+    except Exception as e:
+        logger.error(f"❌ 恢复Worker计数状态失败: {e}")
+        return {
+            "success": False,
+            "message": f"恢复失败: {str(e)}",
+            "counters": None
+        }
+
 @router.get("/worker-health", response_model=List[Dict[str, Any]])
 async def get_all_workers_health(
     worker_sync: WorkerSyncService = Depends(get_worker_sync_service)
@@ -197,16 +262,16 @@ async def get_all_workers_health(
     """获取所有Worker的健康状态"""
     try:
         from src.config import settings
-        
+
         worker_endpoints = settings.WORKER_ENDPOINTS
         if not worker_endpoints:
             return []
-        
+
         health_results = []
         for endpoint in worker_endpoints:
             health_status = await worker_sync.get_worker_health_status(endpoint)
             health_results.append(health_status)
-        
+
         return health_results
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
