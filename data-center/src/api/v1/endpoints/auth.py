@@ -125,13 +125,21 @@ async def login(
     auth_service: AuthService = Depends(get_auth_service)
 ):
     """用户登录"""
+    import logging
+    logger = logging.getLogger(__name__)
+
     try:
+        logger.info(f"🔐 登录请求: 用户名={login_data.username}")
+
         # 验证用户
         user = await auth_service.authenticate_user(login_data.username, login_data.password)
-        
+
         if not user:
+            logger.warning(f"⚠️ 登录失败: 用户名或密码错误 - {login_data.username}")
             raise HTTPException(status_code=401, detail="用户名或密码错误")
-        
+
+        logger.info(f"✅ 用户验证成功: {user.username}")
+
         # 创建JWT令牌
         token_data = {
             "user_id": user.id,
@@ -145,8 +153,6 @@ async def login(
             expires_delta=timedelta(days=3)
         )
 
-        import logging
-        logger = logging.getLogger(__name__)
         logger.info(f"🔐 为用户 {user.username} 生成JWT令牌: {access_token[:20]}...")
 
         # 立即测试JWT令牌是否可以验证
@@ -161,33 +167,44 @@ async def login(
         client_ip = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
 
-        # 创建会话并存储JWT令牌
-        session = await auth_service.create_session(
-            user=user,
-            jwt_token=access_token,
-            ip_address=client_ip,
-            user_agent=user_agent,
-            expires_hours=72  # 3天
-        )
+        logger.info(f"🔐 准备创建会话: client_ip={client_ip}, user_agent={user_agent}")
 
-        logger.info(f"🔐 会话创建成功: session_id={session.id}")
+        # 创建会话并存储JWT令牌
+        try:
+            session = await auth_service.create_session(
+                user=user,
+                jwt_token=access_token,
+                ip_address=client_ip,
+                user_agent=user_agent,
+                expires_hours=72  # 3天
+            )
+            logger.info(f"🔐 会话创建成功: session_id={session.id}")
+        except Exception as session_error:
+            logger.error(f"❌ 创建会话失败: {session_error}", exc_info=True)
+            raise
 
         # 记录登录日志
-        from src.services.stats_service import StatsService
-        stats_service = StatsService()
-        await stats_service.record_system_log(
-            level="INFO",
-            message=f"用户 {user.username} 登录成功",
-            details={
-                "user_id": user.id,
-                "username": user.username,
-                "user_agent": user_agent,
-                "session_id": session.id
-            },
-            category="auth",
-            source="web-ui",
-            source_ip=client_ip
-        )
+        try:
+            from src.services.stats_service import StatsService
+            stats_service = StatsService()
+            await stats_service.record_system_log(
+                level="INFO",
+                message=f"用户 {user.username} 登录成功",
+                details={
+                    "user_id": user.id,
+                    "username": user.username,
+                    "user_agent": user_agent,
+                    "session_id": session.id
+                },
+                category="auth",
+                source="web-ui",
+                source_ip=client_ip
+            )
+        except Exception as log_error:
+            logger.error(f"❌ 记录登录日志失败: {log_error}", exc_info=True)
+            # 日志记录失败不影响登录
+
+        logger.info(f"✅ 登录流程完成: {user.username}")
 
         return {
             "success": True,
@@ -197,9 +214,12 @@ async def login(
             "expires_in": 3 * 24 * 60 * 60,  # 3天，单位秒
             "user": user.to_dict()
         }
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ 登录异常: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"登录失败: {str(e)}")
 
 @router.post("/logout")
 async def logout(
