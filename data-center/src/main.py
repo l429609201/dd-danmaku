@@ -61,14 +61,19 @@ async def lifespan(app: FastAPI):
 
     if settings_data and settings_data.tg_bot_token and settings_data.tg_admin_user_ids:
         logger.info("🤖 启动Telegram机器人（轮询模式）...")
-        telegram_bot = TelegramBot(
-            token=settings_data.tg_bot_token,
-            admin_user_ids=settings_data.tg_admin_user_ids.split(',') if settings_data.tg_admin_user_ids else []
-        )
+        try:
+            telegram_bot = TelegramBot(
+                token=settings_data.tg_bot_token,
+                admin_user_ids=settings_data.tg_admin_user_ids.split(',') if settings_data.tg_admin_user_ids else []
+            )
 
-        # 在后台任务中启动机器人
-        bot_task = asyncio.create_task(telegram_bot.start())
-        logger.info("✅ Telegram机器人启动成功")
+            # 在后台任务中启动机器人（参考MoviePilot的做法）
+            # 使用create_task让机器人在后台运行，不阻塞主程序
+            bot_task = asyncio.create_task(telegram_bot.start())
+            logger.info("✅ Telegram机器人启动任务已创建")
+        except Exception as e:
+            logger.error(f"❌ Telegram机器人启动失败: {e}")
+            bot_task = None
     else:
         logger.info("ℹ️ TG机器人未配置，请通过Web界面配置后重启服务")
         bot_task = None
@@ -94,12 +99,25 @@ async def lifespan(app: FastAPI):
     # 关闭时清理资源
     logger.info("🛑 正在关闭数据交互中心...")
 
+    # 停止Telegram机器人（参考MoviePilot的优雅关闭）
     if 'bot_task' in locals() and bot_task:
         logger.info("🤖 停止Telegram机器人...")
-        bot_task.cancel()
-        if telegram_bot:
-            await telegram_bot.stop()
+        try:
+            # 先停止机器人
+            if telegram_bot:
+                await telegram_bot.stop()
 
+            # 再取消任务
+            if not bot_task.done():
+                bot_task.cancel()
+                try:
+                    await bot_task
+                except asyncio.CancelledError:
+                    logger.info("✅ Telegram机器人任务已取消")
+        except Exception as e:
+            logger.error(f"❌ 停止Telegram机器人时出错: {e}")
+
+    # 停止任务调度器
     if task_scheduler:
         logger.info("⏰ 停止任务调度器...")
         await task_scheduler.stop()

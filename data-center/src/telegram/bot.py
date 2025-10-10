@@ -1,8 +1,10 @@
 """
 Telegram机器人核心类 - 轮询模式
+参考MoviePilot项目的实现优化
 """
 import asyncio
 import logging
+import threading
 from datetime import datetime
 from typing import Optional
 
@@ -27,11 +29,13 @@ class TelegramBot:
         self.application: Optional[Application] = None
         self.config_service = ConfigService()
         self.stats_service = StatsService()
+        self._polling_thread = None
+        self._stop_event = threading.Event()
 
         logger.info(f"🤖 初始化TG机器人，管理员ID: {self.admin_user_ids}")
 
     async def start(self):
-        """启动机器人 - 轮询模式"""
+        """启动机器人 - 轮询模式（参考MoviePilot实现）"""
         try:
             logger.info("🚀 启动Telegram机器人轮询模式...")
 
@@ -44,28 +48,65 @@ class TelegramBot:
             # 设置机器人命令菜单
             await self._setup_bot_commands()
 
-            # 启动轮询 - 关键：不需要公网地址！
-            logger.info("🔄 开始轮询Telegram API...")
-            await self.application.run_polling(
-                poll_interval=1.0,      # 每秒检查一次
-                timeout=10,             # 请求超时10秒
-                bootstrap_retries=5,    # 启动重试5次
-                drop_pending_updates=True  # 丢弃待处理的更新
-            )
+            # 初始化应用（重要：在轮询前必须初始化）
+            await self.application.initialize()
+            await self.application.start()
+
+            # 在独立线程中运行轮询（参考MoviePilot的做法）
+            def run_polling():
+                """在独立线程中运行轮询"""
+                try:
+                    logger.info("🔄 开始轮询Telegram API...")
+                    # 使用updater的start_polling而不是run_polling
+                    # 这样可以更好地控制轮询生命周期
+                    self.application.updater.start_polling(
+                        poll_interval=1.0,              # 每秒检查一次
+                        timeout=10,                     # 请求超时10秒
+                        bootstrap_retries=5,            # 启动重试5次
+                        drop_pending_updates=True,      # 丢弃待处理的更新
+                        allowed_updates=Update.ALL_TYPES  # 接收所有类型的更新
+                    )
+                    logger.info("✅ Telegram轮询已启动")
+
+                    # 保持线程运行直到收到停止信号
+                    self._stop_event.wait()
+
+                except Exception as err:
+                    logger.error(f"❌ Telegram轮询异常: {err}")
+
+            # 启动轮询线程
+            self._polling_thread = threading.Thread(target=run_polling, daemon=True)
+            self._polling_thread.start()
+            logger.info("✅ Telegram机器人轮询线程已启动")
 
         except Exception as e:
             logger.error(f"❌ TG机器人启动失败: {e}")
             raise
 
     async def stop(self):
-        """停止机器人"""
+        """停止机器人（参考MoviePilot实现）"""
         if self.application:
             logger.info("🛑 停止Telegram机器人...")
+
+            # 设置停止事件
+            self._stop_event.set()
+
+            # 停止轮询
+            if self.application.updater:
+                await self.application.updater.stop()
+
+            # 停止应用
             await self.application.stop()
+            await self.application.shutdown()
+
+            # 等待轮询线程结束
+            if self._polling_thread and self._polling_thread.is_alive():
+                self._polling_thread.join(timeout=5)
+
             logger.info("✅ Telegram机器人已停止")
 
     async def _register_handlers(self):
-        """注册命令处理器"""
+        """注册命令处理器（参考MoviePilot的处理器注册）"""
         handlers = [
             CommandHandler("start", self.start_command),
             CommandHandler("status", self.status_command),
@@ -79,7 +120,21 @@ class TelegramBot:
         for handler in handlers:
             self.application.add_handler(handler)
 
-        logger.info(f"✅ 注册了 {len(handlers)} 个命令处理器")
+        # 添加错误处理器（参考MoviePilot）
+        async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            """全局错误处理器"""
+            logger.error(f"❌ TG机器人错误: {context.error}")
+            if update and update.effective_message:
+                try:
+                    await update.effective_message.reply_text(
+                        f"❌ 处理消息时出错: {str(context.error)[:100]}"
+                    )
+                except:
+                    pass
+
+        self.application.add_error_handler(error_handler)
+
+        logger.info(f"✅ 注册了 {len(handlers)} 个命令处理器和1个错误处理器")
 
     async def _setup_bot_commands(self):
         """设置机器人命令菜单"""
@@ -370,21 +425,23 @@ class TelegramBot:
         await self._log_command(user_id, username, "/help", "帮助信息")
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """处理内联键盘回调"""
+        """处理内联键盘回调（参考MoviePilot的回调处理机制）"""
         query = update.callback_query
         user_id = query.from_user.id
         username = query.from_user.username or query.from_user.first_name
 
         if not self._is_authorized(user_id):
-            await query.answer("❌ 权限不足")
+            await query.answer("❌ 权限不足", show_alert=True)
             return
-
-        await query.answer()  # 确认回调
 
         # 根据回调数据处理不同操作
         callback_data = query.data
 
         try:
+            # 先确认回调（避免Telegram显示加载动画）
+            await query.answer()
+
+            # 路由到不同的处理函数
             if callback_data == "status":
                 await self._handle_status_callback(query)
             elif callback_data.startswith("ua_"):
@@ -393,12 +450,24 @@ class TelegramBot:
                 await self._handle_blacklist_callback(query, callback_data)
             elif callback_data.startswith("logs_"):
                 await self._handle_logs_callback(query, callback_data)
+            else:
+                # 未知的回调数据
+                await query.answer("⚠️ 未知的操作", show_alert=True)
+                return
 
             await self._log_command(user_id, username, f"callback:{callback_data}", "回调处理成功")
 
         except Exception as e:
             error_msg = f"处理回调失败: {str(e)}"
-            await query.edit_message_text(f"❌ {error_msg}")
+            logger.error(f"❌ {error_msg}")
+
+            # 尝试编辑消息显示错误
+            try:
+                await query.edit_message_text(f"❌ {error_msg}")
+            except:
+                # 如果编辑失败，发送新消息
+                await query.message.reply_text(f"❌ {error_msg}")
+
             await self._log_command(user_id, username, f"callback:{callback_data}", error_msg, "error", str(e))
 
     async def _handle_status_callback(self, query):

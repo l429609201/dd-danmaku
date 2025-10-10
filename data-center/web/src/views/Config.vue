@@ -250,17 +250,56 @@ export default {
 
     const saveBasicConfig = async () => {
       try {
-        showMessage('基本配置保存成功', 'success')
+        showMessage('正在保存基本配置...', 'info')
+
+        const response = await authFetch('/api/web-config/system-settings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            system_name: config.value.systemName,
+            api_port: config.value.apiPort,
+            debug_mode: config.value.debugMode
+          })
+        })
+
+        if (response.ok) {
+          const result = await response.json()
+          if (result.success) {
+            showMessage('基本配置保存成功', 'success')
+          } else {
+            showMessage(`保存失败: ${result.message}`, 'error')
+          }
+        } else {
+          showMessage(`保存失败: HTTP ${response.status}`, 'error')
+        }
       } catch (error) {
-        showMessage('保存失败', 'error')
+        showMessage(`保存失败: ${error.message}`, 'error')
       }
     }
 
     const saveTelegramConfig = async () => {
       try {
-        showMessage('Telegram配置保存成功', 'success')
+        showMessage('正在保存Telegram配置...', 'info')
+
+        const response = await authFetch('/api/web-config/system-settings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            tg_bot_token: config.value.telegramToken,
+            tg_admin_user_ids: config.value.adminUserIds
+          })
+        })
+
+        if (response.ok) {
+          const result = await response.json()
+          if (result.success) {
+            showMessage('Telegram配置保存成功！需要重启服务才能生效', 'success')
+          } else {
+            showMessage(`保存失败: ${result.message}`, 'error')
+          }
+        } else {
+          showMessage(`保存失败: HTTP ${response.status}`, 'error')
+        }
       } catch (error) {
-        showMessage('保存失败', 'error')
+        showMessage(`保存失败: ${error.message}`, 'error')
       }
     }
 
