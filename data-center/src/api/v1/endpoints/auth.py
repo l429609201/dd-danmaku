@@ -219,7 +219,8 @@ async def login(
         raise
     except Exception as e:
         logger.error(f"❌ 登录异常: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"登录失败: {str(e)}")
+        # 使用400而不是500，因为这通常是客户端问题
+        raise HTTPException(status_code=400, detail=f"登录失败: {str(e)}")
 
 @router.post("/logout")
 async def logout(
