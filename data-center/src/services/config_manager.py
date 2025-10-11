@@ -24,10 +24,14 @@ class ConfigManager:
 
             if config:
                 # 根据配置类型转换值
-                return self._convert_value(config.value, config.config_type)
-            return default
+                value = self._convert_value(config.value, config.config_type)
+                logger.debug(f"📖 获取配置 {key}: {value[:8] if isinstance(value, str) and len(value) > 8 else value}...")
+                return value
+            else:
+                logger.warning(f"⚠️ 配置不存在: {key}, 使用默认值: {default}")
+                return default
         except Exception as e:
-            logger.error(f"获取配置失败 {key}: {e}")
+            logger.error(f"❌ 获取配置失败 {key}: {e}", exc_info=True)
             return default
         finally:
             db.close()
@@ -157,7 +161,13 @@ class ConfigManager:
     
     def get_data_center_api_key(self) -> Optional[str]:
         """获取数据中心API Key"""
-        return self.get_config("data_center_api_key")
+        import logging
+        logger = logging.getLogger(__name__)
+
+        api_key = self.get_config("data_center_api_key")
+        logger.info(f"🔑 获取数据中心API Key: {api_key[:8] if api_key else 'None'}...")
+
+        return api_key
     
     def set_data_center_api_key(self, api_key: str) -> bool:
         """设置数据中心API Key"""
