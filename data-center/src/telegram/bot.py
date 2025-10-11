@@ -42,7 +42,7 @@ class TelegramBot:
         try:
             logger.info("🚀 启动Telegram机器人轮询模式...")
 
-            # 创建应用
+            # 创建应用（仅用于注册处理器和设置命令）
             self.application = Application.builder().token(self.token).build()
 
             # 注册命令处理器
@@ -50,10 +50,6 @@ class TelegramBot:
 
             # 设置机器人命令菜单
             await self._setup_bot_commands()
-
-            # 初始化应用（重要：在轮询前必须初始化）
-            await self.application.initialize()
-            await self.application.start()
 
             # 在独立线程中运行轮询
             def run_polling():
@@ -68,18 +64,23 @@ class TelegramBot:
 
                     # 启动轮询
                     async def start_polling_async():
-                        # 重新创建updater（避免事件循环绑定问题）
-                        from telegram.ext import Updater
+                        # 在子线程中重新创建完整的Application（避免事件循环绑定问题）
+                        thread_app = Application.builder().token(self.token).build()
 
-                        # 创建新的updater实例
-                        updater = Updater(self.application.bot, update_queue=self.application.update_queue)
-                        self.application.updater = updater
+                        # 复制处理器到新的application
+                        for handler in self.application.handlers[0]:  # 默认组
+                            thread_app.add_handler(handler)
 
-                        # 初始化updater
-                        await updater.initialize()
+                        # 复制错误处理器
+                        for error_handler in self.application.error_handlers.values():
+                            thread_app.add_error_handler(error_handler)
+
+                        # 初始化application
+                        await thread_app.initialize()
+                        await thread_app.start()
 
                         # 启动updater的轮询
-                        await updater.start_polling(
+                        await thread_app.updater.start_polling(
                             poll_interval=1.0,
                             timeout=10,
                             bootstrap_retries=5,
@@ -93,8 +94,9 @@ class TelegramBot:
                             await asyncio.sleep(1)
 
                         # 停止轮询
-                        await updater.stop()
-                        await updater.shutdown()
+                        await thread_app.updater.stop()
+                        await thread_app.stop()
+                        await thread_app.shutdown()
 
                     loop.run_until_complete(start_polling_async())
 
