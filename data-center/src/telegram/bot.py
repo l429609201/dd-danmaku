@@ -75,6 +75,9 @@ class TelegramBot:
                         updater = Updater(self.application.bot, update_queue=self.application.update_queue)
                         self.application.updater = updater
 
+                        # 初始化updater
+                        await updater.initialize()
+
                         # 启动updater的轮询
                         await updater.start_polling(
                             poll_interval=1.0,
@@ -91,6 +94,7 @@ class TelegramBot:
 
                         # 停止轮询
                         await updater.stop()
+                        await updater.shutdown()
 
                     loop.run_until_complete(start_polling_async())
 
