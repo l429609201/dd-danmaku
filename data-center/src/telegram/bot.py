@@ -57,14 +57,22 @@ class TelegramBot:
                 """在独立线程中运行轮询"""
                 try:
                     logger.info("🔄 开始轮询Telegram API...")
-                    # 使用updater的start_polling而不是run_polling
-                    # 这样可以更好地控制轮询生命周期
-                    self.application.updater.start_polling(
-                        poll_interval=1.0,              # 每秒检查一次
-                        timeout=10,                     # 请求超时10秒
-                        bootstrap_retries=5,            # 启动重试5次
-                        drop_pending_updates=True,      # 丢弃待处理的更新
-                        allowed_updates=Update.ALL_TYPES  # 接收所有类型的更新
+
+                    # 创建新的事件循环用于轮询线程
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
+                    # 使用run_polling而不是start_polling
+                    # run_polling会阻塞直到停止
+                    loop.run_until_complete(
+                        self.application.updater.start_polling(
+                            poll_interval=1.0,              # 每秒检查一次
+                            timeout=10,                     # 请求超时10秒
+                            bootstrap_retries=5,            # 启动重试5次
+                            drop_pending_updates=True,      # 丢弃待处理的更新
+                            allowed_updates=Update.ALL_TYPES  # 接收所有类型的更新
+                        )
                     )
                     logger.info("✅ Telegram轮询已启动")
 
@@ -73,6 +81,8 @@ class TelegramBot:
 
                 except Exception as err:
                     logger.error(f"❌ Telegram轮询异常: {err}")
+                finally:
+                    loop.close()
 
             # 启动轮询线程
             self._polling_thread = threading.Thread(target=run_polling, daemon=True)

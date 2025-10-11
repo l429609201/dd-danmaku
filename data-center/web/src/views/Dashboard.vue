@@ -150,7 +150,7 @@ export default {
       return num.toString()
     }
 
-    // 加载统计数据
+    // 加载统计数据（默认从数据库获取）
     const loadStats = async () => {
       try {
         const response = await authFetch('/api/stats/summary')
@@ -165,11 +165,6 @@ export default {
             todayBlocked: data.todayBlocked || 0,
             successRate: data.successRate || 0
           }
-        }
-
-        // 如果数据库没有数据，尝试从Worker获取实时数据
-        if (stats.value.totalRequests === 0) {
-          await loadRealtimeStats()
         }
       } catch (error) {
         console.error('加载统计数据失败:', error)
@@ -400,13 +395,39 @@ export default {
       ipBlockInstance.setOption(option)
     }
 
-    // 刷新数据
+    // 刷新数据（从Worker获取并整合到数据库）
     const refreshData = async () => {
       loading.value = true
       try {
+        // 1. 从Worker获取实时数据
+        const realtimeResponse = await authFetch('/api/web-config/worker/realtime-stats')
+        if (realtimeResponse.ok) {
+          const realtimeData = await realtimeResponse.json()
+
+          if (realtimeData.success && realtimeData.stats) {
+            // 2. 将Worker数据整合到数据库
+            // 调用后端API将Worker数据保存到数据库
+            const syncResponse = await authFetch('/api/stats/sync-worker-data', {
+              method: 'POST',
+              body: JSON.stringify({
+                worker_id: 'main-worker',
+                stats: realtimeData.stats
+              })
+            })
+
+            if (syncResponse.ok) {
+              console.log('Worker数据已同步到数据库')
+            }
+          }
+        }
+
+        // 3. 重新从数据库加载数据
         await loadStats()
-        // 更新图表数据
-        updateCharts()
+
+        // 4. 更新图表数据
+        await updateCharts()
+      } catch (error) {
+        console.error('刷新数据失败:', error)
       } finally {
         loading.value = false
       }
@@ -471,9 +492,33 @@ export default {
     // 加载UA使用分布数据
     const loadUADistributionData = async () => {
       try {
-        const response = await authFetch('/api/stats/ua-usage?hours=24')
-        if (response.ok) {
-          const data = await response.json()
+        // 优先从Worker实时数据获取UA类型统计
+        const realtimeResponse = await authFetch('/api/web-config/worker/realtime-stats')
+        if (realtimeResponse.ok) {
+          const realtimeData = await realtimeResponse.json()
+
+          if (realtimeData.success && realtimeData.stats && realtimeData.stats.ua_type_stats) {
+            const uaStats = realtimeData.stats.ua_type_stats
+            const chartData = Object.keys(uaStats).map(uaType => ({
+              value: uaStats[uaType].total_requests || 0,
+              name: uaType
+            }))
+
+            if (uaDistributionInstance && chartData.length > 0) {
+              uaDistributionInstance.setOption({
+                series: [{
+                  data: chartData
+                }]
+              })
+              return
+            }
+          }
+        }
+
+        // 如果Worker数据不可用，尝试从数据库获取
+        const dbResponse = await authFetch('/api/stats/ua-usage?hours=24')
+        if (dbResponse.ok) {
+          const data = await dbResponse.json()
 
           if (uaDistributionInstance && data.length > 0) {
             uaDistributionInstance.setOption({

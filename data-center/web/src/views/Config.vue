@@ -63,7 +63,7 @@
         <div class="card-header">
           <h3>🌐 User Agent 配置</h3>
           <div class="header-buttons">
-            <button @click="showImportDialog" class="btn btn-secondary">📥 JSON导入</button>
+            <button @click="showJsonEditor" class="btn btn-secondary">📝 JSON编辑</button>
             <button @click="addUAConfig" class="btn btn-secondary">➕ 添加UA配置</button>
           </div>
         </div>
@@ -166,33 +166,33 @@
       </div>
     </div>
 
-    <!-- JSON导入对话框 -->
-    <div v-if="showImportModal" class="modal-overlay" @click="closeImportDialog">
-      <div class="modal-content" @click.stop>
+    <!-- JSON编辑器对话框 -->
+    <div v-if="showJsonEditorModal" class="modal-overlay" @click="closeJsonEditor">
+      <div class="modal-content large" @click.stop>
         <div class="modal-header">
-          <h3>📥 导入UA配置JSON</h3>
-          <button @click="closeImportDialog" class="btn btn-secondary">✖️</button>
+          <h3>📝 JSON编辑器</h3>
+          <button @click="closeJsonEditor" class="btn btn-secondary">✖️</button>
         </div>
         <div class="modal-body">
           <div class="form-group">
-            <label>请粘贴JSON配置：</label>
+            <label>UA配置JSON：</label>
             <textarea
-              v-model="importJsonText"
-              placeholder="请粘贴JSON配置..."
+              v-model="jsonEditorText"
+              placeholder="JSON配置..."
               class="json-textarea"
-              rows="15"
+              rows="20"
             ></textarea>
           </div>
-          <div class="import-options">
-            <label class="checkbox-label">
-              <input type="checkbox" v-model="replaceExisting" />
-              替换现有配置（否则追加到现有配置）
-            </label>
+          <div v-if="jsonValidationError" class="validation-error">
+            ❌ JSON格式错误: {{ jsonValidationError }}
+          </div>
+          <div v-else-if="jsonEditorText" class="validation-success">
+            ✅ JSON格式正确
           </div>
         </div>
         <div class="modal-footer">
-          <button @click="closeImportDialog" class="btn btn-secondary">取消</button>
-          <button @click="importUAConfigs" class="btn btn-primary">导入配置</button>
+          <button @click="closeJsonEditor" class="btn btn-secondary">取消</button>
+          <button @click="saveJsonConfig" class="btn btn-primary" :disabled="!!jsonValidationError">保存配置</button>
         </div>
       </div>
     </div>
@@ -200,7 +200,7 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { authFetch } from '../utils/api.js'
 
 export default {
@@ -219,10 +219,10 @@ export default {
 
 
 
-    // JSON导入相关
-    const showImportModal = ref(false)
-    const importJsonText = ref('')
-    const replaceExisting = ref(false)
+    // JSON编辑器相关
+    const showJsonEditorModal = ref(false)
+    const jsonEditorText = ref('')
+    const jsonValidationError = ref('')
 
 
 
@@ -442,34 +442,64 @@ export default {
       uaConfigs.value[uaIndex].pathLimits.splice(pathIndex, 1)
     }
 
-    // JSON导入方法
-    const showImportDialog = () => {
-      showImportModal.value = true
-      importJsonText.value = ''
-      replaceExisting.value = false
+    // JSON编辑器方法
+    const showJsonEditor = () => {
+      showJsonEditorModal.value = true
+      jsonValidationError.value = ''
+
+      // 将当前UA配置转换为JSON格式显示
+      const jsonConfig = {}
+      uaConfigs.value.forEach(ua => {
+        jsonConfig[ua.name] = {
+          enabled: ua.enabled,
+          userAgent: ua.userAgent,
+          maxRequestsPerHour: ua.maxRequestsPerHour,
+          maxRequestsPerDay: ua.maxRequestsPerDay,
+          description: ua.description || '',
+          pathLimits: ua.pathLimits || []
+        }
+      })
+
+      jsonEditorText.value = JSON.stringify(jsonConfig, null, 2)
     }
 
-    const closeImportDialog = () => {
-      showImportModal.value = false
-      importJsonText.value = ''
-      replaceExisting.value = false
+    const closeJsonEditor = () => {
+      showJsonEditorModal.value = false
+      jsonEditorText.value = ''
+      jsonValidationError.value = ''
     }
 
-    const importUAConfigs = () => {
+    const validateJson = () => {
       try {
-        if (!importJsonText.value.trim()) {
-          showMessage('请输入JSON配置', 'error')
+        if (!jsonEditorText.value.trim()) {
+          jsonValidationError.value = 'JSON不能为空'
+          return false
+        }
+
+        JSON.parse(jsonEditorText.value)
+        jsonValidationError.value = ''
+        return true
+      } catch (error) {
+        jsonValidationError.value = error.message
+        return false
+      }
+    }
+
+    const saveJsonConfig = () => {
+      try {
+        if (!validateJson()) {
+          showMessage('JSON格式错误，请检查', 'error')
           return
         }
 
-        const jsonData = JSON.parse(importJsonText.value)
-        const importedConfigs = []
+        const jsonData = JSON.parse(jsonEditorText.value)
+        const newConfigs = []
 
         // 转换JSON格式到内部格式
         for (const [name, config] of Object.entries(jsonData)) {
           const uaConfig = {
             name: name,
-            enabled: config.enabled || true,
+            enabled: config.enabled !== undefined ? config.enabled : true,
             userAgent: config.userAgent || '',
             maxRequestsPerHour: config.maxRequestsPerHour || 100,
             maxRequestsPerDay: config.maxRequestsPerDay || 1000,
@@ -485,21 +515,22 @@ export default {
             }))
           }
 
-          importedConfigs.push(uaConfig)
+          newConfigs.push(uaConfig)
         }
 
-        // 根据选项决定是替换还是追加
-        if (replaceExisting.value) {
-          uaConfigs.value = importedConfigs
-          showMessage(`成功导入 ${importedConfigs.length} 个UA配置（已替换现有配置）`, 'success')
-        } else {
-          uaConfigs.value.push(...importedConfigs)
-          showMessage(`成功导入 ${importedConfigs.length} 个UA配置（已追加到现有配置）`, 'success')
-        }
-
-        closeImportDialog()
+        // 替换现有配置
+        uaConfigs.value = newConfigs
+        showMessage(`成功保存 ${newConfigs.length} 个UA配置`, 'success')
+        closeJsonEditor()
       } catch (error) {
-        showMessage(`JSON解析失败: ${error.message}`, 'error')
+        showMessage(`保存失败: ${error.message}`, 'error')
+      }
+    }
+
+    // 监听JSON编辑器文本变化，实时验证
+    const watchJsonEditor = () => {
+      if (jsonEditorText.value) {
+        validateJson()
       }
     }
 
@@ -530,13 +561,20 @@ export default {
 
 
 
+    // 监听JSON编辑器文本变化
+    watch(jsonEditorText, () => {
+      if (jsonEditorText.value) {
+        validateJson()
+      }
+    })
+
     return {
       config,
       uaConfigs,
       ipBlacklist,
-      showImportModal,
-      importJsonText,
-      replaceExisting,
+      showJsonEditorModal,
+      jsonEditorText,
+      jsonValidationError,
       saveBasicConfig,
       saveTelegramConfig,
       createBotMenu,
@@ -545,9 +583,9 @@ export default {
       addPathLimit,
       removePathLimit,
       saveUAConfigs,
-      showImportDialog,
-      closeImportDialog,
-      importUAConfigs,
+      showJsonEditor,
+      closeJsonEditor,
+      saveJsonConfig,
       addIPBlacklist,
       removeIPBlacklist,
       saveIPBlacklist
@@ -976,36 +1014,46 @@ export default {
 
 .json-textarea {
   width: 100%;
-  min-height: 300px;
+  min-height: 400px;
   padding: 12px;
   border: 1px solid #ddd;
   border-radius: 6px;
   font-family: 'Courier New', monospace;
   font-size: 14px;
-  line-height: 1.4;
+  line-height: 1.6;
   resize: vertical;
+  background: #f8f9fa;
 }
 
 .json-textarea:focus {
   outline: none;
   border-color: #1976d2;
   box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.2);
+  background: white;
 }
 
-.import-options {
-  margin-top: 16px;
-}
-
-.checkbox-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
+.validation-error {
+  margin-top: 12px;
+  padding: 12px;
+  background: #ffebee;
+  border: 1px solid #f44336;
+  border-radius: 6px;
+  color: #c62828;
   font-size: 14px;
 }
 
-.checkbox-label input[type="checkbox"] {
-  margin: 0;
+.validation-success {
+  margin-top: 12px;
+  padding: 12px;
+  background: #e8f5e9;
+  border: 1px solid #4caf50;
+  border-radius: 6px;
+  color: #2e7d32;
+  font-size: 14px;
+}
+
+.modal-content.large {
+  max-width: 900px;
 }
 
 

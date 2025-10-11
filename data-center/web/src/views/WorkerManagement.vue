@@ -69,34 +69,27 @@
             </span>
           </div>
           <div class="worker-actions">
-            <button @click="viewRealtimeStats(worker)" class="btn btn-sm btn-primary" title="查看统计">
-              📊 统计
+            <button @click="testConnection(worker)" class="btn btn-sm btn-outline" title="测试连接">
+              🔗 测试
             </button>
-            <button @click="pushConfig(worker)" class="btn btn-sm btn-success" title="推送配置">
-              🚀 推送
+            <button @click="viewRealtimeStats(worker)" class="btn btn-sm btn-primary" title="查看实时统计">
+              📊 实时统计
             </button>
-            <button @click="viewWorkerLogs(worker)" class="btn btn-sm btn-info" title="查看日志">
+            <button @click="viewWorkerLimits(worker)" class="btn btn-sm btn-info" title="查看限制统计">
+              🚦 限制统计
+            </button>
+            <button @click="viewWorkerLogs(worker)" class="btn btn-sm btn-outline" title="查看日志">
               📋 日志
             </button>
-            <div class="dropdown">
-              <button @click="toggleDropdown(worker.id)" class="btn btn-sm btn-outline" title="更多操作">
-                ⚙️ 更多
-              </button>
-              <div v-if="activeDropdown === worker.id" class="dropdown-menu">
-                <button @click="testConnection(worker)" class="dropdown-item">
-                  🔗 测试连接
-                </button>
-                <button @click="viewWorkerLimits(worker)" class="dropdown-item">
-                  🚦 限制统计
-                </button>
-                <button @click="fullSync(worker)" class="dropdown-item">
-                  🔄 完整同步
-                </button>
-                <button @click="removeWorker(worker)" class="dropdown-item danger">
-                  🗑️ 清空配置
-                </button>
-              </div>
-            </div>
+            <button @click="pushConfig(worker)" class="btn btn-sm btn-success" title="推送配置">
+              🚀 推送配置
+            </button>
+            <button @click="fullSync(worker)" class="btn btn-sm btn-success" title="完整同步">
+              🔄 完整同步
+            </button>
+            <button @click="removeWorker(worker)" class="btn btn-sm btn-danger" title="清空Worker配置">
+              🗑️ 清空配置
+            </button>
           </div>
         </div>
         <div class="card-body">
@@ -448,8 +441,6 @@ export default {
       // Worker实时日志相关
       realtimeLogs: [],
       logsLoading: false,
-      // 下拉菜单状态
-      activeDropdown: null,
       // Worker日志弹窗
       showWorkerLogsModal: false,
       workerLogs: []
@@ -901,14 +892,6 @@ export default {
         unknown: '未知'
       }
       return statusMap[status] || '未知'
-    },
-
-    toggleDropdown(workerId) {
-      if (this.activeDropdown === workerId) {
-        this.activeDropdown = null
-      } else {
-        this.activeDropdown = workerId
-      }
     },
 
     async viewWorkerLogs(worker) {
@@ -1499,49 +1482,6 @@ export default {
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
-}
-
-/* 下拉菜单 */
-.dropdown {
-  position: relative;
-}
-
-.dropdown-menu {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: 4px;
-  background: white;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-  min-width: 150px;
-  z-index: 1000;
-}
-
-.dropdown-item {
-  display: block;
-  width: 100%;
-  padding: 10px 16px;
-  border: none;
-  background: none;
-  text-align: left;
-  cursor: pointer;
-  font-size: 14px;
-  color: #333;
-  transition: background 0.2s;
-}
-
-.dropdown-item:hover {
-  background: #f5f5f5;
-}
-
-.dropdown-item.danger {
-  color: #f44336;
-}
-
-.dropdown-item.danger:hover {
-  background: #ffebee;
 }
 
 .worker-card .card-body {
