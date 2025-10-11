@@ -117,6 +117,113 @@
       </div>
     </div>
 
+    <!-- UA配置卡片 -->
+    <div class="config-card">
+      <div class="card-header">
+        <h3>🌐 User Agent 配置</h3>
+        <div class="header-buttons">
+          <button @click="showJsonEditor" class="btn btn-secondary">📝 JSON编辑</button>
+          <button @click="addUAConfig" class="btn btn-secondary">➕ 添加UA配置</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div v-if="uaConfigs.length === 0" class="empty-state">
+          暂无UA配置，点击上方按钮添加
+        </div>
+        <div v-for="(ua, index) in uaConfigs" :key="index" class="ua-config-item">
+          <div class="ua-config-header">
+            <h4>{{ ua.name || `配置 ${index + 1}` }}</h4>
+            <button @click="removeUAConfig(index)" class="btn btn-danger btn-sm">🗑️ 删除</button>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>配置名称</label>
+              <input v-model="ua.name" type="text" placeholder="例如: MisakaDanmaku" class="form-input" />
+            </div>
+            <div class="form-group">
+              <label>User Agent</label>
+              <input v-model="ua.userAgent" type="text" placeholder="例如: misaka10876/v1.0.0" class="form-input" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>每小时限制</label>
+              <input v-model.number="ua.maxRequestsPerHour" type="number" min="-1" placeholder="100 (-1表示无限制)" class="form-input" />
+            </div>
+            <div class="form-group">
+              <label>每日限制</label>
+              <input v-model.number="ua.maxRequestsPerDay" type="number" min="-1" placeholder="1000 (-1表示无限制)" class="form-input" />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>描述</label>
+            <input v-model="ua.description" type="text" placeholder="例如: Misaka弹幕专用客户端" class="form-input" />
+          </div>
+
+          <div class="form-group">
+            <label class="checkbox-wrapper">
+              <input v-model="ua.enabled" type="checkbox" class="checkbox-input" />
+              <span class="checkbox-custom"></span>
+              <span class="checkbox-label">启用此配置</span>
+            </label>
+          </div>
+
+          <!-- 路径限制配置 -->
+          <div class="path-limits-section">
+            <div class="section-header">
+              <label>路径限制</label>
+              <button @click="addPathLimit(index)" type="button" class="btn btn-secondary btn-sm">➕ 添加路径限制</button>
+            </div>
+
+            <div v-if="ua.pathLimits && ua.pathLimits.length === 0" class="empty-state-small">
+              暂无路径限制
+            </div>
+
+            <div v-for="(pathLimit, pathIndex) in ua.pathLimits" :key="pathIndex" class="path-limit-item">
+              <div class="form-row">
+                <div class="form-group">
+                  <label>路径</label>
+                  <input v-model="pathLimit.path" type="text" placeholder="例如: /api/v2/comment/" class="form-input" />
+                </div>
+                <div class="form-group">
+                  <label>每小时限制</label>
+                  <input v-model.number="pathLimit.maxRequestsPerHour" type="number" min="1" placeholder="50" class="form-input" />
+                </div>
+                <button @click="removePathLimit(index, pathIndex)" class="btn btn-danger btn-sm">🗑️</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button @click="saveUAConfigs" class="btn btn-primary">💾 保存UA配置</button>
+      </div>
+    </div>
+
+    <!-- IP黑名单配置卡片 -->
+    <div class="config-card">
+      <div class="card-header">
+        <h3>🚫 IP黑名单配置</h3>
+        <button @click="addIPBlacklist" class="btn btn-secondary">➕ 添加IP</button>
+      </div>
+      <div class="card-body">
+        <div v-if="ipBlacklist.length === 0" class="empty-state">
+          暂无IP黑名单，点击上方按钮添加
+        </div>
+        <div v-for="(ip, index) in ipBlacklist" :key="index" class="ip-blacklist-item">
+          <div class="form-row">
+            <div class="form-group">
+              <label>IP地址/CIDR</label>
+              <input v-model="ipBlacklist[index]" type="text" placeholder="例如: 192.168.1.1 或 192.168.1.0/24" class="form-input" />
+            </div>
+            <button @click="removeIPBlacklist(index)" class="btn btn-danger">🗑️</button>
+          </div>
+        </div>
+        <button @click="saveIPBlacklist" class="btn btn-primary">💾 保存IP黑名单</button>
+      </div>
+    </div>
+
     <!-- 添加Worker表单 -->
     <div v-if="showAddWorker" class="dialog-overlay">
       <div class="dialog">
@@ -404,6 +511,37 @@
       </div>
     </div>
 
+    <!-- JSON编辑器对话框 -->
+    <div v-if="showJsonEditorModal" class="modal-overlay" @click="closeJsonEditor">
+      <div class="modal-content large" @click.stop>
+        <div class="modal-header">
+          <h3>📝 JSON编辑器</h3>
+          <button @click="closeJsonEditor" class="btn btn-secondary">✖️</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>UA配置JSON：</label>
+            <textarea
+              v-model="jsonEditorText"
+              placeholder="JSON配置..."
+              class="json-textarea"
+              rows="20"
+            ></textarea>
+          </div>
+          <div v-if="jsonValidationError" class="validation-error">
+            ❌ JSON格式错误: {{ jsonValidationError }}
+          </div>
+          <div v-else-if="jsonEditorText" class="validation-success">
+            ✅ JSON格式正确
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button @click="closeJsonEditor" class="btn btn-secondary">取消</button>
+          <button @click="saveJsonConfig" class="btn btn-primary" :disabled="!!jsonValidationError">保存配置</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 消息提示 -->
     <div v-if="message" :class="['toast', message.type]">
       {{ message.text }}
@@ -443,7 +581,14 @@ export default {
       logsLoading: false,
       // Worker日志弹窗
       showWorkerLogsModal: false,
-      workerLogs: []
+      workerLogs: [],
+      // UA配置和IP黑名单
+      uaConfigs: [],
+      ipBlacklist: [],
+      // JSON编辑器
+      showJsonEditorModal: false,
+      jsonEditorText: '',
+      jsonValidationError: ''
     }
   },
 
@@ -467,6 +612,10 @@ export default {
 
     // 启动心跳检查
     this.startHeartbeat()
+
+    // 加载UA配置和IP黑名单
+    await this.loadUAConfigs()
+    await this.loadIPBlacklist()
   },
 
   beforeUnmount() {
@@ -901,21 +1050,47 @@ export default {
       this.logsLoading = true
 
       try {
-        const response = await authFetch(`/api/logs/worker-logs?worker_id=${encodeURIComponent(worker.id)}&limit=100`)
+        // 1. 优先从数据库加载历史日志
+        const dbResponse = await authFetch(`/api/logs/worker-logs?worker_id=${encodeURIComponent(worker.id)}&limit=100`)
 
-        if (response.ok) {
-          const result = await response.json()
+        if (dbResponse.ok) {
+          const dbResult = await dbResponse.json()
 
-          if (result.success && result.logs) {
-            this.workerLogs = result.logs
-            this.showMessage(`加载了 ${result.logs.length} 条日志`, 'success')
-          } else {
-            this.workerLogs = []
-            this.showMessage('暂无日志数据', 'warning')
+          if (dbResult.success && dbResult.logs && dbResult.logs.length > 0) {
+            this.workerLogs = dbResult.logs
+            this.showMessage(`加载了 ${dbResult.logs.length} 条历史日志`, 'success')
+            this.logsLoading = false
+            return
           }
-        } else {
-          this.showMessage('加载日志失败', 'error')
         }
+
+        // 2. 如果数据库没有日志，从Worker端获取
+        this.showMessage('数据库无日志，正在从Worker获取...', 'info')
+        const workerResponse = await authFetch('/api/worker/fetch-logs', {
+          method: 'POST'
+        })
+
+        if (workerResponse.ok) {
+          const workerResult = await workerResponse.json()
+
+          if (workerResult.success && workerResult.logs && workerResult.logs.length > 0) {
+            // 3. 重新从数据库加载（Worker日志已同步到数据库）
+            const reloadResponse = await authFetch(`/api/logs/worker-logs?worker_id=${encodeURIComponent(worker.id)}&limit=100`)
+
+            if (reloadResponse.ok) {
+              const reloadResult = await reloadResponse.json()
+
+              if (reloadResult.success && reloadResult.logs) {
+                this.workerLogs = reloadResult.logs
+                this.showMessage(`从Worker获取并保存了 ${reloadResult.logs.length} 条日志`, 'success')
+                return
+              }
+            }
+          }
+        }
+
+        this.workerLogs = []
+        this.showMessage('暂无日志数据', 'warning')
       } catch (error) {
         console.error('加载Worker日志失败:', error)
         this.showMessage(`加载日志失败: ${error.message}`, 'error')
@@ -1169,6 +1344,207 @@ export default {
         }
       } catch (error) {
         this.showMessage(`获取系统统计异常: ${error.message}`, 'error')
+      }
+    },
+
+    // UA配置方法
+    async loadUAConfigs() {
+      try {
+        const response = await authFetch('/api/web-config/ua-configs')
+        if (response.ok) {
+          const data = await response.json()
+          this.uaConfigs = data || []
+        }
+      } catch (error) {
+        console.error('加载UA配置失败:', error)
+      }
+    },
+
+    addUAConfig() {
+      this.uaConfigs.push({
+        name: '',
+        enabled: true,
+        userAgent: '',
+        maxRequestsPerHour: 100,
+        maxRequestsPerDay: 1000,
+        description: '',
+        pathLimits: []
+      })
+    },
+
+    removeUAConfig(index) {
+      this.uaConfigs.splice(index, 1)
+    },
+
+    addPathLimit(uaIndex) {
+      if (!this.uaConfigs[uaIndex].pathLimits) {
+        this.uaConfigs[uaIndex].pathLimits = []
+      }
+      this.uaConfigs[uaIndex].pathLimits.push({
+        path: '',
+        maxRequestsPerHour: 50
+      })
+    },
+
+    removePathLimit(uaIndex, pathIndex) {
+      this.uaConfigs[uaIndex].pathLimits.splice(pathIndex, 1)
+    },
+
+    async saveUAConfigs() {
+      try {
+        const response = await authFetch('/api/web-config/ua-configs', {
+          method: 'POST',
+          body: JSON.stringify(this.uaConfigs)
+        })
+
+        if (response.ok) {
+          const result = await response.json()
+          if (result.success) {
+            this.showMessage('UA配置保存成功', 'success')
+          } else {
+            this.showMessage(`UA配置保存失败: ${result.message}`, 'error')
+          }
+        } else {
+          this.showMessage(`UA配置保存失败: HTTP ${response.status}`, 'error')
+        }
+      } catch (error) {
+        this.showMessage(`UA配置保存异常: ${error.message}`, 'error')
+      }
+    },
+
+    // IP黑名单方法
+    async loadIPBlacklist() {
+      try {
+        const response = await authFetch('/api/web-config/ip-blacklist')
+        if (response.ok) {
+          const data = await response.json()
+          this.ipBlacklist = data || []
+        }
+      } catch (error) {
+        console.error('加载IP黑名单失败:', error)
+      }
+    },
+
+    addIPBlacklist() {
+      this.ipBlacklist.push('')
+    },
+
+    removeIPBlacklist(index) {
+      this.ipBlacklist.splice(index, 1)
+    },
+
+    async saveIPBlacklist() {
+      try {
+        const response = await authFetch('/api/web-config/ip-blacklist', {
+          method: 'POST',
+          body: JSON.stringify(this.ipBlacklist)
+        })
+
+        if (response.ok) {
+          const result = await response.json()
+          if (result.success) {
+            this.showMessage('IP黑名单保存成功', 'success')
+          } else {
+            this.showMessage(`IP黑名单保存失败: ${result.message}`, 'error')
+          }
+        } else {
+          this.showMessage(`IP黑名单保存失败: HTTP ${response.status}`, 'error')
+        }
+      } catch (error) {
+        this.showMessage(`IP黑名单保存异常: ${error.message}`, 'error')
+      }
+    },
+
+    // JSON编辑器方法
+    showJsonEditor() {
+      this.showJsonEditorModal = true
+      this.jsonValidationError = ''
+
+      // 将当前UA配置转换为JSON格式显示
+      const jsonConfig = {}
+      this.uaConfigs.forEach(ua => {
+        jsonConfig[ua.name] = {
+          enabled: ua.enabled,
+          userAgent: ua.userAgent,
+          maxRequestsPerHour: ua.maxRequestsPerHour,
+          maxRequestsPerDay: ua.maxRequestsPerDay,
+          description: ua.description || '',
+          pathLimits: ua.pathLimits || []
+        }
+      })
+
+      this.jsonEditorText = JSON.stringify(jsonConfig, null, 2)
+    },
+
+    closeJsonEditor() {
+      this.showJsonEditorModal = false
+      this.jsonEditorText = ''
+      this.jsonValidationError = ''
+    },
+
+    validateJson() {
+      try {
+        if (!this.jsonEditorText.trim()) {
+          this.jsonValidationError = 'JSON不能为空'
+          return false
+        }
+
+        JSON.parse(this.jsonEditorText)
+        this.jsonValidationError = ''
+        return true
+      } catch (error) {
+        this.jsonValidationError = error.message
+        return false
+      }
+    },
+
+    saveJsonConfig() {
+      try {
+        if (!this.validateJson()) {
+          this.showMessage('JSON格式错误，请检查', 'error')
+          return
+        }
+
+        const jsonData = JSON.parse(this.jsonEditorText)
+        const newConfigs = []
+
+        // 转换JSON格式到内部格式
+        for (const [name, config] of Object.entries(jsonData)) {
+          const uaConfig = {
+            name: name,
+            enabled: config.enabled !== undefined ? config.enabled : true,
+            userAgent: config.userAgent || '',
+            maxRequestsPerHour: config.maxRequestsPerHour || 100,
+            maxRequestsPerDay: config.maxRequestsPerDay || 1000,
+            description: config.description || '',
+            pathLimits: []
+          }
+
+          // 转换pathLimits格式
+          if (config.pathLimits && Array.isArray(config.pathLimits)) {
+            uaConfig.pathLimits = config.pathLimits.map(limit => ({
+              path: limit.path || '',
+              maxRequestsPerHour: limit.maxRequestsPerHour || 50
+            }))
+          }
+
+          newConfigs.push(uaConfig)
+        }
+
+        // 替换现有配置
+        this.uaConfigs = newConfigs
+        this.showMessage(`成功保存 ${newConfigs.length} 个UA配置`, 'success')
+        this.closeJsonEditor()
+      } catch (error) {
+        this.showMessage(`保存失败: ${error.message}`, 'error')
+      }
+    }
+  },
+
+  watch: {
+    jsonEditorText() {
+      if (this.jsonEditorText) {
+        this.validateJson()
       }
     }
   }
@@ -2100,5 +2476,168 @@ export default {
   margin-top: 4px;
   font-size: 12px;
   color: #999;
+}
+
+/* UA配置和IP黑名单样式 */
+.header-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.ua-config-item,
+.ip-blacklist-item {
+  background: #f9f9f9;
+  padding: 20px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  border: 1px solid #e0e0e0;
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+  align-items: end;
+}
+
+.form-row .form-group {
+  flex: 1;
+}
+
+.form-row .btn-danger {
+  flex-shrink: 0;
+  margin-bottom: 0;
+}
+
+.ua-config-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.ua-config-header h4 {
+  margin: 0;
+  color: #333;
+  font-size: 16px;
+}
+
+.path-limits-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.section-header label {
+  margin: 0;
+  font-weight: 600;
+}
+
+.path-limit-item {
+  margin-bottom: 8px;
+}
+
+.empty-state-small {
+  padding: 12px;
+  text-align: center;
+  color: #999;
+  font-size: 14px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+
+.checkbox-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.checkbox-input {
+  margin: 0;
+}
+
+.checkbox-custom {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #ddd;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+.checkbox-label {
+  font-weight: normal;
+}
+
+.json-textarea {
+  width: 100%;
+  min-height: 400px;
+  padding: 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  resize: vertical;
+  background: #f8f9fa;
+}
+
+.json-textarea:focus {
+  outline: none;
+  border-color: #1976d2;
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.2);
+  background: white;
+}
+
+.validation-error {
+  margin-top: 12px;
+  padding: 12px;
+  background: #ffebee;
+  border: 1px solid #f44336;
+  border-radius: 6px;
+  color: #c62828;
+  font-size: 14px;
+}
+
+.validation-success {
+  margin-top: 12px;
+  padding: 12px;
+  background: #e8f5e9;
+  border: 1px solid #4caf50;
+  border-radius: 6px;
+  color: #2e7d32;
+  font-size: 14px;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 24px;
+  border-top: 1px solid #e0e0e0;
+  background: #f8f9fa;
+}
+
+.form-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: #1976d2;
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.1);
 }
 </style>

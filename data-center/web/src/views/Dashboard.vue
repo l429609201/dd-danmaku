@@ -323,12 +323,7 @@ export default {
             name: 'UA类型',
             type: 'pie',
             radius: '60%',
-            data: [
-              { value: 0, name: 'Android' },
-              { value: 0, name: 'iOS' },
-              { value: 0, name: 'Web' },
-              { value: 0, name: 'Other' }
-            ],
+            data: [],  // 初始为空，由loadUADistributionData动态加载
             emphasis: {
               itemStyle: {
                 shadowBlur: 10,
