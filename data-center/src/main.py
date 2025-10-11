@@ -62,9 +62,14 @@ async def lifespan(app: FastAPI):
     if settings_data and settings_data.tg_bot_token and settings_data.tg_admin_user_ids:
         logger.info("🤖 启动Telegram机器人（轮询模式）...")
         try:
+            # 将管理员ID字符串转换为整数列表
+            admin_ids = []
+            if settings_data.tg_admin_user_ids:
+                admin_ids = [int(uid.strip()) for uid in settings_data.tg_admin_user_ids.split(',') if uid.strip()]
+
             telegram_bot = TelegramBot(
                 token=settings_data.tg_bot_token,
-                admin_user_ids=settings_data.tg_admin_user_ids.split(',') if settings_data.tg_admin_user_ids else []
+                admin_user_ids=admin_ids
             )
 
             # 在后台任务中启动机器人（参考MoviePilot的做法）
