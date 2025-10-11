@@ -528,7 +528,7 @@ export default {
 🔐 秘钥轮换:
 • Secret1使用: ${stats.secret_rotation?.secret1_count || 0} 次
 • Secret2使用: ${stats.secret_rotation?.secret2_count || 0} 次
-• 当前使用: Secret${stats.secret_rotation?.current_secret || '1'}
+• 当前使用: Secret${stats.secret_rotation?.current || stats.secret_rotation?.current_secret || '1'}
 • 轮换阈值: ${stats.secret_rotation?.rotation_limit || 500} 次
 
 注意: Worker统计数据仅反映当前边缘节点实例的情况`

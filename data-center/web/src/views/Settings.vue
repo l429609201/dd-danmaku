@@ -232,28 +232,30 @@ export default {
       passwordLoading.value = true
 
       try {
-        const response = await authFetch('/auth/change-password', {
+        const response = await authFetch('/api/auth/change-password', {
           method: 'POST',
           body: JSON.stringify({
             current_password: passwordForm.value.currentPassword,
-            new_password: passwordForm.value.newPassword
+            new_password: passwordForm.value.newPassword,
+            confirm_password: passwordForm.value.confirmPassword
           })
         })
 
         if (response.ok) {
-          alert('密码修改成功，请重新登录')
+          const result = await response.json()
+          alert(result.message || '密码修改成功，请重新登录')
           closePasswordModal()
-          // 可以选择自动登出
+          // 自动登出
           localStorage.removeItem('access_token')
           localStorage.removeItem('token_type')
           window.location.href = '/'
         } else {
           const error = await response.json()
-          alert(error.message || '密码修改失败')
+          alert(error.detail || error.message || '密码修改失败')
         }
       } catch (error) {
         console.error('密码修改失败:', error)
-        alert('密码修改失败')
+        alert(`密码修改失败: ${error.message || '未知错误'}`)
       } finally {
         passwordLoading.value = false
       }
