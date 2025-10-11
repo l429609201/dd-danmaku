@@ -26,12 +26,6 @@ const routes = [
         meta: { title: '配置管理' }
       },
       {
-        path: 'stats',
-        name: 'Stats',
-        component: () => import('../views/Stats.vue'),
-        meta: { title: '统计数据' }
-      },
-      {
         path: 'logs',
         name: 'Logs',
         component: () => import('../views/Logs.vue'),

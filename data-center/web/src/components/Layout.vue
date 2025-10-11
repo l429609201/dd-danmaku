@@ -37,11 +37,6 @@
             </router-link>
           </li>
           <li>
-            <router-link to="/stats" class="nav-link" :class="{ active: $route.path === '/stats' }" @click="handleNavClick">
-              📈 统计数据
-            </router-link>
-          </li>
-          <li>
             <router-link to="/logs" class="nav-link" :class="{ active: $route.path === '/logs' }" @click="handleNavClick">
               📋 日志管理
             </router-link>
