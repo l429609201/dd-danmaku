@@ -304,15 +304,18 @@ class TelegramBot:
             # 获取UA配置列表
             ua_configs = await self.config_service.get_ua_configs()
 
-            message = "👤 **UA配置管理**\n\n"
+            message = "👤 UA配置管理\n\n"
 
             if not ua_configs:
                 message += "📝 暂无UA配置"
             else:
                 for i, config in enumerate(ua_configs[:10], 1):  # 限制显示前10个
                     status = "✅" if config.enabled else "❌"
-                    message += f"{i}. {status} **{config.name}**\n"
-                    message += f"   UA: `{config.user_agent[:50]}...`\n"
+                    # 转义特殊字符，避免Markdown解析错误
+                    name = config.name.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]')
+                    ua = config.user_agent[:50].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('`', '\\`')
+                    message += f"{i}. {status} {name}\n"
+                    message += f"   UA: {ua}...\n"
                     message += f"   限制: {config.hourly_limit}/小时\n\n"
 
             keyboard = [
