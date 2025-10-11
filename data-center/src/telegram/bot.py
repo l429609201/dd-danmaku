@@ -20,6 +20,9 @@ from src.models.logs import TelegramLog
 
 logger = logging.getLogger(__name__)
 
+# 禁用httpx的INFO日志，避免暴露API密钥
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 class TelegramBot:
     """Telegram机器人类 - 使用轮询模式，无需公网地址"""
 
