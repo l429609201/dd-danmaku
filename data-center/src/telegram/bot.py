@@ -63,17 +63,29 @@ class TelegramBot:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
 
-                    # 使用run_polling方法（阻塞式运行）
-                    loop.run_until_complete(
-                        self.application.run_polling(
-                            poll_interval=1.0,              # 每秒检查一次
-                            timeout=10,                     # 请求超时10秒
-                            bootstrap_retries=5,            # 启动重试5次
-                            drop_pending_updates=True,      # 丢弃待处理的更新
-                            allowed_updates=Update.ALL_TYPES,  # 接收所有类型的更新
-                            close_loop=False                # 不关闭事件循环
+                    # 启动轮询
+                    async def start_polling_async():
+                        await self.application.initialize()
+                        await self.application.start()
+                        await self.application.updater.start_polling(
+                            poll_interval=1.0,
+                            timeout=10,
+                            bootstrap_retries=5,
+                            drop_pending_updates=True,
+                            allowed_updates=Update.ALL_TYPES
                         )
-                    )
+                        logger.info("✅ Telegram轮询已启动")
+
+                        # 保持运行直到收到停止信号
+                        while not self._stop_event.is_set():
+                            await asyncio.sleep(1)
+
+                        # 停止轮询
+                        await self.application.updater.stop()
+                        await self.application.stop()
+                        await self.application.shutdown()
+
+                    loop.run_until_complete(start_polling_async())
 
                 except Exception as err:
                     logger.error(f"❌ Telegram轮询异常: {err}", exc_info=True)
