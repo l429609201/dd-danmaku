@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import httpx
 import logging
+import asyncio
 
 from src.models.auth import User
 from src.api.v1.endpoints.auth import get_current_user
@@ -99,3 +100,75 @@ async def create_bot_menu(
             success=False,
             message=f"创建失败: {str(e)}"
         )
+
+@router.post("/restart", response_model=Dict[str, Any])
+async def restart_telegram_bot(
+    current_user: User = Depends(get_current_user)
+):
+    """重启Telegram机器人"""
+    try:
+        from src.main import telegram_bot
+        from src.services.web_config_service import WebConfigService
+
+        logger.info("🔄 开始重启Telegram机器人...")
+
+        # 1. 停止现有机器人
+        if telegram_bot:
+            logger.info("🛑 停止现有机器人...")
+            try:
+                await telegram_bot.stop()
+                logger.info("✅ 现有机器人已停止")
+            except Exception as e:
+                logger.warning(f"停止机器人时出现警告: {e}")
+
+        # 2. 等待一小段时间确保资源释放
+        await asyncio.sleep(2)
+
+        # 3. 从数据库重新加载配置
+        web_config_service = WebConfigService()
+        settings_data = await web_config_service.get_system_settings()
+
+        if not settings_data or not settings_data.tg_bot_token or not settings_data.tg_admin_user_ids:
+            return {
+                "success": False,
+                "message": "TG机器人配置不完整，请先配置Bot Token和管理员ID"
+            }
+
+        # 4. 创建新的机器人实例
+        from src.telegram.bot import TelegramBot
+
+        # 将管理员ID字符串转换为整数列表
+        admin_ids = []
+        if settings_data.tg_admin_user_ids:
+            admin_ids = [int(uid.strip()) for uid in settings_data.tg_admin_user_ids.split(',') if uid.strip()]
+
+        logger.info(f"🤖 使用新配置创建机器人实例...")
+        logger.info(f"   - Token: {settings_data.tg_bot_token[:8]}...")
+        logger.info(f"   - Admin IDs: {admin_ids}")
+
+        new_bot = TelegramBot(
+            token=settings_data.tg_bot_token,
+            admin_user_ids=admin_ids
+        )
+
+        # 5. 启动新机器人
+        logger.info("🚀 启动新机器人...")
+        bot_task = asyncio.create_task(new_bot.start())
+
+        # 6. 更新全局变量
+        import src.main
+        src.main.telegram_bot = new_bot
+
+        logger.info("✅ Telegram机器人重启成功")
+
+        return {
+            "success": True,
+            "message": "Telegram机器人重启成功"
+        }
+
+    except Exception as e:
+        logger.error(f"❌ 重启Telegram机器人失败: {e}", exc_info=True)
+        return {
+            "success": False,
+            "message": f"重启失败: {str(e)}"
+        }

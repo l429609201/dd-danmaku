@@ -37,7 +37,10 @@
       <div class="config-card">
         <div class="card-header">
           <h3>🤖 Telegram机器人</h3>
-          <button @click="createBotMenu" class="btn btn-secondary">📋 创建机器人菜单</button>
+          <div class="header-buttons">
+            <button @click="restartTelegramBot" class="btn btn-warning">🔄 重启机器人</button>
+            <button @click="createBotMenu" class="btn btn-secondary">📋 创建机器人菜单</button>
+          </div>
         </div>
         <div class="card-body">
           <form @submit.prevent="saveTelegramConfig" class="config-form">
@@ -153,6 +156,29 @@ export default {
       }
     }
 
+    const restartTelegramBot = async () => {
+      try {
+        showMessage('正在重启Telegram机器人...', 'info')
+
+        const response = await authFetch('/api/telegram/restart', {
+          method: 'POST'
+        })
+
+        if (response.ok) {
+          const result = await response.json()
+          if (result.success) {
+            showMessage('Telegram机器人重启成功', 'success')
+          } else {
+            showMessage(`重启失败: ${result.message}`, 'error')
+          }
+        } else {
+          showMessage(`重启失败: HTTP ${response.status}`, 'error')
+        }
+      } catch (error) {
+        showMessage(`重启失败: ${error.message}`, 'error')
+      }
+    }
+
     const createBotMenu = async () => {
       if (!config.value.telegramToken) {
         showMessage('请先配置Bot Token', 'error')
@@ -225,6 +251,7 @@ export default {
       config,
       saveBasicConfig,
       saveTelegramConfig,
+      restartTelegramBot,
       createBotMenu
     }
   }
