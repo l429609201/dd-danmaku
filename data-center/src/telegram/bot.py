@@ -52,7 +52,7 @@ class TelegramBot:
             await self.application.initialize()
             await self.application.start()
 
-            # 在独立线程中运行轮询（参考MoviePilot的做法）
+            # 在独立线程中运行轮询
             def run_polling():
                 """在独立线程中运行轮询"""
                 try:
@@ -63,26 +63,25 @@ class TelegramBot:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
 
-                    # 使用run_polling而不是start_polling
-                    # run_polling会阻塞直到停止
+                    # 使用run_polling方法（阻塞式运行）
                     loop.run_until_complete(
-                        self.application.updater.start_polling(
+                        self.application.run_polling(
                             poll_interval=1.0,              # 每秒检查一次
                             timeout=10,                     # 请求超时10秒
                             bootstrap_retries=5,            # 启动重试5次
                             drop_pending_updates=True,      # 丢弃待处理的更新
-                            allowed_updates=Update.ALL_TYPES  # 接收所有类型的更新
+                            allowed_updates=Update.ALL_TYPES,  # 接收所有类型的更新
+                            close_loop=False                # 不关闭事件循环
                         )
                     )
-                    logger.info("✅ Telegram轮询已启动")
-
-                    # 保持线程运行直到收到停止信号
-                    self._stop_event.wait()
 
                 except Exception as err:
-                    logger.error(f"❌ Telegram轮询异常: {err}")
+                    logger.error(f"❌ Telegram轮询异常: {err}", exc_info=True)
                 finally:
-                    loop.close()
+                    try:
+                        loop.close()
+                    except:
+                        pass
 
             # 启动轮询线程
             self._polling_thread = threading.Thread(target=run_polling, daemon=True)

@@ -21,10 +21,6 @@
               <input v-model="config.systemName" type="text" placeholder="DanDanPlay API 数据交互中心" class="form-input" />
             </div>
             <div class="form-group">
-              <label>API端口</label>
-              <input v-model.number="config.apiPort" type="number" min="1000" max="65535" placeholder="7759" class="form-input" />
-            </div>
-            <div class="form-group">
               <label class="checkbox-wrapper">
                 <input v-model="config.debugMode" type="checkbox" class="checkbox-input" />
                 <span class="checkbox-custom"></span>
@@ -58,149 +54,12 @@
         </div>
       </div>
 
-      <!-- UA配置卡片 -->
-      <div class="config-card">
-        <div class="card-header">
-          <h3>🌐 User Agent 配置</h3>
-          <div class="header-buttons">
-            <button @click="showJsonEditor" class="btn btn-secondary">📝 JSON编辑</button>
-            <button @click="addUAConfig" class="btn btn-secondary">➕ 添加UA配置</button>
-          </div>
-        </div>
-        <div class="card-body">
-          <div v-if="uaConfigs.length === 0" class="empty-state">
-            暂无UA配置，点击上方按钮添加
-          </div>
-          <div v-for="(ua, index) in uaConfigs" :key="index" class="ua-config-item">
-            <div class="ua-config-header">
-              <h4>{{ ua.name || `配置 ${index + 1}` }}</h4>
-              <button @click="removeUAConfig(index)" class="btn btn-danger btn-sm">🗑️ 删除</button>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group">
-                <label>配置名称</label>
-                <input v-model="ua.name" type="text" placeholder="例如: MisakaDanmaku" class="form-input" />
-              </div>
-              <div class="form-group">
-                <label>User Agent</label>
-                <input v-model="ua.userAgent" type="text" placeholder="例如: misaka10876/v1.0.0" class="form-input" />
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group">
-                <label>每小时限制</label>
-                <input v-model.number="ua.maxRequestsPerHour" type="number" min="-1" placeholder="100 (-1表示无限制)" class="form-input" />
-              </div>
-              <div class="form-group">
-                <label>每日限制</label>
-                <input v-model.number="ua.maxRequestsPerDay" type="number" min="-1" placeholder="1000 (-1表示无限制)" class="form-input" />
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label>描述</label>
-              <input v-model="ua.description" type="text" placeholder="例如: Misaka弹幕专用客户端" class="form-input" />
-            </div>
-
-            <div class="form-group">
-              <label class="checkbox-wrapper">
-                <input v-model="ua.enabled" type="checkbox" class="checkbox-input" />
-                <span class="checkbox-custom"></span>
-                <span class="checkbox-label">启用此配置</span>
-              </label>
-            </div>
-
-            <!-- 路径限制配置 -->
-            <div class="path-limits-section">
-              <div class="section-header">
-                <label>路径限制</label>
-                <button @click="addPathLimit(index)" type="button" class="btn btn-secondary btn-sm">➕ 添加路径限制</button>
-              </div>
-
-              <div v-if="ua.pathLimits && ua.pathLimits.length === 0" class="empty-state-small">
-                暂无路径限制
-              </div>
-
-              <div v-for="(pathLimit, pathIndex) in ua.pathLimits" :key="pathIndex" class="path-limit-item">
-                <div class="form-row">
-                  <div class="form-group">
-                    <label>路径</label>
-                    <input v-model="pathLimit.path" type="text" placeholder="例如: /api/v2/comment/" class="form-input" />
-                  </div>
-                  <div class="form-group">
-                    <label>每小时限制</label>
-                    <input v-model.number="pathLimit.maxRequestsPerHour" type="number" min="1" placeholder="50" class="form-input" />
-                  </div>
-                  <button @click="removePathLimit(index, pathIndex)" class="btn btn-danger btn-sm">🗑️</button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <button @click="saveUAConfigs" class="btn btn-primary">💾 保存UA配置</button>
-        </div>
-      </div>
-
-      <!-- IP黑名单配置卡片 -->
-      <div class="config-card">
-        <div class="card-header">
-          <h3>🚫 IP黑名单配置</h3>
-          <button @click="addIPBlacklist" class="btn btn-secondary">➕ 添加IP</button>
-        </div>
-        <div class="card-body">
-          <div v-if="ipBlacklist.length === 0" class="empty-state">
-            暂无IP黑名单，点击上方按钮添加
-          </div>
-          <div v-for="(ip, index) in ipBlacklist" :key="index" class="ip-blacklist-item">
-            <div class="form-row">
-              <div class="form-group">
-                <label>IP地址/CIDR</label>
-                <input v-model="ipBlacklist[index]" type="text" placeholder="例如: 192.168.1.1 或 192.168.1.0/24" class="form-input" />
-              </div>
-              <button @click="removeIPBlacklist(index)" class="btn btn-danger">🗑️</button>
-            </div>
-          </div>
-          <button @click="saveIPBlacklist" class="btn btn-primary">💾 保存IP黑名单</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- JSON编辑器对话框 -->
-    <div v-if="showJsonEditorModal" class="modal-overlay" @click="closeJsonEditor">
-      <div class="modal-content large" @click.stop>
-        <div class="modal-header">
-          <h3>📝 JSON编辑器</h3>
-          <button @click="closeJsonEditor" class="btn btn-secondary">✖️</button>
-        </div>
-        <div class="modal-body">
-          <div class="form-group">
-            <label>UA配置JSON：</label>
-            <textarea
-              v-model="jsonEditorText"
-              placeholder="JSON配置..."
-              class="json-textarea"
-              rows="20"
-            ></textarea>
-          </div>
-          <div v-if="jsonValidationError" class="validation-error">
-            ❌ JSON格式错误: {{ jsonValidationError }}
-          </div>
-          <div v-else-if="jsonEditorText" class="validation-success">
-            ✅ JSON格式正确
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button @click="closeJsonEditor" class="btn btn-secondary">取消</button>
-          <button @click="saveJsonConfig" class="btn btn-primary" :disabled="!!jsonValidationError">保存配置</button>
-        </div>
-      </div>
     </div>
   </div>
 </template>
 
 <script>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted } from 'vue'
 import { authFetch } from '../utils/api.js'
 
 export default {
@@ -214,15 +73,7 @@ export default {
       adminUserIds: ''
     })
 
-    const uaConfigs = ref([])
-    const ipBlacklist = ref([])
 
-
-
-    // JSON编辑器相关
-    const showJsonEditorModal = ref(false)
-    const jsonEditorText = ref('')
-    const jsonValidationError = ref('')
 
 
 
@@ -255,9 +106,8 @@ export default {
         const response = await authFetch('/api/web-config/system-settings', {
           method: 'PUT',
           body: JSON.stringify({
-            system_name: config.value.systemName,
-            api_port: config.value.apiPort,
-            debug_mode: config.value.debugMode
+            project_name: config.value.systemName,
+            log_level: config.value.debugMode ? 'DEBUG' : 'INFO'
           })
         })
 
@@ -341,37 +191,7 @@ export default {
 
 
 
-    // IP黑名单方法
-    const addIPBlacklist = () => {
-      ipBlacklist.value.push('')
-    }
 
-    const removeIPBlacklist = (index) => {
-      ipBlacklist.value.splice(index, 1)
-    }
-
-    const saveIPBlacklist = async () => {
-      try {
-        const response = await authFetch('/api/web-config/ip-blacklist', {
-          method: 'POST',
-          body: JSON.stringify(ipBlacklist.value)
-        })
-
-        if (response.ok) {
-          const result = await response.json()
-          if (result.success) {
-            showMessage('IP黑名单保存成功', 'success')
-          } else {
-            showMessage(`IP黑名单保存失败: ${result.message}`, 'error')
-          }
-        } else {
-          const errorText = await response.text()
-          showMessage(`IP黑名单保存失败: HTTP ${response.status} - ${errorText}`, 'error')
-        }
-      } catch (error) {
-        showMessage(`IP黑名单保存异常: ${error.message}`, 'error')
-      }
-    }
 
     // 加载配置数据
     const loadConfigs = async () => {
@@ -381,26 +201,11 @@ export default {
         if (systemResponse.ok) {
           const systemData = await systemResponse.json()
           if (systemData) {
-            config.value.systemName = systemData.system_name || config.value.systemName
-            config.value.apiPort = systemData.api_port || config.value.apiPort
-            config.value.debugMode = systemData.debug_mode || config.value.debugMode
+            config.value.systemName = systemData.project_name || config.value.systemName
+            config.value.debugMode = systemData.log_level === 'DEBUG'
             config.value.telegramToken = systemData.tg_bot_token || ''
             config.value.adminUserIds = systemData.tg_admin_user_ids || ''
           }
-        }
-
-        // 加载UA配置
-        const uaResponse = await authFetch('/api/web-config/ua-configs')
-        if (uaResponse.ok) {
-          const uaData = await uaResponse.json()
-          uaConfigs.value = uaData || []
-        }
-
-        // 加载IP黑名单
-        const ipResponse = await authFetch('/api/web-config/ip-blacklist')
-        if (ipResponse.ok) {
-          const ipData = await ipResponse.json()
-          ipBlacklist.value = ipData || []
         }
       } catch (error) {
         console.error('加载配置失败:', error)
@@ -411,184 +216,13 @@ export default {
       loadConfigs()
     })
 
-    // UA配置方法
-    const addUAConfig = () => {
-      uaConfigs.value.push({
-        name: '',
-        enabled: true,
-        userAgent: '',
-        maxRequestsPerHour: 100,
-        maxRequestsPerDay: 1000,
-        description: '',
-        pathLimits: []
-      })
-    }
 
-    const removeUAConfig = (index) => {
-      uaConfigs.value.splice(index, 1)
-    }
-
-    const addPathLimit = (uaIndex) => {
-      if (!uaConfigs.value[uaIndex].pathLimits) {
-        uaConfigs.value[uaIndex].pathLimits = []
-      }
-      uaConfigs.value[uaIndex].pathLimits.push({
-        path: '',
-        maxRequestsPerHour: 50
-      })
-    }
-
-    const removePathLimit = (uaIndex, pathIndex) => {
-      uaConfigs.value[uaIndex].pathLimits.splice(pathIndex, 1)
-    }
-
-    // JSON编辑器方法
-    const showJsonEditor = () => {
-      showJsonEditorModal.value = true
-      jsonValidationError.value = ''
-
-      // 将当前UA配置转换为JSON格式显示
-      const jsonConfig = {}
-      uaConfigs.value.forEach(ua => {
-        jsonConfig[ua.name] = {
-          enabled: ua.enabled,
-          userAgent: ua.userAgent,
-          maxRequestsPerHour: ua.maxRequestsPerHour,
-          maxRequestsPerDay: ua.maxRequestsPerDay,
-          description: ua.description || '',
-          pathLimits: ua.pathLimits || []
-        }
-      })
-
-      jsonEditorText.value = JSON.stringify(jsonConfig, null, 2)
-    }
-
-    const closeJsonEditor = () => {
-      showJsonEditorModal.value = false
-      jsonEditorText.value = ''
-      jsonValidationError.value = ''
-    }
-
-    const validateJson = () => {
-      try {
-        if (!jsonEditorText.value.trim()) {
-          jsonValidationError.value = 'JSON不能为空'
-          return false
-        }
-
-        JSON.parse(jsonEditorText.value)
-        jsonValidationError.value = ''
-        return true
-      } catch (error) {
-        jsonValidationError.value = error.message
-        return false
-      }
-    }
-
-    const saveJsonConfig = () => {
-      try {
-        if (!validateJson()) {
-          showMessage('JSON格式错误，请检查', 'error')
-          return
-        }
-
-        const jsonData = JSON.parse(jsonEditorText.value)
-        const newConfigs = []
-
-        // 转换JSON格式到内部格式
-        for (const [name, config] of Object.entries(jsonData)) {
-          const uaConfig = {
-            name: name,
-            enabled: config.enabled !== undefined ? config.enabled : true,
-            userAgent: config.userAgent || '',
-            maxRequestsPerHour: config.maxRequestsPerHour || 100,
-            maxRequestsPerDay: config.maxRequestsPerDay || 1000,
-            description: config.description || '',
-            pathLimits: []
-          }
-
-          // 转换pathLimits格式
-          if (config.pathLimits && Array.isArray(config.pathLimits)) {
-            uaConfig.pathLimits = config.pathLimits.map(limit => ({
-              path: limit.path || '',
-              maxRequestsPerHour: limit.maxRequestsPerHour || 50
-            }))
-          }
-
-          newConfigs.push(uaConfig)
-        }
-
-        // 替换现有配置
-        uaConfigs.value = newConfigs
-        showMessage(`成功保存 ${newConfigs.length} 个UA配置`, 'success')
-        closeJsonEditor()
-      } catch (error) {
-        showMessage(`保存失败: ${error.message}`, 'error')
-      }
-    }
-
-    // 监听JSON编辑器文本变化，实时验证
-    const watchJsonEditor = () => {
-      if (jsonEditorText.value) {
-        validateJson()
-      }
-    }
-
-    const saveUAConfigs = async () => {
-      try {
-        const response = await authFetch('/api/web-config/ua-configs', {
-          method: 'POST',
-          body: JSON.stringify(uaConfigs.value)
-        })
-
-        if (response.ok) {
-          const result = await response.json()
-          if (result.success) {
-            showMessage('UA配置保存成功', 'success')
-          } else {
-            showMessage(`UA配置保存失败: ${result.message}`, 'error')
-          }
-        } else {
-          const errorText = await response.text()
-          showMessage(`UA配置保存失败: HTTP ${response.status} - ${errorText}`, 'error')
-        }
-      } catch (error) {
-        showMessage(`UA配置保存异常: ${error.message}`, 'error')
-      }
-    }
-
-
-
-
-
-    // 监听JSON编辑器文本变化
-    watch(jsonEditorText, () => {
-      if (jsonEditorText.value) {
-        validateJson()
-      }
-    })
 
     return {
       config,
-      uaConfigs,
-      ipBlacklist,
-      showJsonEditorModal,
-      jsonEditorText,
-      jsonValidationError,
       saveBasicConfig,
       saveTelegramConfig,
-      createBotMenu,
-      addUAConfig,
-      removeUAConfig,
-      addPathLimit,
-      removePathLimit,
-      saveUAConfigs,
-      showJsonEditor,
-      closeJsonEditor,
-      saveJsonConfig,
-      addIPBlacklist,
-      removeIPBlacklist,
-      saveIPBlacklist
+      createBotMenu
     }
   }
 }
