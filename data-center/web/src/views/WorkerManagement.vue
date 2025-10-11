@@ -744,14 +744,22 @@ export default {
     async refreshWorkerLimits() {
       this.loading = true
       try {
-        const response = await authFetch('/api/web-config/worker/stats')
+        // 使用realtime-stats API获取完整的Worker统计数据
+        const response = await authFetch('/api/web-config/worker/realtime-stats')
         if (response.ok) {
           const data = await response.json()
+          console.log('Worker限制数据响应:', data)
+
           if (data.success && data.stats && data.stats.rate_limit_stats) {
             this.workerLimits = data.stats.rate_limit_stats
             this.showMessage('Worker限制数据刷新成功', 'success')
+          } else if (data.stats && data.stats.rate_limit_stats) {
+            // 兼容没有success字段的情况
+            this.workerLimits = data.stats.rate_limit_stats
+            this.showMessage('Worker限制数据刷新成功', 'success')
           } else {
-            this.showMessage('获取Worker限制数据失败', 'error')
+            console.error('Worker限制数据格式错误:', data)
+            this.showMessage('获取Worker限制数据失败：数据格式错误', 'error')
           }
         } else {
           this.showMessage(`获取Worker限制数据失败: HTTP ${response.status}`, 'error')
@@ -1050,42 +1058,38 @@ export default {
       this.logsLoading = true
 
       try {
-        // 1. 优先从数据库加载历史日志
-        const dbResponse = await authFetch(`/api/logs/worker-logs?worker_id=${encodeURIComponent(worker.id)}&limit=100`)
-
-        if (dbResponse.ok) {
-          const dbResult = await dbResponse.json()
-
-          if (dbResult.success && dbResult.logs && dbResult.logs.length > 0) {
-            this.workerLogs = dbResult.logs
-            this.showMessage(`加载了 ${dbResult.logs.length} 条历史日志`, 'success')
-            this.logsLoading = false
-            return
-          }
-        }
-
-        // 2. 如果数据库没有日志，从Worker端获取
-        this.showMessage('数据库无日志，正在从Worker获取...', 'info')
+        // 1. 先从Worker端获取最新日志
+        console.log('从Worker获取日志...')
         const workerResponse = await authFetch('/api/worker/fetch-logs', {
           method: 'POST'
         })
 
         if (workerResponse.ok) {
           const workerResult = await workerResponse.json()
+          console.log('Worker日志响应:', workerResult)
 
           if (workerResult.success && workerResult.logs && workerResult.logs.length > 0) {
-            // 3. 重新从数据库加载（Worker日志已同步到数据库）
-            const reloadResponse = await authFetch(`/api/logs/worker-logs?worker_id=${encodeURIComponent(worker.id)}&limit=100`)
+            // 直接显示Worker返回的日志
+            this.workerLogs = workerResult.logs
+            this.showMessage(`加载了 ${workerResult.logs.length} 条日志`, 'success')
+            this.logsLoading = false
+            return
+          }
+        }
 
-            if (reloadResponse.ok) {
-              const reloadResult = await reloadResponse.json()
+        // 2. 如果Worker没有日志，尝试从数据库加载历史日志
+        console.log('从数据库加载历史日志...')
+        const dbResponse = await authFetch(`/api/logs/worker-logs?limit=100`)
 
-              if (reloadResult.success && reloadResult.logs) {
-                this.workerLogs = reloadResult.logs
-                this.showMessage(`从Worker获取并保存了 ${reloadResult.logs.length} 条日志`, 'success')
-                return
-              }
-            }
+        if (dbResponse.ok) {
+          const dbResult = await dbResponse.json()
+          console.log('数据库日志响应:', dbResult)
+
+          if (dbResult.success && dbResult.logs && dbResult.logs.length > 0) {
+            this.workerLogs = dbResult.logs
+            this.showMessage(`加载了 ${dbResult.logs.length} 条历史日志`, 'success')
+            this.logsLoading = false
+            return
           }
         }
 
@@ -1675,7 +1679,7 @@ export default {
   border: 1px solid #e0e0e0;
   transition: all 0.3s ease;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-  margin-bottom: 24px;
+  margin-bottom: 32px;  /* 增加间距从24px到32px */
 }
 
 .config-card:hover {
@@ -1800,7 +1804,7 @@ export default {
 }
 
 .worker-card .card-header {
-  padding: 20px 24px 16px;
+  padding: 20px 24px 20px;  /* 增加底部padding从16px到20px */
   border-bottom: 1px solid #e0e0e0;
 }
 
