@@ -196,15 +196,18 @@ export default {
     // 加载配置数据
     const loadConfigs = async () => {
       try {
-        // 加载系统设置（包括TG机器人配置）
-        const systemResponse = await authFetch('/api/web-config/system-settings')
+        // 加载系统设置（包括TG机器人配置）- 使用with-secrets端点获取完整数据
+        const systemResponse = await authFetch('/api/web-config/system-settings/with-secrets')
         if (systemResponse.ok) {
           const systemData = await systemResponse.json()
+          console.log('加载的系统配置:', systemData)
           if (systemData) {
             config.value.systemName = systemData.project_name || config.value.systemName
             config.value.debugMode = systemData.log_level === 'DEBUG'
             config.value.telegramToken = systemData.tg_bot_token || ''
             config.value.adminUserIds = systemData.tg_admin_user_ids || ''
+            console.log('TG Token长度:', config.value.telegramToken.length)
+            console.log('Admin User IDs:', config.value.adminUserIds)
           }
         }
       } catch (error) {

@@ -68,8 +68,15 @@ class TelegramBot:
 
                     # 启动轮询
                     async def start_polling_async():
-                        # 只启动updater的轮询，不启动整个application
-                        await self.application.updater.start_polling(
+                        # 重新创建updater（避免事件循环绑定问题）
+                        from telegram.ext import Updater
+
+                        # 创建新的updater实例
+                        updater = Updater(self.application.bot, update_queue=self.application.update_queue)
+                        self.application.updater = updater
+
+                        # 启动updater的轮询
+                        await updater.start_polling(
                             poll_interval=1.0,
                             timeout=10,
                             bootstrap_retries=5,
@@ -83,7 +90,7 @@ class TelegramBot:
                             await asyncio.sleep(1)
 
                         # 停止轮询
-                        await self.application.updater.stop()
+                        await updater.stop()
 
                     loop.run_until_complete(start_polling_async())
 
