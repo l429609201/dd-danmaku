@@ -655,10 +655,15 @@ async def get_worker_realtime_stats(
         from src.services.config_manager import config_manager
         worker_api_key = config_manager.get_data_center_api_key()
 
+        logger.info(f"🔑 获取API Key: {worker_api_key[:8] if worker_api_key else 'None'}...")
+
         # 准备请求头
         headers = {}
         if worker_api_key:
             headers['X-API-Key'] = worker_api_key
+            logger.info(f"✅ API Key已添加到请求头")
+        else:
+            logger.warning(f"⚠️ API Key为空，将不发送认证头")
 
         # 直接从Worker获取实时统计数据
         async with httpx.AsyncClient(timeout=10.0) as client:
