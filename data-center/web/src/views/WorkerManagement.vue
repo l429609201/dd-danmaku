@@ -69,33 +69,34 @@
             </span>
           </div>
           <div class="worker-actions">
-            <button @click="testConnection(worker)" class="btn btn-sm btn-outline" title="测试连接">
-              🔗
+            <button @click="viewRealtimeStats(worker)" class="btn btn-sm btn-primary" title="查看统计">
+              📊 统计
             </button>
-            <button @click="viewRealtimeStats(worker)" class="btn btn-sm btn-outline" title="查看Worker实时统计">
-              📊
+            <button @click="pushConfig(worker)" class="btn btn-sm btn-success" title="推送配置">
+              🚀 推送
             </button>
-            <button @click="viewWorkerLimits(worker)" class="btn btn-sm btn-info" title="查看Worker限制统计">
-              🚦
+            <button @click="viewWorkerLogs(worker)" class="btn btn-sm btn-info" title="查看日志">
+              📋 日志
             </button>
-            <button @click="viewSystemStats" class="btn btn-sm btn-success" title="查看数据中心系统统计">
-              🖥️
-            </button>
-            <button @click="fetchWorkerLogs(worker)" class="btn btn-sm btn-outline" title="获取日志">
-              📋
-            </button>
-            <button @click="viewWorkerSyncLogs(worker)" class="btn btn-sm btn-outline" title="查看同步日志">
-              📄
-            </button>
-            <button @click="pushConfig(worker)" class="btn btn-sm btn-primary" title="推送配置">
-              🚀
-            </button>
-            <button @click="fullSync(worker)" class="btn btn-sm btn-success" title="完整同步">
-              🔄
-            </button>
-            <button @click="removeWorker(worker)" class="btn btn-sm btn-danger" title="清空Worker配置">
-              🗑️
-            </button>
+            <div class="dropdown">
+              <button @click="toggleDropdown(worker.id)" class="btn btn-sm btn-outline" title="更多操作">
+                ⚙️ 更多
+              </button>
+              <div v-if="activeDropdown === worker.id" class="dropdown-menu">
+                <button @click="testConnection(worker)" class="dropdown-item">
+                  🔗 测试连接
+                </button>
+                <button @click="viewWorkerLimits(worker)" class="dropdown-item">
+                  🚦 限制统计
+                </button>
+                <button @click="fullSync(worker)" class="dropdown-item">
+                  🔄 完整同步
+                </button>
+                <button @click="removeWorker(worker)" class="dropdown-item danger">
+                  🗑️ 清空配置
+                </button>
+              </div>
+            </div>
           </div>
         </div>
         <div class="card-body">
@@ -372,6 +373,44 @@
       </div>
     </div>
 
+    <!-- Worker日志弹窗 -->
+    <div v-if="showWorkerLogsModal" class="modal-overlay" @click="showWorkerLogsModal = false">
+      <div class="modal-content large" @click.stop>
+        <div class="modal-header">
+          <h3>📋 Worker日志</h3>
+          <button class="modal-close" @click="showWorkerLogsModal = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="logsLoading" class="loading">
+            <div class="spinner"></div>
+            <p>加载日志中...</p>
+          </div>
+
+          <div v-else-if="workerLogs.length > 0" class="logs-container">
+            <div v-for="(log, index) in workerLogs" :key="index" :class="['log-entry', log.level]">
+              <div class="log-header">
+                <span class="log-time">{{ new Date(log.created_at).toLocaleString() }}</span>
+                <span :class="['log-level', log.level]">{{ log.level }}</span>
+              </div>
+              <div class="log-content">
+                <span class="log-message">{{ log.message }}</span>
+                <div v-if="log.details && Object.keys(log.details).length > 0" class="log-details">
+                  <pre>{{ JSON.stringify(log.details, null, 2) }}</pre>
+                </div>
+                <div v-if="log.ip_address" class="log-ip">
+                  IP: {{ log.ip_address }}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="no-logs">
+            <p>暂无日志数据</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 消息提示 -->
     <div v-if="message" :class="['toast', message.type]">
       {{ message.text }}
@@ -408,7 +447,12 @@ export default {
       realtimeLoading: false,
       // Worker实时日志相关
       realtimeLogs: [],
-      logsLoading: false
+      logsLoading: false,
+      // 下拉菜单状态
+      activeDropdown: null,
+      // Worker日志弹窗
+      showWorkerLogsModal: false,
+      workerLogs: []
     }
   },
 
@@ -857,6 +901,44 @@ export default {
         unknown: '未知'
       }
       return statusMap[status] || '未知'
+    },
+
+    toggleDropdown(workerId) {
+      if (this.activeDropdown === workerId) {
+        this.activeDropdown = null
+      } else {
+        this.activeDropdown = workerId
+      }
+    },
+
+    async viewWorkerLogs(worker) {
+      this.showMessage(`正在加载 ${worker.name} 的日志...`, 'info')
+      this.showWorkerLogsModal = true
+      this.selectedWorker = worker
+      this.logsLoading = true
+
+      try {
+        const response = await authFetch(`/api/logs/worker-logs?worker_id=${encodeURIComponent(worker.id)}&limit=100`)
+
+        if (response.ok) {
+          const result = await response.json()
+
+          if (result.success && result.logs) {
+            this.workerLogs = result.logs
+            this.showMessage(`加载了 ${result.logs.length} 条日志`, 'success')
+          } else {
+            this.workerLogs = []
+            this.showMessage('暂无日志数据', 'warning')
+          }
+        } else {
+          this.showMessage('加载日志失败', 'error')
+        }
+      } catch (error) {
+        console.error('加载Worker日志失败:', error)
+        this.showMessage(`加载日志失败: ${error.message}`, 'error')
+      } finally {
+        this.logsLoading = false
+      }
     },
 
     async testConnection(worker) {
@@ -1339,7 +1421,7 @@ export default {
 /* Worker网格 */
 .workers-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  grid-template-columns: 1fr;
   gap: 20px;
 }
 
@@ -1416,6 +1498,50 @@ export default {
   display: flex;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+/* 下拉菜单 */
+.dropdown {
+  position: relative;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  min-width: 150px;
+  z-index: 1000;
+}
+
+.dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+  color: #333;
+  transition: background 0.2s;
+}
+
+.dropdown-item:hover {
+  background: #f5f5f5;
+}
+
+.dropdown-item.danger {
+  color: #f44336;
+}
+
+.dropdown-item.danger:hover {
+  background: #ffebee;
 }
 
 .worker-card .card-body {
@@ -2001,10 +2127,38 @@ export default {
 
 .no-logs {
   text-align: center;
-  padding: 20px;
+  padding: 40px;
   color: #666;
   font-style: italic;
   background: #f8f9fa;
   border-radius: 6px;
+}
+
+/* Worker日志弹窗样式 */
+.logs-container {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.log-details {
+  margin-top: 8px;
+  padding: 8px;
+  background: #f8f9fa;
+  border-radius: 4px;
+  border: 1px solid #e9ecef;
+}
+
+.log-details pre {
+  margin: 0;
+  font-size: 12px;
+  color: #666;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-ip {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #999;
 }
 </style>

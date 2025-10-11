@@ -547,8 +547,8 @@ export default {
       // 加载图表数据
       await loadChartData()
 
-      // 设置自动刷新（每30秒）
-      refreshTimer = setInterval(refreshData, 30000)
+      // 不设置自动刷新，只在手动点击刷新或Worker同步数据后更新
+      // refreshTimer = setInterval(refreshData, 30000)
     })
 
     onUnmounted(() => {
