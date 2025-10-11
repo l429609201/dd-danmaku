@@ -311,15 +311,32 @@ class TelegramBot:
             if not ua_configs:
                 message += "📝 暂无UA配置"
             else:
+                import html
                 for i, config in enumerate(ua_configs[:10], 1):  # 限制显示前10个
                     status = "✅" if config.enabled else "❌"
                     # HTML转义特殊字符
-                    import html
                     name = html.escape(config.name)
                     ua = html.escape(config.user_agent[:50])
+
+                    # 显示限制（-1显示为∞）
+                    limit_display = "∞" if config.hourly_limit == -1 else str(config.hourly_limit)
+
                     message += f"{i}. {status} <b>{name}</b>\n"
                     message += f"   UA: <code>{ua}...</code>\n"
-                    message += f"   限制: {config.hourly_limit}/小时\n\n"
+                    message += f"   限制: {limit_display}/小时\n"
+
+                    # 显示路径限制
+                    if config.path_specific_limits:
+                        message += f"   路径限制:\n"
+                        for path, limit_data in list(config.path_specific_limits.items())[:3]:  # 最多显示3个
+                            path_escaped = html.escape(path)
+                            path_limit = limit_data.get("maxRequestsPerHour", 50)
+                            path_limit_display = "∞" if path_limit == -1 else str(path_limit)
+                            message += f"     • {path_escaped}: {path_limit_display}/h\n"
+                        if len(config.path_specific_limits) > 3:
+                            message += f"     • ...还有{len(config.path_specific_limits) - 3}个\n"
+
+                    message += "\n"
 
             keyboard = [
                 [
@@ -556,9 +573,30 @@ class TelegramBot:
                         status = "✅" if config.enabled else "❌"
                         name = html.escape(config.name)
                         ua = html.escape(config.user_agent[:50])
+
+                        # 显示限制（-1显示为∞）
+                        limit_display = "∞" if config.hourly_limit == -1 else str(config.hourly_limit)
+
                         message += f"{i}. {status} <b>{name}</b>\n"
                         message += f"   UA: <code>{ua}...</code>\n"
-                        message += f"   限制: {config.hourly_limit}/小时\n\n"
+                        message += f"   限制: {limit_display}/小时\n"
+
+                        # 显示路径限制
+                        if config.path_specific_limits:
+                            message += f"   路径限制:\n"
+                            for path, limit_data in list(config.path_specific_limits.items())[:3]:
+                                path_escaped = html.escape(path)
+                                path_limit = limit_data.get("maxRequestsPerHour", 50)
+                                path_limit_display = "∞" if path_limit == -1 else str(path_limit)
+                                message += f"     • {path_escaped}: {path_limit_display}/h\n"
+                            if len(config.path_specific_limits) > 3:
+                                message += f"     • ...还有{len(config.path_specific_limits) - 3}个\n"
+
+                        message += "\n"
+
+                # 添加刷新时间
+                from datetime import datetime
+                message += f"\n<i>刷新时间: {datetime.now().strftime('%H:%M:%S')}</i>"
 
                 keyboard = [
                     [
@@ -568,7 +606,12 @@ class TelegramBot:
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
-                await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+                try:
+                    await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+                except Exception as edit_error:
+                    # 如果消息内容相同，忽略错误
+                    if "message is not modified" not in str(edit_error).lower():
+                        raise
 
             except Exception as e:
                 await query.edit_message_text(f"❌ 获取UA配置失败: {str(e)}")
@@ -611,6 +654,10 @@ class TelegramBot:
                             message += f"   原因: {reason}\n"
                         message += f"   时间: {ip_record.created_at.strftime('%m-%d %H:%M')}\n\n"
 
+                # 添加刷新时间
+                from datetime import datetime
+                message += f"\n<i>刷新时间: {datetime.now().strftime('%H:%M:%S')}</i>"
+
                 keyboard = [
                     [
                         InlineKeyboardButton("➕ 添加IP", callback_data="blacklist_add"),
@@ -619,7 +666,12 @@ class TelegramBot:
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
-                await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+                try:
+                    await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+                except Exception as edit_error:
+                    # 如果消息内容相同，忽略错误
+                    if "message is not modified" not in str(edit_error).lower():
+                        raise
 
             except Exception as e:
                 await query.edit_message_text(f"❌ 获取黑名单失败: {str(e)}")
@@ -630,15 +682,21 @@ class TelegramBot:
             try:
                 logs = await self.stats_service.get_recent_logs(limit=10)
 
-                message = "📝 **最近日志**\n\n"
+                message = "📝 <b>最近日志</b>\n\n"
 
                 if not logs:
                     message += "📝 暂无日志记录"
                 else:
+                    import html
                     for log in logs:
                         level_emoji = {"INFO": "ℹ️", "WARN": "⚠️", "ERROR": "❌"}.get(log.level, "📝")
-                        message += f"{level_emoji} **{log.level}** - {log.created_at.strftime('%H:%M:%S')}\n"
-                        message += f"   {log.message[:100]}...\n\n"
+                        log_msg = html.escape(log.message[:100])
+                        message += f"{level_emoji} <b>{log.level}</b> - {log.created_at.strftime('%H:%M:%S')}\n"
+                        message += f"   {log_msg}...\n\n"
+
+                # 添加刷新时间
+                from datetime import datetime
+                message += f"\n<i>刷新时间: {datetime.now().strftime('%H:%M:%S')}</i>"
 
                 keyboard = [
                     [
@@ -648,7 +706,12 @@ class TelegramBot:
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
-                await query.edit_message_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+                try:
+                    await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+                except Exception as edit_error:
+                    # 如果消息内容相同，忽略错误
+                    if "message is not modified" not in str(edit_error).lower():
+                        raise
 
             except Exception as e:
                 await query.edit_message_text(f"❌ 获取日志失败: {str(e)}")
