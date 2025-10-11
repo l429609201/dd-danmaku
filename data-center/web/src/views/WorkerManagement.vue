@@ -881,11 +881,18 @@ export default {
 
         if (response.ok) {
           const result = await response.json()
-          if (result.success && result.data.api_key) {
+          console.log('API密钥响应:', result)
+
+          if (result.success && result.data && result.data.api_key) {
             this.currentApiKey = result.data.api_key
+            console.log('加载的API密钥长度:', this.currentApiKey.length)
             // 同步到sessionStorage
             sessionStorage.setItem('worker_api_key', this.currentApiKey)
+          } else {
+            console.warn('API密钥响应格式错误或密钥为空')
           }
+        } else {
+          console.error('API密钥请求失败:', response.status)
         }
       } catch (error) {
         console.error('加载API密钥失败:', error)
