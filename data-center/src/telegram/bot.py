@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 class TelegramBot:
     """Telegram机器人类 - 使用轮询模式，无需公网地址"""
 
-    def __init__(self, token: str, admin_user_id: list):
+    def __init__(self, token: str, admin_user_ids: list):
         self.token = token
-        self.admin_user_ids = admin_user_id if isinstance(admin_user_id, list) else [admin_user_id]
+        self.admin_user_ids = admin_user_ids if isinstance(admin_user_ids, list) else [admin_user_ids]
         self.application: Optional[Application] = None
         self.config_service = ConfigService()
         self.stats_service = StatsService()
