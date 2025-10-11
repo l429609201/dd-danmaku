@@ -306,18 +306,19 @@ class TelegramBot:
             # 获取UA配置列表
             ua_configs = await self.config_service.get_ua_configs()
 
-            message = "👤 UA配置管理\n\n"
+            message = "👤 <b>UA配置管理</b>\n\n"
 
             if not ua_configs:
                 message += "📝 暂无UA配置"
             else:
                 for i, config in enumerate(ua_configs[:10], 1):  # 限制显示前10个
                     status = "✅" if config.enabled else "❌"
-                    # 转义特殊字符，避免Markdown解析错误
-                    name = config.name.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]')
-                    ua = config.user_agent[:50].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('`', '\\`')
-                    message += f"{i}. {status} {name}\n"
-                    message += f"   UA: {ua}...\n"
+                    # HTML转义特殊字符
+                    import html
+                    name = html.escape(config.name)
+                    ua = html.escape(config.user_agent[:50])
+                    message += f"{i}. {status} <b>{name}</b>\n"
+                    message += f"   UA: <code>{ua}...</code>\n"
                     message += f"   限制: {config.hourly_limit}/小时\n\n"
 
             keyboard = [
@@ -338,7 +339,7 @@ class TelegramBot:
 
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+            await update.message.reply_text(message, parse_mode='HTML', reply_markup=reply_markup)
             await self._log_command(user_id, username, "/ua", "UA配置列表查询成功")
 
         except Exception as e:
@@ -359,16 +360,19 @@ class TelegramBot:
             # 获取黑名单列表
             blacklist = await self.config_service.get_ip_blacklist()
 
-            message = "🚫 **IP黑名单管理**\n\n"
+            message = "🚫 <b>IP黑名单管理</b>\n\n"
 
             if not blacklist:
                 message += "📝 暂无黑名单记录"
             else:
+                import html
                 for i, ip_record in enumerate(blacklist[:10], 1):  # 限制显示前10个
                     status = "✅" if ip_record.enabled else "❌"
-                    message += f"{i}. {status} `{ip_record.ip_address}`\n"
+                    ip_addr = html.escape(ip_record.ip_address)
+                    message += f"{i}. {status} <code>{ip_addr}</code>\n"
                     if ip_record.reason:
-                        message += f"   原因: {ip_record.reason}\n"
+                        reason = html.escape(ip_record.reason)
+                        message += f"   原因: {reason}\n"
                     message += f"   时间: {ip_record.created_at.strftime('%m-%d %H:%M')}\n\n"
 
             keyboard = [
@@ -380,7 +384,7 @@ class TelegramBot:
 
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+            await update.message.reply_text(message, parse_mode='HTML', reply_markup=reply_markup)
             await self._log_command(user_id, username, "/blacklist", "黑名单列表查询成功")
 
         except Exception as e:
@@ -542,15 +546,18 @@ class TelegramBot:
             try:
                 ua_configs = await self.config_service.get_ua_configs()
 
-                message = "👤 **UA配置列表**\n\n"
+                message = "👤 <b>UA配置列表</b>\n\n"
 
                 if not ua_configs:
                     message += "📝 暂无UA配置"
                 else:
+                    import html
                     for i, config in enumerate(ua_configs[:10], 1):
                         status = "✅" if config.enabled else "❌"
-                        message += f"{i}. {status} **{config.name}**\n"
-                        message += f"   UA: `{config.user_agent[:50]}...`\n"
+                        name = html.escape(config.name)
+                        ua = html.escape(config.user_agent[:50])
+                        message += f"{i}. {status} <b>{name}</b>\n"
+                        message += f"   UA: <code>{ua}...</code>\n"
                         message += f"   限制: {config.hourly_limit}/小时\n\n"
 
                 keyboard = [
@@ -561,18 +568,18 @@ class TelegramBot:
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
-                await query.edit_message_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+                await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
 
             except Exception as e:
                 await query.edit_message_text(f"❌ 获取UA配置失败: {str(e)}")
 
         elif callback_data == "ua_add":
-            message = """➕ **添加UA配置**
+            message = """➕ <b>添加UA配置</b>
 
 请通过Web界面添加新的UA配置：
 🌐 http://localhost:7759
 
-**配置项目：**
+<b>配置项目：</b>
 • UA名称
 • User-Agent字符串
 • 小时限制
@@ -581,7 +588,7 @@ class TelegramBot:
             keyboard = [[InlineKeyboardButton("🔙 返回UA管理", callback_data="ua_list")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            await query.edit_message_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
 
     async def _handle_blacklist_callback(self, query, callback_data):
         """处理黑名单相关回调"""
@@ -589,16 +596,19 @@ class TelegramBot:
             try:
                 blacklist = await self.config_service.get_ip_blacklist()
 
-                message = "🚫 **IP黑名单列表**\n\n"
+                message = "🚫 <b>IP黑名单列表</b>\n\n"
 
                 if not blacklist:
                     message += "📝 暂无黑名单记录"
                 else:
+                    import html
                     for i, ip_record in enumerate(blacklist[:10], 1):
                         status = "✅" if ip_record.enabled else "❌"
-                        message += f"{i}. {status} `{ip_record.ip_address}`\n"
+                        ip_addr = html.escape(ip_record.ip_address)
+                        message += f"{i}. {status} <code>{ip_addr}</code>\n"
                         if ip_record.reason:
-                            message += f"   原因: {ip_record.reason}\n"
+                            reason = html.escape(ip_record.reason)
+                            message += f"   原因: {reason}\n"
                         message += f"   时间: {ip_record.created_at.strftime('%m-%d %H:%M')}\n\n"
 
                 keyboard = [
@@ -609,7 +619,7 @@ class TelegramBot:
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
-                await query.edit_message_text(message, parse_mode='Markdown', reply_markup=reply_markup)
+                await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
 
             except Exception as e:
                 await query.edit_message_text(f"❌ 获取黑名单失败: {str(e)}")
