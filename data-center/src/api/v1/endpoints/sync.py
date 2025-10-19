@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from src.services.worker_sync import WorkerSyncService
 from src.services.config_service import ConfigService
 from src.config import settings
+from src.api.v1.endpoints.auth import get_current_user
+from src.models.auth import User
 
 router = APIRouter()
 
@@ -26,6 +28,24 @@ class StatsData(BaseModel):
     stats: Dict[str, Any]
     config_status: Optional[Dict[str, Any]] = None
     logs: Optional[List[Dict[str, Any]]] = None
+
+# 新增：配置数据模型
+class ConfigData(BaseModel):
+    worker_id: str
+    timestamp: int
+    data: Dict[str, Any]
+
+# 新增：日志数据模型
+class LogsData(BaseModel):
+    worker_id: str
+    timestamp: int
+    logs: List[Dict[str, Any]]
+
+# 新增：IP 请求统计数据模型
+class RequestStatsData(BaseModel):
+    worker_id: str
+    timestamp: int
+    stats: Dict[str, Any]
 
 # 依赖注入
 def get_worker_sync_service() -> WorkerSyncService:
@@ -286,8 +306,164 @@ async def get_worker_health(
         # 确保endpoint包含协议
         if not endpoint.startswith(('http://', 'https://')):
             endpoint = f"https://{endpoint}"
-        
+
         health_status = await worker_sync.get_worker_health_status(endpoint)
         return health_status
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 新增：接收配置数据
+@router.post("/config", response_model=SyncResponse)
+async def receive_worker_config(
+    config_data: ConfigData,
+    worker_sync: WorkerSyncService = Depends(get_worker_sync_service),
+    api_key: str = Depends(verify_api_key)
+):
+    """接收Worker推送的配置数据"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info(f"📋 接收Worker {config_data.worker_id} 的配置数据")
+
+        # 处理配置数据
+        success = await worker_sync.process_worker_config(
+            config_data.worker_id,
+            config_data.data
+        )
+
+        if success:
+            return SyncResponse(
+                success=True,
+                message=f"接收Worker {config_data.worker_id} 配置数据成功"
+            )
+        else:
+            return SyncResponse(
+                success=False,
+                message=f"处理Worker {config_data.worker_id} 配置数据失败"
+            )
+    except Exception as e:
+        logger.error(f"❌ 接收配置数据失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 新增：接收日志数据
+@router.post("/logs", response_model=SyncResponse)
+async def receive_worker_logs(
+    logs_data: LogsData,
+    worker_sync: WorkerSyncService = Depends(get_worker_sync_service),
+    api_key: str = Depends(verify_api_key)
+):
+    """接收Worker推送的日志数据"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info(f"📝 接收Worker {logs_data.worker_id} 的日志数据，共 {len(logs_data.logs)} 条")
+
+        # 处理日志数据
+        success = await worker_sync.process_worker_logs(
+            logs_data.worker_id,
+            logs_data.logs
+        )
+
+        if success:
+            return SyncResponse(
+                success=True,
+                message=f"接收Worker {logs_data.worker_id} 日志数据成功 ({len(logs_data.logs)}条)"
+            )
+        else:
+            return SyncResponse(
+                success=False,
+                message=f"处理Worker {logs_data.worker_id} 日志数据失败"
+            )
+    except Exception as e:
+        logger.error(f"❌ 接收日志数据失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 新增：接收 IP 请求统计数据
+@router.post("/request-stats", response_model=SyncResponse)
+async def receive_worker_request_stats(
+    stats_data: RequestStatsData,
+    worker_sync: WorkerSyncService = Depends(get_worker_sync_service),
+    api_key: str = Depends(verify_api_key)
+):
+    """接收Worker推送的 IP 请求统计数据"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info(f"📊 接收Worker {stats_data.worker_id} 的 IP 请求统计数据")
+
+        # 处理 IP 请求统计数据
+        success = await worker_sync.process_worker_request_stats(
+            stats_data.worker_id,
+            stats_data.stats
+        )
+
+        if success:
+            return SyncResponse(
+                success=True,
+                message=f"接收Worker {stats_data.worker_id} IP 请求统计数据成功"
+            )
+        else:
+            return SyncResponse(
+                success=False,
+                message=f"处理Worker {stats_data.worker_id} IP 请求统计数据失败"
+            )
+    except Exception as e:
+        logger.error(f"❌ 接收 IP 请求统计数据失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 新增：查询日志数据（Web前端使用，需要JWT认证）
+@router.get("/logs", response_model=Dict[str, Any])
+async def query_worker_logs(
+    worker_id: str = None,
+    limit: int = 100,
+    worker_sync: WorkerSyncService = Depends(get_worker_sync_service),
+    current_user: User = Depends(get_current_user)
+):
+    """查询Worker推送的日志数据"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info(f"📝 查询Worker {worker_id} 的日志数据 (用户: {current_user.username})")
+
+        # 查询日志数据
+        logs = await worker_sync.query_worker_logs(worker_id, limit)
+
+        return {
+            "success": True,
+            "logs": logs,
+            "count": len(logs)
+        }
+    except Exception as e:
+        logger.error(f"❌ 查询日志数据失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 新增：查询 IP 请求统计数据（Web前端使用，需要JWT认证）
+@router.get("/request-stats", response_model=Dict[str, Any])
+async def query_worker_request_stats(
+    worker_id: str = None,
+    limit: int = 100,
+    worker_sync: WorkerSyncService = Depends(get_worker_sync_service),
+    current_user: User = Depends(get_current_user)
+):
+    """查询Worker推送的 IP 请求统计数据"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info(f"📊 查询Worker {worker_id} 的 IP 请求统计数据 (用户: {current_user.username})")
+
+        # 查询 IP 请求统计数据
+        stats = await worker_sync.query_worker_request_stats(worker_id, limit)
+
+        return {
+            "success": True,
+            "stats": stats,
+            "count": len(stats)
+        }
+    except Exception as e:
+        logger.error(f"❌ 查询 IP 请求统计数据失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))

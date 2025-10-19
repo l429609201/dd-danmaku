@@ -78,8 +78,14 @@
             <button @click="viewWorkerLimits(worker)" class="btn btn-sm btn-info" title="查看限制统计">
               🚦 限制统计
             </button>
-            <button @click="viewWorkerLogs(worker)" class="btn btn-sm btn-outline" title="查看日志">
-              📋 日志
+            <button @click="viewWorkerLogs(worker)" class="btn btn-sm btn-outline" title="查看实时日志">
+              📋 实时日志
+            </button>
+            <button @click="viewSyncedLogs(worker)" class="btn btn-sm btn-outline" title="查看同步日志">
+              📝 同步日志
+            </button>
+            <button @click="viewIPStats(worker)" class="btn btn-sm btn-outline" title="查看IP统计">
+              🌐 IP统计
             </button>
             <button @click="pushConfig(worker)" class="btn btn-sm btn-success" title="推送配置">
               🚀 推送配置
@@ -511,6 +517,98 @@
       </div>
     </div>
 
+    <!-- 同步日志弹窗 -->
+    <div v-if="showSyncedLogsModal" class="modal-overlay" @click="showSyncedLogsModal = false">
+      <div class="modal-content large" @click.stop>
+        <div class="modal-header">
+          <h2>📝 同步日志 - {{ selectedWorker?.name }}</h2>
+          <button @click="showSyncedLogsModal = false" class="close-btn">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="stats-controls">
+            <button @click="loadSyncedLogs" :disabled="syncedLogsLoading" class="btn btn-primary">
+              {{ syncedLogsLoading ? '加载中...' : '🔄 刷新日志' }}
+            </button>
+          </div>
+
+          <div v-if="syncedLogsLoading" class="loading">
+            <div class="spinner"></div>
+            <p>加载日志中...</p>
+          </div>
+
+          <div v-else-if="syncedLogs.length > 0" class="logs-container">
+            <div v-for="(log, index) in syncedLogs" :key="index" :class="['log-entry', `log-${log.level.toLowerCase()}`]">
+              <span class="log-time">{{ formatLogTime(log.timestamp) }}</span>
+              <span class="log-level">{{ log.level }}</span>
+              <span class="log-message">{{ log.message }}</span>
+              <div v-if="log.data && Object.keys(log.data).length > 0" class="log-data">
+                {{ JSON.stringify(log.data) }}
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="no-logs">
+            暂无同步日志数据
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- IP统计弹窗 -->
+    <div v-if="showIPStatsModal" class="modal-overlay" @click="showIPStatsModal = false">
+      <div class="modal-content large" @click.stop>
+        <div class="modal-header">
+          <h2>🌐 IP请求统计 - {{ selectedWorker?.name }}</h2>
+          <button @click="showIPStatsModal = false" class="close-btn">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="stats-controls">
+            <button @click="loadIPStats" :disabled="ipStatsLoading" class="btn btn-primary">
+              {{ ipStatsLoading ? '加载中...' : '🔄 刷新统计' }}
+            </button>
+          </div>
+
+          <div v-if="ipStatsLoading" class="loading">
+            <div class="spinner"></div>
+            <p>加载统计中...</p>
+          </div>
+
+          <div v-else-if="ipStats.length > 0" class="ip-stats-container">
+            <div v-for="(stat, index) in ipStats" :key="index" class="ip-stat-item">
+              <div class="ip-stat-header">
+                <span class="ip-address">{{ stat.ip_address }}</span>
+                <span class="stat-badge">{{ stat.total_count }} 请求</span>
+                <span v-if="stat.violations > 0" class="violation-badge">{{ stat.violations }} 违规</span>
+              </div>
+              <div class="ip-stat-details">
+                <div class="stat-row">
+                  <span class="label">总请求数:</span>
+                  <span class="value">{{ stat.total_count }}</span>
+                </div>
+                <div class="stat-row">
+                  <span class="label">违规次数:</span>
+                  <span class="value">{{ stat.violations }}</span>
+                </div>
+              </div>
+              <div v-if="stat.paths && Object.keys(stat.paths).length > 0" class="paths-section">
+                <h4>路径分布:</h4>
+                <div class="paths-list">
+                  <div v-for="(count, path) in stat.paths" :key="path" class="path-item">
+                    <span class="path">{{ path }}</span>
+                    <span class="count">{{ count }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="no-logs">
+            暂无IP统计数据
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- JSON编辑器对话框 -->
     <div v-if="showJsonEditorModal" class="modal-overlay" @click="closeJsonEditor">
       <div class="modal-content large" @click.stop>
@@ -582,6 +680,14 @@ export default {
       // Worker日志弹窗
       showWorkerLogsModal: false,
       workerLogs: [],
+      // 同步日志弹窗
+      showSyncedLogsModal: false,
+      syncedLogs: [],
+      syncedLogsLoading: false,
+      // IP统计弹窗
+      showIPStatsModal: false,
+      ipStats: [],
+      ipStatsLoading: false,
       // UA配置和IP黑名单
       uaConfigs: [],
       ipBlacklist: [],
@@ -1227,6 +1333,80 @@ export default {
       setTimeout(() => {
         this.showMessage(`${worker.name} 最新日志：系统运行正常，最后活动时间 ${new Date().toLocaleString()}`, 'success')
       }, 500)
+    },
+
+    async viewSyncedLogs(worker) {
+      this.selectedWorker = worker
+      this.showSyncedLogsModal = true
+      await this.loadSyncedLogs()
+    },
+
+    async loadSyncedLogs() {
+      if (!this.selectedWorker) return
+
+      this.syncedLogsLoading = true
+      try {
+        // 从后端API获取同步日志
+        const response = await authFetch(`/worker-api/sync/logs?worker_id=${this.selectedWorker.id}`, {
+          method: 'GET'
+        })
+
+        if (response.ok) {
+          const data = await response.json()
+          if (data.success && data.logs) {
+            this.syncedLogs = data.logs
+            this.showMessage(`加载了 ${data.logs.length} 条同步日志`, 'success')
+          } else {
+            this.syncedLogs = []
+            this.showMessage('暂无同步日志数据', 'warning')
+          }
+        } else {
+          throw new Error(`HTTP ${response.status}`)
+        }
+      } catch (error) {
+        console.error('加载同步日志失败:', error)
+        this.showMessage(`加载同步日志失败: ${error.message}`, 'error')
+        this.syncedLogs = []
+      } finally {
+        this.syncedLogsLoading = false
+      }
+    },
+
+    async viewIPStats(worker) {
+      this.selectedWorker = worker
+      this.showIPStatsModal = true
+      await this.loadIPStats()
+    },
+
+    async loadIPStats() {
+      if (!this.selectedWorker) return
+
+      this.ipStatsLoading = true
+      try {
+        // 从后端API获取IP统计
+        const response = await authFetch(`/worker-api/sync/request-stats?worker_id=${this.selectedWorker.id}`, {
+          method: 'GET'
+        })
+
+        if (response.ok) {
+          const data = await response.json()
+          if (data.success && data.stats) {
+            this.ipStats = data.stats
+            this.showMessage(`加载了 ${data.stats.length} 条IP统计`, 'success')
+          } else {
+            this.ipStats = []
+            this.showMessage('暂无IP统计数据', 'warning')
+          }
+        } else {
+          throw new Error(`HTTP ${response.status}`)
+        }
+      } catch (error) {
+        console.error('加载IP统计失败:', error)
+        this.showMessage(`加载IP统计失败: ${error.message}`, 'error')
+        this.ipStats = []
+      } finally {
+        this.ipStatsLoading = false
+      }
     },
 
     async removeWorker(worker) {
@@ -2571,22 +2751,49 @@ export default {
   align-items: center;
   gap: 8px;
   cursor: pointer;
+  user-select: none;
 }
 
 .checkbox-input {
-  margin: 0;
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+  width: 0;
+  height: 0;
 }
 
 .checkbox-custom {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   border: 2px solid #ddd;
   border-radius: 4px;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: white;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.checkbox-wrapper .checkbox-input:checked + .checkbox-custom {
+  background: #1976d2;
+  border-color: #1976d2;
+}
+
+.checkbox-wrapper .checkbox-input:checked + .checkbox-custom::after {
+  content: '✓';
+  color: white;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.checkbox-wrapper:hover .checkbox-custom {
+  border-color: #1976d2;
 }
 
 .checkbox-label {
   font-weight: normal;
+  color: #333;
 }
 
 .json-textarea {
@@ -2650,5 +2857,126 @@ export default {
   outline: none;
   border-color: #1976d2;
   box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.1);
+}
+
+/* IP统计样式 */
+.ip-stats-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.ip-stat-item {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 16px;
+  border: 1px solid #e9ecef;
+}
+
+.ip-stat-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.ip-address {
+  font-weight: 600;
+  color: #333;
+  font-family: monospace;
+  font-size: 14px;
+  flex: 1;
+}
+
+.stat-badge {
+  background: #007bff;
+  color: white;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.violation-badge {
+  background: #dc3545;
+  color: white;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.ip-stat-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.stat-row .label {
+  color: #666;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.stat-row .value {
+  color: #333;
+  font-weight: 600;
+  font-family: monospace;
+}
+
+.paths-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #dee2e6;
+}
+
+.paths-section h4 {
+  margin: 0 0 8px 0;
+  color: #333;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.paths-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.path-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  background: white;
+  border-radius: 4px;
+  border: 1px solid #dee2e6;
+  font-size: 12px;
+}
+
+.path-item .path {
+  color: #666;
+  font-family: monospace;
+  flex: 1;
+  word-break: break-all;
+}
+
+.path-item .count {
+  color: #333;
+  font-weight: 600;
+  margin-left: 12px;
+  white-space: nowrap;
 }
 </style>

@@ -128,26 +128,26 @@ class IPViolationStats(Base):
 class UAUsageStats(Base):
     """UA使用统计模型"""
     __tablename__ = "ua_usage_stats"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     worker_id = Column(String(100), index=True, comment="Worker标识")
     ua_config_name = Column(String(100), index=True, comment="UA配置名称")
     date_hour = Column(DateTime(timezone=True), index=True, comment="统计时间（小时）")
-    
+
     # 使用统计
     request_count = Column(Integer, default=0, comment="请求次数")
     blocked_count = Column(Integer, default=0, comment="被阻止次数")
     success_rate = Column(Float, comment="成功率")
-    
+
     # 路径统计
     path_stats = Column(JSON, comment="路径使用统计")
-    
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), comment="更新时间")
-    
+
     def __repr__(self):
         return f"<UAUsageStats(ua='{self.ua_config_name}', requests={self.request_count})>"
-    
+
     def to_dict(self):
         """转换为字典"""
         return {
@@ -159,6 +159,78 @@ class UAUsageStats(Base):
             "blocked_count": self.blocked_count,
             "success_rate": self.success_rate,
             "path_stats": self.path_stats or {},
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }
+
+class IPRequestStats(Base):
+    """IP 请求统计模型"""
+    __tablename__ = "ip_request_stats"
+
+    id = Column(Integer, primary_key=True, index=True)
+    worker_id = Column(String(100), index=True, comment="Worker标识")
+    ip_address = Column(String(45), index=True, comment="IP地址")
+    date_hour = Column(DateTime(timezone=True), index=True, comment="统计时间（小时）")
+
+    # 请求统计
+    total_count = Column(BigInteger, default=0, comment="总请求数")
+    violations = Column(Integer, default=0, comment="违规次数")
+
+    # 路径统计（JSON格式存储）
+    paths = Column(JSON, comment="路径请求统计")
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), comment="更新时间")
+
+    def __repr__(self):
+        return f"<IPRequestStats(ip='{self.ip_address}', total={self.total_count}, violations={self.violations})>"
+
+    def to_dict(self):
+        """转换为字典"""
+        return {
+            "id": self.id,
+            "worker_id": self.worker_id,
+            "ip_address": self.ip_address,
+            "date_hour": self.date_hour.isoformat() if self.date_hour else None,
+            "total_count": self.total_count,
+            "violations": self.violations,
+            "paths": self.paths or {},
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }
+
+class WorkerConfig(Base):
+    """Worker 配置数据模型"""
+    __tablename__ = "worker_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    worker_id = Column(String(100), index=True, comment="Worker标识")
+
+    # 配置数据
+    ua_configs = Column(JSON, comment="UA配置")
+    ip_blacklist = Column(JSON, comment="IP黑名单")
+
+    # Secret 使用统计
+    secret_usage = Column(JSON, comment="Secret使用统计")
+
+    # 时间戳
+    last_update = Column(BigInteger, comment="最后更新时间戳")
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), comment="更新时间")
+
+    def __repr__(self):
+        return f"<WorkerConfig(worker_id='{self.worker_id}', updated_at='{self.updated_at}')>"
+
+    def to_dict(self):
+        """转换为字典"""
+        return {
+            "id": self.id,
+            "worker_id": self.worker_id,
+            "ua_configs": self.ua_configs or {},
+            "ip_blacklist": self.ip_blacklist or [],
+            "secret_usage": self.secret_usage or {},
+            "last_update": self.last_update,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }
