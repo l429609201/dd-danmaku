@@ -268,7 +268,7 @@ async function restoreCountersFromDataCenter() {
     try {
         console.log('🔄 尝试从数据中心恢复计数状态...');
 
-        const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/stats/restore`, {
+        const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/sync/stats/restore`, {
             method: 'GET',
             headers: {
                 'X-API-Key': DATA_CENTER_CONFIG.apiKey,
@@ -399,53 +399,79 @@ async function syncConfigFromDataCenter() {
     }
 }
 
-// 向数据中心发送统计数据
-async function syncStatsToDataCenter() {
+// 向数据中心发送配置数据
+async function syncConfigToDataCenter() {
     if (!DATA_CENTER_CONFIG.enabled) return;
 
     try {
-        const stats = await getWorkerStats();
+        console.log('📋 开始同步配置数据到数据中心...');
 
-        console.log('📊 开始定时同步统计数据到数据中心...');
-        console.log('📋 当前内存日志数量:', memoryCache.logs.length);
-        console.log('🔑 使用API Key:', DATA_CENTER_CONFIG.apiKey ? `${DATA_CENTER_CONFIG.apiKey.substring(0, 8)}...` : '未设置');
-        console.log('🎯 数据中心URL:', DATA_CENTER_CONFIG.url);
+        const configData = {
+            worker_id: DATA_CENTER_CONFIG.workerId,
+            timestamp: Date.now(),
+            data: {
+                ua_configs: memoryCache.configCache.uaConfigs,
+                ip_blacklist: memoryCache.configCache.ipBlacklist,
+                last_update: memoryCache.configCache.lastUpdate,
+                secret_usage: memoryCache.appSecretUsage
+            }
+        };
 
-        const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/sync/stats`, {
+        const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/sync/config`, {
             method: 'POST',
             headers: {
                 'X-API-Key': DATA_CENTER_CONFIG.apiKey,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-                worker_id: DATA_CENTER_CONFIG.workerId,
-                timestamp: Date.now(),
-                stats: stats,
-                // 同时上报当前配置状态
-                config_status: {
-                    ua_configs: memoryCache.configCache.uaConfigs,
-                    ip_blacklist: memoryCache.configCache.ipBlacklist,
-                    last_config_update: memoryCache.configCache.lastUpdate
-                },
-                // 同时上报内存日志
-                logs: memoryCache.logs.slice() // 发送日志副本
-            })
+            body: JSON.stringify(configData)
         });
 
         if (response.ok) {
-            const responseData = await response.json();
-            console.log('📥 数据中心响应:', responseData);
-
-            DATA_CENTER_CONFIG.lastStatsSync = Date.now();
-            const logCount = memoryCache.logs.length;
-            console.log(`✅ 统计数据、配置状态和日志同步成功 (${logCount}条日志)`);
-            addMemoryLog('INFO', '定时同步成功', {
-                data_center_url: DATA_CENTER_CONFIG.url,
-                worker_id: DATA_CENTER_CONFIG.workerId,
-                stats_count: Object.keys(stats).length,
-                logs_count: logCount,
-                response: responseData
+            console.log('✅ 配置数据同步成功');
+            addMemoryLog('INFO', '配置数据同步成功', { sync_type: 'config' });
+        } else {
+            const errorText = await response.text();
+            console.error('❌ 配置数据同步失败，HTTP状态:', response.status);
+            addMemoryLog('ERROR', `配置数据同步失败: HTTP ${response.status}`, {
+                status: response.status,
+                sync_type: 'config'
             });
+        }
+    } catch (error) {
+        console.error('❌ 配置数据同步异常:', error);
+        addMemoryLog('ERROR', `配置数据同步异常: ${error.message}`, {
+            error: error.message,
+            sync_type: 'config'
+        });
+    }
+}
+
+// 向数据中心发送日志数据
+async function syncLogsToDataCenter() {
+    if (!DATA_CENTER_CONFIG.enabled) return;
+
+    try {
+        console.log('📝 开始同步日志数据到数据中心...');
+        console.log('📋 当前内存日志数量:', memoryCache.logs.length);
+
+        const logsData = {
+            worker_id: DATA_CENTER_CONFIG.workerId,
+            timestamp: Date.now(),
+            logs: memoryCache.logs.slice() // 发送日志副本
+        };
+
+        const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/sync/logs`, {
+            method: 'POST',
+            headers: {
+                'X-API-Key': DATA_CENTER_CONFIG.apiKey,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(logsData)
+        });
+
+        if (response.ok) {
+            console.log(`✅ 日志数据同步成功 (${memoryCache.logs.length}条日志)`);
+            addMemoryLog('INFO', '日志数据同步成功', { logs_count: memoryCache.logs.length });
 
             // 同步成功后，清理已发送的日志（保留最近的一些日志）
             if (memoryCache.logs.length > 200) {
@@ -454,21 +480,99 @@ async function syncStatsToDataCenter() {
             }
         } else {
             const errorText = await response.text();
-            console.error('❌ 定时同步失败，HTTP状态:', response.status);
-            console.error('❌ 错误详情:', errorText);
-            addMemoryLog('ERROR', `定时同步失败: HTTP ${response.status}`, {
-                data_center_url: DATA_CENTER_CONFIG.url,
+            console.error('❌ 日志数据同步失败，HTTP状态:', response.status);
+            addMemoryLog('ERROR', `日志数据同步失败: HTTP ${response.status}`, {
                 status: response.status,
-                statusText: response.statusText,
-                errorDetail: errorText,
-                sync_type: 'scheduled',
-                apiKey: DATA_CENTER_CONFIG.apiKey ? `${DATA_CENTER_CONFIG.apiKey.substring(0, 8)}...` : '未设置'
+                sync_type: 'logs'
             });
         }
     } catch (error) {
+        console.error('❌ 日志数据同步异常:', error);
+        addMemoryLog('ERROR', `日志数据同步异常: ${error.message}`, {
+            error: error.message,
+            sync_type: 'logs'
+        });
+    }
+}
+
+// 向数据中心发送 IP 请求统计数据
+async function syncRequestStatsToDataCenter() {
+    if (!DATA_CENTER_CONFIG.enabled) return;
+
+    try {
+        console.log('📊 开始同步 IP 请求统计数据到数据中心...');
+
+        // 构建 by_ip 统计数据
+        const byIp = {};
+        for (const [key, counter] of memoryCache.rateLimitCounts.entries()) {
+            const [uaType, clientIP] = key.split('-');
+            if (!byIp[clientIP]) {
+                byIp[clientIP] = {
+                    total_count: 0,
+                    violations: 0,
+                    paths: {}
+                };
+            }
+            byIp[clientIP].total_count += counter.count;
+        }
+
+        const statsData = {
+            worker_id: DATA_CENTER_CONFIG.workerId,
+            timestamp: Date.now(),
+            stats: {
+                total_requests: memoryCache.totalRequests,
+                by_ip: byIp
+            }
+        };
+
+        const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/sync/request-stats`, {
+            method: 'POST',
+            headers: {
+                'X-API-Key': DATA_CENTER_CONFIG.apiKey,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(statsData)
+        });
+
+        if (response.ok) {
+            console.log('✅ IP 请求统计数据同步成功');
+            addMemoryLog('INFO', 'IP 请求统计数据同步成功', { sync_type: 'request-stats' });
+        } else {
+            const errorText = await response.text();
+            console.error('❌ IP 请求统计数据同步失败，HTTP状态:', response.status);
+            addMemoryLog('ERROR', `IP 请求统计数据同步失败: HTTP ${response.status}`, {
+                status: response.status,
+                sync_type: 'request-stats'
+            });
+        }
+    } catch (error) {
+        console.error('❌ IP 请求统计数据同步异常:', error);
+        addMemoryLog('ERROR', `IP 请求统计数据同步异常: ${error.message}`, {
+            error: error.message,
+            sync_type: 'request-stats'
+        });
+    }
+}
+
+// 向数据中心发送统计数据（调用所有同步函数）
+async function syncStatsToDataCenter() {
+    if (!DATA_CENTER_CONFIG.enabled) return;
+
+    try {
+        console.log('🔄 开始定时同步所有数据到数据中心...');
+
+        // 并行执行三个同步操作
+        await Promise.all([
+            syncConfigToDataCenter(),
+            syncLogsToDataCenter(),
+            syncRequestStatsToDataCenter()
+        ]);
+
+        DATA_CENTER_CONFIG.lastStatsSync = Date.now();
+        console.log('✅ 所有数据同步完成');
+    } catch (error) {
         console.error('❌ 定时同步异常:', error);
         addMemoryLog('ERROR', `定时同步异常: ${error.message}`, {
-            data_center_url: DATA_CENTER_CONFIG.url,
             error: error.message,
             sync_type: 'scheduled'
         });

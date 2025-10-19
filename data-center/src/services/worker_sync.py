@@ -422,7 +422,170 @@ class WorkerSyncService:
         except Exception as e:
             logger.error(f"❌ 处理Worker配置状态失败: {e}")
             return False
+
+    async def process_worker_config(self, worker_id: str, config_data: Dict[str, Any]) -> bool:
+        """处理Worker推送的配置数据"""
+        try:
+            from src.models.stats import WorkerConfig
+
+            logger.info(f"📋 处理Worker {worker_id} 的配置数据")
+
+            db = self.db()
+
+            # 查找或创建配置记录
+            worker_config = db.query(WorkerConfig).filter(
+                WorkerConfig.worker_id == worker_id
+            ).first()
+
+            if not worker_config:
+                worker_config = WorkerConfig(worker_id=worker_id)
+
+            # 更新配置数据
+            worker_config.ua_configs = config_data.get("ua_configs", {})
+            worker_config.ip_blacklist = config_data.get("ip_blacklist", [])
+            worker_config.secret_usage = config_data.get("secret_usage", {})
+            worker_config.last_update = config_data.get("last_update", 0)
+
+            db.add(worker_config)
+            db.commit()
+            db.close()
+
+            logger.info(f"✅ Worker配置数据保存成功: {worker_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ 处理Worker配置数据失败: {e}")
+            return False
+
+    async def process_worker_request_stats(self, worker_id: str, stats_data: Dict[str, Any]) -> bool:
+        """处理Worker推送的IP请求统计数据"""
+        try:
+            from src.models.stats import IPRequestStats
+            from datetime import datetime
+
+            logger.info(f"📊 处理Worker {worker_id} 的IP请求统计数据")
+
+            db = self.db()
+
+            # 获取统计数据
+            by_ip = stats_data.get("by_ip", {})
+            current_hour = datetime.now().replace(minute=0, second=0, microsecond=0)
+
+            # 批量保存IP请求统计
+            saved_count = 0
+            for ip_address, ip_stats in by_ip.items():
+                try:
+                    # 查找或创建IP统计记录
+                    ip_request_stat = db.query(IPRequestStats).filter(
+                        IPRequestStats.worker_id == worker_id,
+                        IPRequestStats.ip_address == ip_address,
+                        IPRequestStats.date_hour == current_hour
+                    ).first()
+
+                    if not ip_request_stat:
+                        ip_request_stat = IPRequestStats(
+                            worker_id=worker_id,
+                            ip_address=ip_address,
+                            date_hour=current_hour
+                        )
+
+                    # 更新统计数据
+                    ip_request_stat.total_count = ip_stats.get("total_count", 0)
+                    ip_request_stat.violations = ip_stats.get("violations", 0)
+                    ip_request_stat.paths = ip_stats.get("paths", {})
+
+                    db.add(ip_request_stat)
+                    saved_count += 1
+
+                except Exception as e:
+                    logger.error(f"❌ 保存IP {ip_address} 的统计数据失败: {e}")
+                    continue
+
+            db.commit()
+            db.close()
+
+            logger.info(f"✅ Worker IP请求统计数据保存成功: {worker_id}, 共保存 {saved_count} 条IP统计")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ 处理Worker IP请求统计数据失败: {e}")
+            return False
     
+    async def query_worker_logs(self, worker_id: str = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """查询Worker推送的日志数据"""
+        try:
+            from src.models.logs import SystemLog
+
+            db = self.db()
+
+            # 构建查询
+            query = db.query(SystemLog).filter(SystemLog.category == 'worker_sync')
+
+            if worker_id:
+                query = query.filter(SystemLog.worker_id == worker_id)
+
+            # 按时间倒序，获取最新的日志
+            logs = query.order_by(SystemLog.created_at.desc()).limit(limit).all()
+
+            db.close()
+
+            # 转换为字典列表
+            result = []
+            for log in logs:
+                result.append({
+                    "id": log.id,
+                    "worker_id": log.worker_id,
+                    "level": log.level,
+                    "message": log.message,
+                    "timestamp": int(log.created_at.timestamp() * 1000) if log.created_at else 0,
+                    "data": log.details or {}
+                })
+
+            logger.info(f"✅ 查询Worker {worker_id} 的日志成功，共 {len(result)} 条")
+            return result
+
+        except Exception as e:
+            logger.error(f"❌ 查询Worker日志失败: {e}")
+            return []
+
+    async def query_worker_request_stats(self, worker_id: str = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """查询Worker推送的 IP 请求统计数据"""
+        try:
+            from src.models.stats import IPRequestStats
+
+            db = self.db()
+
+            # 构建查询
+            query = db.query(IPRequestStats)
+
+            if worker_id:
+                query = query.filter(IPRequestStats.worker_id == worker_id)
+
+            # 按时间倒序，获取最新的统计
+            stats = query.order_by(IPRequestStats.date_hour.desc()).limit(limit).all()
+
+            db.close()
+
+            # 转换为字典列表
+            result = []
+            for stat in stats:
+                result.append({
+                    "id": stat.id,
+                    "worker_id": stat.worker_id,
+                    "ip_address": stat.ip_address,
+                    "total_count": stat.total_count,
+                    "violations": stat.violations,
+                    "paths": stat.paths or {},
+                    "date_hour": stat.date_hour.isoformat() if stat.date_hour else None
+                })
+
+            logger.info(f"✅ 查询Worker {worker_id} 的IP请求统计成功，共 {len(result)} 条")
+            return result
+
+        except Exception as e:
+            logger.error(f"❌ 查询Worker IP请求统计失败: {e}")
+            return []
+
     async def get_worker_health_status(self, worker_endpoint: str) -> Dict[str, Any]:
         """获取Worker健康状态"""
         try:
@@ -439,7 +602,7 @@ class WorkerSyncService:
                     headers["X-API-Key"] = api_key
 
                 response = await client.get(health_url, headers=headers)
-                
+
                 if response.status_code == 200:
                     return {
                         "status": "healthy",
@@ -453,7 +616,7 @@ class WorkerSyncService:
                         "endpoint": worker_endpoint,
                         "error": f"HTTP {response.status_code}"
                     }
-                    
+
         except Exception as e:
             return {
                 "status": "error",
