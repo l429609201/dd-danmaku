@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.1.0
+// @version      1.1.1
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -25,7 +25,7 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.1.0', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.1.1', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -748,14 +748,60 @@
 
     async function fetchSearchEpisodes(anime, episode, prefix) {
         if (!anime) { throw new Error('anime is required'); }
-        // [修正] 使用传入的 prefix 构造 URL
-        const url = `${prefix}/search/episodes?anime=${anime}${episode ? `&episode=${episode}` : ''}`;
-        const searchResult = await fetchJson(url)
+
+        // 步骤1: 使用 /api/v2/search/anime 搜索动画
+        const searchUrl = `${prefix}/search/anime?keyword=${encodeURIComponent(anime)}`;
+        const searchResult = await fetchJson(searchUrl)
             .catch((error) => {
-                console.error(`[API请求] search/episodes 查询失败: ${error.message}`);
+                console.error(`[API请求] v2/search/anime 查询失败: ${error.message}`);
                 return null;
             });
-        console.log(`[API请求] search/episodes 查询成功`, searchResult);
+
+        if (!searchResult || !searchResult.animes || searchResult.animes.length === 0) {
+            console.log(`[API请求] v2/search/anime 查询结果为空`);
+            return { animes: [] };
+        }
+
+        console.log(`[API请求] v2/search/anime 查询成功，共 ${searchResult.animes.length} 个结果`);
+
+        // 步骤2: 只为第一个动画获取详细的分集信息（默认选择）
+        if (searchResult.animes.length > 0 && searchResult.animes[0].bangumiId) {
+            const firstAnime = searchResult.animes[0];
+            const bangumiUrl = `${prefix}/bangumi/${firstAnime.bangumiId}`;
+            const bangumiResult = await fetchJson(bangumiUrl)
+                .catch((error) => {
+                    console.error(`[API请求] v2/bangumi/${firstAnime.bangumiId} 查询失败: ${error.message}`);
+                    return null;
+                });
+
+            if (bangumiResult && bangumiResult.bangumi && bangumiResult.bangumi.episodes) {
+                // 为第一个动画添加分集信息
+                searchResult.animes[0] = {
+                    ...firstAnime,
+                    episodes: bangumiResult.bangumi.episodes,
+                    seasons: bangumiResult.bangumi.seasons
+                };
+                console.log(`[API请求] 已获取第一个动画的分集信息: ${firstAnime.animeTitle}, 共 ${bangumiResult.bangumi.episodes.length} 集`);
+            }
+        }
+
+        // 如果指定了集数，过滤第一个动画的集数
+        if (episode && searchResult.animes.length > 0 && searchResult.animes[0].episodes) {
+            const firstAnime = searchResult.animes[0];
+            const matchedEpisode = firstAnime.episodes.find(ep =>
+                ep.episodeId === episode ||
+                ep.episodeNumber === String(episode) ||
+                ep.episodeTitle.includes(`第${episode}集`) ||
+                ep.episodeTitle.includes(`${episode}话`)
+            );
+
+            if (matchedEpisode) {
+                console.log(`[API请求] 匹配到集数 ${episode}: ${matchedEpisode.episodeTitle}`);
+            } else {
+                console.log(`[API请求] 未匹配到集数 ${episode}`);
+            }
+        }
+
         return searchResult;
     }
 
@@ -1220,15 +1266,25 @@
             Object.assign(requestHeaders, headers);
         }
         const requestBody = body ? JSON.stringify(body) : null;
+
+        // [优化] 添加超时控制（30秒）
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+
         try {
             const response = await fetch(url, {
                 method: method,
                 headers: requestHeaders,
                 body: requestBody,
+                signal: controller.signal,
             });
+
+            clearTimeout(timeoutId);
+
             if (!response.ok) {
                 throw new Error(`HTTP error! Status: ${response.status}`);
             }
+
             const responseText = await response.text();
             if (responseText.length > 0) {
                 try {
@@ -1239,6 +1295,11 @@
             }
             return { success: true };
         } catch (error) {
+            clearTimeout(timeoutId);
+            // [优化] 区分超时错误和其他错误
+            if (error.name === 'AbortError') {
+                throw new Error(`请求超时 (30s): ${url}`);
+            }
             throw error;
         }
     }
@@ -1318,7 +1379,6 @@
             const container = item.Path ? item.Path.split('.').pop() : 'mkv';
             streamUrl = `${serverAddress}${extraStr}/videos/${itemId}/stream?DeviceId=${deviceId}&MediaSourceId=${mediaSourceId}&api_key=${apiKey}&Static=true&Container=${container}`;
 
-            console.log(`[Stream] 构建的流媒体URL: ${streamUrl}`);
             console.log(`[Stream] 认证信息 - ApiKey: ${apiKey ? '已获取' : '未获取'}, DeviceId: ${deviceId}`);
         } else {
             console.warn(`[Stream] 无MediaSource，无法构建流媒体URL`);
@@ -1399,7 +1459,7 @@
         }
 
         // [修改] 简化认证逻辑 - streamUrl已包含api_key参数，无需额外认证头
-        console.log(`[Hash] 使用流媒体URL: ${streamUrl}`);
+        console.log(`[Hash] 使用流媒体URL: ${streamUrl ? '已获取' : '未获取'}`);
 
         // 检查URL是否包含api_key
         if (!streamUrl.includes('api_key=')) {
@@ -1541,7 +1601,7 @@
 
         // 仅在有文件路径时才计算哈希值
         if (streamUrl && size > 0) {
-            console.log(`准备通过播放链接计算文件哈希: ${streamUrl}`);
+            console.log(`准备通过播放链接计算文件哈希`);
             matchPayload.fileHash = await calculateFileHash(streamUrl, size);
             if (matchPayload.fileHash) { 
                 console.log(`文件哈希计算完成: ${matchPayload.fileHash}`);
@@ -1960,7 +2020,7 @@
             getMapByEmbyItemInfo().then((itemInfoMap) => {
                 // [新增] 在插件API成功时也计算文件哈希
                 if (itemInfoMap && itemInfoMap.streamUrl && itemInfoMap.size > 0) {
-                    console.log(`[插件API] 准备计算文件哈希: ${itemInfoMap.streamUrl}`);
+                    console.log(`[插件API] 准备计算文件哈希`);
                     calculateFileHash(itemInfoMap.streamUrl, itemInfoMap.size).then(hash => {
                         if (hash) {
                             console.log(`[插件API] 文件哈希计算完成: ${hash}`);
@@ -2302,7 +2362,6 @@
 
     function danmakuParser($obj) {
         //const fontSize = Number(values[2]) || 25
-        // 弹幕大小
         const fontSizeRate = lsGetItem(lsKeys.fontSizeRate.id) / 100;
         let fontSize = 25;
         // 播放页媒体次级标题 h3 元素
@@ -2490,7 +2549,7 @@
                         <div id="${eleIds.danmakuSizeDiv}" style="width: 15.5em; text-align: center;"></div>
                         <label>
                             <label style="${styles.embySliderLabel}"></label>
-                            <label>%倍</label>
+                            <label>%</label>
                         </label>
                     </div>
                     <div style="${styles.embySlider}">
@@ -2506,7 +2565,7 @@
                         <div id="${eleIds.danmakuSpeedDiv}" style="width: 15.5em; text-align: center;"></div>
                         <label>
                             <label style="${styles.embySliderLabel}"></label>
-                            <label>%倍</label>
+                            <label>%</label>
                         </label>
                     </div>
                     <div style="${styles.embySlider}">
@@ -4054,13 +4113,20 @@
         const animeSelect = embySelect({ id: eleIds.danmakuAnimeSelect, label: '剧集: ', style: 'width: auto;max-width: 100%;' }
             , selectAnimeIdx, allAnimes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription} 来源：${opt.apiName}`, doDanmakuAnimeSelect);
         danmakuAnimeDiv.append(animeSelect);
-        const episodeNumSelect = embySelect({ id: eleIds.danmakuEpisodeNumSelect, label: '集数: ', style: 'width: auto;max-width: 100%;' }
-            , window.ede.searchDanmakuOpts.episode, allAnimes[selectAnimeIdx].episodes, 'episodeId', (opt, i) => `${i + 1} - ${opt.episodeTitle}`);
-        danmakuEpisodeNumDiv.append(episodeNumSelect);
+
+        // [修改] 只有当选中的动画有 episodes 时才显示集数选择器
+        const selectedAnime = allAnimes[selectAnimeIdx];
+        if (selectedAnime.episodes && selectedAnime.episodes.length > 0) {
+            const episodeNumSelect = embySelect({ id: eleIds.danmakuEpisodeNumSelect, label: '集数: ', style: 'width: auto;max-width: 100%;' }
+                , window.ede.searchDanmakuOpts.episode, selectedAnime.episodes, 'episodeId', (opt, i) => `${i + 1} - ${opt.episodeTitle}`);
+            danmakuEpisodeNumDiv.append(episodeNumSelect);
+        } else {
+            danmakuEpisodeNumDiv.innerHTML = '<span style="color: #52b54b;">请选择动画以加载分集信息</span>';
+        }
+
         getById(eleIds.danmakuEpisodeFlag).hidden = false;
         getById(eleIds.danmakuSwitchEpisode).disabled = false;
 
-        const selectedAnime = allAnimes[selectAnimeIdx];
         // [修正] 始终使用匹配到的海报，如果没有则使用官方API拼接
         getById(eleIds.searchImg).src = selectedAnime.imageUrl || dandanplayApi.posterImg(selectedAnime.animeId);
 
@@ -4094,10 +4160,40 @@
         });
     }
 
-    function doDanmakuAnimeSelect(value, index, option) {
+    async function doDanmakuAnimeSelect(value, index, option) {
         const numDiv = getById(eleIds.danmakuEpisodeNumDiv);
         numDiv.innerHTML = '';
         const anime = window.ede.searchDanmakuOpts.animes[index];
+
+        // [新增] 如果该动画还没有分集信息，先获取
+        if (!anime.episodes && anime.bangumiId) {
+            console.log(`[手动匹配] 动画 ${anime.animeTitle} 缺少分集信息，正在获取...`);
+            numDiv.innerHTML = '<span style="color: #52b54b;">正在加载分集信息...</span>';
+
+            const apiPrefix = anime.apiPrefix || window.ede.searchDanmakuOpts.apiPrefix;
+            const bangumiUrl = `${apiPrefix}/bangumi/${anime.bangumiId}`;
+
+            try {
+                const bangumiResult = await fetchJson(bangumiUrl);
+                if (bangumiResult && bangumiResult.bangumi && bangumiResult.bangumi.episodes) {
+                    // 更新动画对象，添加分集信息
+                    anime.episodes = bangumiResult.bangumi.episodes;
+                    anime.seasons = bangumiResult.bangumi.seasons;
+                    console.log(`[手动匹配] 获取分集信息成功: ${anime.animeTitle}, 共 ${anime.episodes.length} 集`);
+                } else {
+                    console.error(`[手动匹配] 获取分集信息失败: 返回数据格式错误`);
+                    numDiv.innerHTML = '<span style="color: #e23636;">获取分集信息失败</span>';
+                    return;
+                }
+            } catch (error) {
+                console.error(`[手动匹配] 获取分集信息失败: ${error.message}`);
+                numDiv.innerHTML = '<span style="color: #e23636;">获取分集信息失败</span>';
+                return;
+            }
+
+            numDiv.innerHTML = '';
+        }
+
         // 切换剧集时，默认选中第一个分集
         const episodeNumSelect = embySelect({ id: eleIds.danmakuEpisodeNumSelect, label: '集数: ' }, 0, anime.episodes, 'episodeId', (opt, i) => `${i + 1} - ${opt.episodeTitle}`);
         episodeNumSelect.style.maxWidth = '100%';
@@ -4358,6 +4454,8 @@
         return iNode;
     }
 
+
+
     /** props: {id: 'btnId', label: 'label text', style: '', iconKey: '',...} for setAttribute(key, value)
      * 'iconKey' will innerHTML <i>iconKey</i>|function will not setAttribute
      */
@@ -4585,6 +4683,8 @@
                 const e = new Event('change');
                 e.isManual = true;
                 slider.dispatchEvent(e);
+            }).catch(error => {
+                console.warn('waitForElement error:', error);
             });
         }
         require(['browser'], (browser) => {
@@ -4611,7 +4711,6 @@
         const defaultOpts = { text: '', title: '', timeout: 0, html: '', buttons: [] };
         opts = { ...defaultOpts, ...opts };
         return require(['dialog']).then(items => items[0](opts))
-        return require(['dialog']).then(dialog => dialog(opts))
             .catch(error => { console.log('点击弹出框外部取消: ' + error) });
     }
 
@@ -4650,7 +4749,6 @@
         const defaultOpts = { text: '', title: '', timeout: 0, html: ''};
         opts = { ...defaultOpts, ...opts };
         return require(['alert']).then(items => items[0](opts))
-        return require(['alert']).then(alert => alert(opts))
             .catch(error => { console.log('点击弹出框外部取消: ' + error) });
     }
 
@@ -4660,6 +4758,8 @@
         opts = { ...defaultOpts, ...opts };
         return require(['toast'], toast => toast(opts));
     }
+
+
 
     function getValueOrInvoke(option, keyOrFunc) {
         if (typeof keyOrFunc === 'function') {
@@ -4936,23 +5036,45 @@
         videoTimeUpdateInterval(_media, true);
 
         // 以下暂未遇到匿名函数导致的事件重复,等出现时再匿名转命名函数
+        // [修复] 添加seeking检测的防抖和初始化标志
+        let lastSeekingTime = 0;
+        let isFirstTimeUpdate = true;
+        const SEEKING_THRESHOLD = 2; // 时间差阈值（秒）
+        const SEEKING_DEBOUNCE = 500; // 防抖时间（毫秒）
+
         require(['playbackManager'], (playbackManager) => {
             playbackEventsRefresh({
                 'timeupdate': (e) => {
                     // conver to seconds from Ticks
                     const realCurrentTime = playbackManager.currentTime(playbackManager.getCurrentPlayer()) / 10000000;
                     const mediaTime = _media.currentTime;
+                    const timeDiff = Math.abs(mediaTime - realCurrentTime);
+
                     _media.currentTime = realCurrentTime;
                     // playbackRate 同步依赖至少 100ms currentTime 变更
                     const embyPlaybackRate = playbackManager.getPlayerState().PlayState.PlaybackRate;
                     _media.playbackRate = embyPlaybackRate ? embyPlaybackRate : 1;
-                    // 当前时间与上次记录时间差值大于2秒,则判定为用户操作进度,seeking 事件必须在 currentTime 更改后触发,否则回退后弹幕将消失
-                    if (Math.abs(mediaTime - realCurrentTime) > 2) {
-                        _media.dispatchEvent(new Event('seeking'));
-                        console.warn(`[虚拟播放器] 检测到拖动进度条 (seeking), Emby时间: ${realCurrentTime}, 虚拟播放器时间: ${mediaTime}`);
+
+                    // [修复] 跳过第一次时间更新（初始化时可能有大的时间差）
+                    if (isFirstTimeUpdate) {
+                        isFirstTimeUpdate = false;
+                        if (lsGetItem(lsKeys.debugH5VideoAdapterEnable.id)) {
+                            console.log(`[虚拟播放器] 初始化时间: ${realCurrentTime}, 跳过seeking检测`);
+                        }
+                        return;
                     }
+
+                    // [修复] 当前时间与上次记录时间差值大于阈值,且距离上次seeking超过防抖时间,则判定为用户操作进度
+                    // seeking 事件必须在 currentTime 更改后触发,否则回退后弹幕将消失
+                    const now = Date.now();
+                    if (timeDiff > SEEKING_THRESHOLD && (now - lastSeekingTime) > SEEKING_DEBOUNCE) {
+                        lastSeekingTime = now;
+                        _media.dispatchEvent(new Event('seeking'));
+                        console.warn(`[虚拟播放器] 检测到拖动进度条 (seeking), Emby时间: ${realCurrentTime}, 虚拟播放器时间: ${mediaTime}, 时间差: ${timeDiff.toFixed(2)}秒`);
+                    }
+
                     if (lsGetItem(lsKeys.debugH5VideoAdapterEnable.id)) {
-                        console.log(`[虚拟播放器] 时间更新: currentTime=${_media.currentTime}, playbackRate=${_media.playbackRate}`);
+                        console.log(`[虚拟播放器] 时间更新: currentTime=${_media.currentTime}, playbackRate=${_media.playbackRate}, 时间差=${timeDiff.toFixed(2)}秒`);
                     }
                 },
             });
@@ -4965,6 +5087,8 @@
             },
             'unpause': (e) => {
                 console.warn('[虚拟播放器] 监听到取消暂停/播放事件 (unpause)');
+                // [修复] 播放开始时重置seeking检测标志
+                isFirstTimeUpdate = true;
                 _media.dispatchEvent(new Event('play'));
                 videoTimeUpdateInterval(_media, true);
             },
@@ -4977,7 +5101,7 @@
         const _media = media || document.querySelector(mediaQueryStr);
         if (!_media) { return; }
         if (enable && !_media.timeupdateIntervalId) {
-            _media.timeupdateIntervalId = setInterval(() => { _media.currentTime += 100 / 1e3 }, 100);
+            // [修复] 移除重复的 setInterval 调用，只保留一个
             _media.timeupdateIntervalId = setInterval(() => { _media.currentTime += 100 / 1000 }, 100);
         } else if (!enable && _media.timeupdateIntervalId) {
             clearInterval(_media.timeupdateIntervalId);
