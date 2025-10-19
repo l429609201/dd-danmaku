@@ -198,39 +198,3 @@ class IPRequestStats(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }
-
-class WorkerConfig(Base):
-    """Worker 配置数据模型"""
-    __tablename__ = "worker_configs"
-
-    id = Column(Integer, primary_key=True, index=True)
-    worker_id = Column(String(100), index=True, comment="Worker标识")
-
-    # 配置数据
-    ua_configs = Column(JSON, comment="UA配置")
-    ip_blacklist = Column(JSON, comment="IP黑名单")
-
-    # Secret 使用统计
-    secret_usage = Column(JSON, comment="Secret使用统计")
-
-    # 时间戳
-    last_update = Column(BigInteger, comment="最后更新时间戳")
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), comment="更新时间")
-
-    def __repr__(self):
-        return f"<WorkerConfig(worker_id='{self.worker_id}', updated_at='{self.updated_at}')>"
-
-    def to_dict(self):
-        """转换为字典"""
-        return {
-            "id": self.id,
-            "worker_id": self.worker_id,
-            "ua_configs": self.ua_configs or {},
-            "ip_blacklist": self.ip_blacklist or [],
-            "secret_usage": self.secret_usage or {},
-            "last_update": self.last_update,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None
-        }
