@@ -426,7 +426,7 @@ class WorkerSyncService:
     async def process_worker_config(self, worker_id: str, config_data: Dict[str, Any]) -> bool:
         """处理Worker推送的配置数据"""
         try:
-            from src.models.stats import WorkerConfig
+            from src.models.config import WorkerConfig
 
             logger.info(f"📋 处理Worker {worker_id} 的配置数据")
 

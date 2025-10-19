@@ -66,7 +66,7 @@ class IPBlacklist(Base):
 class WorkerConfig(Base):
     """Worker配置模型"""
     __tablename__ = "worker_configs"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     worker_id = Column(String(100), unique=True, index=True, nullable=False, comment="Worker标识")
     endpoint = Column(String(500), nullable=False, comment="Worker端点地址")
@@ -74,13 +74,19 @@ class WorkerConfig(Base):
     enabled = Column(Boolean, default=True, comment="是否启用")
     last_sync_at = Column(DateTime(timezone=True), comment="最后同步时间")
     sync_status = Column(String(50), default="pending", comment="同步状态")
-    
+
+    # 配置数据（从Worker推送）
+    ua_configs = Column(JSON, comment="UA配置")
+    ip_blacklist = Column(JSON, comment="IP黑名单")
+    secret_usage = Column(JSON, comment="Secret使用统计")
+    last_update = Column(BigInteger, comment="最后更新时间戳")
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), comment="更新时间")
-    
+
     def __repr__(self):
         return f"<WorkerConfig(worker_id='{self.worker_id}', endpoint='{self.endpoint}', enabled={self.enabled})>"
-    
+
     def to_dict(self):
         """转换为字典"""
         return {
@@ -91,6 +97,10 @@ class WorkerConfig(Base):
             "enabled": self.enabled,
             "last_sync_at": self.last_sync_at.isoformat() if self.last_sync_at else None,
             "sync_status": self.sync_status,
+            "ua_configs": self.ua_configs or {},
+            "ip_blacklist": self.ip_blacklist or [],
+            "secret_usage": self.secret_usage or {},
+            "last_update": self.last_update,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }
