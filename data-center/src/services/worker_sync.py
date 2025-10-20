@@ -341,12 +341,21 @@ class WorkerSyncService:
 
             # 导入SystemLog模型
             from src.models.logs import SystemLog
+            from datetime import datetime
 
             # 批量保存日志（增量保存，避免重复）
             saved_count = 0
             for log_entry in logs_data:
+                # 使用 id 或 timestamp 作为唯一标识符
                 log_id = log_entry.get('id')
+                log_timestamp = log_entry.get('timestamp')
+
+                # 如果没有 id，使用 timestamp 作为唯一标识符
+                if not log_id and log_timestamp:
+                    log_id = f"{worker_id}-{log_timestamp}"
+
                 if not log_id:
+                    logger.warning(f"日志缺少id和timestamp，跳过: {log_entry}")
                     continue
 
                 # 检查是否已存在相同ID的日志（避免重复保存）
@@ -367,6 +376,15 @@ class WorkerSyncService:
                 # 处理User-Agent字段（Worker可能使用userAgent或user_agent）
                 user_agent = log_data.get('userAgent') or log_data.get('user_agent')
 
+                # 转换时间戳为 datetime（如果是毫秒时间戳）
+                created_at = None
+                if log_timestamp:
+                    try:
+                        # 假设时间戳是毫秒
+                        created_at = datetime.fromtimestamp(log_timestamp / 1000)
+                    except Exception as e:
+                        logger.warning(f"转换时间戳失败: {e}")
+
                 system_log = SystemLog(
                     worker_id=worker_id,
                     level=log_entry.get('level', 'INFO').upper(),
@@ -378,6 +396,11 @@ class WorkerSyncService:
                     ip_address=ip_address,
                     user_agent=user_agent
                 )
+
+                # 如果有时间戳，设置创建时间
+                if created_at:
+                    system_log.created_at = created_at
+
                 db.add(system_log)
                 saved_count += 1
 

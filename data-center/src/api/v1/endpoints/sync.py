@@ -467,3 +467,51 @@ async def query_worker_request_stats(
     except Exception as e:
         logger.error(f"❌ 查询 IP 请求统计数据失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# 新增：主动拉取 Worker 的 IP 请求统计数据
+@router.post("/pull-request-stats", response_model=Dict[str, Any])
+async def pull_worker_request_stats(
+    worker_data: WorkerEndpoint,
+    worker_sync: WorkerSyncService = Depends(get_worker_sync_service),
+    current_user: User = Depends(get_current_user)
+):
+    """主动从Worker拉取 IP 请求统计数据"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info(f"📊 主动拉取Worker {worker_data.endpoint} 的 IP 请求统计数据 (用户: {current_user.username})")
+
+        # 从Worker拉取统计数据
+        stats_data = await worker_sync.pull_stats_from_worker(worker_data.endpoint)
+
+        if stats_data:
+            # 处理拉取到的统计数据
+            by_ip = stats_data.get("stats", {}).get("by_ip", {})
+
+            # 保存到数据库
+            success = await worker_sync.process_worker_request_stats(
+                stats_data.get("worker_id", "unknown"),
+                {"by_ip": by_ip}
+            )
+
+            if success:
+                return {
+                    "success": True,
+                    "message": f"成功从 {worker_data.endpoint} 拉取并保存 IP 请求统计数据",
+                    "data": stats_data
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": f"从 {worker_data.endpoint} 拉取数据成功，但保存到数据库失败"
+                }
+        else:
+            return {
+                "success": False,
+                "message": f"从 {worker_data.endpoint} 拉取 IP 请求统计数据失败"
+            }
+    except Exception as e:
+        logger.error(f"❌ 主动拉取 IP 请求统计数据失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

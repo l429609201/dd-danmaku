@@ -555,8 +555,11 @@
         </div>
         <div class="modal-body">
           <div class="stats-controls">
+            <button @click="pullIPStatsFromWorker" :disabled="ipStatsLoading" class="btn btn-success">
+              {{ ipStatsLoading ? '同步中...' : '🔄 主动同步' }}
+            </button>
             <button @click="loadIPStats" :disabled="ipStatsLoading" class="btn btn-primary">
-              {{ ipStatsLoading ? '加载中...' : '🔄 刷新统计' }}
+              {{ ipStatsLoading ? '加载中...' : '📊 刷新统计' }}
             </button>
           </div>
 
@@ -1359,6 +1362,39 @@ export default {
         console.error('加载IP统计失败:', error)
         this.showMessage(`加载IP统计失败: ${error.message}`, 'error')
         this.ipStats = []
+      } finally {
+        this.ipStatsLoading = false
+      }
+    },
+
+    async pullIPStatsFromWorker() {
+      if (!this.selectedWorker) return
+
+      this.ipStatsLoading = true
+      try {
+        // 主动从Worker拉取IP统计数据
+        const response = await authFetch('/worker-api/sync/pull-request-stats', {
+          method: 'POST',
+          body: JSON.stringify({
+            endpoint: this.selectedWorker.url
+          })
+        })
+
+        if (response.ok) {
+          const data = await response.json()
+          if (data.success) {
+            this.showMessage(`成功从Worker同步IP统计数据`, 'success')
+            // 同步成功后，重新加载统计数据
+            await this.loadIPStats()
+          } else {
+            this.showMessage(`同步失败: ${data.message}`, 'error')
+          }
+        } else {
+          throw new Error(`HTTP ${response.status}`)
+        }
+      } catch (error) {
+        console.error('主动同步IP统计失败:', error)
+        this.showMessage(`主动同步IP统计失败: ${error.message}`, 'error')
       } finally {
         this.ipStatsLoading = false
       }
