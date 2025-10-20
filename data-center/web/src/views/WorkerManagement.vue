@@ -78,11 +78,8 @@
             <button @click="viewWorkerLimits(worker)" class="btn btn-sm btn-info" title="查看限制统计">
               🚦 限制统计
             </button>
-            <button @click="viewWorkerLogs(worker)" class="btn btn-sm btn-outline" title="查看实时日志">
-              📋 实时日志
-            </button>
-            <button @click="viewSyncedLogs(worker)" class="btn btn-sm btn-outline" title="查看同步日志">
-              📝 同步日志
+            <button @click="viewWorkerLogs(worker)" class="btn btn-sm btn-outline" title="查看Worker日志">
+              📋 Worker日志
             </button>
             <button @click="viewIPStats(worker)" class="btn btn-sm btn-outline" title="查看IP统计">
               🌐 IP统计
@@ -479,76 +476,74 @@
       </div>
     </div>
 
-    <!-- Worker日志弹窗 -->
+    <!-- Worker日志弹窗 - 分为历史日志和实时同步日志 -->
     <div v-if="showWorkerLogsModal" class="modal-overlay" @click="showWorkerLogsModal = false">
-      <div class="modal-content large" @click.stop>
+      <div class="modal-content xlarge" @click.stop>
         <div class="modal-header">
-          <h3>📋 Worker日志</h3>
+          <h3>📋 Worker日志 - {{ selectedWorker?.name }}</h3>
           <button class="modal-close" @click="showWorkerLogsModal = false">✕</button>
         </div>
-        <div class="modal-body">
-          <div v-if="logsLoading" class="loading">
-            <div class="spinner"></div>
-            <p>加载日志中...</p>
-          </div>
-
-          <div v-else-if="workerLogs.length > 0" class="logs-container">
-            <div v-for="(log, index) in workerLogs" :key="index" :class="['log-entry', log.level]">
-              <div class="log-header">
-                <span class="log-time">{{ new Date(log.created_at).toLocaleString() }}</span>
-                <span :class="['log-level', log.level]">{{ log.level }}</span>
+        <div class="modal-body worker-logs-split">
+          <!-- 左侧：历史日志 -->
+          <div class="logs-panel left-panel">
+            <div class="panel-header">
+              <h4>📝 历史日志</h4>
+              <button @click="loadSyncedLogs" :disabled="syncedLogsLoading" class="btn btn-sm btn-primary">
+                {{ syncedLogsLoading ? '加载中...' : '🔄 刷新' }}
+              </button>
+            </div>
+            <div class="panel-content">
+              <div v-if="syncedLogsLoading" class="loading">
+                <div class="spinner"></div>
+                <p>加载日志中...</p>
               </div>
-              <div class="log-content">
-                <span class="log-message">{{ log.message }}</span>
-                <div v-if="log.details && Object.keys(log.details).length > 0" class="log-details">
-                  <pre>{{ JSON.stringify(log.details, null, 2) }}</pre>
+
+              <div v-else-if="syncedLogs.length > 0" class="logs-container">
+                <div v-for="(log, index) in syncedLogs" :key="index" :class="['log-entry', `log-${log.level.toLowerCase()}`]">
+                  <span class="log-time">{{ formatLogTime(log.timestamp) }}</span>
+                  <span class="log-level">{{ log.level }}</span>
+                  <span class="log-message">{{ log.message }}</span>
+                  <div v-if="log.data && Object.keys(log.data).length > 0" class="log-data">
+                    {{ JSON.stringify(log.data) }}
+                  </div>
                 </div>
-                <div v-if="log.ip_address" class="log-ip">
-                  IP: {{ log.ip_address }}
-                </div>
+              </div>
+
+              <div v-else class="no-logs">
+                暂无历史日志数据
               </div>
             </div>
           </div>
 
-          <div v-else class="no-logs">
-            <p>暂无日志数据</p>
-          </div>
-        </div>
-      </div>
-    </div>
+          <!-- 右侧：实时同步日志 -->
+          <div class="logs-panel right-panel">
+            <div class="panel-header">
+              <h4>🔄 实时同步日志</h4>
+              <button @click="refreshRealtimeLogs" :disabled="logsLoading" class="btn btn-sm btn-primary">
+                {{ logsLoading ? '获取中...' : '🔄 刷新' }}
+              </button>
+            </div>
+            <div class="panel-content">
+              <div v-if="logsLoading" class="loading">
+                <div class="spinner"></div>
+                <p>加载日志中...</p>
+              </div>
 
-    <!-- 同步日志弹窗 -->
-    <div v-if="showSyncedLogsModal" class="modal-overlay" @click="showSyncedLogsModal = false">
-      <div class="modal-content large" @click.stop>
-        <div class="modal-header">
-          <h2>📝 同步日志 - {{ selectedWorker?.name }}</h2>
-          <button @click="showSyncedLogsModal = false" class="close-btn">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="stats-controls">
-            <button @click="loadSyncedLogs" :disabled="syncedLogsLoading" class="btn btn-primary">
-              {{ syncedLogsLoading ? '加载中...' : '🔄 刷新日志' }}
-            </button>
-          </div>
+              <div v-else-if="realtimeLogs && realtimeLogs.length > 0" class="logs-container">
+                <div v-for="(log, index) in realtimeLogs" :key="index" :class="['log-entry', `log-${log.level.toLowerCase()}`]">
+                  <span class="log-time">{{ formatLogTime(log.timestamp) }}</span>
+                  <span class="log-level">{{ log.level }}</span>
+                  <span class="log-message">{{ log.message }}</span>
+                  <div v-if="log.data && Object.keys(log.data).length > 0" class="log-data">
+                    {{ JSON.stringify(log.data) }}
+                  </div>
+                </div>
+              </div>
 
-          <div v-if="syncedLogsLoading" class="loading">
-            <div class="spinner"></div>
-            <p>加载日志中...</p>
-          </div>
-
-          <div v-else-if="syncedLogs.length > 0" class="logs-container">
-            <div v-for="(log, index) in syncedLogs" :key="index" :class="['log-entry', `log-${log.level.toLowerCase()}`]">
-              <span class="log-time">{{ formatLogTime(log.timestamp) }}</span>
-              <span class="log-level">{{ log.level }}</span>
-              <span class="log-message">{{ log.message }}</span>
-              <div v-if="log.data && Object.keys(log.data).length > 0" class="log-data">
-                {{ JSON.stringify(log.data) }}
+              <div v-else class="no-logs">
+                暂无实时日志数据
               </div>
             </div>
-          </div>
-
-          <div v-else class="no-logs">
-            暂无同步日志数据
           </div>
         </div>
       </div>
@@ -680,8 +675,7 @@ export default {
       // Worker日志弹窗
       showWorkerLogsModal: false,
       workerLogs: [],
-      // 同步日志弹窗
-      showSyncedLogsModal: false,
+      // 同步日志（在Worker日志弹窗中显示）
       syncedLogs: [],
       syncedLogsLoading: false,
       // IP统计弹窗
@@ -1333,12 +1327,6 @@ export default {
       setTimeout(() => {
         this.showMessage(`${worker.name} 最新日志：系统运行正常，最后活动时间 ${new Date().toLocaleString()}`, 'success')
       }, 500)
-    },
-
-    async viewSyncedLogs(worker) {
-      this.selectedWorker = worker
-      this.showSyncedLogsModal = true
-      await this.loadSyncedLogs()
     },
 
     async loadSyncedLogs() {
@@ -2978,5 +2966,157 @@ export default {
   font-weight: 600;
   margin-left: 12px;
   white-space: nowrap;
+}
+
+/* Worker日志分割面板样式 */
+.modal-content.xlarge {
+  max-width: 1400px;
+}
+
+.worker-logs-split {
+  display: flex;
+  gap: 16px;
+  height: calc(80vh - 100px);
+  padding: 0 !important;
+}
+
+.logs-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  overflow: hidden;
+  background: white;
+}
+
+.logs-panel.left-panel {
+  border-right: 2px solid #e0e0e0;
+}
+
+.logs-panel.right-panel {
+  border-left: 2px solid #e0e0e0;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e0e0e0;
+  flex-shrink: 0;
+}
+
+.panel-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+.panel-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.panel-content .logs-container {
+  max-height: none;
+  border: none;
+  background: transparent;
+}
+
+.panel-content .log-entry {
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border-left: 3px solid #ddd;
+  border-radius: 4px;
+  background: #f8f9fa;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.panel-content .log-entry.log-info {
+  border-left-color: #1976d2;
+  background: #e3f2fd;
+}
+
+.panel-content .log-entry.log-warn {
+  border-left-color: #f57c00;
+  background: #fff3e0;
+}
+
+.panel-content .log-entry.log-error {
+  border-left-color: #d32f2f;
+  background: #ffebee;
+}
+
+.panel-content .log-entry.log-debug {
+  border-left-color: #7b1fa2;
+  background: #f3e5f5;
+}
+
+.panel-content .log-time {
+  color: #999;
+  font-size: 11px;
+  margin-right: 8px;
+}
+
+.panel-content .log-level {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: 8px;
+  min-width: 50px;
+  text-align: center;
+}
+
+.panel-content .log-entry.log-info .log-level {
+  background: #1976d2;
+  color: white;
+}
+
+.panel-content .log-entry.log-warn .log-level {
+  background: #f57c00;
+  color: white;
+}
+
+.panel-content .log-entry.log-error .log-level {
+  background: #d32f2f;
+  color: white;
+}
+
+.panel-content .log-entry.log-debug .log-level {
+  background: #7b1fa2;
+  color: white;
+}
+
+.panel-content .log-message {
+  color: #333;
+  word-break: break-word;
+}
+
+.panel-content .log-data {
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: white;
+  border-radius: 3px;
+  border: 1px solid #e0e0e0;
+  font-family: monospace;
+  font-size: 11px;
+  color: #666;
+  overflow-x: auto;
+}
+
+.panel-content .no-logs {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #999;
+  font-size: 14px;
 }
 </style>
