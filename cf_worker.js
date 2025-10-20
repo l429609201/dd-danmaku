@@ -246,13 +246,8 @@ async function initializeDataCenterConfig(env) {
         // 启动时尝试从数据中心同步配置（优先使用数据中心配置）
         await syncConfigFromDataCenter();
 
-        // 设置定时同步（每小时），避免重复设置
-        if (!DATA_CENTER_CONFIG.syncTimer) {
-            DATA_CENTER_CONFIG.syncTimer = setInterval(async () => {
-                await syncConfigFromDataCenter();
-                await syncStatsToDataCenter();
-            }, DATA_CENTER_CONFIG.syncInterval);
-        }
+        // 注意：Cloudflare Workers 中不支持 setInterval，定时同步通过请求时间检查实现
+        console.log('📋 定时同步将在请求处理中按时间间隔触发');
     } else {
         console.log('⚠️ 数据中心集成未启用（缺少URL或API密钥）');
     }
@@ -1160,9 +1155,14 @@ async function handleRequest(request, env, ctx) {
     console.log(`   - 待处理请求: ${memoryCache.pendingRequests}`);
     console.log(`   - 总请求数: ${memoryCache.totalRequests}`);
 
-    // 检查是否需要同步到存储
+    // 检查是否需要同步到存储（仅同步本地缓存，不涉及数据中心）
     if (await shouldSyncToStorage()) {
         ctx.waitUntil(syncCacheToStorage());
+    }
+
+    // 检查是否需要同步到数据中心（独立的定时检查，不阻塞请求）
+    if (DATA_CENTER_CONFIG.enabled && await shouldSyncToDataCenter()) {
+        ctx.waitUntil(syncStatsToDataCenter());
     }
 
     if (ACCESS_CONFIG.logging.enabled) {
@@ -1248,6 +1248,17 @@ async function shouldSyncToStorage() {
     // 达到请求阈值或时间间隔时触发同步
     return memoryCache.pendingRequests >= BATCH_SYNC_THRESHOLD ||
            timeSinceLastSync >= BATCH_SYNC_INTERVAL;
+}
+
+// 检查是否需要同步到数据中心（独立的定时检查）
+async function shouldSyncToDataCenter() {
+    if (!DATA_CENTER_CONFIG.enabled) return false;
+
+    const now = Date.now();
+    const timeSinceLastSync = now - DATA_CENTER_CONFIG.lastStatsSync;
+
+    // 每小时同步一次到数据中心
+    return timeSinceLastSync >= DATA_CENTER_CONFIG.syncInterval;
 }
 
 async function syncCacheToStorage() {

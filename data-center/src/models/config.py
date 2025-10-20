@@ -2,7 +2,7 @@
 配置相关数据模型
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, JSON, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, JSON, Text, BigInteger
 from sqlalchemy.sql import func
 
 from src.database import Base
