@@ -7,6 +7,21 @@
         <p>配置和监控主Worker节点</p>
       </div>
       <div class="header-actions">
+        <div v-if="workers.length > 0" class="worker-header-info">
+          <div class="info-item">
+            <span class="label">URL:</span>
+            <code>{{ workers[0].url }}</code>
+          </div>
+          <div class="info-item">
+            <span class="label">最后同步:</span>
+            <span>{{ workers[0].lastSync || '从未' }}</span>
+          </div>
+        </div>
+        <div class="header-status">
+          <span v-if="workers.length > 0" :class="['status-badge', workers[0].status]">
+            {{ getStatusText(workers[0].status) }}
+          </span>
+        </div>
         <button v-if="!workers.length" @click="addWorker" class="btn btn-primary">
           ➕ 配置Worker
         </button>
@@ -14,6 +29,31 @@
           ✏️ 修改配置
         </button>
       </div>
+    </div>
+
+    <!-- Worker操作按钮行 -->
+    <div v-if="workers.length > 0" class="worker-actions-bar">
+      <button @click="testConnection(workers[0])" class="btn btn-sm btn-outline" title="测试连接">
+        🔗 测试
+      </button>
+      <button @click="viewRealtimeStats(workers[0])" class="btn btn-sm btn-primary" title="查看实时统计">
+        📊 实时统计
+      </button>
+      <button @click="viewWorkerLimits(workers[0])" class="btn btn-sm btn-info" title="查看限制统计">
+        🚦 限制统计
+      </button>
+      <button @click="viewWorkerLogs(workers[0])" class="btn btn-sm btn-outline" title="查看Worker日志">
+        📋 Worker日志
+      </button>
+      <button @click="viewIPStats(workers[0])" class="btn btn-sm btn-outline" title="查看IP统计">
+        🌐 IP统计
+      </button>
+      <button @click="pushConfig(workers[0])" class="btn btn-sm btn-success" title="推送配置">
+        🚀 推送配置
+      </button>
+      <button @click="fullSync(workers[0])" class="btn btn-sm btn-success" title="完整同步">
+        🔄 完整同步
+      </button>
     </div>
 
     <!-- API密钥管理卡片 -->
@@ -58,66 +98,14 @@
       </div>
     </div>
 
-    <!-- Worker状态 -->
-    <div class="workers-grid">
-      <div v-for="worker in workers" :key="worker.id" class="worker-card">
-        <div class="card-header">
-          <div class="worker-info">
-            <h3>{{ worker.name }}</h3>
-            <span :class="['status-badge', worker.status]">
-              {{ getStatusText(worker.status) }}
-            </span>
-          </div>
-          <div class="worker-actions">
-            <button @click="testConnection(worker)" class="btn btn-sm btn-outline" title="测试连接">
-              🔗 测试
-            </button>
-            <button @click="viewRealtimeStats(worker)" class="btn btn-sm btn-primary" title="查看实时统计">
-              📊 实时统计
-            </button>
-            <button @click="viewWorkerLimits(worker)" class="btn btn-sm btn-info" title="查看限制统计">
-              🚦 限制统计
-            </button>
-            <button @click="viewWorkerLogs(worker)" class="btn btn-sm btn-outline" title="查看Worker日志">
-              📋 Worker日志
-            </button>
-            <button @click="viewIPStats(worker)" class="btn btn-sm btn-outline" title="查看IP统计">
-              🌐 IP统计
-            </button>
-            <button @click="pushConfig(worker)" class="btn btn-sm btn-success" title="推送配置">
-              🚀 推送配置
-            </button>
-            <button @click="fullSync(worker)" class="btn btn-sm btn-success" title="完整同步">
-              🔄 完整同步
-            </button>
-            <button @click="removeWorker(worker)" class="btn btn-sm btn-danger" title="清空Worker配置">
-              🗑️ 清空配置
-            </button>
-          </div>
-        </div>
-        <div class="card-body">
-          <div class="worker-url">
-            <span class="label">URL:</span>
-            <code>{{ worker.url }}</code>
-          </div>
-          <div class="worker-meta">
-            <span class="meta-item">
-              <span class="label">最后同步:</span>
-              {{ worker.lastSync || '从未' }}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 空状态 -->
-      <div v-if="workers.length === 0" class="empty-state">
-        <div class="empty-icon">🤖</div>
-        <h3>暂未配置Worker</h3>
-        <p>点击"配置Worker"开始设置您的Worker节点</p>
-        <button @click="addWorker" class="btn btn-primary">
-          ➕ 配置Worker
-        </button>
-      </div>
+    <!-- 空状态 -->
+    <div v-if="workers.length === 0" class="empty-state">
+      <div class="empty-icon">🤖</div>
+      <h3>暂未配置Worker</h3>
+      <p>点击"配置Worker"开始设置您的Worker节点</p>
+      <button @click="addWorker" class="btn btn-primary">
+        ➕ 配置Worker
+      </button>
     </div>
 
     <!-- UA配置卡片 -->
@@ -1746,13 +1734,18 @@ export default {
 .page-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   margin-bottom: 24px;
   padding: 24px;
   background: white;
   border-radius: 8px;
   border: 1px solid #e0e0e0;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  gap: 24px;
+}
+
+.header-content {
+  flex: 1;
 }
 
 .header-content h1 {
@@ -1770,7 +1763,53 @@ export default {
 
 .header-actions {
   display: flex;
+  gap: 24px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.worker-header-info {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+}
+
+.info-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.info-item .label {
+  color: #666;
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.info-item code {
+  background: #f5f5f5;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 13px;
+  color: #333;
+}
+
+.header-status {
+  display: flex;
+  align-items: center;
+}
+
+/* Worker操作按钮行 */
+.worker-actions-bar {
+  display: flex;
   gap: 12px;
+  margin-bottom: 24px;
+  padding: 12px;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  flex-wrap: wrap;
 }
 
 /* 按钮样式 */

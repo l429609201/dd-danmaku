@@ -500,7 +500,11 @@ async function syncRequestStatsToDataCenter() {
         // 构建 by_ip 统计数据
         const byIp = {};
         for (const [key, counter] of memoryCache.rateLimitCounts.entries()) {
-            const [uaType, clientIP] = key.split('-');
+            // 提取客户端IP（IP总是在最后一个位置）
+            const parts = key.split('-');
+            const clientIP = parts[parts.length - 1]; // 最后一个元素是IP
+            const uaType = parts[0]; // 第一个元素是UA类型
+
             if (!byIp[clientIP]) {
                 byIp[clientIP] = {
                     total_count: 0,
@@ -519,6 +523,13 @@ async function syncRequestStatsToDataCenter() {
                 by_ip: byIp
             }
         };
+
+        // 调试日志：打印IP统计数据
+        console.log('📊 IP请求统计数据详情:');
+        console.log('   - 总请求数:', memoryCache.totalRequests);
+        console.log('   - 频率限制计数器数量:', memoryCache.rateLimitCounts.size);
+        console.log('   - IP统计数据:', JSON.stringify(byIp));
+        console.log('   - 统计的IP数量:', Object.keys(byIp).length);
 
         const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/sync/request-stats`, {
             method: 'POST',
