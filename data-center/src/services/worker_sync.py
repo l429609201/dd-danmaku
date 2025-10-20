@@ -487,11 +487,14 @@ class WorkerSyncService:
             from datetime import datetime
 
             logger.info(f"📊 处理Worker {worker_id} 的IP请求统计数据")
+            logger.debug(f"📊 接收到的统计数据: {stats_data}")
 
             db = self.db()
 
             # 获取统计数据
             by_ip = stats_data.get("by_ip", {})
+            logger.info(f"📊 by_ip数据: {by_ip}")
+            logger.info(f"📊 by_ip数据类型: {type(by_ip)}, 数据长度: {len(by_ip) if isinstance(by_ip, dict) else 'N/A'}")
             current_hour = datetime.now().replace(minute=0, second=0, microsecond=0)
 
             # 批量保存IP请求统计
