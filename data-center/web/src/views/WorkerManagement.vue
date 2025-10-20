@@ -484,13 +484,10 @@
           <button class="modal-close" @click="showWorkerLogsModal = false">✕</button>
         </div>
         <div class="modal-body worker-logs-split">
-          <!-- 左侧：历史日志 -->
+          <!-- 左侧：历史日志（从数据中心数据库读取） -->
           <div class="logs-panel left-panel">
             <div class="panel-header">
               <h4>📝 历史日志</h4>
-              <button @click="loadSyncedLogs" :disabled="syncedLogsLoading" class="btn btn-sm btn-primary">
-                {{ syncedLogsLoading ? '加载中...' : '🔄 刷新' }}
-              </button>
             </div>
             <div class="panel-content">
               <div v-if="syncedLogsLoading" class="loading">
@@ -1163,50 +1160,20 @@ export default {
       this.showWorkerLogsModal = true
       this.selectedWorker = worker
       this.logsLoading = true
+      this.syncedLogsLoading = true
 
       try {
-        // 1. 先从Worker端获取最新日志
-        console.log('从Worker获取日志...')
-        const workerResponse = await authFetch('/api/worker/fetch-logs', {
-          method: 'POST'
-        })
-
-        if (workerResponse.ok) {
-          const workerResult = await workerResponse.json()
-          console.log('Worker日志响应:', workerResult)
-
-          if (workerResult.success && workerResult.logs && workerResult.logs.length > 0) {
-            // 直接显示Worker返回的日志
-            this.workerLogs = workerResult.logs
-            this.showMessage(`加载了 ${workerResult.logs.length} 条日志`, 'success')
-            this.logsLoading = false
-            return
-          }
-        }
-
-        // 2. 如果Worker没有日志，尝试从数据库加载历史日志
-        console.log('从数据库加载历史日志...')
-        const dbResponse = await authFetch(`/api/logs/worker-logs?limit=100`)
-
-        if (dbResponse.ok) {
-          const dbResult = await dbResponse.json()
-          console.log('数据库日志响应:', dbResult)
-
-          if (dbResult.success && dbResult.logs && dbResult.logs.length > 0) {
-            this.workerLogs = dbResult.logs
-            this.showMessage(`加载了 ${dbResult.logs.length} 条历史日志`, 'success')
-            this.logsLoading = false
-            return
-          }
-        }
-
-        this.workerLogs = []
-        this.showMessage('暂无日志数据', 'warning')
+        // 并行加载历史日志和实时日志
+        const [syncedLogsResult, realtimeLogsResult] = await Promise.all([
+          this.loadSyncedLogs(),
+          this.refreshRealtimeLogs()
+        ])
       } catch (error) {
         console.error('加载Worker日志失败:', error)
         this.showMessage(`加载日志失败: ${error.message}`, 'error')
       } finally {
         this.logsLoading = false
+        this.syncedLogsLoading = false
       }
     },
 
