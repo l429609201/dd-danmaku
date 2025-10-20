@@ -31,9 +31,9 @@ export function getAuthHeaders() {
  * 发送认证请求
  */
 export async function authFetch(url, options = {}) {
-  // 自动添加API前缀
+  // 自动添加API前缀（但不为worker-api路由添加）
   let finalUrl = url
-  if (url.startsWith('/') && !url.startsWith('/api/')) {
+  if (url.startsWith('/') && !url.startsWith('/api/') && !url.startsWith('/worker-api/')) {
     finalUrl = `/api${url}`
   }
 
