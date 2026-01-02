@@ -24,39 +24,42 @@ class StatsService:
         """获取系统概览统计"""
         try:
             db = self.db()
-            
-            # 请求统计
-            total_requests = db.query(func.sum(RequestStats.total_requests)).scalar() or 0
-            successful_requests = db.query(func.sum(RequestStats.successful_requests)).scalar() or 0
-            blocked_requests = db.query(func.sum(RequestStats.blocked_requests)).scalar() or 0
-            error_requests = db.query(func.sum(RequestStats.error_requests)).scalar() or 0
-            
+
+            # 请求统计（转换为 int，避免 Decimal 类型导致 JSON 序列化失败）
+            total_requests = int(db.query(func.sum(RequestStats.total_requests)).scalar() or 0)
+            successful_requests = int(db.query(func.sum(RequestStats.successful_requests)).scalar() or 0)
+            blocked_requests = int(db.query(func.sum(RequestStats.blocked_requests)).scalar() or 0)
+            error_requests = int(db.query(func.sum(RequestStats.error_requests)).scalar() or 0)
+
             # 配置统计
-            ua_configs = db.query(func.count(UAConfig.id)).scalar() or 0
-            enabled_ua_configs = db.query(func.count(UAConfig.id)).filter(UAConfig.enabled == True).scalar() or 0
-            blacklist_count = db.query(func.count(IPBlacklist.id)).filter(IPBlacklist.enabled == True).scalar() or 0
-            
+            ua_configs = int(db.query(func.count(UAConfig.id)).scalar() or 0)
+            enabled_ua_configs = int(db.query(func.count(UAConfig.id)).filter(UAConfig.enabled == True).scalar() or 0)
+            blacklist_count = int(db.query(func.count(IPBlacklist.id)).filter(IPBlacklist.enabled == True).scalar() or 0)
+
             # 违规统计
-            violation_ips = db.query(func.count(func.distinct(IPViolationStats.ip_address))).scalar() or 0
-            temp_banned = db.query(func.count(IPViolationStats.id)).filter(
+            violation_ips = int(db.query(func.count(func.distinct(IPViolationStats.ip_address))).scalar() or 0)
+            temp_banned = int(db.query(func.count(IPViolationStats.id)).filter(
                 IPViolationStats.is_banned == "temp"
-            ).scalar() or 0
-            
+            ).scalar() or 0)
+
             db.close()
-            
+
+            # 计算成功率（转换为 float，避免 Decimal 类型）
+            success_rate = float((successful_requests / total_requests * 100) if total_requests > 0 else 0)
+
             return {
                 "total_requests": total_requests,
                 "successful_requests": successful_requests,
                 "blocked_requests": blocked_requests,
                 "error_requests": error_requests,
-                "success_rate": (successful_requests / total_requests * 100) if total_requests > 0 else 0,
+                "success_rate": round(success_rate, 2),
                 "ua_configs": ua_configs,
                 "enabled_ua_configs": enabled_ua_configs,
                 "blacklist_count": blacklist_count,
                 "violation_ips": violation_ips,
                 "temp_banned": temp_banned
             }
-            
+
         except Exception as e:
             logger.error(f"获取系统概览失败: {e}")
             return {}
@@ -318,37 +321,37 @@ class StatsService:
         """获取性能指标"""
         try:
             db = self.db()
-            
-            # 最近24小时的平均响应时间
-            avg_response_time = db.query(func.avg(RequestStats.avg_response_time)).filter(
+
+            # 最近24小时的平均响应时间（转换为 float，避免 Decimal 类型）
+            avg_response_time = float(db.query(func.avg(RequestStats.avg_response_time)).filter(
                 RequestStats.date_hour >= datetime.now() - timedelta(hours=24)
-            ).scalar() or 0
-            
-            # 最近1小时的请求量
-            recent_requests = db.query(func.sum(RequestStats.total_requests)).filter(
+            ).scalar() or 0)
+
+            # 最近1小时的请求量（转换为 int，避免 Decimal 类型）
+            recent_requests = int(db.query(func.sum(RequestStats.total_requests)).filter(
                 RequestStats.date_hour >= datetime.now() - timedelta(hours=1)
-            ).scalar() or 0
-            
-            # 错误率
-            recent_errors = db.query(func.sum(RequestStats.error_requests)).filter(
+            ).scalar() or 0)
+
+            # 错误率（转换为 int，避免 Decimal 类型）
+            recent_errors = int(db.query(func.sum(RequestStats.error_requests)).filter(
                 RequestStats.date_hour >= datetime.now() - timedelta(hours=24)
-            ).scalar() or 0
-            
-            recent_total = db.query(func.sum(RequestStats.total_requests)).filter(
+            ).scalar() or 0)
+
+            recent_total = int(db.query(func.sum(RequestStats.total_requests)).filter(
                 RequestStats.date_hour >= datetime.now() - timedelta(hours=24)
-            ).scalar() or 0
-            
-            error_rate = (recent_errors / recent_total * 100) if recent_total > 0 else 0
-            
+            ).scalar() or 0)
+
+            error_rate = float((recent_errors / recent_total * 100) if recent_total > 0 else 0)
+
             db.close()
-            
+
             return {
                 "avg_response_time": round(avg_response_time, 2),
                 "recent_requests_per_hour": recent_requests,
                 "error_rate_24h": round(error_rate, 2),
                 "timestamp": datetime.now().isoformat()
             }
-            
+
         except Exception as e:
             logger.error(f"获取性能指标失败: {e}")
             return {}

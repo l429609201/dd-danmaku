@@ -681,11 +681,14 @@ export default {
   },
 
   async mounted() {
-    // 优先从后端加载Worker列表
-    await this.loadWorkersFromServer()
-
-    // 从服务器加载当前API密钥
-    await this.loadCurrentApiKey()
+    // 并行加载所有初始数据，大幅提升页面加载速度
+    // 将原来的串行请求改为并行请求
+    const [workersResult, apiKeyResult, uaConfigsResult, ipBlacklistResult] = await Promise.allSettled([
+      this.loadWorkersFromServer(),
+      this.loadCurrentApiKey(),
+      this.loadUAConfigs(),
+      this.loadIPBlacklist()
+    ])
 
     // 如果服务器没有API密钥，尝试从sessionStorage恢复
     if (!this.currentApiKey) {
@@ -695,15 +698,14 @@ export default {
       }
     }
 
-    // 进入页面时立即请求一次Worker状态
-    await this.checkWorkerStatus()
+    // Worker状态检查可以在后台进行，不阻塞页面渲染
+    // 使用 setTimeout 延迟执行，让页面先渲染完成
+    setTimeout(() => {
+      this.checkWorkerStatus()
+    }, 100)
 
     // 启动心跳检查
     this.startHeartbeat()
-
-    // 加载UA配置和IP黑名单
-    await this.loadUAConfigs()
-    await this.loadIPBlacklist()
   },
 
   beforeUnmount() {
