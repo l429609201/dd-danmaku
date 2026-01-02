@@ -358,18 +358,29 @@ class StatsService:
         try:
             db = self.db()
 
-            # 今日请求数
+            # 今日请求数 - 使用 date_hour 字段（更准确）
             today = datetime.now().date()
+            today_start = datetime.combine(today, datetime.min.time())
+
             today_requests = db.query(func.sum(RequestStats.total_requests)).filter(
-                func.date(RequestStats.created_at) == today
+                RequestStats.date_hour >= today_start
             ).scalar() or 0
 
             # 总请求数
             total_requests = db.query(func.sum(RequestStats.total_requests)).scalar() or 0
 
-            # 成功率
+            # 成功率 - 基于成功请求数和总请求数
             successful_requests = db.query(func.sum(RequestStats.successful_requests)).scalar() or 0
-            success_rate = round((successful_requests / total_requests * 100) if total_requests > 0 else 0, 1)
+            blocked_requests_total = db.query(func.sum(RequestStats.blocked_requests)).scalar() or 0
+
+            # 如果有成功请求数据，使用它计算成功率
+            if successful_requests > 0 and total_requests > 0:
+                success_rate = round((successful_requests / total_requests * 100), 1)
+            elif total_requests > 0 and blocked_requests_total >= 0:
+                # 否则用总请求减去阻止请求来估算
+                success_rate = round(((total_requests - blocked_requests_total) / total_requests * 100), 1)
+            else:
+                success_rate = 0
 
             # 如果数据库中没有数据，尝试从Worker实时获取
             if total_requests == 0:
@@ -378,6 +389,8 @@ class StatsService:
                     today_requests = worker_stats.get('today_requests', 0)
                     total_requests = worker_stats.get('total_requests', 0)
                     success_rate = worker_stats.get('success_rate', 0)
+
+            logger.info(f"📊 统计摘要: 今日请求={today_requests}, 总请求={total_requests}, 成功率={success_rate}%")
 
             # Worker状态 (从数据库配置中获取)
             try:
@@ -414,13 +427,26 @@ class StatsService:
             # 被阻止的IP数量
             blocked_ips = db.query(func.count(IPBlacklist.id)).scalar() or 0
 
-            # 今日阻止的请求数
-            today_blocked = db.query(func.sum(IPViolationStats.violation_count)).filter(
-                func.date(IPViolationStats.created_at) == today
+            # 今日阻止的请求数 - 优先从 RequestStats 获取
+            today_blocked = db.query(func.sum(RequestStats.blocked_requests)).filter(
+                RequestStats.date_hour >= today_start
             ).scalar() or 0
 
-            # 违规请求数
-            violation_requests = db.query(func.sum(IPViolationStats.violation_count)).scalar() or 0
+            # 如果 RequestStats 没有数据，尝试从 IPViolationStats 获取
+            if today_blocked == 0:
+                today_blocked = db.query(func.sum(IPViolationStats.violation_count)).filter(
+                    func.date(IPViolationStats.created_at) == today
+                ).scalar() or 0
+
+            # 违规请求数 - 优先从 RequestStats 获取
+            violation_requests = db.query(func.sum(RequestStats.blocked_requests)).scalar() or 0
+            if violation_requests == 0:
+                violation_requests = db.query(func.sum(IPViolationStats.violation_count)).scalar() or 0
+
+            # 活跃IP数量
+            active_ips = db.query(func.sum(RequestStats.active_ips_count)).filter(
+                RequestStats.date_hour >= today_start
+            ).scalar() or 0
 
             # 系统运行时间 (简单计算)
             try:
@@ -458,6 +484,8 @@ class StatsService:
                 if worker_stats.get('success_rate', 0) > 0:
                     success_rate = worker_stats.get('success_rate', success_rate)
 
+            db.close()
+
             return {
                 "today_requests": today_requests,
                 "total_requests": total_requests,
@@ -468,6 +496,7 @@ class StatsService:
                 "blocked_ips": blocked_ips,
                 "today_blocked": today_blocked,
                 "violation_requests": violation_requests,
+                "active_ips": active_ips,
                 "memory_usage": memory_usage,
                 "cpu_usage": cpu_usage,
                 "uptime": uptime
