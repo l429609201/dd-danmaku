@@ -25,14 +25,15 @@ if settings.database_url.startswith("sqlite"):
     )
 else:
     # MySQL/PostgreSQL 连接池优化配置
+    # 参考 misaka_danmu_server 的配置
     engine = create_engine(
         settings.database_url,
         echo=settings.DATABASE_ECHO,
         pool_pre_ping=True,      # 连接前检查连接是否有效
-        pool_recycle=300,        # 5分钟回收连接，避免MySQL 8小时超时
-        pool_size=40,            # 连接池大小
-        max_overflow=40,         # 最大溢出连接数
-        pool_timeout=20,         # 获取连接超时时间（秒）
+        pool_recycle=3600,       # 1小时回收连接（misaka_danmu_server 使用 3600）
+        pool_size=40,            # 连接池大小（misaka_danmu_server 使用 20）
+        max_overflow=40,         # 最大溢出连接数（misaka_danmu_server 使用 40）
+        pool_timeout=30,         # 获取连接超时时间（秒）（misaka_danmu_server 使用 30）
     )
 
 # 会话工厂
