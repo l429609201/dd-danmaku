@@ -1639,7 +1639,7 @@ async function checkAccess(request, targetApiPath) {
                 );
 
                 if (!pathRateLimitCheck.allowed) {
-                    console.log(`❌ [${clientIP}] 路径特定频率限制失败: ${pathRateLimitCheck.reason}`);
+                    console.log(`❌ [${clientIP}] 路径限制 [${pathPattern}]: 超限 (${pathRateLimitCheck.count}/${pathRateLimitCheck.limit})`);
                     addMemoryLog('warn', '路径特定频率限制触发', {
                         ip: clientIP,
                         userAgent,
@@ -1657,7 +1657,7 @@ async function checkAccess(request, targetApiPath) {
                         status: 429
                     };
                 }
-                console.log(`✅ [${clientIP}] 路径特定频率限制检查通过: ${pathRateLimitCheck.count}/${pathRateLimitCheck.limit}`);
+                console.log(`📊 [${clientIP}] 路径限制 [${pathPattern}]: 通过 (${pathRateLimitCheck.count}/${pathRateLimitCheck.limit})`);
                 break; // 只检查第一个匹配的路径模式
             }
         }
