@@ -483,7 +483,7 @@ class WorkerSyncService:
     async def process_worker_request_stats(self, worker_id: str, stats_data: Dict[str, Any]) -> bool:
         """处理Worker推送的IP请求统计数据"""
         try:
-            from src.models.stats import IPRequestStats
+            from src.models.stats import IPRequestStats, RequestStats
             from datetime import datetime
 
             logger.info(f"📊 处理Worker {worker_id} 的IP请求统计数据")
@@ -493,9 +493,37 @@ class WorkerSyncService:
 
             # 获取统计数据
             by_ip = stats_data.get("by_ip", {})
-            logger.info(f"📊 by_ip数据: {by_ip}")
+            total_requests = stats_data.get("total_requests", 0)
+
+            logger.info(f"📊 总请求数: {total_requests}")
             logger.info(f"📊 by_ip数据类型: {type(by_ip)}, 数据长度: {len(by_ip) if isinstance(by_ip, dict) else 'N/A'}")
             current_hour = datetime.now().replace(minute=0, second=0, microsecond=0)
+
+            # 更新 RequestStats 表的总请求数（用于仪表盘统计）
+            request_stats = db.query(RequestStats).filter(
+                RequestStats.worker_id == worker_id,
+                RequestStats.date_hour == current_hour
+            ).first()
+
+            if not request_stats:
+                request_stats = RequestStats(
+                    worker_id=worker_id,
+                    date_hour=current_hour
+                )
+                db.add(request_stats)
+
+            # 更新总请求数和活跃IP数
+            request_stats.total_requests = total_requests
+            request_stats.active_ips_count = len(by_ip)
+
+            # 计算违规总数
+            total_violations = sum(ip_stats.get("violations", 0) for ip_stats in by_ip.values())
+            request_stats.blocked_requests = total_violations
+
+            # 计算成功请求数（总请求 - 违规）
+            request_stats.successful_requests = max(0, total_requests - total_violations)
+
+            logger.info(f"📊 更新RequestStats: 总请求={total_requests}, 活跃IP={len(by_ip)}, 违规={total_violations}")
 
             # 批量保存IP请求统计
             saved_count = 0
