@@ -2,13 +2,13 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, test ]
     tags: [ 'v*' ]
     paths:
       - 'data-center/**'
       - '.github/workflows/docker-build.yml'
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, test ]
     paths:
       - 'data-center/**'
       - '.github/workflows/docker-build.yml'
