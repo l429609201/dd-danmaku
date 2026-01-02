@@ -53,17 +53,20 @@ async def init_db():
     """初始化数据库"""
     try:
         logger.info("🔧 正在初始化数据库...")
-        
+
         # 导入所有模型以确保表被创建
         from src.models import config, stats, logs, web_config, auth
         # 确保模型被加载
         _ = web_config, auth
-        
+
         # 创建所有表
         Base.metadata.create_all(bind=engine)
-        
+
         logger.info("✅ 数据库初始化完成")
-        
+
+        # 执行数据库迁移（添加缺失的列）
+        await migrate_database()
+
         # 初始化默认数据
         await init_default_data()
 
@@ -72,10 +75,66 @@ async def init_db():
 
         # 初始化管理员用户
         await init_admin_user()
-        
+
     except Exception as e:
         logger.error(f"❌ 数据库初始化失败: {e}")
         raise
+
+async def migrate_database():
+    """数据库迁移 - 添加缺失的列"""
+    try:
+        db = SessionLocal()
+
+        # 检查并添加 worker_configs 表的缺失列
+        migrations = [
+            # (表名, 列名, 列类型)
+            ("worker_configs", "ua_configs", "JSON"),
+            ("worker_configs", "ip_blacklist", "JSON"),
+            ("worker_configs", "secret_usage", "JSON"),
+            ("worker_configs", "last_update", "BIGINT"),
+            # RequestStats 表的新列
+            ("request_stats", "active_ips_count", "INTEGER DEFAULT 0"),
+        ]
+
+        for table_name, column_name, column_type in migrations:
+            try:
+                # 检查列是否存在
+                if settings.database_url.startswith("sqlite"):
+                    # SQLite 检查列是否存在
+                    result = db.execute(text(f"PRAGMA table_info({table_name})"))
+                    columns = [row[1] for row in result.fetchall()]
+
+                    if column_name not in columns:
+                        # 添加列
+                        db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+                        db.commit()
+                        logger.info(f"✅ 已添加列: {table_name}.{column_name}")
+                    else:
+                        logger.debug(f"ℹ️ 列已存在: {table_name}.{column_name}")
+                else:
+                    # PostgreSQL 检查列是否存在
+                    result = db.execute(text(f"""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = '{table_name}' AND column_name = '{column_name}'
+                    """))
+                    if not result.fetchone():
+                        db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+                        db.commit()
+                        logger.info(f"✅ 已添加列: {table_name}.{column_name}")
+                    else:
+                        logger.debug(f"ℹ️ 列已存在: {table_name}.{column_name}")
+
+            except Exception as e:
+                # 如果表不存在或其他错误，跳过
+                logger.debug(f"ℹ️ 迁移跳过 {table_name}.{column_name}: {e}")
+                db.rollback()
+                continue
+
+        db.close()
+        logger.info("✅ 数据库迁移检查完成")
+
+    except Exception as e:
+        logger.error(f"❌ 数据库迁移失败: {e}")
 
 async def init_default_data():
     """初始化默认数据"""

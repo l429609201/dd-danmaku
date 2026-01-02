@@ -38,6 +38,7 @@ class RequestStats(Base):
     # Worker运行状态统计
     pending_requests = Column(BigInteger, default=0, comment="待处理请求数")
     memory_cache_size = Column(BigInteger, default=0, comment="内存缓存大小")
+    active_ips_count = Column(Integer, default=0, comment="活跃IP数量")
     logs_count = Column(BigInteger, default=0, comment="日志数量")
     uptime = Column(BigInteger, default=0, comment="运行时间（毫秒）")
 
