@@ -392,31 +392,49 @@ class StatsService:
 
             logger.info(f"📊 统计摘要: 今日请求={today_requests}, 总请求={total_requests}, 成功率={success_rate}%")
 
-            # Worker状态 (从数据库配置中获取)
+            # Worker状态 (优先从 WorkerConfig 表获取，因为 Worker 会主动推送数据)
             try:
-                from src.services.web_config_service import WebConfigService
-                web_config_service = WebConfigService()
-                system_settings = await web_config_service.get_system_settings()
+                from src.models.config import WorkerConfig
+                from datetime import timedelta
 
-                if system_settings and system_settings.worker_endpoints:
-                    endpoints = [ep.strip() for ep in system_settings.worker_endpoints.split(',') if ep.strip()]
-                    total_workers = len(endpoints)
-                    # 尝试检查Worker在线状态
-                    online_workers = 0
-                    for endpoint in endpoints:
-                        try:
-                            # 简单的健康检查
-                            import aiohttp
-                            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
-                                async with session.get(f"{endpoint}/health") as resp:
-                                    if resp.status == 200:
-                                        online_workers += 1
-                        except:
-                            pass
-                else:
-                    online_workers = 0
-                    total_workers = 0
-            except Exception:
+                # 查询所有 Worker 配置
+                all_workers = db.query(WorkerConfig).all()
+                total_workers = len(all_workers)
+
+                # 判断在线状态：最近 5 分钟内有同步的 Worker 视为在线
+                online_threshold = datetime.now() - timedelta(minutes=5)
+                online_workers = 0
+
+                for worker in all_workers:
+                    if worker.last_sync_at and worker.last_sync_at > online_threshold:
+                        online_workers += 1
+
+                # 如果没有 Worker 配置，尝试从系统设置获取并检查健康状态
+                if total_workers == 0:
+                    from src.services.web_config_service import WebConfigService
+                    web_config_service = WebConfigService()
+                    system_settings = await web_config_service.get_system_settings()
+
+                    if system_settings and system_settings.worker_endpoints:
+                        endpoints = [ep.strip() for ep in system_settings.worker_endpoints.split(',') if ep.strip()]
+                        total_workers = len(endpoints)
+                        # 尝试检查Worker在线状态
+                        online_workers = 0
+                        for endpoint in endpoints:
+                            try:
+                                # 简单的健康检查 - 使用正确的端点路径
+                                import aiohttp
+                                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
+                                    async with session.get(f"{endpoint}/worker-api/health") as resp:
+                                        if resp.status == 200:
+                                            online_workers += 1
+                            except:
+                                pass
+
+                logger.info(f"🤖 Worker状态: {online_workers}/{total_workers} 在线")
+
+            except Exception as e:
+                logger.warning(f"获取Worker状态失败: {e}")
                 online_workers = 0
                 total_workers = 0
 
