@@ -102,6 +102,12 @@ async def migrate_database():
             ("telegram_logs", "user_id", "BIGINT"),
         ]
 
+        # 需要修改列约束的迁移（MySQL 专用）
+        column_nullable_changes = [
+            # (表名, 列名, 列类型, 是否允许NULL)
+            ("worker_configs", "endpoint", "VARCHAR(500)", True),
+        ]
+
         for table_name, column_name, column_type in migrations:
             try:
                 # 检查列是否存在
@@ -157,6 +163,18 @@ async def migrate_database():
                             logger.debug(f"ℹ️ 列类型已正确: {table_name}.{column_name} = {new_type}")
                 except Exception as e:
                     logger.debug(f"ℹ️ 列类型修改跳过 {table_name}.{column_name}: {e}")
+                    db.rollback()
+                    continue
+
+            # 处理列约束修改（允许 NULL）
+            for table_name, column_name, column_type, nullable in column_nullable_changes:
+                try:
+                    null_str = "NULL" if nullable else "NOT NULL"
+                    db.execute(text(f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} {null_str}"))
+                    db.commit()
+                    logger.info(f"✅ 已修改列约束: {table_name}.{column_name} -> {null_str}")
+                except Exception as e:
+                    logger.debug(f"ℹ️ 列约束修改跳过 {table_name}.{column_name}: {e}")
                     db.rollback()
                     continue
 

@@ -69,7 +69,7 @@ class WorkerConfig(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     worker_id = Column(String(100), unique=True, index=True, nullable=False, comment="Worker标识")
-    endpoint = Column(String(500), nullable=False, comment="Worker端点地址")
+    endpoint = Column(String(500), nullable=True, comment="Worker端点地址")  # 允许为空，Worker推送时可能不知道自己的endpoint
     name = Column(String(200), comment="Worker名称")
     enabled = Column(Boolean, default=True, comment="是否启用")
     last_sync_at = Column(DateTime(timezone=True), comment="最后同步时间")
