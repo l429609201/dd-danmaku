@@ -12,6 +12,16 @@ const SECRET_ROTATION_LIMIT = 500; // 每个secret使用500次后切换
 const BATCH_SYNC_THRESHOLD = 100; // 每100次请求同步一次到DO
 const BATCH_SYNC_INTERVAL = 60000; // 或每60秒强制同步一次
 
+// 内存限制配置
+const MEMORY_LIMITS = {
+    MAX_IP_STATS: 10000,        // 最多保存10000个IP的统计
+    MAX_RATE_LIMIT_COUNTERS: 5000, // 最多5000个频率限制计数器
+    IP_STATS_CLEANUP_INTERVAL: 3600000, // 每小时清理一次IP统计
+    RATE_LIMIT_CLEANUP_INTERVAL: 60000,  // 每分钟清理一次频率限制计数器
+    API_CACHE_TTL: 7200000,     // API缓存2小时
+    MAX_API_CACHE_SIZE: 3000    // 最多缓存1000个API响应
+};
+
 // 全局内存缓存
 let memoryCache = {
     rateLimitCounts: new Map(), // 频率限制计数缓存
@@ -19,6 +29,9 @@ let memoryCache = {
     lastSyncTime: Date.now(),
     pendingRequests: 0,
     totalRequests: 0, // 总请求计数（不会重置）
+    // IP请求统计数据（定期清理，防止内存泄漏）
+    ipRequestStats: {}, // 格式: { "192.168.1.1": { total_count: 100, violations: 5, paths: {...}, lastAccess: timestamp } }
+    lastIpStatsCleanup: Date.now(),
     // 配置缓存（优先使用数据中心配置，否则使用环境变量）
     configCache: {
         uaConfigs: {},
@@ -31,7 +44,10 @@ let memoryCache = {
     },
     // 内存日志存储（只保存1天）
     logs: [],
-    lastLogCleanup: Date.now()
+    lastLogCleanup: Date.now(),
+    lastRateLimitCleanup: Date.now(),
+    // API响应缓存（用于搜索和番剧接口）
+    apiCache: new Map() // 格式: { "cache_key": { data: response, timestamp: Date.now() } }
 };
 
 // 数据中心集成配置
@@ -146,6 +162,30 @@ function checkMemoryRateLimit(clientIP, uaType, limits) {
 
     console.log(`   - 更新后计数: ${counter.count}/${isUnlimited ? '无限制' : maxRequests}`);
 
+    // 累积IP统计数据（定期清理，防止内存泄漏）
+    if (!memoryCache.ipRequestStats[clientIP]) {
+        memoryCache.ipRequestStats[clientIP] = {
+            total_count: 0,
+            violations: 0,
+            paths: {},
+            lastAccess: now
+        };
+    }
+    memoryCache.ipRequestStats[clientIP].total_count++;
+    memoryCache.ipRequestStats[clientIP].lastAccess = now;
+
+    // 记录路径访问统计
+    const pathKey = uaType.includes('-path-') ? uaType.split('-path-')[1] : 'global';
+    if (!memoryCache.ipRequestStats[clientIP].paths[pathKey]) {
+        memoryCache.ipRequestStats[clientIP].paths[pathKey] = 0;
+    }
+    memoryCache.ipRequestStats[clientIP].paths[pathKey]++;
+
+    // 如果超限，记录违规
+    if (!isUnlimited && counter.count > maxRequests) {
+        memoryCache.ipRequestStats[clientIP].violations++;
+    }
+
     // 如果是无限制，直接通过
     if (isUnlimited) {
         return {
@@ -178,11 +218,111 @@ function cleanupRateLimitCounters() {
     const now = Date.now();
     const expireTime = 5 * 60 * 1000; // 5分钟过期
 
+    let deletedCount = 0;
     for (const [key, counter] of memoryCache.rateLimitCounts.entries()) {
         if (now - counter.lastRequest > expireTime) {
             memoryCache.rateLimitCounts.delete(key);
+            deletedCount++;
         }
     }
+
+    // 如果超过上限，删除最旧的计数器
+    if (memoryCache.rateLimitCounts.size > MEMORY_LIMITS.MAX_RATE_LIMIT_COUNTERS) {
+        const entries = Array.from(memoryCache.rateLimitCounts.entries())
+            .sort((a, b) => a[1].lastRequest - b[1].lastRequest);
+        const toDelete = entries.slice(0, entries.length - MEMORY_LIMITS.MAX_RATE_LIMIT_COUNTERS);
+        toDelete.forEach(([key]) => {
+            memoryCache.rateLimitCounts.delete(key);
+            deletedCount++;
+        });
+    }
+
+    if (deletedCount > 0) {
+        console.log(`🧹 清理了 ${deletedCount} 个过期的频率限制计数器，当前剩余: ${memoryCache.rateLimitCounts.size}`);
+    }
+
+    memoryCache.lastRateLimitCleanup = now;
+}
+
+// 清理过期的IP统计数据
+function cleanupIpRequestStats() {
+    const now = Date.now();
+    const expireTime = 24 * 60 * 60 * 1000; // 24小时无访问则清理
+
+    let deletedCount = 0;
+    const ips = Object.keys(memoryCache.ipRequestStats);
+
+    for (const ip of ips) {
+        const stats = memoryCache.ipRequestStats[ip];
+        if (stats.lastAccess && now - stats.lastAccess > expireTime) {
+            delete memoryCache.ipRequestStats[ip];
+            deletedCount++;
+        }
+    }
+
+    // 如果超过上限，删除访问量最少的IP
+    const currentCount = Object.keys(memoryCache.ipRequestStats).length;
+    if (currentCount > MEMORY_LIMITS.MAX_IP_STATS) {
+        const sortedIps = Object.entries(memoryCache.ipRequestStats)
+            .sort((a, b) => a[1].total_count - b[1].total_count);
+        const toDelete = sortedIps.slice(0, currentCount - MEMORY_LIMITS.MAX_IP_STATS);
+        toDelete.forEach(([ip]) => {
+            delete memoryCache.ipRequestStats[ip];
+            deletedCount++;
+        });
+    }
+
+    if (deletedCount > 0) {
+        console.log(`🧹 清理了 ${deletedCount} 个过期的IP统计，当前剩余: ${Object.keys(memoryCache.ipRequestStats).length}`);
+    }
+
+    memoryCache.lastIpStatsCleanup = now;
+}
+
+// 清理过期的API缓存
+function cleanupApiCache() {
+    const now = Date.now();
+    let deletedCount = 0;
+
+    for (const [key, cached] of memoryCache.apiCache.entries()) {
+        if (now - cached.timestamp > MEMORY_LIMITS.API_CACHE_TTL) {
+            memoryCache.apiCache.delete(key);
+            deletedCount++;
+        }
+    }
+
+    // 如果超过上限，删除最旧的缓存
+    if (memoryCache.apiCache.size > MEMORY_LIMITS.MAX_API_CACHE_SIZE) {
+        const entries = Array.from(memoryCache.apiCache.entries())
+            .sort((a, b) => a[1].timestamp - b[1].timestamp);
+        const toDelete = entries.slice(0, entries.length - MEMORY_LIMITS.MAX_API_CACHE_SIZE);
+        toDelete.forEach(([key]) => {
+            memoryCache.apiCache.delete(key);
+            deletedCount++;
+        });
+    }
+
+    if (deletedCount > 0) {
+        console.log(`🧹 清理了 ${deletedCount} 个过期的API缓存，当前剩余: ${memoryCache.apiCache.size}`);
+    }
+}
+
+// 定期清理内存（在每个请求时检查）
+function periodicCleanup() {
+    const now = Date.now();
+
+    // 每分钟清理一次频率限制计数器
+    if (now - memoryCache.lastRateLimitCleanup > MEMORY_LIMITS.RATE_LIMIT_CLEANUP_INTERVAL) {
+        cleanupRateLimitCounters();
+    }
+
+    // 每小时清理一次IP统计
+    if (now - memoryCache.lastIpStatsCleanup > MEMORY_LIMITS.IP_STATS_CLEANUP_INTERVAL) {
+        cleanupIpRequestStats();
+    }
+
+    // 清理API缓存
+    cleanupApiCache();
 }
 
 // ========================================
@@ -219,26 +359,35 @@ async function initializeConfigCache(env) {
     }
 }
 
-// 初始化数据中心配置
+// 初始化数据中心配置（带锁防止并发初始化）
+let initializationPromise = null;
 async function initializeDataCenterConfig(env) {
     // 如果已经初始化过，直接返回
     if (DATA_CENTER_CONFIG.initialized) {
         return;
     }
 
-    // 从环境变量读取配置
-    DATA_CENTER_CONFIG.url = env.DATA_CENTER_URL || '';
-    DATA_CENTER_CONFIG.apiKey = env.DATA_CENTER_API_KEY || '';
-    DATA_CENTER_CONFIG.workerId = env.WORKER_ID || 'worker-1';
-    // 使用同一个API Key进行双向认证
-    DATA_CENTER_CONFIG.workerApiKey = env.DATA_CENTER_API_KEY || '';
-    DATA_CENTER_CONFIG.enabled = !!(env.DATA_CENTER_URL && env.DATA_CENTER_API_KEY);
+    // 如果正在初始化中，等待初始化完成
+    if (initializationPromise) {
+        return initializationPromise;
+    }
 
-    // 初始化配置缓存（先加载环境变量配置）
-    await initializeConfigCache(env);
+    // 开始初始化
+    initializationPromise = (async () => {
+        try {
+            // 从环境变量读取配置
+            DATA_CENTER_CONFIG.url = env.DATA_CENTER_URL || '';
+            DATA_CENTER_CONFIG.apiKey = env.DATA_CENTER_API_KEY || '';
+            DATA_CENTER_CONFIG.workerId = env.WORKER_ID || 'worker-1';
+            // 使用同一个API Key进行双向认证
+            DATA_CENTER_CONFIG.workerApiKey = env.DATA_CENTER_API_KEY || '';
+            DATA_CENTER_CONFIG.enabled = !!(env.DATA_CENTER_URL && env.DATA_CENTER_API_KEY);
 
-    if (DATA_CENTER_CONFIG.enabled) {
-        console.log('✅ 数据中心集成已启用');
+            // 初始化配置缓存（先加载环境变量配置）
+            await initializeConfigCache(env);
+
+            if (DATA_CENTER_CONFIG.enabled) {
+                console.log('✅ 数据中心集成已启用');
 
         // 启动时尝试从数据中心恢复上次的计数状态
         await restoreCountersFromDataCenter();
@@ -246,14 +395,20 @@ async function initializeDataCenterConfig(env) {
         // 启动时尝试从数据中心同步配置（优先使用数据中心配置）
         await syncConfigFromDataCenter();
 
-        // 注意：Cloudflare Workers 中不支持 setInterval，定时同步通过请求时间检查实现
-        console.log('📋 定时同步将在请求处理中按时间间隔触发');
-    } else {
-        console.log('⚠️ 数据中心集成未启用（缺少URL或API密钥）');
-    }
+                // 注意：Cloudflare Workers 中不支持 setInterval，定时同步通过请求时间检查实现
+                console.log('📋 定时同步将在请求处理中按时间间隔触发');
+            } else {
+                console.log('⚠️ 数据中心集成未启用（缺少URL或API密钥）');
+            }
 
-    // 标记为已初始化
-    DATA_CENTER_CONFIG.initialized = true;
+            // 标记为已初始化
+            DATA_CENTER_CONFIG.initialized = true;
+        } finally {
+            initializationPromise = null;
+        }
+    })();
+
+    return initializationPromise;
 }
 
 // 从数据中心恢复计数状态
@@ -394,21 +549,23 @@ async function syncConfigFromDataCenter() {
     }
 }
 
-// 向数据中心发送配置数据
-async function syncConfigToDataCenter() {
+// 向数据中心发送配置数据（带重试机制）
+async function syncConfigToDataCenter(retryCount = 0) {
     if (!DATA_CENTER_CONFIG.enabled) return;
+    const MAX_RETRIES = 3;
 
     try {
         console.log('📋 开始同步配置数据到数据中心...');
 
+        // 深拷贝配置数据
         const configData = {
             worker_id: DATA_CENTER_CONFIG.workerId,
             timestamp: Date.now(),
             data: {
-                ua_configs: memoryCache.configCache.uaConfigs,
-                ip_blacklist: memoryCache.configCache.ipBlacklist,
+                ua_configs: JSON.parse(JSON.stringify(memoryCache.configCache.uaConfigs)),
+                ip_blacklist: [...(memoryCache.configCache.ipBlacklist || [])],
                 last_update: memoryCache.configCache.lastUpdate,
-                secret_usage: memoryCache.appSecretUsage
+                secret_usage: { ...memoryCache.appSecretUsage }
             }
         };
 
@@ -426,11 +583,16 @@ async function syncConfigToDataCenter() {
             addMemoryLog('INFO', '配置数据同步成功', { sync_type: 'config' });
         } else {
             const errorText = await response.text();
-            console.error('❌ 配置数据同步失败，HTTP状态:', response.status);
+            console.error('❌ 配置数据同步失败，HTTP状态:', response.status, errorText);
             addMemoryLog('ERROR', `配置数据同步失败: HTTP ${response.status}`, {
                 status: response.status,
                 sync_type: 'config'
             });
+            if (retryCount < MAX_RETRIES) {
+                console.log(`🔄 将在5秒后重试 (${retryCount + 1}/${MAX_RETRIES})...`);
+                await new Promise(r => setTimeout(r, 5000));
+                return syncConfigToDataCenter(retryCount + 1);
+            }
         }
     } catch (error) {
         console.error('❌ 配置数据同步异常:', error);
@@ -438,21 +600,29 @@ async function syncConfigToDataCenter() {
             error: error.message,
             sync_type: 'config'
         });
+        if (retryCount < MAX_RETRIES) {
+            console.log(`🔄 将在5秒后重试 (${retryCount + 1}/${MAX_RETRIES})...`);
+            await new Promise(r => setTimeout(r, 5000));
+            return syncConfigToDataCenter(retryCount + 1);
+        }
     }
 }
 
-// 向数据中心发送日志数据
-async function syncLogsToDataCenter() {
+// 向数据中心发送日志数据（带重试机制）
+async function syncLogsToDataCenter(retryCount = 0) {
     if (!DATA_CENTER_CONFIG.enabled) return;
+    const MAX_RETRIES = 3;
 
     try {
         console.log('📝 开始同步日志数据到数据中心...');
         console.log('📋 当前内存日志数量:', memoryCache.logs.length);
 
+        // 深拷贝日志数据
+        const logsCopy = memoryCache.logs.slice();
         const logsData = {
             worker_id: DATA_CENTER_CONFIG.workerId,
             timestamp: Date.now(),
-            logs: memoryCache.logs.slice() // 发送日志副本
+            logs: logsCopy
         };
 
         const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/sync/logs`, {
@@ -465,8 +635,8 @@ async function syncLogsToDataCenter() {
         });
 
         if (response.ok) {
-            console.log(`✅ 日志数据同步成功 (${memoryCache.logs.length}条日志)`);
-            addMemoryLog('INFO', '日志数据同步成功', { logs_count: memoryCache.logs.length });
+            console.log(`✅ 日志数据同步成功 (${logsCopy.length}条日志)`);
+            addMemoryLog('INFO', '日志数据同步成功', { logs_count: logsCopy.length });
 
             // 同步成功后，清理已发送的日志（保留最近的一些日志）
             if (memoryCache.logs.length > 200) {
@@ -475,11 +645,16 @@ async function syncLogsToDataCenter() {
             }
         } else {
             const errorText = await response.text();
-            console.error('❌ 日志数据同步失败，HTTP状态:', response.status);
+            console.error('❌ 日志数据同步失败，HTTP状态:', response.status, errorText);
             addMemoryLog('ERROR', `日志数据同步失败: HTTP ${response.status}`, {
                 status: response.status,
                 sync_type: 'logs'
             });
+            if (retryCount < MAX_RETRIES) {
+                console.log(`🔄 将在5秒后重试 (${retryCount + 1}/${MAX_RETRIES})...`);
+                await new Promise(r => setTimeout(r, 5000));
+                return syncLogsToDataCenter(retryCount + 1);
+            }
         }
     } catch (error) {
         console.error('❌ 日志数据同步异常:', error);
@@ -487,48 +662,38 @@ async function syncLogsToDataCenter() {
             error: error.message,
             sync_type: 'logs'
         });
+        if (retryCount < MAX_RETRIES) {
+            console.log(`🔄 将在5秒后重试 (${retryCount + 1}/${MAX_RETRIES})...`);
+            await new Promise(r => setTimeout(r, 5000));
+            return syncLogsToDataCenter(retryCount + 1);
+        }
     }
 }
 
-// 向数据中心发送 IP 请求统计数据
-async function syncRequestStatsToDataCenter() {
+// 向数据中心发送 IP 请求统计数据（带重试机制）
+async function syncRequestStatsToDataCenter(retryCount = 0) {
     if (!DATA_CENTER_CONFIG.enabled) return;
+    const MAX_RETRIES = 3;
 
     try {
         console.log('📊 开始同步 IP 请求统计数据到数据中心...');
 
-        // 构建 by_ip 统计数据
-        const byIp = {};
-        for (const [key, counter] of memoryCache.rateLimitCounts.entries()) {
-            // 提取客户端IP（IP总是在最后一个位置）
-            const parts = key.split('-');
-            const clientIP = parts[parts.length - 1]; // 最后一个元素是IP
-            const uaType = parts[0]; // 第一个元素是UA类型
-
-            if (!byIp[clientIP]) {
-                byIp[clientIP] = {
-                    total_count: 0,
-                    violations: 0,
-                    paths: {}
-                };
-            }
-            byIp[clientIP].total_count += counter.count;
-        }
+        // 深拷贝IP统计数据，避免同步过程中数据被修改
+        const byIp = JSON.parse(JSON.stringify(memoryCache.ipRequestStats));
+        const totalRequests = memoryCache.totalRequests;
 
         const statsData = {
             worker_id: DATA_CENTER_CONFIG.workerId,
             timestamp: Date.now(),
             stats: {
-                total_requests: memoryCache.totalRequests,
+                total_requests: totalRequests,
                 by_ip: byIp
             }
         };
 
         // 调试日志：打印IP统计数据
         console.log('📊 IP请求统计数据详情:');
-        console.log('   - 总请求数:', memoryCache.totalRequests);
-        console.log('   - 频率限制计数器数量:', memoryCache.rateLimitCounts.size);
-        console.log('   - IP统计数据:', JSON.stringify(byIp));
+        console.log('   - 总请求数:', totalRequests);
         console.log('   - 统计的IP数量:', Object.keys(byIp).length);
 
         const response = await fetch(`${DATA_CENTER_CONFIG.url}/worker-api/sync/request-stats`, {
@@ -545,11 +710,17 @@ async function syncRequestStatsToDataCenter() {
             addMemoryLog('INFO', 'IP 请求统计数据同步成功', { sync_type: 'request-stats' });
         } else {
             const errorText = await response.text();
-            console.error('❌ IP 请求统计数据同步失败，HTTP状态:', response.status);
+            console.error('❌ IP 请求统计数据同步失败，HTTP状态:', response.status, errorText);
             addMemoryLog('ERROR', `IP 请求统计数据同步失败: HTTP ${response.status}`, {
                 status: response.status,
                 sync_type: 'request-stats'
             });
+            // 重试
+            if (retryCount < MAX_RETRIES) {
+                console.log(`🔄 将在5秒后重试 (${retryCount + 1}/${MAX_RETRIES})...`);
+                await new Promise(r => setTimeout(r, 5000));
+                return syncRequestStatsToDataCenter(retryCount + 1);
+            }
         }
     } catch (error) {
         console.error('❌ IP 请求统计数据同步异常:', error);
@@ -557,6 +728,12 @@ async function syncRequestStatsToDataCenter() {
             error: error.message,
             sync_type: 'request-stats'
         });
+        // 重试
+        if (retryCount < MAX_RETRIES) {
+            console.log(`🔄 将在5秒后重试 (${retryCount + 1}/${MAX_RETRIES})...`);
+            await new Promise(r => setTimeout(r, 5000));
+            return syncRequestStatsToDataCenter(retryCount + 1);
+        }
     }
 }
 
@@ -1014,6 +1191,9 @@ export default {
 
 
 async function handleRequest(request, env, ctx) {
+    // 定期清理内存
+    periodicCleanup();
+
     // 获取客户端IP
     const clientIP = request.headers.get('CF-Connecting-IP') ||
                      request.headers.get('X-Forwarded-For') ||
@@ -1111,34 +1291,37 @@ async function handleRequest(request, env, ctx) {
     console.log(`   - UA类型: ${accessCheck.uaConfig?.type || 'unknown'}`);
     console.log(`   - 目标路径: ${tUrlObj.pathname}`);
 
-    // 频率限制检查已在accessCheck中完成，这里直接使用结果
-    const rateLimitResult = { allowed: true }; // accessCheck已经通过，说明频率限制检查通过
+    // 检查是否可以使用API缓存（搜索、番剧、匹配接口）
+    const apiPath = tUrlObj.pathname;
+    const cacheablePatterns = ['/api/v2/search/anime', '/api/v2/bangumi/', '/api/v2/match'];
+    const isCacheable = request.method === 'GET' && cacheablePatterns.some(p => apiPath.startsWith(p));
 
-    // 路径满载检查功能已移除
+    if (isCacheable) {
+        // 生成缓存键（包含完整URL以区分不同查询参数）
+        const cacheKey = `api_cache_${url}`;
+        const cached = memoryCache.apiCache.get(cacheKey);
 
-    if (!rateLimitResult.allowed) {
-        const userAgent = request.headers.get('X-User-Agent') || '';
-        const errorMessage = `频率限制：${rateLimitResult.reason} UA:${userAgent}`;
-        console.log(`⚠️ [${clientIP}] ${errorMessage}`);
+        if (cached && (Date.now() - cached.timestamp < MEMORY_LIMITS.API_CACHE_TTL)) {
+            console.log(`📦 [${clientIP}] API缓存命中: ${apiPath}`);
+            addMemoryLog('INFO', 'API缓存命中', {
+                ip: clientIP,
+                path: apiPath,
+                cacheAge: Math.round((Date.now() - cached.timestamp) / 1000) + 's'
+            });
 
-        // 记录到内存日志
-        addMemoryLog('warn', '频率限制触发', {
-            ip: clientIP,
-            userAgent,
-            reason: rateLimitResult.reason
-        });
-
-        return new Response(JSON.stringify({
-            status: 429,
-            type: "频率限制",
-            message: errorMessage
-        }), {
-            status: 429,
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-        });
+            // 返回缓存的响应
+            const cachedResponse = new Response(cached.data, {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                    'X-Cache': 'HIT',
+                    'X-Cache-Age': Math.round((Date.now() - cached.timestamp) / 1000).toString()
+                }
+            });
+            return cachedResponse;
+        }
     }
-
-
 
     const appId = env.APP_ID;
     // 使用缓存的AppSecret信息，避免每次都调用DO
@@ -1146,7 +1329,6 @@ async function handleRequest(request, env, ctx) {
 
 
     const timestamp = Math.floor(Date.now() / 1000);
-    const apiPath = tUrlObj.pathname;
     const signature = await generateSignature(appId, timestamp, apiPath, appSecret);
 
     // 在内存中记录AppSecret使用次数
@@ -1240,15 +1422,28 @@ async function handleRequest(request, env, ctx) {
         console.log(`📄 [${clientIP}] dandanplay API响应内容:`, responseText);
     }
 
+    // 如果是可缓存的接口且响应成功，存入缓存
+    if (isCacheable && response.status === 200) {
+        const cacheKey = `api_cache_${url}`;
+        memoryCache.apiCache.set(cacheKey, {
+            data: responseText,
+            timestamp: Date.now()
+        });
+        console.log(`📦 [${clientIP}] API响应已缓存: ${apiPath} (缓存有效期: 2小时)`);
+    }
+
     // 重新创建Response对象（因为body已经被读取）
-    response = new Response(responseText, {
+    const responseHeaders = new Headers(response.headers);
+    responseHeaders.set('Access-Control-Allow-Origin', '*');
+    if (isCacheable) {
+        responseHeaders.set('X-Cache', 'MISS');
+    }
+
+    return new Response(responseText, {
         status: response.status,
         statusText: response.statusText,
-        headers: response.headers
+        headers: responseHeaders
     });
-    response.headers.set('Access-Control-Allow-Origin', '*');
-
-    return response;
 }
 
 // 批量同步管理函数
@@ -1444,17 +1639,6 @@ async function checkAccess(request, targetApiPath) {
     return { allowed: true, uaConfig: uaConfig, apiPath: apiPath };
 }
 
-
-
-// pemToArrayBuffer函数已移除（未使用）
-
-// TG Webhook功能已移除
-
-
-
-
-
-// base64ToArrayBuffer函数已移除（未使用）
 
 function Forbidden(url) {
     return new Response(JSON.stringify({
