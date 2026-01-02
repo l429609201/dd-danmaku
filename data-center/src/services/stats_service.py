@@ -357,7 +357,7 @@ class StatsService:
             return {}
 
     async def get_summary(self) -> Dict[str, Any]:
-        """获取统计数据摘要"""
+        """获取统计数据摘要（优化版：减少阻塞操作，提升响应速度）"""
         try:
             db = self.db()
 
@@ -385,20 +385,10 @@ class StatsService:
             else:
                 success_rate = 0
 
-            # 如果数据库中没有数据，尝试从Worker实时获取
-            if total_requests == 0:
-                worker_stats = await self._get_real_time_worker_stats()
-                if worker_stats:
-                    today_requests = worker_stats.get('today_requests', 0)
-                    total_requests = worker_stats.get('total_requests', 0)
-                    success_rate = worker_stats.get('success_rate', 0)
-
-            logger.info(f"📊 统计摘要: 今日请求={today_requests}, 总请求={total_requests}, 成功率={success_rate}%")
-
             # Worker状态 (优先从 WorkerConfig 表获取，因为 Worker 会主动推送数据)
+            # 注意：移除了串行的 HTTP 健康检查，改为只依赖 last_sync_at 判断在线状态
             try:
                 from src.models.config import WorkerConfig
-                from datetime import timedelta
 
                 # 查询所有 Worker 配置
                 all_workers = db.query(WorkerConfig).all()
@@ -406,35 +396,7 @@ class StatsService:
 
                 # 判断在线状态：最近 5 分钟内有同步的 Worker 视为在线
                 online_threshold = datetime.now() - timedelta(minutes=5)
-                online_workers = 0
-
-                for worker in all_workers:
-                    if worker.last_sync_at and worker.last_sync_at > online_threshold:
-                        online_workers += 1
-
-                # 如果没有 Worker 配置，尝试从系统设置获取并检查健康状态
-                if total_workers == 0:
-                    from src.services.web_config_service import WebConfigService
-                    web_config_service = WebConfigService()
-                    system_settings = await web_config_service.get_system_settings()
-
-                    if system_settings and system_settings.worker_endpoints:
-                        endpoints = [ep.strip() for ep in system_settings.worker_endpoints.split(',') if ep.strip()]
-                        total_workers = len(endpoints)
-                        # 尝试检查Worker在线状态
-                        online_workers = 0
-                        for endpoint in endpoints:
-                            try:
-                                # 简单的健康检查 - 使用正确的端点路径
-                                import aiohttp
-                                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
-                                    async with session.get(f"{endpoint}/worker-api/health") as resp:
-                                        if resp.status == 200:
-                                            online_workers += 1
-                            except:
-                                pass
-
-                logger.info(f"🤖 Worker状态: {online_workers}/{total_workers} 在线")
+                online_workers = sum(1 for w in all_workers if w.last_sync_at and w.last_sync_at > online_threshold)
 
             except Exception as e:
                 logger.warning(f"获取Worker状态失败: {e}")
@@ -443,7 +405,7 @@ class StatsService:
 
             # 平均响应时间
             avg_response_time = db.query(func.avg(RequestStats.avg_response_time)).scalar() or 0
-            avg_response_time = round(avg_response_time, 2)
+            avg_response_time = round(float(avg_response_time), 2)
 
             # 被阻止的IP数量
             blocked_ips = db.query(func.count(IPBlacklist.id)).scalar() or 0
@@ -469,7 +431,12 @@ class StatsService:
                 RequestStats.date_hour >= today_start
             ).scalar() or 0
 
-            # 系统运行时间 (简单计算)
+            db.close()
+
+            # 系统运行时间 (简单计算) - 移到数据库操作之后
+            uptime = "未知"
+            memory_usage = 0
+            cpu_usage = 0
             try:
                 import psutil
                 uptime_seconds = psutil.boot_time()
@@ -484,28 +451,21 @@ class StatsService:
                     days = uptime_minutes // 1440
                     hours = (uptime_minutes % 1440) // 60
                     uptime = f"{days}天{hours}小时"
-            except ImportError:
-                uptime = "未知"
 
-            # 获取系统资源使用情况
-            memory_usage = 0
-            cpu_usage = 0
-            try:
-                import psutil
+                # 获取系统资源使用情况（非阻塞）
                 memory_usage = round(psutil.virtual_memory().percent, 1)
-                cpu_usage = round(psutil.cpu_percent(interval=1), 1)
+                # cpu_percent(interval=0) 不阻塞，返回上次调用以来的 CPU 使用率
+                cpu_usage = round(psutil.cpu_percent(interval=0), 1)
             except ImportError:
                 pass
 
-            # 如果从Worker获取到了实时数据，优先使用Worker数据
-            worker_stats = await self._get_real_time_worker_stats()
-            if worker_stats:
-                today_requests = max(today_requests, worker_stats.get('today_requests', today_requests))
-                total_requests = max(total_requests, worker_stats.get('total_requests', total_requests))
-                if worker_stats.get('success_rate', 0) > 0:
-                    success_rate = worker_stats.get('success_rate', success_rate)
-
-            db.close()
+            # 转换为 int/float，避免 Decimal 类型导致 JSON 序列化失败
+            today_requests = int(today_requests)
+            total_requests = int(total_requests)
+            blocked_ips = int(blocked_ips)
+            today_blocked = int(today_blocked)
+            violation_requests = int(violation_requests)
+            active_ips = int(active_ips)
 
             return {
                 "today_requests": today_requests,
