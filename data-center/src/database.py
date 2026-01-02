@@ -24,12 +24,15 @@ if settings.database_url.startswith("sqlite"):
         poolclass=StaticPool,
     )
 else:
-    # PostgreSQL或其他数据库配置
+    # MySQL/PostgreSQL 连接池优化配置
     engine = create_engine(
         settings.database_url,
         echo=settings.DATABASE_ECHO,
-        pool_pre_ping=True,
-        pool_recycle=300,
+        pool_pre_ping=True,      # 连接前检查连接是否有效
+        pool_recycle=300,        # 5分钟回收连接，避免MySQL 8小时超时
+        pool_size=40,            # 连接池大小
+        max_overflow=40,         # 最大溢出连接数
+        pool_timeout=20,         # 获取连接超时时间（秒）
     )
 
 # 会话工厂
