@@ -14,12 +14,13 @@ const BATCH_SYNC_INTERVAL = 60000; // 或每60秒强制同步一次
 
 // 内存限制配置
 const MEMORY_LIMITS = {
-    MAX_IP_STATS: 10000,        // 最多保存10000个IP的统计
-    MAX_RATE_LIMIT_COUNTERS: 5000, // 最多5000个频率限制计数器
-    IP_STATS_CLEANUP_INTERVAL: 3600000, // 每小时清理一次IP统计
-    RATE_LIMIT_CLEANUP_INTERVAL: 60000,  // 每分钟清理一次频率限制计数器
+    MAX_IP_STATS: 50000,        // 最多保存50000个IP的统计
+    MAX_RATE_LIMIT_COUNTERS: 100000, // 最多100000个频率限制计数器（IP+UA+路径组合）
+    IP_STATS_CLEANUP_INTERVAL: 3600000, // 每小时检查一次IP统计清理
+    RATE_LIMIT_CLEANUP_INTERVAL: 300000,  // 每5分钟检查一次频率限制计数器清理
+    RATE_LIMIT_COUNTER_EXPIRE: 3600000,   // 频率限制计数器1小时过期（与小时限制对应）
     API_CACHE_TTL: 7200000,     // API缓存2小时
-    MAX_API_CACHE_SIZE: 3000    // 最多缓存1000个API响应
+    MAX_API_CACHE_SIZE: 3000    // 最多缓存3000个API响应
 };
 
 // 全局内存缓存
@@ -216,7 +217,8 @@ function checkMemoryRateLimit(clientIP, uaType, limits) {
 // 清理过期的频率限制计数器
 function cleanupRateLimitCounters() {
     const now = Date.now();
-    const expireTime = 5 * 60 * 1000; // 5分钟过期
+    // 使用配置的过期时间（默认1小时，与小时限制对应）
+    const expireTime = MEMORY_LIMITS.RATE_LIMIT_COUNTER_EXPIRE || 3600000;
 
     let deletedCount = 0;
     for (const [key, counter] of memoryCache.rateLimitCounts.entries()) {
@@ -558,12 +560,23 @@ async function syncConfigToDataCenter(retryCount = 0) {
         console.log('📋 开始同步配置数据到数据中心...');
 
         // 深拷贝配置数据
+        // 注意：ip_blacklist 可能是对象（从数据中心同步）或数组（从环境变量加载）
+        const ipBlacklist = memoryCache.configCache.ipBlacklist;
+        let ipBlacklistCopy;
+        if (Array.isArray(ipBlacklist)) {
+            ipBlacklistCopy = [...ipBlacklist];
+        } else if (ipBlacklist && typeof ipBlacklist === 'object') {
+            ipBlacklistCopy = JSON.parse(JSON.stringify(ipBlacklist));
+        } else {
+            ipBlacklistCopy = [];
+        }
+
         const configData = {
             worker_id: DATA_CENTER_CONFIG.workerId,
             timestamp: Date.now(),
             data: {
                 ua_configs: JSON.parse(JSON.stringify(memoryCache.configCache.uaConfigs)),
-                ip_blacklist: [...(memoryCache.configCache.ipBlacklist || [])],
+                ip_blacklist: ipBlacklistCopy,
                 last_update: memoryCache.configCache.lastUpdate,
                 secret_usage: { ...memoryCache.appSecretUsage }
             }
@@ -943,7 +956,7 @@ async function getWorkerStats() {
             // 配置统计
             config_stats: {
                 ua_configs_count: Object.keys(memoryCache.configCache.uaConfigs || {}).length,
-                ip_blacklist_count: (memoryCache.configCache.ipBlacklist || []).length,
+                ip_blacklist_count: getIpBlacklistCount(),
                 last_config_update: memoryCache.configCache.lastUpdate
             },
             // 秘钥轮换统计（直接使用内存缓存）
@@ -1078,12 +1091,31 @@ function getRateLimitStats() {
     return stats;
 }
 
-// 获取IP黑名单配置（优先使用内存缓存）
+// 获取IP黑名单数量（兼容数组和对象格式）
+function getIpBlacklistCount() {
+    const ipBlacklist = memoryCache.configCache.ipBlacklist;
+    if (!ipBlacklist) return 0;
+    if (Array.isArray(ipBlacklist)) return ipBlacklist.length;
+    if (typeof ipBlacklist === 'object') return Object.keys(ipBlacklist).length;
+    return 0;
+}
+
+// 获取IP黑名单配置（优先使用内存缓存，兼容数组和对象格式）
 function getIpBlacklist() {
-    // 使用内存缓存中的配置（数据中心同步的配置或环境变量兜底配置）
-    if (memoryCache.configCache.ipBlacklist && memoryCache.configCache.ipBlacklist.length > 0) {
-        console.log('使用内存缓存IP黑名单，包含', memoryCache.configCache.ipBlacklist.length, '个规则');
-        return memoryCache.configCache.ipBlacklist;
+    const ipBlacklist = memoryCache.configCache.ipBlacklist;
+
+    // 如果是数组格式（从环境变量加载）
+    if (Array.isArray(ipBlacklist) && ipBlacklist.length > 0) {
+        console.log('使用内存缓存IP黑名单（数组格式），包含', ipBlacklist.length, '个规则');
+        return ipBlacklist;
+    }
+
+    // 如果是对象格式（从数据中心同步）
+    if (ipBlacklist && typeof ipBlacklist === 'object' && Object.keys(ipBlacklist).length > 0) {
+        // 转换为数组格式供 isIpBlacklisted 使用
+        const ipList = Object.keys(ipBlacklist);
+        console.log('使用内存缓存IP黑名单（对象格式），包含', ipList.length, '个规则');
+        return ipList;
     }
 
     console.log('无可用的IP黑名单配置');
