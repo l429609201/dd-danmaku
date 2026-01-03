@@ -246,7 +246,7 @@ async def restore_worker_stats(
                 "secret1_count": recent_stats.secret1_count or 0,
                 "secret2_count": recent_stats.secret2_count or 0,
                 "current_secret": recent_stats.current_secret or "1",
-                "total_requests": recent_stats.requests_total or 0
+                "total_requests": recent_stats.total_requests or 0  # 修正：使用正确的字段名
             }
 
             logger.info(f"✅ 找到Worker计数状态: {worker_id}")

@@ -428,17 +428,15 @@ export default {
       }
     }
 
-    // 加载图表数据
+    // 加载图表数据（并行加载，提升性能）
     const loadChartData = async () => {
       try {
-        // 加载请求趋势数据
-        await loadRequestTrendData()
-
-        // 加载UA使用分布数据
-        await loadUADistributionData()
-
-        // 加载IP封禁趋势数据
-        await loadIPBlockTrendData()
+        // 并行加载所有图表数据
+        await Promise.all([
+          loadRequestTrendData(),
+          loadUADistributionData(),
+          loadIPBlockTrendData()
+        ])
 
         // 更新Worker状态图
         updateWorkerStatusChart()
@@ -576,16 +574,22 @@ export default {
     }
 
     onMounted(async () => {
-      await loadStats()
-
-      // 初始化所有图表
+      // 初始化所有图表（同步操作，不需要等待）
       initRequestTrendChart()
       initWorkerStatusChart()
       initUADistributionChart()
       initIPBlockChart()
 
-      // 加载图表数据
-      await loadChartData()
+      // 并行加载所有数据，大幅提升加载速度
+      await Promise.all([
+        loadStats(),
+        loadRequestTrendData(),
+        loadUADistributionData(),
+        loadIPBlockTrendData()
+      ])
+
+      // 统计数据加载完成后更新 Worker 状态图
+      updateWorkerStatusChart()
 
       // 不设置自动刷新，只在手动点击刷新或Worker同步数据后更新
       // refreshTimer = setInterval(refreshData, 30000)

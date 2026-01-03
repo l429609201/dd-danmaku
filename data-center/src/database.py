@@ -24,12 +24,16 @@ if settings.database_url.startswith("sqlite"):
         poolclass=StaticPool,
     )
 else:
-    # PostgreSQL或其他数据库配置
+    # MySQL/PostgreSQL 连接池优化配置
+    # 参考 misaka_danmu_server 的配置
     engine = create_engine(
         settings.database_url,
         echo=settings.DATABASE_ECHO,
-        pool_pre_ping=True,
-        pool_recycle=300,
+        pool_pre_ping=True,      # 连接前检查连接是否有效
+        pool_recycle=3600,       # 1小时回收连接（misaka_danmu_server 使用 3600）
+        pool_size=40,            # 连接池大小（misaka_danmu_server 使用 20）
+        max_overflow=40,         # 最大溢出连接数（misaka_danmu_server 使用 40）
+        pool_timeout=30,         # 获取连接超时时间（秒）（misaka_danmu_server 使用 30）
     )
 
 # 会话工厂
@@ -85,7 +89,7 @@ async def migrate_database():
     try:
         db = SessionLocal()
 
-        # 检查并添加 worker_configs 表的缺失列
+        # 检查并添加缺失的列
         migrations = [
             # (表名, 列名, 列类型)
             ("worker_configs", "ua_configs", "JSON"),
@@ -94,6 +98,18 @@ async def migrate_database():
             ("worker_configs", "last_update", "BIGINT"),
             # RequestStats 表的新列
             ("request_stats", "active_ips_count", "INTEGER DEFAULT 0"),
+        ]
+
+        # 需要修改列类型的迁移（MySQL 专用）
+        column_type_changes = [
+            # (表名, 列名, 新类型) - Telegram user_id 可能超过 INT 范围
+            ("telegram_logs", "user_id", "BIGINT"),
+        ]
+
+        # 需要修改列约束的迁移（MySQL 专用）
+        column_nullable_changes = [
+            # (表名, 列名, 列类型, 是否允许NULL)
+            ("worker_configs", "endpoint", "VARCHAR(500)", True),
         ]
 
         for table_name, column_name, column_type in migrations:
@@ -129,6 +145,42 @@ async def migrate_database():
                 logger.debug(f"ℹ️ 迁移跳过 {table_name}.{column_name}: {e}")
                 db.rollback()
                 continue
+
+        # 处理列类型修改（MySQL/MariaDB 专用）
+        if not settings.database_url.startswith("sqlite"):
+            for table_name, column_name, new_type in column_type_changes:
+                try:
+                    # 检查当前列类型
+                    result = db.execute(text(f"""
+                        SELECT data_type FROM information_schema.columns
+                        WHERE table_name = '{table_name}' AND column_name = '{column_name}'
+                    """))
+                    row = result.fetchone()
+                    if row:
+                        current_type = row[0].upper()
+                        if current_type != new_type.upper():
+                            # 修改列类型
+                            db.execute(text(f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {new_type}"))
+                            db.commit()
+                            logger.info(f"✅ 已修改列类型: {table_name}.{column_name} -> {new_type}")
+                        else:
+                            logger.debug(f"ℹ️ 列类型已正确: {table_name}.{column_name} = {new_type}")
+                except Exception as e:
+                    logger.debug(f"ℹ️ 列类型修改跳过 {table_name}.{column_name}: {e}")
+                    db.rollback()
+                    continue
+
+            # 处理列约束修改（允许 NULL）
+            for table_name, column_name, column_type, nullable in column_nullable_changes:
+                try:
+                    null_str = "NULL" if nullable else "NOT NULL"
+                    db.execute(text(f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} {null_str}"))
+                    db.commit()
+                    logger.info(f"✅ 已修改列约束: {table_name}.{column_name} -> {null_str}")
+                except Exception as e:
+                    logger.debug(f"ℹ️ 列约束修改跳过 {table_name}.{column_name}: {e}")
+                    db.rollback()
+                    continue
 
         db.close()
         logger.info("✅ 数据库迁移检查完成")

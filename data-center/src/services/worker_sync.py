@@ -408,6 +408,10 @@ class WorkerSyncService:
             db.close()
 
             logger.info(f"✅ 处理Worker日志成功: {worker_id}, 接收{len(logs_data)}条, 新增{saved_count}条")
+
+            # 更新 Worker 最后同步时间
+            await self._update_worker_sync_time(worker_id)
+
             return True
 
         except Exception as e:
@@ -468,6 +472,8 @@ class WorkerSyncService:
             worker_config.ip_blacklist = config_data.get("ip_blacklist", [])
             worker_config.secret_usage = config_data.get("secret_usage", {})
             worker_config.last_update = config_data.get("last_update", 0)
+            worker_config.last_sync_at = datetime.now()  # 更新最后同步时间
+            worker_config.sync_status = "synced"  # 更新同步状态
 
             db.add(worker_config)
             db.commit()
@@ -559,12 +565,16 @@ class WorkerSyncService:
             db.close()
 
             logger.info(f"✅ Worker IP请求统计数据保存成功: {worker_id}, 共保存 {saved_count} 条IP统计")
+
+            # 更新 Worker 最后同步时间
+            await self._update_worker_sync_time(worker_id)
+
             return True
 
         except Exception as e:
             logger.error(f"❌ 处理Worker IP请求统计数据失败: {e}")
             return False
-    
+
     async def query_worker_logs(self, worker_id: str = None, limit: int = 100) -> List[Dict[str, Any]]:
         """查询Worker推送的日志数据"""
         try:
@@ -677,3 +687,33 @@ class WorkerSyncService:
                 "endpoint": worker_endpoint,
                 "error": str(e)
             }
+
+    async def _update_worker_sync_time(self, worker_id: str) -> None:
+        """更新 Worker 最后同步时间"""
+        try:
+            from src.models.config import WorkerConfig
+
+            db = self.db()
+
+            worker_config = db.query(WorkerConfig).filter(
+                WorkerConfig.worker_id == worker_id
+            ).first()
+
+            if worker_config:
+                worker_config.last_sync_at = datetime.now()
+                worker_config.sync_status = "synced"
+                db.commit()
+            else:
+                # 如果不存在，创建一个新的配置记录
+                worker_config = WorkerConfig(
+                    worker_id=worker_id,
+                    last_sync_at=datetime.now(),
+                    sync_status="synced"
+                )
+                db.add(worker_config)
+                db.commit()
+
+            db.close()
+
+        except Exception as e:
+            logger.warning(f"更新Worker同步时间失败: {e}")

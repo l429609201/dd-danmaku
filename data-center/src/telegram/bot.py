@@ -9,8 +9,20 @@ from datetime import datetime
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes,
+    ConversationHandler, MessageHandler, filters
+)
 from telegram.error import TelegramError
+
+# 会话状态常量
+(
+    UA_NAME_INPUT,      # 等待输入UA名称
+    UA_STRING_INPUT,    # 等待输入User-Agent字符串
+    UA_LIMIT_SELECT,    # 等待选择小时限制
+    IP_ADDRESS_INPUT,   # 等待输入IP地址
+    IP_REASON_INPUT,    # 等待输入封禁原因
+) = range(5)
 
 from src.config import settings
 from src.database import get_db_sync
@@ -34,6 +46,8 @@ class TelegramBot:
         self.stats_service = StatsService()
         self._polling_thread = None
         self._stop_event = threading.Event()
+        # 用于存储会话数据（添加UA/IP时的临时数据）
+        self._user_data = {}
 
         logger.info(f"🤖 初始化TG机器人，管理员ID: {self.admin_user_ids}")
 
@@ -148,6 +162,8 @@ class TelegramBot:
             CommandHandler("blacklist", self.blacklist_command),
             CommandHandler("logs", self.logs_command),
             CommandHandler("help", self.help_command),
+            # 消息处理器 - 用于处理用户输入（添加UA/IP时的文本输入）
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_input),
             CallbackQueryHandler(self.handle_callback)
         ]
 
@@ -500,14 +516,20 @@ class TelegramBot:
             await query.answer()
 
             # 路由到不同的处理函数
-            if callback_data == "status":
+            if callback_data == "main_menu":
+                await self._handle_main_menu_callback(query)
+            elif callback_data == "status":
                 await self._handle_status_callback(query)
             elif callback_data.startswith("ua_"):
                 await self._handle_ua_callback(query, callback_data)
-            elif callback_data.startswith("blacklist_"):
+            elif callback_data.startswith("blacklist_") or callback_data.startswith("ip_"):
                 await self._handle_blacklist_callback(query, callback_data)
             elif callback_data.startswith("logs_"):
                 await self._handle_logs_callback(query, callback_data)
+            elif callback_data == "noop":
+                # 空操作（占位按钮）
+                await query.answer()
+                return
             else:
                 # 未知的回调数据
                 await query.answer("⚠️ 未知的操作", show_alert=True)
@@ -527,6 +549,226 @@ class TelegramBot:
                 await query.message.reply_text(f"❌ {error_msg}")
 
             await self._log_command(user_id, username, f"callback:{callback_data}", error_msg, "error", str(e))
+
+    async def handle_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理用户文本输入（用于添加UA/IP的会话流程）"""
+        user_id = update.effective_user.id
+        username = update.effective_user.username or update.effective_user.first_name
+
+        if not self._is_authorized(user_id):
+            return  # 非授权用户的消息直接忽略
+
+        # 检查用户是否在会话中
+        if user_id not in self._user_data:
+            return  # 没有进行中的会话，忽略消息
+
+        user_session = self._user_data[user_id]
+        action = user_session.get("action")
+        step = user_session.get("step")
+        text = update.message.text.strip()
+
+        try:
+            if action == "add_ua":
+                await self._handle_ua_text_input(update, user_id, step, text)
+            elif action == "add_ip":
+                await self._handle_ip_text_input(update, user_id, step, text)
+        except Exception as e:
+            logger.error(f"处理文本输入失败: {e}")
+            await update.message.reply_text(f"❌ 处理输入失败: {str(e)}")
+
+    async def _handle_ua_text_input(self, update: Update, user_id: int, step: str, text: str):
+        """处理添加UA的文本输入"""
+        if step == "name":
+            # 验证名称
+            if len(text) < 2:
+                await update.message.reply_text("❌ 名称太短，请输入至少2个字符")
+                return
+            if len(text) > 50:
+                await update.message.reply_text("❌ 名称太长，请输入不超过50个字符")
+                return
+
+            # 检查是否已存在
+            existing = await self.config_service.get_ua_config_by_name(text)
+            if existing:
+                await update.message.reply_text(f"❌ 已存在同名配置: {text}，请输入其他名称")
+                return
+
+            # 保存名称，进入下一步
+            self._user_data[user_id]["name"] = text
+            self._user_data[user_id]["step"] = "user_agent"
+
+            message = f"""✅ 名称已设置: <code>{text}</code>
+
+请输入 User-Agent 字符串：
+
+<i>💡 示例: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36...</i>"""
+
+            keyboard = [
+                [InlineKeyboardButton("❌ 取消", callback_data="ua_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.message.reply_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        elif step == "user_agent":
+            # 验证User-Agent
+            if len(text) < 10:
+                await update.message.reply_text("❌ User-Agent太短，请输入有效的UA字符串")
+                return
+            if len(text) > 500:
+                await update.message.reply_text("❌ User-Agent太长，请输入不超过500个字符")
+                return
+
+            # 保存User-Agent，进入选择限制步骤
+            self._user_data[user_id]["user_agent"] = text
+            self._user_data[user_id]["step"] = "limit"
+
+            ua_name = self._user_data[user_id].get("name", "")
+
+            message = f"""✅ User-Agent 已设置
+
+📋 <b>当前配置</b>
+• 名称: <code>{ua_name}</code>
+• UA: <code>{text[:60]}...</code>
+
+请选择每小时请求限制："""
+
+            keyboard = [
+                [
+                    InlineKeyboardButton("50/小时", callback_data="ua_limit_50"),
+                    InlineKeyboardButton("100/小时", callback_data="ua_limit_100")
+                ],
+                [
+                    InlineKeyboardButton("200/小时", callback_data="ua_limit_200"),
+                    InlineKeyboardButton("500/小时", callback_data="ua_limit_500")
+                ],
+                [
+                    InlineKeyboardButton("∞ 无限制", callback_data="ua_limit_unlimited")
+                ],
+                [InlineKeyboardButton("❌ 取消", callback_data="ua_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.message.reply_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        elif step == "path_input":
+            # 验证路径格式
+            if not text.startswith("/"):
+                await update.message.reply_text("❌ 路径必须以 / 开头，例如: /api/danmaku")
+                return
+            if len(text) > 200:
+                await update.message.reply_text("❌ 路径太长，请输入不超过200个字符")
+                return
+
+            # 保存当前路径，进入选择路径限制步骤
+            self._user_data[user_id]["current_path"] = text
+            self._user_data[user_id]["step"] = "path_limit"
+
+            ua_name = self._user_data[user_id].get("name", "")
+            hourly_limit = self._user_data[user_id].get("hourly_limit", 100)
+            limit_display = "无限制" if hourly_limit == -1 else f"{hourly_limit}/小时"
+
+            message = f"""✅ 路径已设置: <code>{text}</code>
+
+请选择该路径的每小时请求限制：
+
+<i>💡 当前全局限制: {limit_display}</i>"""
+
+            keyboard = [
+                [
+                    InlineKeyboardButton("20/小时", callback_data="ua_path_limit_20"),
+                    InlineKeyboardButton("50/小时", callback_data="ua_path_limit_50")
+                ],
+                [
+                    InlineKeyboardButton("100/小时", callback_data="ua_path_limit_100"),
+                    InlineKeyboardButton("200/小时", callback_data="ua_path_limit_200")
+                ],
+                [
+                    InlineKeyboardButton("∞ 无限制", callback_data="ua_path_limit_unlimited")
+                ],
+                [InlineKeyboardButton("❌ 取消", callback_data="ua_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.message.reply_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+    async def _handle_ip_text_input(self, update: Update, user_id: int, step: str, text: str):
+        """处理添加IP黑名单的文本输入"""
+        if step == "ip_address":
+            # 简单验证IP格式
+            import re
+            ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+            if not re.match(ip_pattern, text):
+                await update.message.reply_text("❌ IP地址格式不正确，请输入有效的IPv4地址（如: 192.168.1.100）")
+                return
+
+            # 验证IP范围
+            parts = text.split('.')
+            for part in parts:
+                if int(part) > 255:
+                    await update.message.reply_text("❌ IP地址格式不正确，每段数字应在0-255之间")
+                    return
+
+            # 保存IP地址，进入下一步
+            self._user_data[user_id]["ip_address"] = text
+            self._user_data[user_id]["step"] = "reason"
+
+            message = f"""✅ IP地址已设置: <code>{text}</code>
+
+请输入封禁原因（可选，直接点击跳过）：
+
+<i>💡 示例: 恶意爬虫、频繁请求、异常访问等</i>"""
+
+            keyboard = [
+                [InlineKeyboardButton("⏭️ 跳过（无原因）", callback_data="ip_reason_skip")],
+                [InlineKeyboardButton("❌ 取消", callback_data="blacklist_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.message.reply_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        elif step == "reason":
+            # 保存原因并创建黑名单记录
+            ip_address = self._user_data[user_id].get("ip_address", "")
+            reason = text if text else None
+
+            await self._create_ip_blacklist(update, user_id, ip_address, reason)
+
+    async def _create_ip_blacklist(self, update_or_query, user_id: int, ip_address: str, reason: str = None):
+        """创建IP黑名单记录"""
+        try:
+            success = await self.config_service.add_ip_to_blacklist(ip_address, reason)
+
+            if success:
+                reason_display = reason if reason else "无"
+                message = f"""✅ <b>IP已添加到黑名单！</b>
+
+📋 <b>详情</b>
+• IP地址: <code>{ip_address}</code>
+• 原因: {reason_display}
+• 状态: 🚫 已封禁"""
+            else:
+                message = f"❌ 添加失败，IP可能已在黑名单中: {ip_address}"
+
+        except Exception as e:
+            message = f"❌ 添加失败: {str(e)}"
+
+        # 清理会话数据
+        if user_id in self._user_data:
+            del self._user_data[user_id]
+
+        keyboard = [
+            [InlineKeyboardButton("📋 查看黑名单", callback_data="blacklist_list")],
+            [InlineKeyboardButton("➕ 继续添加", callback_data="blacklist_add")],
+            [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # 判断是消息还是回调查询
+        if hasattr(update_or_query, 'message') and update_or_query.message:
+            await update_or_query.message.reply_text(message, parse_mode='HTML', reply_markup=reply_markup)
+        else:
+            await update_or_query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
 
     async def _handle_status_callback(self, query):
         """处理状态回调"""
@@ -549,13 +791,46 @@ class TelegramBot:
 🤖 **系统状态**: 正常运行
 """
 
-            keyboard = [[InlineKeyboardButton("🔄 刷新状态", callback_data="status")]]
+            keyboard = [
+                [InlineKeyboardButton("🔄 刷新状态", callback_data="status")],
+                [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")]
+            ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             await query.edit_message_text(message, parse_mode='Markdown', reply_markup=reply_markup)
 
         except Exception as e:
             await query.edit_message_text(f"❌ 获取状态失败: {str(e)}")
+
+    async def _handle_main_menu_callback(self, query):
+        """处理返回主菜单回调"""
+        try:
+            message = """🌐 <b>欢迎使用管理机器人！</b>
+
+📋 <b>主要功能</b>
+• 📊 系统监控 - 实时查看系统状态和统计
+• 👤 UA管理 - 用户代理配置管理
+• 🚫 IP管理 - 黑名单和违规记录管理
+• 📝 日志查询 - 系统日志查看和分析
+
+🔧 使用 /help 查看所有可用命令"""
+
+            keyboard = [
+                [
+                    InlineKeyboardButton("📊 系统状态", callback_data="status"),
+                    InlineKeyboardButton("👤 UA管理", callback_data="ua_list")
+                ],
+                [
+                    InlineKeyboardButton("🚫 IP管理", callback_data="blacklist_list"),
+                    InlineKeyboardButton("📝 系统日志", callback_data="logs_recent")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        except Exception as e:
+            await query.edit_message_text(f"❌ 返回主菜单失败: {str(e)}")
 
     async def _handle_ua_callback(self, query, callback_data):
         """处理UA相关回调"""
@@ -601,8 +876,10 @@ class TelegramBot:
                 keyboard = [
                     [
                         InlineKeyboardButton("➕ 添加配置", callback_data="ua_add"),
-                        InlineKeyboardButton("🔄 刷新列表", callback_data="ua_list")
-                    ]
+                        InlineKeyboardButton("�️ 删除配置", callback_data="ua_delete_list_0")
+                    ],
+                    [InlineKeyboardButton("🔄 刷新列表", callback_data="ua_list")],
+                    [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -616,19 +893,336 @@ class TelegramBot:
             except Exception as e:
                 await query.edit_message_text(f"❌ 获取UA配置失败: {str(e)}")
 
+        # 处理删除UA列表（带分页）
+        elif callback_data.startswith("ua_delete_list_"):
+            try:
+                page = int(callback_data.replace("ua_delete_list_", ""))
+                ua_configs = await self.config_service.get_ua_configs()
+
+                if not ua_configs:
+                    message = "📝 暂无UA配置可删除"
+                    keyboard = [
+                        [InlineKeyboardButton("🔙 返回UA管理", callback_data="ua_list")],
+                        [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+                    return
+
+                # 分页参数
+                page_size = 8
+                total_pages = (len(ua_configs) + page_size - 1) // page_size
+                start_idx = page * page_size
+                end_idx = min(start_idx + page_size, len(ua_configs))
+                current_configs = ua_configs[start_idx:end_idx]
+
+                message = f"""🗑️ <b>选择要删除的UA配置</b>
+
+<i>第 {page + 1}/{total_pages} 页，共 {len(ua_configs)} 个配置</i>
+
+点击下方按钮选择要删除的配置："""
+
+                # 生成配置按钮（每行2个）
+                keyboard = []
+                row = []
+                for i, config in enumerate(current_configs):
+                    btn_text = f"{config.name[:15]}" if len(config.name) <= 15 else f"{config.name[:12]}..."
+                    row.append(InlineKeyboardButton(btn_text, callback_data=f"ua_delete_select_{config.name}"))
+                    if len(row) == 2:
+                        keyboard.append(row)
+                        row = []
+                if row:  # 添加剩余的按钮
+                    keyboard.append(row)
+
+                # 添加翻页按钮（始终显示，不可用时显示占位）
+                nav_row = []
+                if page > 0:
+                    nav_row.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"ua_delete_list_{page - 1}"))
+                else:
+                    nav_row.append(InlineKeyboardButton(" ", callback_data="noop"))  # 占位按钮
+                if page < total_pages - 1:
+                    nav_row.append(InlineKeyboardButton("➡️ 下一页", callback_data=f"ua_delete_list_{page + 1}"))
+                else:
+                    nav_row.append(InlineKeyboardButton(" ", callback_data="noop"))  # 占位按钮
+                keyboard.append(nav_row)
+
+                # 添加返回按钮（同一行）
+                keyboard.append([
+                    InlineKeyboardButton("🔙 返回UA管理", callback_data="ua_list"),
+                    InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")
+                ])
+
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+            except Exception as e:
+                await query.edit_message_text(f"❌ 获取UA配置失败: {str(e)}")
+
+        # 处理选择要删除的UA
+        elif callback_data.startswith("ua_delete_select_"):
+            ua_name = callback_data.replace("ua_delete_select_", "")
+
+            # 获取配置详情
+            config = await self.config_service.get_ua_config_by_name(ua_name)
+            if not config:
+                await query.answer("⚠️ 配置不存在", show_alert=True)
+                return
+
+            import html
+            name_escaped = html.escape(config.name)
+            ua_escaped = html.escape(config.user_agent[:80])
+            limit_display = "∞" if config.hourly_limit == -1 else str(config.hourly_limit)
+
+            message = f"""⚠️ <b>确认删除UA配置？</b>
+
+📋 <b>配置详情</b>
+• 名称: <code>{name_escaped}</code>
+• UA: <code>{ua_escaped}...</code>
+• 限制: {limit_display}/小时
+• 状态: {'✅ 已启用' if config.enabled else '❌ 已禁用'}
+
+<b>⚠️ 此操作不可恢复！</b>"""
+
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ 确认删除", callback_data=f"ua_delete_confirm_{ua_name}"),
+                    InlineKeyboardButton("❌ 取消", callback_data="ua_delete_list_0")
+                ],
+                [InlineKeyboardButton("🔙 返回UA管理", callback_data="ua_list")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        # 处理确认删除UA
+        elif callback_data.startswith("ua_delete_confirm_"):
+            ua_name = callback_data.replace("ua_delete_confirm_", "")
+
+            try:
+                success = await self.config_service.delete_ua_config(ua_name)
+
+                if success:
+                    message = f"✅ <b>UA配置已删除</b>\n\n已成功删除配置: <code>{ua_name}</code>"
+                else:
+                    message = f"❌ 删除失败，配置不存在或不能删除: {ua_name}"
+
+            except Exception as e:
+                message = f"❌ 删除失败: {str(e)}"
+
+            keyboard = [
+                [InlineKeyboardButton("📋 查看UA列表", callback_data="ua_list")],
+                [InlineKeyboardButton("🗑️ 继续删除", callback_data="ua_delete_list_0")],
+                [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
         elif callback_data == "ua_add":
+            # 开始添加UA配置的会话流程
+            user_id = query.from_user.id
+            self._user_data[user_id] = {"action": "add_ua", "step": "name"}
+
             message = """➕ <b>添加UA配置</b>
 
-请通过Web界面添加新的UA配置：
-🌐 http://localhost:7759
+请输入UA配置名称（例如：emby-client、jellyfin-app）：
 
-<b>配置项目：</b>
-• UA名称
-• User-Agent字符串
-• 小时限制
-• 路径特定限制
-"""
-            keyboard = [[InlineKeyboardButton("🔙 返回UA管理", callback_data="ua_list")]]
+<i>💡 名称用于标识不同的客户端类型</i>"""
+
+            keyboard = [
+                [InlineKeyboardButton("❌ 取消", callback_data="ua_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        elif callback_data == "ua_cancel":
+            # 取消添加UA配置
+            user_id = query.from_user.id
+            if user_id in self._user_data:
+                del self._user_data[user_id]
+
+            message = "❌ 已取消添加UA配置"
+            keyboard = [
+                [InlineKeyboardButton("🔙 返回UA管理", callback_data="ua_list")],
+                [InlineKeyboardButton("� 返回主菜单", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        elif callback_data.startswith("ua_limit_"):
+            # 选择小时限制
+            user_id = query.from_user.id
+            if user_id not in self._user_data or self._user_data[user_id].get("action") != "add_ua":
+                await query.answer("⚠️ 会话已过期，请重新开始", show_alert=True)
+                return
+
+            limit_value = callback_data.replace("ua_limit_", "")
+            hourly_limit = -1 if limit_value == "unlimited" else int(limit_value)
+
+            # 保存小时限制，进入下一步（选择是否添加路径限制）
+            self._user_data[user_id]["hourly_limit"] = hourly_limit
+            self._user_data[user_id]["step"] = "path_limit_choice"
+            self._user_data[user_id]["path_limits"] = {}  # 初始化路径限制
+
+            ua_name = self._user_data[user_id].get("name", "")
+            ua_string = self._user_data[user_id].get("user_agent", "")
+            limit_display = "无限制" if hourly_limit == -1 else f"{hourly_limit}/小时"
+
+            message = f"""✅ 小时限制已设置: {limit_display}
+
+📋 <b>当前配置</b>
+• 名称: <code>{ua_name}</code>
+• UA: <code>{ua_string[:50]}...</code>
+• 小时限制: {limit_display}
+• 路径限制: 暂无
+
+是否需要添加特定路径的请求限制？"""
+
+            keyboard = [
+                [
+                    InlineKeyboardButton("➕ 添加路径限制", callback_data="ua_path_add"),
+                    InlineKeyboardButton("✅ 完成添加", callback_data="ua_finish")
+                ],
+                [InlineKeyboardButton("❌ 取消", callback_data="ua_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        elif callback_data == "ua_path_add":
+            # 添加路径限制
+            user_id = query.from_user.id
+            if user_id not in self._user_data or self._user_data[user_id].get("action") != "add_ua":
+                await query.answer("⚠️ 会话已过期，请重新开始", show_alert=True)
+                return
+
+            self._user_data[user_id]["step"] = "path_input"
+
+            message = """➕ <b>添加路径限制</b>
+
+请输入要限制的路径（例如：/api/danmaku、/emby/Videos）：
+
+<i>💡 路径限制用于对特定API路径设置不同的请求频率</i>"""
+
+            keyboard = [
+                [InlineKeyboardButton("⏭️ 跳过，完成添加", callback_data="ua_finish")],
+                [InlineKeyboardButton("❌ 取消", callback_data="ua_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        elif callback_data.startswith("ua_path_limit_"):
+            # 选择路径的小时限制
+            user_id = query.from_user.id
+            if user_id not in self._user_data or self._user_data[user_id].get("action") != "add_ua":
+                await query.answer("⚠️ 会话已过期，请重新开始", show_alert=True)
+                return
+
+            limit_value = callback_data.replace("ua_path_limit_", "")
+            path_limit = -1 if limit_value == "unlimited" else int(limit_value)
+
+            # 获取当前路径并保存限制
+            current_path = self._user_data[user_id].get("current_path", "")
+            if current_path:
+                self._user_data[user_id]["path_limits"][current_path] = {
+                    "maxRequestsPerHour": path_limit
+                }
+
+            # 显示当前配置，询问是否继续添加
+            ua_name = self._user_data[user_id].get("name", "")
+            ua_string = self._user_data[user_id].get("user_agent", "")
+            hourly_limit = self._user_data[user_id].get("hourly_limit", 100)
+            path_limits = self._user_data[user_id].get("path_limits", {})
+
+            limit_display = "无限制" if hourly_limit == -1 else f"{hourly_limit}/小时"
+            path_limit_display = "无限制" if path_limit == -1 else f"{path_limit}/小时"
+
+            message = f"""✅ 路径限制已添加: <code>{current_path}</code> → {path_limit_display}
+
+📋 <b>当前配置</b>
+• 名称: <code>{ua_name}</code>
+• UA: <code>{ua_string[:40]}...</code>
+• 小时限制: {limit_display}
+• 路径限制: {len(path_limits)} 个"""
+
+            # 显示已添加的路径限制
+            if path_limits:
+                message += "\n\n📂 <b>已添加的路径限制</b>"
+                for path, limit_data in path_limits.items():
+                    pl = limit_data.get("maxRequestsPerHour", 50)
+                    pl_display = "∞" if pl == -1 else str(pl)
+                    message += f"\n• <code>{path}</code>: {pl_display}/小时"
+
+            message += "\n\n是否继续添加路径限制？"
+
+            keyboard = [
+                [
+                    InlineKeyboardButton("➕ 继续添加", callback_data="ua_path_add"),
+                    InlineKeyboardButton("✅ 完成添加", callback_data="ua_finish")
+                ],
+                [InlineKeyboardButton("❌ 取消", callback_data="ua_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        elif callback_data == "ua_finish":
+            # 完成UA配置添加
+            user_id = query.from_user.id
+            if user_id not in self._user_data or self._user_data[user_id].get("action") != "add_ua":
+                await query.answer("⚠️ 会话已过期，请重新开始", show_alert=True)
+                return
+
+            ua_name = self._user_data[user_id].get("name", "")
+            ua_string = self._user_data[user_id].get("user_agent", "")
+            hourly_limit = self._user_data[user_id].get("hourly_limit", 100)
+            path_limits = self._user_data[user_id].get("path_limits", {})
+
+            # 创建UA配置
+            try:
+                config = await self.config_service.create_ua_config(
+                    name=ua_name,
+                    user_agent=ua_string,
+                    hourly_limit=hourly_limit,
+                    enabled=True,
+                    path_specific_limits=path_limits
+                )
+
+                if config:
+                    limit_display = "无限制" if hourly_limit == -1 else f"{hourly_limit}/小时"
+                    message = f"""✅ <b>UA配置添加成功！</b>
+
+📋 <b>配置详情</b>
+• 名称: <code>{ua_name}</code>
+• User-Agent: <code>{ua_string[:50]}...</code>
+• 小时限制: {limit_display}
+• 路径限制: {len(path_limits)} 个
+• 状态: ✅ 已启用"""
+
+                    if path_limits:
+                        message += "\n\n📂 <b>路径限制</b>"
+                        for path, limit_data in path_limits.items():
+                            pl = limit_data.get("maxRequestsPerHour", 50)
+                            pl_display = "∞" if pl == -1 else str(pl)
+                            message += f"\n• <code>{path}</code>: {pl_display}/小时"
+                else:
+                    message = f"❌ 添加失败，可能已存在同名配置: {ua_name}"
+
+            except Exception as e:
+                message = f"❌ 添加失败: {str(e)}"
+
+            # 清理会话数据
+            if user_id in self._user_data:
+                del self._user_data[user_id]
+
+            keyboard = [
+                [InlineKeyboardButton("📋 查看UA列表", callback_data="ua_list")],
+                [InlineKeyboardButton("➕ 继续添加", callback_data="ua_add")],
+                [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")]
+            ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
@@ -661,8 +1255,10 @@ class TelegramBot:
                 keyboard = [
                     [
                         InlineKeyboardButton("➕ 添加IP", callback_data="blacklist_add"),
-                        InlineKeyboardButton("🔄 刷新列表", callback_data="blacklist_list")
-                    ]
+                        InlineKeyboardButton("�️ 删除IP", callback_data="ip_delete_list_0")
+                    ],
+                    [InlineKeyboardButton("🔄 刷新列表", callback_data="blacklist_list")],
+                    [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -675,6 +1271,163 @@ class TelegramBot:
 
             except Exception as e:
                 await query.edit_message_text(f"❌ 获取黑名单失败: {str(e)}")
+
+        # 处理删除IP列表（带分页）
+        elif callback_data.startswith("ip_delete_list_"):
+            try:
+                page = int(callback_data.replace("ip_delete_list_", ""))
+                ip_blacklist = await self.config_service.get_ip_blacklist()
+
+                if not ip_blacklist:
+                    message = "📝 暂无IP黑名单可删除"
+                    keyboard = [
+                        [InlineKeyboardButton("🔙 返回IP管理", callback_data="blacklist_list")],
+                        [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+                    return
+
+                # 分页参数
+                page_size = 8
+                total_pages = (len(ip_blacklist) + page_size - 1) // page_size
+                start_idx = page * page_size
+                end_idx = min(start_idx + page_size, len(ip_blacklist))
+                current_ips = ip_blacklist[start_idx:end_idx]
+
+                message = f"""🗑️ <b>选择要删除的IP</b>
+
+<i>第 {page + 1}/{total_pages} 页，共 {len(ip_blacklist)} 个IP</i>
+
+点击下方按钮选择要删除的IP："""
+
+                # 生成IP按钮（每行2个）
+                keyboard = []
+                row = []
+                for ip_record in current_ips:
+                    btn_text = ip_record.ip_address
+                    row.append(InlineKeyboardButton(btn_text, callback_data=f"ip_delete_select_{ip_record.ip_address}"))
+                    if len(row) == 2:
+                        keyboard.append(row)
+                        row = []
+                if row:  # 添加剩余的按钮
+                    keyboard.append(row)
+
+                # 添加翻页按钮（始终显示，不可用时显示占位）
+                nav_row = []
+                if page > 0:
+                    nav_row.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"ip_delete_list_{page - 1}"))
+                else:
+                    nav_row.append(InlineKeyboardButton(" ", callback_data="noop"))  # 占位按钮
+                if page < total_pages - 1:
+                    nav_row.append(InlineKeyboardButton("➡️ 下一页", callback_data=f"ip_delete_list_{page + 1}"))
+                else:
+                    nav_row.append(InlineKeyboardButton(" ", callback_data="noop"))  # 占位按钮
+                keyboard.append(nav_row)
+
+                # 添加返回按钮（同一行）
+                keyboard.append([
+                    InlineKeyboardButton("🔙 返回IP管理", callback_data="blacklist_list"),
+                    InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")
+                ])
+
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+            except Exception as e:
+                await query.edit_message_text(f"❌ 获取IP黑名单失败: {str(e)}")
+
+        # 处理选择要删除的IP
+        elif callback_data.startswith("ip_delete_select_"):
+            ip_address = callback_data.replace("ip_delete_select_", "")
+
+            import html
+            ip_escaped = html.escape(ip_address)
+
+            message = f"""⚠️ <b>确认删除IP？</b>
+
+📋 <b>IP详情</b>
+• IP地址: <code>{ip_escaped}</code>
+
+<b>⚠️ 删除后该IP将不再被封禁！</b>"""
+
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ 确认删除", callback_data=f"ip_delete_confirm_{ip_address}"),
+                    InlineKeyboardButton("❌ 取消", callback_data="ip_delete_list_0")
+                ],
+                [InlineKeyboardButton("🔙 返回IP管理", callback_data="blacklist_list")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        # 处理确认删除IP
+        elif callback_data.startswith("ip_delete_confirm_"):
+            ip_address = callback_data.replace("ip_delete_confirm_", "")
+
+            try:
+                success = await self.config_service.remove_ip_from_blacklist(ip_address)
+
+                if success:
+                    message = f"✅ <b>IP已从黑名单移除</b>\n\n已成功移除IP: <code>{ip_address}</code>"
+                else:
+                    message = f"❌ 删除失败，IP不存在: {ip_address}"
+
+            except Exception as e:
+                message = f"❌ 删除失败: {str(e)}"
+
+            keyboard = [
+                [InlineKeyboardButton("📋 查看黑名单", callback_data="blacklist_list")],
+                [InlineKeyboardButton("🗑️ 继续删除", callback_data="ip_delete_list_0")],
+                [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        elif callback_data == "blacklist_add":
+            # 开始添加IP黑名单的会话流程
+            user_id = query.from_user.id
+            self._user_data[user_id] = {"action": "add_ip", "step": "ip_address"}
+
+            message = """➕ <b>添加IP到黑名单</b>
+
+请输入要封禁的IP地址：
+
+<i>💡 示例: 192.168.1.100</i>"""
+
+            keyboard = [
+                [InlineKeyboardButton("❌ 取消", callback_data="blacklist_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        elif callback_data == "blacklist_cancel":
+            # 取消添加IP
+            user_id = query.from_user.id
+            if user_id in self._user_data:
+                del self._user_data[user_id]
+
+            message = "❌ 已取消添加IP到黑名单"
+            keyboard = [
+                [InlineKeyboardButton("🔙 返回IP管理", callback_data="blacklist_list")],
+                [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+        elif callback_data == "ip_reason_skip":
+            # 跳过原因，直接创建黑名单记录
+            user_id = query.from_user.id
+            if user_id not in self._user_data or self._user_data[user_id].get("action") != "add_ip":
+                await query.answer("⚠️ 会话已过期，请重新开始", show_alert=True)
+                return
+
+            ip_address = self._user_data[user_id].get("ip_address", "")
+            await self._create_ip_blacklist(query, user_id, ip_address, None)
 
     async def _handle_logs_callback(self, query, callback_data):
         """处理日志相关回调"""
@@ -702,7 +1455,8 @@ class TelegramBot:
                     [
                         InlineKeyboardButton("🔄 刷新日志", callback_data="logs_recent"),
                         InlineKeyboardButton("⚠️ 错误日志", callback_data="logs_error")
-                    ]
+                    ],
+                    [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -715,3 +1469,41 @@ class TelegramBot:
 
             except Exception as e:
                 await query.edit_message_text(f"❌ 获取日志失败: {str(e)}")
+
+        elif callback_data == "logs_error":
+            try:
+                logs = await self.stats_service.get_logs_by_level(level="ERROR", limit=10)
+
+                message = "⚠️ <b>错误日志</b>\n\n"
+
+                if not logs:
+                    message += "📝 暂无错误日志记录"
+                else:
+                    import html
+                    for log in logs:
+                        log_msg = html.escape(log.message[:100])
+                        message += f"❌ <b>ERROR</b> - {log.created_at.strftime('%H:%M:%S')}\n"
+                        message += f"   {log_msg}...\n\n"
+
+                # 添加刷新时间
+                from datetime import datetime
+                message += f"\n<i>刷新时间: {datetime.now().strftime('%H:%M:%S')}</i>"
+
+                keyboard = [
+                    [
+                        InlineKeyboardButton("🔄 刷新错误日志", callback_data="logs_error"),
+                        InlineKeyboardButton("📝 全部日志", callback_data="logs_recent")
+                    ],
+                    [InlineKeyboardButton("🏠 返回主菜单", callback_data="main_menu")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                try:
+                    await query.edit_message_text(message, parse_mode='HTML', reply_markup=reply_markup)
+                except Exception as edit_error:
+                    # 如果消息内容相同，忽略错误
+                    if "message is not modified" not in str(edit_error).lower():
+                        raise
+
+            except Exception as e:
+                await query.edit_message_text(f"❌ 获取错误日志失败: {str(e)}")

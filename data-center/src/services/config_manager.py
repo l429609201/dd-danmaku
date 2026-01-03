@@ -1,7 +1,14 @@
 """
 系统配置管理器
+
+参考 misaka_danmu_server 的设计模式：
+- 永久缓存（无 TTL）
+- 线程锁防止并发问题
+- 双重检查锁定模式
+- 更新时手动失效缓存
 """
 import logging
+import threading
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 from src.database import get_db
@@ -9,32 +16,68 @@ from src.models.config import SystemConfig
 
 logger = logging.getLogger(__name__)
 
+# 配置缓存（模块级别，所有实例共享）
+# 永久缓存，只有在更新配置时才会失效
+_config_cache: Dict[str, Any] = {}
+_cache_lock = threading.Lock()  # 线程锁，防止并发问题
+
 
 class ConfigManager:
-    """系统配置管理器"""
+    """
+    系统配置管理器
+
+    特点：
+    - 永久缓存：配置很少变化，不需要 TTL 定期过期
+    - 手动失效：更新配置时调用 invalidate() 清除缓存
+    - 线程安全：使用锁防止并发问题
+    - 双重检查：获取锁后再次检查缓存，避免重复加载
+    """
 
     def __init__(self):
         pass
-    
-    def get_config(self, key: str, default: Any = None) -> Any:
-        """获取配置值"""
-        try:
-            db = next(get_db())
-            config = db.query(SystemConfig).filter(SystemConfig.key == key).first()
 
-            if config:
-                # 根据配置类型转换值
-                value = self._convert_value(config.value, config.config_type)
-                logger.debug(f"📖 获取配置 {key}: {value[:8] if isinstance(value, str) and len(value) > 8 else value}...")
-                return value
-            else:
-                logger.warning(f"⚠️ 配置不存在: {key}, 使用默认值: {default}")
+    def get_config(self, key: str, default: Any = None) -> Any:
+        """
+        获取配置值（带永久缓存）
+
+        缓存策略：
+        1. 缓存命中直接返回
+        2. 缓存未命中时加锁从数据库读取
+        3. 双重检查防止并发重复加载
+        """
+        global _config_cache
+
+        # 第一次检查：缓存命中直接返回（无锁，高性能）
+        if key in _config_cache:
+            return _config_cache[key]
+
+        # 缓存未命中，加锁从数据库读取
+        with _cache_lock:
+            # 第二次检查：防止在等待锁的过程中其他线程已经加载了配置
+            if key in _config_cache:
+                return _config_cache[key]
+
+            # 从数据库读取
+            try:
+                db = next(get_db())
+                config = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+
+                if config:
+                    # 根据配置类型转换值
+                    value = self._convert_value(config.value, config.config_type)
+                    logger.debug(f"📖 从数据库加载配置 {key}")
+
+                    # 更新缓存
+                    _config_cache[key] = value
+                    return value
+                else:
+                    logger.warning(f"⚠️ 配置不存在: {key}, 使用默认值: {default}")
+                    return default
+            except Exception as e:
+                logger.error(f"❌ 获取配置失败 {key}: {e}", exc_info=True)
                 return default
-        except Exception as e:
-            logger.error(f"❌ 获取配置失败 {key}: {e}", exc_info=True)
-            return default
-        finally:
-            db.close()
+            finally:
+                db.close()
     
     def set_config(self, key: str, value: Any, description: str = "", config_type: str = "string") -> bool:
         """设置配置值"""
@@ -60,6 +103,10 @@ class ConfigManager:
                 db.add(config)
 
             db.commit()
+
+            # 清除该配置的缓存（手动失效）
+            self.invalidate(key)
+
             logger.info(f"配置设置成功: {key}")
             return True
         except Exception as e:
@@ -77,6 +124,10 @@ class ConfigManager:
             if config:
                 db.delete(config)
                 db.commit()
+
+                # 清除该配置的缓存（手动失效）
+                self.invalidate(key)
+
                 logger.info(f"配置删除成功: {key}")
                 return True
             else:
@@ -87,6 +138,29 @@ class ConfigManager:
             return False
         finally:
             db.close()
+
+    def invalidate(self, key: str):
+        """
+        使指定配置的缓存失效
+
+        在更新或删除配置后调用，确保下次获取时从数据库重新加载
+        """
+        global _config_cache
+        with _cache_lock:
+            if key in _config_cache:
+                del _config_cache[key]
+                logger.debug(f"🗑️ 配置缓存已失效: {key}")
+
+    def clear_cache(self):
+        """
+        清空所有配置缓存
+
+        在需要强制刷新所有配置时调用
+        """
+        global _config_cache
+        with _cache_lock:
+            _config_cache.clear()
+            logger.info("🗑️ 所有配置缓存已清空")
     
     def get_all_configs(self, category: str = None) -> Dict[str, Any]:
         """获取所有配置"""

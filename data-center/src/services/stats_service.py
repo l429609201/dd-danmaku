@@ -24,39 +24,42 @@ class StatsService:
         """获取系统概览统计"""
         try:
             db = self.db()
-            
-            # 请求统计
-            total_requests = db.query(func.sum(RequestStats.total_requests)).scalar() or 0
-            successful_requests = db.query(func.sum(RequestStats.successful_requests)).scalar() or 0
-            blocked_requests = db.query(func.sum(RequestStats.blocked_requests)).scalar() or 0
-            error_requests = db.query(func.sum(RequestStats.error_requests)).scalar() or 0
-            
+
+            # 请求统计（转换为 int，避免 Decimal 类型导致 JSON 序列化失败）
+            total_requests = int(db.query(func.sum(RequestStats.total_requests)).scalar() or 0)
+            successful_requests = int(db.query(func.sum(RequestStats.successful_requests)).scalar() or 0)
+            blocked_requests = int(db.query(func.sum(RequestStats.blocked_requests)).scalar() or 0)
+            error_requests = int(db.query(func.sum(RequestStats.error_requests)).scalar() or 0)
+
             # 配置统计
-            ua_configs = db.query(func.count(UAConfig.id)).scalar() or 0
-            enabled_ua_configs = db.query(func.count(UAConfig.id)).filter(UAConfig.enabled == True).scalar() or 0
-            blacklist_count = db.query(func.count(IPBlacklist.id)).filter(IPBlacklist.enabled == True).scalar() or 0
-            
+            ua_configs = int(db.query(func.count(UAConfig.id)).scalar() or 0)
+            enabled_ua_configs = int(db.query(func.count(UAConfig.id)).filter(UAConfig.enabled == True).scalar() or 0)
+            blacklist_count = int(db.query(func.count(IPBlacklist.id)).filter(IPBlacklist.enabled == True).scalar() or 0)
+
             # 违规统计
-            violation_ips = db.query(func.count(func.distinct(IPViolationStats.ip_address))).scalar() or 0
-            temp_banned = db.query(func.count(IPViolationStats.id)).filter(
+            violation_ips = int(db.query(func.count(func.distinct(IPViolationStats.ip_address))).scalar() or 0)
+            temp_banned = int(db.query(func.count(IPViolationStats.id)).filter(
                 IPViolationStats.is_banned == "temp"
-            ).scalar() or 0
-            
+            ).scalar() or 0)
+
             db.close()
-            
+
+            # 计算成功率（转换为 float，避免 Decimal 类型）
+            success_rate = float((successful_requests / total_requests * 100) if total_requests > 0 else 0)
+
             return {
                 "total_requests": total_requests,
                 "successful_requests": successful_requests,
                 "blocked_requests": blocked_requests,
                 "error_requests": error_requests,
-                "success_rate": (successful_requests / total_requests * 100) if total_requests > 0 else 0,
+                "success_rate": round(success_rate, 2),
                 "ua_configs": ua_configs,
                 "enabled_ua_configs": enabled_ua_configs,
                 "blacklist_count": blacklist_count,
                 "violation_ips": violation_ips,
                 "temp_banned": temp_banned
             }
-            
+
         except Exception as e:
             logger.error(f"获取系统概览失败: {e}")
             return {}
@@ -318,43 +321,43 @@ class StatsService:
         """获取性能指标"""
         try:
             db = self.db()
-            
-            # 最近24小时的平均响应时间
-            avg_response_time = db.query(func.avg(RequestStats.avg_response_time)).filter(
+
+            # 最近24小时的平均响应时间（转换为 float，避免 Decimal 类型）
+            avg_response_time = float(db.query(func.avg(RequestStats.avg_response_time)).filter(
                 RequestStats.date_hour >= datetime.now() - timedelta(hours=24)
-            ).scalar() or 0
-            
-            # 最近1小时的请求量
-            recent_requests = db.query(func.sum(RequestStats.total_requests)).filter(
+            ).scalar() or 0)
+
+            # 最近1小时的请求量（转换为 int，避免 Decimal 类型）
+            recent_requests = int(db.query(func.sum(RequestStats.total_requests)).filter(
                 RequestStats.date_hour >= datetime.now() - timedelta(hours=1)
-            ).scalar() or 0
-            
-            # 错误率
-            recent_errors = db.query(func.sum(RequestStats.error_requests)).filter(
+            ).scalar() or 0)
+
+            # 错误率（转换为 int，避免 Decimal 类型）
+            recent_errors = int(db.query(func.sum(RequestStats.error_requests)).filter(
                 RequestStats.date_hour >= datetime.now() - timedelta(hours=24)
-            ).scalar() or 0
-            
-            recent_total = db.query(func.sum(RequestStats.total_requests)).filter(
+            ).scalar() or 0)
+
+            recent_total = int(db.query(func.sum(RequestStats.total_requests)).filter(
                 RequestStats.date_hour >= datetime.now() - timedelta(hours=24)
-            ).scalar() or 0
-            
-            error_rate = (recent_errors / recent_total * 100) if recent_total > 0 else 0
-            
+            ).scalar() or 0)
+
+            error_rate = float((recent_errors / recent_total * 100) if recent_total > 0 else 0)
+
             db.close()
-            
+
             return {
                 "avg_response_time": round(avg_response_time, 2),
                 "recent_requests_per_hour": recent_requests,
                 "error_rate_24h": round(error_rate, 2),
                 "timestamp": datetime.now().isoformat()
             }
-            
+
         except Exception as e:
             logger.error(f"获取性能指标失败: {e}")
             return {}
 
     async def get_summary(self) -> Dict[str, Any]:
-        """获取统计数据摘要"""
+        """获取统计数据摘要（优化版：减少阻塞操作，提升响应速度）"""
         try:
             db = self.db()
 
@@ -382,47 +385,27 @@ class StatsService:
             else:
                 success_rate = 0
 
-            # 如果数据库中没有数据，尝试从Worker实时获取
-            if total_requests == 0:
-                worker_stats = await self._get_real_time_worker_stats()
-                if worker_stats:
-                    today_requests = worker_stats.get('today_requests', 0)
-                    total_requests = worker_stats.get('total_requests', 0)
-                    success_rate = worker_stats.get('success_rate', 0)
-
-            logger.info(f"📊 统计摘要: 今日请求={today_requests}, 总请求={total_requests}, 成功率={success_rate}%")
-
-            # Worker状态 (从数据库配置中获取)
+            # Worker状态 (优先从 WorkerConfig 表获取，因为 Worker 会主动推送数据)
+            # 注意：移除了串行的 HTTP 健康检查，改为只依赖 last_sync_at 判断在线状态
             try:
-                from src.services.web_config_service import WebConfigService
-                web_config_service = WebConfigService()
-                system_settings = await web_config_service.get_system_settings()
+                from src.models.config import WorkerConfig
 
-                if system_settings and system_settings.worker_endpoints:
-                    endpoints = [ep.strip() for ep in system_settings.worker_endpoints.split(',') if ep.strip()]
-                    total_workers = len(endpoints)
-                    # 尝试检查Worker在线状态
-                    online_workers = 0
-                    for endpoint in endpoints:
-                        try:
-                            # 简单的健康检查
-                            import aiohttp
-                            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
-                                async with session.get(f"{endpoint}/health") as resp:
-                                    if resp.status == 200:
-                                        online_workers += 1
-                        except:
-                            pass
-                else:
-                    online_workers = 0
-                    total_workers = 0
-            except Exception:
+                # 查询所有 Worker 配置
+                all_workers = db.query(WorkerConfig).all()
+                total_workers = len(all_workers)
+
+                # 判断在线状态：最近 5 分钟内有同步的 Worker 视为在线
+                online_threshold = datetime.now() - timedelta(minutes=5)
+                online_workers = sum(1 for w in all_workers if w.last_sync_at and w.last_sync_at > online_threshold)
+
+            except Exception as e:
+                logger.warning(f"获取Worker状态失败: {e}")
                 online_workers = 0
                 total_workers = 0
 
             # 平均响应时间
             avg_response_time = db.query(func.avg(RequestStats.avg_response_time)).scalar() or 0
-            avg_response_time = round(avg_response_time, 2)
+            avg_response_time = round(float(avg_response_time), 2)
 
             # 被阻止的IP数量
             blocked_ips = db.query(func.count(IPBlacklist.id)).scalar() or 0
@@ -448,7 +431,12 @@ class StatsService:
                 RequestStats.date_hour >= today_start
             ).scalar() or 0
 
-            # 系统运行时间 (简单计算)
+            db.close()
+
+            # 系统运行时间 (简单计算) - 移到数据库操作之后
+            uptime = "未知"
+            memory_usage = 0
+            cpu_usage = 0
             try:
                 import psutil
                 uptime_seconds = psutil.boot_time()
@@ -463,28 +451,21 @@ class StatsService:
                     days = uptime_minutes // 1440
                     hours = (uptime_minutes % 1440) // 60
                     uptime = f"{days}天{hours}小时"
-            except ImportError:
-                uptime = "未知"
 
-            # 获取系统资源使用情况
-            memory_usage = 0
-            cpu_usage = 0
-            try:
-                import psutil
+                # 获取系统资源使用情况（非阻塞）
                 memory_usage = round(psutil.virtual_memory().percent, 1)
-                cpu_usage = round(psutil.cpu_percent(interval=1), 1)
+                # cpu_percent(interval=0) 不阻塞，返回上次调用以来的 CPU 使用率
+                cpu_usage = round(psutil.cpu_percent(interval=0), 1)
             except ImportError:
                 pass
 
-            # 如果从Worker获取到了实时数据，优先使用Worker数据
-            worker_stats = await self._get_real_time_worker_stats()
-            if worker_stats:
-                today_requests = max(today_requests, worker_stats.get('today_requests', today_requests))
-                total_requests = max(total_requests, worker_stats.get('total_requests', total_requests))
-                if worker_stats.get('success_rate', 0) > 0:
-                    success_rate = worker_stats.get('success_rate', success_rate)
-
-            db.close()
+            # 转换为 int/float，避免 Decimal 类型导致 JSON 序列化失败
+            today_requests = int(today_requests)
+            total_requests = int(total_requests)
+            blocked_ips = int(blocked_ips)
+            today_blocked = int(today_blocked)
+            violation_requests = int(violation_requests)
+            active_ips = int(active_ips)
 
             return {
                 "today_requests": today_requests,

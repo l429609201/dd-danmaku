@@ -2,7 +2,7 @@
 日志数据模型
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Text, JSON
+from sqlalchemy import Column, Integer, BigInteger, String, DateTime, Text, JSON
 from sqlalchemy.sql import func
 
 from src.database import Base
@@ -50,9 +50,9 @@ class SystemLog(Base):
 class TelegramLog(Base):
     """Telegram机器人日志模型"""
     __tablename__ = "telegram_logs"
-    
+
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, index=True, comment="用户ID")
+    user_id = Column(BigInteger, index=True, comment="用户ID")  # Telegram user_id 可能超过 Integer 范围
     username = Column(String(100), comment="用户名")
     command = Column(String(200), comment="执行的命令")
     response = Column(Text, comment="机器人响应")
