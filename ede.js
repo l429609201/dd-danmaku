@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.1.1
+// @version      1.1.2
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -25,7 +25,7 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.1.1', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.1.2', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -218,9 +218,9 @@
         switch: { id: 'danmakuSwitch', defaultValue: true, name: '弹幕开关' },
         filterLevel: { id: 'danmakuFilterLevel', defaultValue: 0, name: '过滤强度', min: 0, max: 3, step: 1 },
         heightPercent: { id: 'danmakuHeightPercent', defaultValue: 100, name: '显示区域', min: 3, max: 100, step: 1 },
-        fontSizeRate: { id: 'danmakuFontSizeRate', defaultValue: 100, name: '弹幕大小', min: 10, max: 300, step: 10 },
-        fontOpacity: { id: 'danmakuFontOpacity', defaultValue: 100, name: '透明度', min: 10, max: 100, step: 10 },
-        speed: { id: 'danmakuBaseSpeed', defaultValue: 100, name: '速度', min: 10, max: 300, step: 10 },
+        fontSizeRate: { id: 'danmakuFontSizeRate', defaultValue: 150, name: '弹幕大小', min: 10, max: 300, step: 10 },
+        fontOpacity: { id: 'danmakuFontOpacity', defaultValue: 50, name: '透明度', min: 10, max: 100, step: 10 },
+        speed: { id: 'danmakuBaseSpeed', defaultValue: 200, name: '速度', min: 10, max: 300, step: 10 },
         timelineOffset: { id: 'danmakuTimelineOffset', defaultValue: 0, name: '轴偏秒' },
         fontWeight: { id: 'danmakuFontWeight', defaultValue: 400, name: '弹幕粗细', min: 100, max: 1000, step: 100 },
         fontStyle: { id: 'danmakuFontStyle', defaultValue: 0, name: '弹幕斜体', min: 0, max: 2, step: 1 },
@@ -510,7 +510,8 @@
         /* https://cdn.jsdelivr.net/npm/danmaku@2.0.8/dist/danmaku.min.js */
         /* eslint-disable */
         // prettier-ignore
-        !function(t,e){"object"==typeof exports&&"undefined"!=typeof module?module.exports=e():"function"==typeof define&&define.amd?define(e):(t="undefined"!=typeof globalThis?globalThis:t||self).Danmaku=e()}(this,(function(){"use strict";var t=function(){if("undefined"==typeof document)return"transform";for(var t=["oTransform","msTransform","mozTransform","webkitTransform","transform"],e=document.createElement("div").style,i=0;i<t.length;i++)if(t[i]in e)return t[i];return"transform"}();function e(t){var e=document.createElement("div");if(e.style.cssText="position:absolute;","function"==typeof t.render){var i=t.render();if(i instanceof HTMLElement)return e.appendChild(i),e}if(e.textContent=t.text,t.style)for(var n in t.style)e.style[n]=t.style[n];return e}var i={name:"dom",init:function(){var t=document.createElement("div");return t.style.cssText="overflow:hidden;white-space:nowrap;transform:translateZ(0);",t},clear:function(t){for(var e=t.lastChild;e;)t.removeChild(e),e=t.lastChild},resize:function(t,e,i){t.style.width=e+"px",t.style.height=i+"px"},framing:function(){},setup:function(t,i){var n=document.createDocumentFragment(),s=0,r=null;for(s=0;s<i.length;s++)(r=i[s]).node=r.node||e(r),n.appendChild(r.node);for(i.length&&t.appendChild(n),s=0;s<i.length;s++)(r=i[s]).width=r.width||r.node.offsetWidth,r.height=r.height||r.node.offsetHeight},render:function(e,i){i.node.style[t]="translate("+i.x+"px,"+i.y+"px)"},remove:function(t,e){t.removeChild(e.node),this.media||(e.node=null)}},n="undefined"!=typeof window&&window.devicePixelRatio||1,s=Object.create(null);function r(t,e){if("function"==typeof t.render){var i=t.render();if(i instanceof HTMLCanvasElement)return t.width=i.width,t.height=i.height,i}var r=document.createElement("canvas"),h=r.getContext("2d"),o=t.style||{};o.font=o.font||"10px sans-serif",o.textBaseline=o.textBaseline||"bottom";var a=1*o.lineWidth;for(var d in a=a>0&&a!==1/0?Math.ceil(a):1*!!o.strokeStyle,h.font=o.font,t.width=t.width||Math.max(1,Math.ceil(h.measureText(t.text).width)+2*a),t.height=t.height||Math.ceil(function(t,e){if(s[t])return s[t];var i=12,n=t.match(/(\d+(?:\.\d+)?)(px|%|em|rem)(?:\s*\/\s*(\d+(?:\.\d+)?)(px|%|em|rem)?)?/);if(n){var r=1*n[1]||10,h=n[2],o=1*n[3]||1.2,a=n[4];"%"===h&&(r*=e.container/100),"em"===h&&(r*=e.container),"rem"===h&&(r*=e.root),"px"===a&&(i=o),"%"===a&&(i=r*o/100),"em"===a&&(i=r*o),"rem"===a&&(i=e.root*o),void 0===a&&(i=r*o)}return s[t]=i,i}(o.font,e))+2*a,r.width=t.width*n,r.height=t.height*n,h.scale(n,n),o)h[d]=o[d];var u=0;switch(o.textBaseline){case"top":case"hanging":u=a;break;case"middle":u=t.height>>1;break;default:u=t.height-a}return o.strokeStyle&&h.strokeText(t.text,a,u),h.fillText(t.text,a,u),r}function h(t){return 1*window.getComputedStyle(t,null).getPropertyValue("font-size").match(/(.+)px/)[1]}var o={name:"canvas",init:function(t){var e=document.createElement("canvas");return e.context=e.getContext("2d"),e._fontSize={root:h(document.getElementsByTagName("html")[0]),container:h(t)},e},clear:function(t,e){t.context.clearRect(0,0,t.width,t.height);for(var i=0;i<e.length;i++)e[i].canvas=null},resize:function(t,e,i){t.width=e*n,t.height=i*n,t.style.width=e+"px",t.style.height=i+"px"},framing:function(t){t.context.clearRect(0,0,t.width,t.height)},setup:function(t,e){for(var i=0;i<e.length;i++){var n=e[i];n.canvas=r(n,t._fontSize)}},render:function(t,e){t.context.drawImage(e.canvas,e.x*n,e.y*n)},remove:function(t,e){e.canvas=null}},a=("undefined"!=typeof window&&(window.requestAnimationFrame||window.mozRequestAnimationFrame||window.webkitRequestAnimationFrame)||function(t){return setTimeout(t,50/3)}).bind(window),d=("undefined"!=typeof window&&(window.cancelAnimationFrame||window.mozCancelAnimationFrame||window.webkitCancelAnimationFrame)||clearTimeout).bind(window);function u(t,e,i){for(var n=0,s=0,r=t.length;s<r-1;)i>=t[n=s+r>>1][e]?s=n:r=n;return t[s]&&i<t[s][e]?s:r}function m(t){return/^(ltr|top|bottom)$/i.test(t)?t.toLowerCase():"rtl"}function c(){var t=9007199254740991;return[{range:0,time:-t,width:t,height:0},{range:t,time:t,width:0,height:0}]}function l(t){t.ltr=c(),t.rtl=c(),t.top=c(),t.bottom=c()}function f(){return void 0!==window.performance&&window.performance.now?window.performance.now():Date.now()}function p(t){var e=this,i=this.media?this.media.currentTime:f()/1e3,n=this.media?this.media.playbackRate:1;function s(t,s){if("top"===s.mode||"bottom"===s.mode)return i-t.time<e._.duration;var r=(e._.width+t.width)*(i-t.time)*n/e._.duration;if(t.width>r)return!0;var h=e._.duration+t.time-i,o=e._.width+s.width,a=e.media?s.time:s._utc,d=o*(i-a)*n/e._.duration,u=e._.width-d;return h>e._.duration*u/(e._.width+s.width)}for(var r=this._.space[t.mode],h=0,o=0,a=1;a<r.length;a++){var d=r[a],u=t.height;if("top"!==t.mode&&"bottom"!==t.mode||(u+=d.height),d.range-d.height-r[h].range>=u){o=a;break}s(d,t)&&(h=a)}var m=r[h].range,c={range:m+t.height,time:this.media?t.time:t._utc,width:t.width,height:t.height};return r.splice(h+1,o-h-1,c),"bottom"===t.mode?this._.height-t.height-m%this._.height:m%(this._.height-t.height)}function g(){if(!this._.visible||!this._.paused)return this;if(this._.paused=!1,this.media)for(var t=0;t<this._.runningList.length;t++){var e=this._.runningList[t];e._utc=f()/1e3-(this.media.currentTime-e.time)}var i=this,n=function(t,e,i,n){return function(s){t(this._.stage);var r=(s||f())/1e3,h=this.media?this.media.currentTime:r,o=this.media?this.media.playbackRate:1,a=null,d=0,u=0;for(u=this._.runningList.length-1;u>=0;u--)a=this._.runningList[u],h-(d=this.media?a.time:a._utc)>this._.duration&&(n(this._.stage,a),this._.runningList.splice(u,1));for(var m=[];this._.position<this.comments.length&&(a=this.comments[this._.position],!((d=this.media?a.time:a._utc)>=h));)h-d>this._.duration||(this.media&&(a._utc=r-(this.media.currentTime-a.time)),m.push(a)),++this._.position;for(e(this._.stage,m),u=0;u<m.length;u++)(a=m[u]).y=p.call(this,a),this._.runningList.push(a);for(u=0;u<this._.runningList.length;u++){a=this._.runningList[u];var c=(this._.width+a.width)*(r-a._utc)*o/this._.duration;"ltr"===a.mode&&(a.x=c-a.width),"rtl"===a.mode&&(a.x=this._.width-c),"top"!==a.mode&&"bottom"!==a.mode||(a.x=this._.width-a.width>>1),i(this._.stage,a)}}}(this._.engine.framing.bind(this),this._.engine.setup.bind(this),this._.engine.render.bind(this),this._.engine.remove.bind(this));return this._.requestID=a((function t(e){n.call(i,e),i._.requestID=a(t)})),this}function _(){return!this._.visible||this._.paused||(this._.paused=!0,d(this._.requestID),this._.requestID=0),this}function v(){if(!this.media)return this;this.clear(),l(this._.space);var t=u(this.comments,"time",this.media.currentTime);return this._.position=Math.max(0,t-1),this}function w(t){t.play=g.bind(this),t.pause=_.bind(this),t.seeking=v.bind(this),this.media.addEventListener("play",t.play),this.media.addEventListener("pause",t.pause),this.media.addEventListener("playing",t.play),this.media.addEventListener("waiting",t.pause),this.media.addEventListener("seeking",t.seeking)}function y(t){this.media.removeEventListener("play",t.play),this.media.removeEventListener("pause",t.pause),this.media.removeEventListener("playing",t.play),this.media.removeEventListener("waiting",t.pause),this.media.removeEventListener("seeking",t.seeking),t.play=null,t.pause=null,t.seeking=null}function x(t){this._={},this.container=t.container||document.createElement("div"),this.media=t.media,this._.visible=!0,this.engine=(t.engine||"DOM").toLowerCase(),this._.engine="canvas"===this.engine?o:i,this._.requestID=0,this._.speed=Math.max(0,t.speed)||144,this._.duration=4,this.comments=t.comments||[],this.comments.sort((function(t,e){return t.time-e.time}));for(var e=0;e<this.comments.length;e++)this.comments[e].mode=m(this.comments[e].mode);return this._.runningList=[],this._.position=0,this._.paused=!0,this.media&&(this._.listener={},w.call(this,this._.listener)),this._.stage=this._.engine.init(this.container),this._.stage.style.cssText+="position:relative;pointer-events:none;",this.resize(),this.container.appendChild(this._.stage),this._.space={},l(this._.space),this.media&&this.media.paused||(v.call(this),g.call(this)),this}function b(){if(!this.container)return this;for(var t in _.call(this),this.clear(),this.container.removeChild(this._.stage),this.media&&y.call(this,this._.listener),this)Object.prototype.hasOwnProperty.call(this,t)&&(this[t]=null);return this}var L=["mode","time","text","render","style"];function T(t){if(!t||"[object Object]"!==Object.prototype.toString.call(t))return this;for(var e={},i=0;i<L.length;i++)void 0!==t[L[i]]&&(e[L[i]]=t[L[i]]);if(e.text=(e.text||"").toString(),e.mode=m(e.mode),e._utc=f()/1e3,this.media){var n=0;void 0===e.time?(e.time=this.media.currentTime,n=this._.position):(n=u(this.comments,"time",e.time))<this._.position&&(this._.position+=1),this.comments.splice(n,0,e)}else this.comments.push(e);return this}function E(){return this._.visible?this:(this._.visible=!0,this.media&&this.media.paused||(v.call(this),g.call(this)),this)}function k(){return this._.visible?(_.call(this),this.clear(),this._.visible=!1,this):this}function C(){return this._.engine.clear(this._.stage,this._.runningList),this._.runningList=[],this}function z(){return this._.width=this.container.offsetWidth,this._.height=this.container.offsetHeight,this._.engine.resize(this._.stage,this._.width,this._.height),this._.duration=this._.width/this._.speed,this}var D={get:function(){return this._.speed},set:function(t){return"number"!=typeof t||isNaN(t)||!isFinite(t)||t<=0?this._.speed:(this._.speed=t,this._.width&&(this._.duration=this._.width/t),t)}};function M(t){t&&x.call(this,t)}return M.prototype.destroy=function(){return b.call(this)},M.prototype.emit=function(t){return T.call(this,t)},M.prototype.show=function(){return E.call(this)},M.prototype.hide=function(){return k.call(this)},M.prototype.clear=function(){return C.call(this)},M.prototype.resize=function(){return z.call(this)},Object.defineProperty(M.prototype,"speed",D),M}));
+        // 注意: 原版使用 this 作为全局对象，但在严格模式下 this 为 undefined，改用 window 确保兼容性
+        !function(t,e){"object"==typeof exports&&"undefined"!=typeof module?module.exports=e():"function"==typeof define&&define.amd?define(e):(t="undefined"!=typeof globalThis?globalThis:t||self).Danmaku=e()}(window,(function(){"use strict";var t=function(){if("undefined"==typeof document)return"transform";for(var t=["oTransform","msTransform","mozTransform","webkitTransform","transform"],e=document.createElement("div").style,i=0;i<t.length;i++)if(t[i]in e)return t[i];return"transform"}();function e(t){var e=document.createElement("div");if(e.style.cssText="position:absolute;","function"==typeof t.render){var i=t.render();if(i instanceof HTMLElement)return e.appendChild(i),e}if(e.textContent=t.text,t.style)for(var n in t.style)e.style[n]=t.style[n];return e}var i={name:"dom",init:function(){var t=document.createElement("div");return t.style.cssText="overflow:hidden;white-space:nowrap;transform:translateZ(0);",t},clear:function(t){for(var e=t.lastChild;e;)t.removeChild(e),e=t.lastChild},resize:function(t,e,i){t.style.width=e+"px",t.style.height=i+"px"},framing:function(){},setup:function(t,i){var n=document.createDocumentFragment(),s=0,r=null;for(s=0;s<i.length;s++)(r=i[s]).node=r.node||e(r),n.appendChild(r.node);for(i.length&&t.appendChild(n),s=0;s<i.length;s++)(r=i[s]).width=r.width||r.node.offsetWidth,r.height=r.height||r.node.offsetHeight},render:function(e,i){i.node.style[t]="translate("+i.x+"px,"+i.y+"px)"},remove:function(t,e){t.removeChild(e.node),this.media||(e.node=null)}},n="undefined"!=typeof window&&window.devicePixelRatio||1,s=Object.create(null);function r(t,e){if("function"==typeof t.render){var i=t.render();if(i instanceof HTMLCanvasElement)return t.width=i.width,t.height=i.height,i}var r=document.createElement("canvas"),h=r.getContext("2d"),o=t.style||{};o.font=o.font||"10px sans-serif",o.textBaseline=o.textBaseline||"bottom";var a=1*o.lineWidth;for(var d in a=a>0&&a!==1/0?Math.ceil(a):1*!!o.strokeStyle,h.font=o.font,t.width=t.width||Math.max(1,Math.ceil(h.measureText(t.text).width)+2*a),t.height=t.height||Math.ceil(function(t,e){if(s[t])return s[t];var i=12,n=t.match(/(\d+(?:\.\d+)?)(px|%|em|rem)(?:\s*\/\s*(\d+(?:\.\d+)?)(px|%|em|rem)?)?/);if(n){var r=1*n[1]||10,h=n[2],o=1*n[3]||1.2,a=n[4];"%"===h&&(r*=e.container/100),"em"===h&&(r*=e.container),"rem"===h&&(r*=e.root),"px"===a&&(i=o),"%"===a&&(i=r*o/100),"em"===a&&(i=r*o),"rem"===a&&(i=e.root*o),void 0===a&&(i=r*o)}return s[t]=i,i}(o.font,e))+2*a,r.width=t.width*n,r.height=t.height*n,h.scale(n,n),o)h[d]=o[d];var u=0;switch(o.textBaseline){case"top":case"hanging":u=a;break;case"middle":u=t.height>>1;break;default:u=t.height-a}return o.strokeStyle&&h.strokeText(t.text,a,u),h.fillText(t.text,a,u),r}function h(t){return 1*window.getComputedStyle(t,null).getPropertyValue("font-size").match(/(.+)px/)[1]}var o={name:"canvas",init:function(t){var e=document.createElement("canvas");return e.context=e.getContext("2d"),e._fontSize={root:h(document.getElementsByTagName("html")[0]),container:h(t)},e},clear:function(t,e){t.context.clearRect(0,0,t.width,t.height);for(var i=0;i<e.length;i++)e[i].canvas=null},resize:function(t,e,i){t.width=e*n,t.height=i*n,t.style.width=e+"px",t.style.height=i+"px"},framing:function(t){t.context.clearRect(0,0,t.width,t.height)},setup:function(t,e){for(var i=0;i<e.length;i++){var n=e[i];n.canvas=r(n,t._fontSize)}},render:function(t,e){t.context.drawImage(e.canvas,e.x*n,e.y*n)},remove:function(t,e){e.canvas=null}},a=("undefined"!=typeof window&&(window.requestAnimationFrame||window.mozRequestAnimationFrame||window.webkitRequestAnimationFrame)||function(t){return setTimeout(t,50/3)}).bind(window),d=("undefined"!=typeof window&&(window.cancelAnimationFrame||window.mozCancelAnimationFrame||window.webkitCancelAnimationFrame)||clearTimeout).bind(window);function u(t,e,i){for(var n=0,s=0,r=t.length;s<r-1;)i>=t[n=s+r>>1][e]?s=n:r=n;return t[s]&&i<t[s][e]?s:r}function m(t){return/^(ltr|top|bottom)$/i.test(t)?t.toLowerCase():"rtl"}function c(){var t=9007199254740991;return[{range:0,time:-t,width:t,height:0},{range:t,time:t,width:0,height:0}]}function l(t){t.ltr=c(),t.rtl=c(),t.top=c(),t.bottom=c()}function f(){return void 0!==window.performance&&window.performance.now?window.performance.now():Date.now()}function p(t){var e=this,i=this.media?this.media.currentTime:f()/1e3,n=this.media?this.media.playbackRate:1;function s(t,s){if("top"===s.mode||"bottom"===s.mode)return i-t.time<e._.duration;var r=(e._.width+t.width)*(i-t.time)*n/e._.duration;if(t.width>r)return!0;var h=e._.duration+t.time-i,o=e._.width+s.width,a=e.media?s.time:s._utc,d=o*(i-a)*n/e._.duration,u=e._.width-d;return h>e._.duration*u/(e._.width+s.width)}for(var r=this._.space[t.mode],h=0,o=0,a=1;a<r.length;a++){var d=r[a],u=t.height;if("top"!==t.mode&&"bottom"!==t.mode||(u+=d.height),d.range-d.height-r[h].range>=u){o=a;break}s(d,t)&&(h=a)}var m=r[h].range,c={range:m+t.height,time:this.media?t.time:t._utc,width:t.width,height:t.height};return r.splice(h+1,o-h-1,c),"bottom"===t.mode?this._.height-t.height-m%this._.height:m%(this._.height-t.height)}function g(){if(!this._.visible||!this._.paused)return this;if(this._.paused=!1,this.media)for(var t=0;t<this._.runningList.length;t++){var e=this._.runningList[t];e._utc=f()/1e3-(this.media.currentTime-e.time)}var i=this,n=function(t,e,i,n){return function(s){t(this._.stage);var r=(s||f())/1e3,h=this.media?this.media.currentTime:r,o=this.media?this.media.playbackRate:1,a=null,d=0,u=0;for(u=this._.runningList.length-1;u>=0;u--)a=this._.runningList[u],h-(d=this.media?a.time:a._utc)>this._.duration&&(n(this._.stage,a),this._.runningList.splice(u,1));for(var m=[];this._.position<this.comments.length&&(a=this.comments[this._.position],!((d=this.media?a.time:a._utc)>=h));)h-d>this._.duration||(this.media&&(a._utc=r-(this.media.currentTime-a.time)),m.push(a)),++this._.position;for(e(this._.stage,m),u=0;u<m.length;u++)(a=m[u]).y=p.call(this,a),this._.runningList.push(a);for(u=0;u<this._.runningList.length;u++){a=this._.runningList[u];var c=(this._.width+a.width)*(r-a._utc)*o/this._.duration;"ltr"===a.mode&&(a.x=c-a.width),"rtl"===a.mode&&(a.x=this._.width-c),"top"!==a.mode&&"bottom"!==a.mode||(a.x=this._.width-a.width>>1),i(this._.stage,a)}}}(this._.engine.framing.bind(this),this._.engine.setup.bind(this),this._.engine.render.bind(this),this._.engine.remove.bind(this));return this._.requestID=a((function t(e){n.call(i,e),i._.requestID=a(t)})),this}function _(){return!this._.visible||this._.paused||(this._.paused=!0,d(this._.requestID),this._.requestID=0),this}function v(){if(!this.media)return this;this.clear(),l(this._.space);var t=u(this.comments,"time",this.media.currentTime);return this._.position=Math.max(0,t-1),this}function w(t){t.play=g.bind(this),t.pause=_.bind(this),t.seeking=v.bind(this),this.media.addEventListener("play",t.play),this.media.addEventListener("pause",t.pause),this.media.addEventListener("playing",t.play),this.media.addEventListener("waiting",t.pause),this.media.addEventListener("seeking",t.seeking)}function y(t){this.media.removeEventListener("play",t.play),this.media.removeEventListener("pause",t.pause),this.media.removeEventListener("playing",t.play),this.media.removeEventListener("waiting",t.pause),this.media.removeEventListener("seeking",t.seeking),t.play=null,t.pause=null,t.seeking=null}function x(t){this._={},this.container=t.container||document.createElement("div"),this.media=t.media,this._.visible=!0,this.engine=(t.engine||"DOM").toLowerCase(),this._.engine="canvas"===this.engine?o:i,this._.requestID=0,this._.speed=Math.max(0,t.speed)||144,this._.duration=4,this.comments=t.comments||[],this.comments.sort((function(t,e){return t.time-e.time}));for(var e=0;e<this.comments.length;e++)this.comments[e].mode=m(this.comments[e].mode);return this._.runningList=[],this._.position=0,this._.paused=!0,this.media&&(this._.listener={},w.call(this,this._.listener)),this._.stage=this._.engine.init(this.container),this._.stage.style.cssText+="position:relative;pointer-events:none;",this.resize(),this.container.appendChild(this._.stage),this._.space={},l(this._.space),this.media&&this.media.paused||(v.call(this),g.call(this)),this}function b(){if(!this.container)return this;for(var t in _.call(this),this.clear(),this.container.removeChild(this._.stage),this.media&&y.call(this,this._.listener),this)Object.prototype.hasOwnProperty.call(this,t)&&(this[t]=null);return this}var L=["mode","time","text","render","style"];function T(t){if(!t||"[object Object]"!==Object.prototype.toString.call(t))return this;for(var e={},i=0;i<L.length;i++)void 0!==t[L[i]]&&(e[L[i]]=t[L[i]]);if(e.text=(e.text||"").toString(),e.mode=m(e.mode),e._utc=f()/1e3,this.media){var n=0;void 0===e.time?(e.time=this.media.currentTime,n=this._.position):(n=u(this.comments,"time",e.time))<this._.position&&(this._.position+=1),this.comments.splice(n,0,e)}else this.comments.push(e);return this}function E(){return this._.visible?this:(this._.visible=!0,this.media&&this.media.paused||(v.call(this),g.call(this)),this)}function k(){return this._.visible?(_.call(this),this.clear(),this._.visible=!1,this):this}function C(){return this._.engine.clear(this._.stage,this._.runningList),this._.runningList=[],this}function z(){return this._.width=this.container.offsetWidth,this._.height=this.container.offsetHeight,this._.engine.resize(this._.stage,this._.width,this._.height),this._.duration=this._.width/this._.speed,this}var D={get:function(){return this._.speed},set:function(t){return"number"!=typeof t||isNaN(t)||!isFinite(t)||t<=0?this._.speed:(this._.speed=t,this._.width&&(this._.duration=this._.width/t),t)}};function M(t){t&&x.call(this,t)}return M.prototype.destroy=function(){return b.call(this)},M.prototype.emit=function(t){return T.call(this,t)},M.prototype.show=function(){return E.call(this)},M.prototype.hide=function(){return k.call(this)},M.prototype.clear=function(){return C.call(this)},M.prototype.resize=function(){return z.call(this)},Object.defineProperty(M.prototype,"speed",D),M}));
         /* eslint-enable */
     } else {
         window.Danmaku || Emby.importModule(requireDanmakuPath).then(f => {
@@ -753,16 +754,16 @@
         const searchUrl = `${prefix}/search/anime?keyword=${encodeURIComponent(anime)}`;
         const searchResult = await fetchJson(searchUrl)
             .catch((error) => {
-                console.error(`[API请求] v2/search/anime 查询失败: ${error.message}`);
+                console.error(`[API请求] /search/anime 查询失败: ${error.message}`);
                 return null;
             });
 
         if (!searchResult || !searchResult.animes || searchResult.animes.length === 0) {
-            console.log(`[API请求] v2/search/anime 查询结果为空`);
+            console.log(`[API请求] /search/anime 查询结果为空`);
             return { animes: [] };
         }
 
-        console.log(`[API请求] v2/search/anime 查询成功，共 ${searchResult.animes.length} 个结果`);
+        console.log(`[API请求] /search/anime 查询成功，共 ${searchResult.animes.length} 个结果`);
 
         // 步骤2: 只为第一个动画获取详细的分集信息（默认选择）
         if (searchResult.animes.length > 0 && searchResult.animes[0].bangumiId) {
@@ -770,18 +771,37 @@
             const bangumiUrl = `${prefix}/bangumi/${firstAnime.bangumiId}`;
             const bangumiResult = await fetchJson(bangumiUrl)
                 .catch((error) => {
-                    console.error(`[API请求] v2/bangumi/${firstAnime.bangumiId} 查询失败: ${error.message}`);
+                    console.error(`[API请求] /bangumi/${firstAnime.bangumiId} 查询失败: ${error.message}`);
                     return null;
                 });
 
-            if (bangumiResult && bangumiResult.bangumi && bangumiResult.bangumi.episodes) {
+            // 兼容不同 API 的返回格式：
+            // - 标准格式: { bangumi: { episodes: [...] } }
+            // - 简化格式: { episodes: [...] } 或直接返回 bangumi 对象
+            let episodes = null;
+            let seasons = null;
+            if (bangumiResult) {
+                if (bangumiResult.bangumi && bangumiResult.bangumi.episodes) {
+                    // 标准格式: { bangumi: { episodes: [...] } }
+                    episodes = bangumiResult.bangumi.episodes;
+                    seasons = bangumiResult.bangumi.seasons;
+                } else if (bangumiResult.episodes) {
+                    // 简化格式: { episodes: [...] }
+                    episodes = bangumiResult.episodes;
+                    seasons = bangumiResult.seasons;
+                }
+            }
+
+            if (episodes && episodes.length > 0) {
                 // 为第一个动画添加分集信息
                 searchResult.animes[0] = {
                     ...firstAnime,
-                    episodes: bangumiResult.bangumi.episodes,
-                    seasons: bangumiResult.bangumi.seasons
+                    episodes: episodes,
+                    seasons: seasons
                 };
-                console.log(`[API请求] 已获取第一个动画的分集信息: ${firstAnime.animeTitle}, 共 ${bangumiResult.bangumi.episodes.length} 集`);
+                console.log(`[API请求] 已获取第一个动画的分集信息: ${firstAnime.animeTitle}, 共 ${episodes.length} 集`);
+            } else {
+                console.log(`[API请求] 未能获取分集信息，bangumiResult 结构:`, bangumiResult ? Object.keys(bangumiResult) : 'null');
             }
         }
 
@@ -1047,12 +1067,22 @@
         console.log(`[API请求] match 请求详情 - Payload:`, payload);
         console.log(`[API请求] match 请求详情 - Prefix: ${prefix}`);
         try {
+            // [修复] 判断是否为自定义 API（非弹弹play官方API）
+            // 自定义 API 不发送 X-User-Agent 头，避免 CORS 问题
+            const isDandanplayApi = prefix.includes('api.dandanplay.net') || prefix.includes('dandanplay');
+
             const requestHeaders = {
                 'Accept-Encoding': 'gzip',
                 'Accept': 'application/json',
                 'Content-Type': 'application/json',
-                'X-User-Agent': userAgent,
             };
+
+            // 只有弹弹play官方API才发送 X-User-Agent
+            if (isDandanplayApi) {
+                requestHeaders['X-User-Agent'] = userAgent;
+            } else {
+                console.log(`[API请求] match 跳过 X-User-Agent (自定义API)`);
+            }
 
             // [新增] 如果启用了非对称验证，添加挑战响应头
             if (window.ede && window.ede.asymmetricAuthEnabled) {
@@ -1104,8 +1134,32 @@
         const url = `${prefix}/comment/${episodeId}?withRelated=true&chConvert=${window.ede.chConvert}`;
         return fetchJson(url) // 直接使用 fetchJson
             .then((data) => {
-                console.log(`[API请求] comment 获取弹幕成功，数量: ${data.comments.length}`);
-                return data.comments;
+                // 兼容不同 API 的返回格式：
+                // - 标准格式: { comments: [...] }
+                // - 嵌套格式: { data: { comments: [...] } }
+                // - 直接数组: [...]
+                let comments = null;
+                if (Array.isArray(data)) {
+                    // 直接返回数组
+                    comments = data;
+                } else if (data && Array.isArray(data.comments)) {
+                    // 标准格式: { comments: [...] }
+                    comments = data.comments;
+                } else if (data && data.data && Array.isArray(data.data.comments)) {
+                    // 嵌套格式: { data: { comments: [...] } }
+                    comments = data.data.comments;
+                } else if (data && data.result && Array.isArray(data.result)) {
+                    // 其他格式: { result: [...] }
+                    comments = data.result;
+                }
+
+                if (comments) {
+                    console.log(`[API请求] comment 获取弹幕成功，数量: ${comments.length}`);
+                    return comments;
+                } else {
+                    console.error(`[API请求] comment 返回数据格式不兼容，结构:`, data ? Object.keys(data) : 'null');
+                    return null;
+                }
             })
             .catch((error) => {
                 console.error(`[API请求] comment 获取弹幕失败: ${error.message}`);
@@ -1252,13 +1306,27 @@
         if (method === 'GET' && body) {
             method = 'POST';
         }
-        console.log(`[DEBUG] fetchJson 使用的 X-User-Agent: ${userAgent}`);
+
+        // [修复] 判断是否为自定义 API（非弹弹play官方API）
+        // 自定义 API 不发送 X-User-Agent 头，避免 CORS 问题
+        const isDandanplayApi = url.includes('api.dandanplay.net') || url.includes('dandanplay');
+        const isBangumiApi = url.includes('api.bgm.tv') || url.includes('bgm.tv');
+        const shouldSendUserAgent = isDandanplayApi || isBangumiApi;
+
         const requestHeaders = {
             'Accept-Encoding': 'gzip',
             Accept: 'application/json',
             'Content-Type': 'application/json',
-            'X-User-Agent': userAgent,
         };
+
+        // 只有弹弹play和Bangumi官方API才发送 X-User-Agent
+        if (shouldSendUserAgent) {
+            requestHeaders['X-User-Agent'] = userAgent;
+            console.log(`[DEBUG] fetchJson 使用的 X-User-Agent: ${userAgent}`);
+        } else {
+            console.log(`[DEBUG] fetchJson 跳过 X-User-Agent (自定义API): ${url.substring(0, 80)}...`);
+        }
+
         if (token) {
             requestHeaders.Authorization = `Bearer ${token}`;
         }
@@ -1909,7 +1977,33 @@
         const _container = await waitForElement(mediaContainerQueryStr);
         _container.prepend(wrapper);
         let _speed = 144 * (lsGetItem(lsKeys.speed.id) / 100);
-        window.ede.danmaku = new Danmaku({
+        // 检查 Danmaku 库是否已加载，如果未加载则等待
+        if (typeof Danmaku === 'undefined' && typeof window.Danmaku === 'undefined') {
+            console.log('[Danmaku] 弹幕库未加载，尝试等待加载...');
+            // 尝试等待 Danmaku 库加载完成，最多等待 3 秒
+            let waitCount = 0;
+            const maxWait = 30; // 30 * 100ms = 3秒
+            while (typeof window.Danmaku === 'undefined' && waitCount < maxWait) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                waitCount++;
+            }
+            if (typeof window.Danmaku === 'undefined') {
+                console.error('[Danmaku] 弹幕库加载超时，尝试重新加载...');
+                // 尝试重新加载
+                try {
+                    const module = await Emby.importModule(requireDanmakuPath);
+                    window.Danmaku = module;
+                    console.log('[Danmaku] 弹幕库重新加载成功');
+                } catch (error) {
+                    console.error('[Danmaku] 弹幕库加载失败:', error);
+                    throw new Error('创建弹幕失败：Danmaku 库未能加载。请检查网络连接或刷新页面重试。');
+                }
+            } else {
+                console.log('[Danmaku] 弹幕库加载完成');
+            }
+        }
+        const DanmakuClass = window.Danmaku || Danmaku;
+        window.ede.danmaku = new DanmakuClass({
             container: wrapper,
             media: _media,
             comments: _comments,
@@ -4423,7 +4517,13 @@
     function embyInput(props, onEnter, onChange) {
         const input = document.createElement('input', { is: 'emby-input' });
         objectEntries(props).forEach(([key, value]) => {
-            if (typeof value !== 'function') { input.setAttribute(key, value); }
+            if (typeof value !== 'function') { 
+                input.setAttribute(key, value);
+                // [修复] 对于 value 属性，需要同时设置 DOM 属性才能正确显示
+                if (key === 'value') {
+                    input.value = value;
+                }
+            }
         });
         input.className = classes.embyInput; // searchfields-txtSearch: 半圆角
         if (typeof onEnter === 'function') {
@@ -4790,7 +4890,8 @@
         if (!key) { return null; }
         const defaultValue = lsKeys[key].defaultValue;
         const item = localStorage.getItem(id);
-        if (item === null) { return defaultValue; }
+        // [修复] 如果 localStorage 中没有值，或者值为空字符串且默认值不为空，则返回默认值
+        if (item === null || (item === '' && defaultValue !== '')) { return defaultValue; }
         if (Array.isArray(defaultValue)) { return JSON.parse(item); }
         if (Array.isArray(defaultValue) || typeof defaultValue === 'object') { return JSON.parse(item); }
         if (typeof defaultValue === 'boolean') { return item === 'true'; }
