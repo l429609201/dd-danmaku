@@ -2304,6 +2304,18 @@
             lsSetItem(lsKeys.typeFilter.id, typeFilterTemp);
             msg += `\n已自动添加 ${lsKeys.typeFilter.name}:${danmakuTypeFilterOpts.bottom.name}`;
         }
+        // 弹幕数量上来后合并弹幕真的很卡
+       // const mergeSimilarEnable = lsGetItem(lsKeys.mergeSimilarEnable.id);
+       // if (!mergeSimilarEnable) {
+       //     window.ede.tempLsValues[lsKeys.mergeSimilarEnable.id] = mergeSimilarEnable;
+       //     lsSetItem(lsKeys.mergeSimilarEnable.id, true);
+       //     msg += `\n已自动调整 ${lsKeys.mergeSimilarEnable.name}:true`;
+      //  }
+      //  if (msg.length != initMsgLenth) {
+      //      embyToast({ text: msg });
+       //     console.log('[自动过滤] ' + msg);
+      //  }
+
     }
 
     function danmakuAutoFilterCancel() {
