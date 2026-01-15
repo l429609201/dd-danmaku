@@ -1670,8 +1670,8 @@
             fileName: animeName,
             fileHash: null,
             fileSize: size || 0,
-            videoDuration: Math.floor(duration || 0),
-            matchMode: "hashAndFileName"
+            videoDuration: Math.floor(duration || 0),// [修复] 转换为整数
+            matchMode: "hashAndFileName" 
         };
 
         // 计算文件哈希
@@ -2008,19 +2008,23 @@
         // 检查 Danmaku 库是否已加载
         if (typeof Danmaku === 'undefined' && typeof window.Danmaku === 'undefined') {
             console.log('[Danmaku] 弹幕库未加载，尝试等待加载...');
+             // 尝试等待 Danmaku 库加载完成，最多等待 3 秒
             let waitCount = 0;
-            const maxWait = 30; 
+            const maxWait = 30; // 30 * 100ms = 3秒
             while (typeof window.Danmaku === 'undefined' && waitCount < maxWait) {
                 await new Promise(resolve => setTimeout(resolve, 100));
                 waitCount++;
             }
             if (typeof window.Danmaku === 'undefined') {
+                 console.error('[Danmaku] 弹幕库加载超时，尝试重新加载...');
+                 // 尝试重新加载
                 try {
                     const module = await Emby.importModule(requireDanmakuPath);
                     window.Danmaku = module;
+                    console.log('[Danmaku] 弹幕库重新加载成功');
                 } catch (error) {
                     console.error('[Danmaku] 弹幕库加载失败:', error);
-                    throw new Error('创建弹幕失败：Danmaku 库未能加载。');
+                    throw new Error('创建弹幕失败：Danmaku 库未能加载。请检查网络连接或刷新页面重试。');
                 }
             }
         }
@@ -2038,6 +2042,7 @@
         }
         window.ede.ob = new ResizeObserver(() => {
             if (window.ede.danmaku) {
+                console.log('检测到播放器尺寸变化 (Resizing)，正在重置弹幕画布...');
                 window.ede.danmaku.resize();
                 if (lsGetItem(lsKeys.osdLineChartEnable.id)) {
                     buildProgressBarChart(20);
@@ -3078,15 +3083,6 @@
         buildSearchEpisodeEle();
         buildExtCommentDiv();
         // buildDanmuPluginDiv(); // 【修改点】已删除此调用
-        // 【优化】自动聚焦搜索框
-        setTimeout(() => {
-            const searchInput = getById(eleIds.danmakuSearchName);
-            if (searchInput) {
-                searchInput.focus();
-                searchInput.select(); 
-            }
-        }, 300);
-
         bindManualMatchButtons();
     }
 
