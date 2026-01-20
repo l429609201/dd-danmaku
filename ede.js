@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.1.2
+// @version      1.1.3
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -25,7 +25,7 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.1.2', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.1.3', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -36,7 +36,9 @@
     };
     const dandanplayApi = {
         get prefix() {
-            const custom = lsGetItem(lsKeys.customApiPrefix.id);
+            // [修改] 支持多源：使用第一个自定义源
+            const customList = typeof getCustomApiList === 'function' ? getCustomApiList() : [];
+            const custom = customList.length > 0 ? customList[0] : lsGetItem(lsKeys.customApiPrefix.id);
             if (custom && custom.length > 0 && !lsGetItem(lsKeys.useOfficialApi.id)) {
                 return custom;
             }
@@ -51,7 +53,9 @@
     };
     const dandanplayApiCustom = {
         get prefix() {
-            const custom = lsGetItem(lsKeys.customApiPrefix.id);
+            // [修改] 支持多源：使用第一个自定义源
+            const customList = typeof getCustomApiList === 'function' ? getCustomApiList() : [];
+            const custom = customList.length > 0 ? customList[0] : lsGetItem(lsKeys.customApiPrefix.id);
             // 自定义API可以不走代理
             return custom && custom.length > 0 ? custom : dandanplayApi.prefix;
         },
@@ -217,10 +221,10 @@
         chConvert: { id: 'danmakuChConvert', defaultValue: 1, name: '简繁转换' },
         switch: { id: 'danmakuSwitch', defaultValue: true, name: '弹幕开关' },
         filterLevel: { id: 'danmakuFilterLevel', defaultValue: 0, name: '过滤强度', min: 0, max: 3, step: 1 },
-        heightPercent: { id: 'danmakuHeightPercent', defaultValue: 100, name: '显示区域', min: 3, max: 100, step: 1 },
+        heightPercent: { id: 'danmakuHeightPercent', defaultValue: 70, name: '显示区域', min: 3, max: 100, step: 1 },
         fontSizeRate: { id: 'danmakuFontSizeRate', defaultValue: 150, name: '弹幕大小', min: 10, max: 300, step: 10 },
-        fontOpacity: { id: 'danmakuFontOpacity', defaultValue: 50, name: '透明度', min: 10, max: 100, step: 10 },
-        speed: { id: 'danmakuBaseSpeed', defaultValue: 200, name: '速度', min: 10, max: 300, step: 10 },
+        fontOpacity: { id: 'danmakuFontOpacity', defaultValue: 100, name: '透明度', min: 10, max: 100, step: 10 },
+        speed: { id: 'danmakuBaseSpeed', defaultValue: 100, name: '速度', min: 10, max: 300, step: 10 },
         timelineOffset: { id: 'danmakuTimelineOffset', defaultValue: 0, name: '轴偏秒' },
         fontWeight: { id: 'danmakuFontWeight', defaultValue: 400, name: '弹幕粗细', min: 100, max: 1000, step: 100 },
         fontStyle: { id: 'danmakuFontStyle', defaultValue: 0, name: '弹幕斜体', min: 0, max: 2, step: 1 },
@@ -270,6 +274,7 @@
         customeGetExtcommentUrl: { id: 'danmakuCustomeGetExtcommentUrl', defaultValue: getApiTl(dandanplayApi.getExtcomment), name: '获取指定第三方url的弹幕' },
         customePosterImgUrl: { id: 'danmakuCustomePosterImgUrl', defaultValue: getApiTl(dandanplayApi.posterImg), name: '媒体海报' },
         customApiPrefix: { id: 'danmakuCustomApiPrefix', defaultValue: '', name: '自定义弹弹play API地址' },
+        customApiList: { id: 'danmakuCustomApiList', defaultValue: [], name: '自定义弹幕源列表' },
         apiPriority: { id: 'danmakuApiPriority', defaultValue: ['official', 'custom'], name: 'API 优先级' },
     };
     const lsLocalKeys = {
@@ -734,6 +739,12 @@
             mediaBtnOpts.forEach(opt => {
                 menubar.appendChild(embyButton(opt, opt.onClick));
             });
+            // [修复] 初始化时检查弹幕开关状态，确保按钮图标与实际状态一致
+            const danmakuEnabled = lsGetItem(lsKeys.switch.id);
+            const osdDanmakuSwitchBtn = getById(eleIds.danmakuSwitchBtn);
+            if (osdDanmakuSwitchBtn && osdDanmakuSwitchBtn.firstChild) {
+                osdDanmakuSwitchBtn.firstChild.innerHTML = danmakuEnabled ? iconKeys.comment : iconKeys.comments_disabled;
+            }
             console.log('播放器弹幕UI初始化完成');
         }, 0);
     }
@@ -1447,7 +1458,7 @@
             const container = item.Path ? item.Path.split('.').pop() : 'mkv';
             streamUrl = `${serverAddress}${extraStr}/videos/${itemId}/stream?DeviceId=${deviceId}&MediaSourceId=${mediaSourceId}&api_key=${apiKey}&Static=true&Container=${container}`;
 
-            console.log(`[Stream] 认证信息 - ApiKey: ${apiKey ? '已获取' : '未获取'}, DeviceId: ${deviceId}`);
+            console.log(`[Stream] 认证信息 - ApiKey: ${apiKey ? '已获取' : '未获取'}, DeviceId: ${deviceId ? '已获取' : '未获取'}`);
         } else {
             console.warn(`[Stream] 无MediaSource，无法构建流媒体URL`);
         }
@@ -1650,13 +1661,41 @@
     async function searchEpisodes(itemInfoMap) {
         const { animeName, episode, seriesOrMovieId, streamUrl, size, duration } = itemInfoMap;
         console.log(`[Debug] searchEpisodes调用 - streamUrl: ${streamUrl ? '已获取' : '未获取'}, size: ${size}, duration: ${duration}`);
-        
+
         // 新增：读取用户定义的API优先级
         const apiPriority = lsGetItem(lsKeys.apiPriority.id);
+
+        // [修改] 构建API配置，支持多个自定义源（新数据结构）
+        const customApiList = getCustomApiList();
         const apiConfigs = {
             official: { name: '官方API', prefix: corsProxy + 'https://api.dandanplay.net/api/v2', enabled: lsGetItem(lsKeys.useOfficialApi.id) },
-            custom: { name: '自定义API', prefix: lsGetItem(lsKeys.customApiPrefix.id), enabled: lsGetItem(lsKeys.useCustomApi.id) }
         };
+
+        // 为每个启用的自定义源创建配置
+        if (lsGetItem(lsKeys.useCustomApi.id) && customApiList.length > 0) {
+            customApiList.forEach((item, index) => {
+                if (item.enabled) {
+                    apiConfigs[`custom_${index}`] = {
+                        name: item.name || `自定义源${index + 1}`,
+                        prefix: item.url,
+                        enabled: true
+                    };
+                }
+            });
+        }
+
+        // 构建实际的优先级列表
+        const actualPriority = [];
+        for (const key of apiPriority) {
+            if (key === 'official') {
+                actualPriority.push('official');
+            } else if (key === 'custom') {
+                // 将 'custom' 展开为所有自定义源
+                customApiList.forEach((_, index) => {
+                    actualPriority.push(`custom_${index}`);
+                });
+            }
+        }
 
         // 准备 /match 接口的请求体
         const matchPayload = {
@@ -1683,7 +1722,7 @@
         }
 
         // 1. 严格按照优先级顺序进行匹配
-        for (const apiKey of apiPriority) {
+        for (const apiKey of actualPriority) {
             const config = apiConfigs[apiKey];
             if (!config || !config.enabled || !config.prefix) {
                 continue;
@@ -1973,6 +2012,8 @@
         // wrapper.style.opacity = lsGetItem(lsKeys.fontOpacity.id); // 弹幕整体透明度
         wrapper.style.top = wrapperTop + 'px';
         wrapper.style.pointerEvents = 'none';
+        // [优化] 告诉浏览器这个层是会变的，让 GPU 提前准备
+        wrapper.style.willChange = 'transform, opacity';
         // const _container = document.querySelector(mediaContainerQueryStr);
         const _container = await waitForElement(mediaContainerQueryStr);
         _container.prepend(wrapper);
@@ -2368,41 +2409,57 @@
 
     function danmakuMergeSimilar(comments, threshold = 50, timeWindow = 15) {
         if (!lsGetItem(lsKeys.mergeSimilarEnable.id)) { return comments; }
-    
+
         const mergedComments = [];
-        const mergedIndexes = [];
+        // [优化] 使用 Set 替代数组，提升 includes 查找性能 O(n) -> O(1)
+        const mergedIndexes = new Set();
         const startTime = new Date().getTime();
-    
+
         for (let i = 0; i < comments.length; i++) {
-            if (mergedIndexes.includes(i)) { continue; }
-    
-            let mergedComment = comments[i];
+            if (mergedIndexes.has(i)) { continue; }
+
+            const rootComment = comments[i];
+            // [优化] 缓存基准弹幕的文本和长度，避免在内层循环中重复读取属性
+            const rootText = rootComment.text;
+            const rootLen = rootText.length;
+            const rootTime = rootComment.time;
             let count = 1;
             let totalSimilarity = 0;
-    
-            for (let j = i + 1; j < comments.length && Math.abs(comments[j].time - comments[i].time) <= timeWindow; j++) {
-                if (mergedIndexes.includes(j)) { continue; }
-    
-                const similarity = similarityPercentage(mergedComment.text, comments[j].text);
+
+            for (let j = i + 1; j < comments.length; j++) {
+                const compareComment = comments[j];
+                // [优化] 时间窗口快速退出
+                if ((compareComment.time - rootTime) > timeWindow) { break; }
+                if (mergedIndexes.has(j)) { continue; }
+
+                // [优化] 长度差异预判剪枝：在调用 similarityPercentage 之前先检查
+                const compareText = compareComment.text;
+                const compareLen = compareText.length;
+                const maxLen = Math.max(rootLen, compareLen);
+                const minLen = Math.min(rootLen, compareLen);
+                const maxPossibleSimilarity = (minLen / maxLen) * 100;
+                if (maxPossibleSimilarity < threshold) { continue; }
+
+                const similarity = similarityPercentage(rootText, compareText, threshold);
                 if (similarity >= threshold) {
                     count++;
-                    mergedIndexes.push(j);
+                    mergedIndexes.add(j);
                     totalSimilarity += similarity;
                 }
             }
-    
+
             if (count > 1) {
-                mergedComment.text += ` [x${count}]`;
-                mergedComment.xCount = count;
-                mergedComment.xTotalSimilarity = totalSimilarity / count;
+                rootComment.text += ` [x${count}]`;
+                rootComment.xCount = count;
+                rootComment.xTotalSimilarity = totalSimilarity / count;
             }
-    
-            mergedComments.push(mergedComment);
+
+            mergedComments.push(rootComment);
         }
-    
+
         const endTime = new Date().getTime();
         console.log(`合并相似弹幕 (danmakuMergeSimilar) 耗时: ${endTime - startTime} 毫秒`);
-    
+
         return mergedComments;
     }
 
@@ -2414,25 +2471,46 @@
      *
      * @param {string} a - 第一个字符串
      * @param {string} b - 第二个字符串
-     * @returns {Object} - 包含 Levenshtein 距离和相似度百分比的对象
+     * @param {number} threshold - 相似度阈值，用于提前剪枝优化
      * @returns {number} - 两个字符串之间的相似度百分比,范围为 0 到 100
      */
-    function similarityPercentage(a, b) {
+    function similarityPercentage(a, b, threshold = 0) {
         if (a === b) {
             return 100;
         }
 
-        if (a.length > b.length) {
+        const lenA = a.length;
+        const lenB = b.length;
+        const maxLength = Math.max(lenA, lenB);
+
+        // [优化] 长度差异预判剪枝：如果长度差异过大，理论最大相似度低于阈值，直接返回 0
+        if (threshold > 0) {
+            const minLength = Math.min(lenA, lenB);
+            const maxPossibleSimilarity = (minLength / maxLength) * 100;
+            if (maxPossibleSimilarity < threshold) {
+                return 0;
+            }
+        }
+
+        if (lenA > lenB) {
             [a, b] = [b, a];
         }
 
-        let previousRow = Array.from({ length: a.length + 1 }, (_, i) => i);
-        let currentRow = Array(a.length + 1);
+        // [优化] 使用 Int32Array 替代普通数组，减少内存开销和 GC 压力
+        const aLen = a.length;
+        const bLen = b.length;
+        let previousRow = new Int32Array(aLen + 1);
+        let currentRow = new Int32Array(aLen + 1);
 
-        for (let j = 1; j <= b.length; j++) {
+        // 初始化第一行
+        for (let i = 0; i <= aLen; i++) {
+            previousRow[i] = i;
+        }
+
+        for (let j = 1; j <= bLen; j++) {
             currentRow[0] = j;
 
-            for (let i = 1; i <= a.length; i++) {
+            for (let i = 1; i <= aLen; i++) {
                 const substitutionCost = (a[i - 1] === b[j - 1]) ? 0 : 1;
                 const insertionCost = previousRow[i] + 1;
                 const deletionCost = currentRow[i - 1] + 1;
@@ -2444,11 +2522,11 @@
                 );
             }
 
+            // 交换行
             [previousRow, currentRow] = [currentRow, previousRow];
         }
 
         const distance = previousRow[a.length];
-        const maxLength = Math.max(a.length, b.length);
         const similarity = ((maxLength - distance) / maxLength) * 100;
 
         return similarity;
@@ -3049,133 +3127,206 @@
 
     function buildSearchEpisodeEle() {
         const customApiContainer = getById('customApiContainer');
-        const customApiDiv = document.createElement('div');
-        customApiDiv.className = 'emby-field';
-        const customApiLabel = document.createElement('label');
-        customApiLabel.className = 'emby-label';
-        customApiLabel.textContent = lsKeys.customApiPrefix.name + '：';
-        customApiDiv.append(customApiLabel);
-        const customApiInput = embyInput({
-            id: 'customApiPrefixInput',
-            type: 'search',
-            value: lsGetItem(lsKeys.customApiPrefix.id) || '',
-            style: 'width: 24em;'
-        }, (e) => {
-            if (e.key === 'Enter') {
-                const val = e.target.value.trim();
-                lsSetItem(lsKeys.customApiPrefix.id, val);
-                embyToast({ text: '自定义API地址已保存', secondaryText: val });
+        if (!customApiContainer) return;
+        customApiContainer.innerHTML = '';
+
+        // --- 多自定义弹幕源列表 UI (PR #167 优化) ---
+        const renderSourceList = () => {
+            customApiContainer.innerHTML = '';
+            const list = getCustomApiList();
+
+            // 添加表单
+            const addForm = document.createElement('div');
+            addForm.style.cssText = 'display: flex; gap: 0.5em; align-items: center; background: rgba(0, 0, 0, 0.3); padding: 1em; border-radius: 4px; margin-bottom: 1em; flex-wrap: wrap;';
+
+            const nameInput = document.createElement('input');
+            nameInput.setAttribute('is', 'emby-input');
+            nameInput.className = classes.embyInput;
+            nameInput.type = 'text';
+            nameInput.placeholder = '源名称 (备注)';
+            nameInput.style.cssText = 'flex: 1; min-width: 120px;';
+
+            const urlInput = document.createElement('input');
+            urlInput.setAttribute('is', 'emby-input');
+            urlInput.className = classes.embyInput;
+            urlInput.type = 'text';
+            urlInput.placeholder = 'API 地址 (http://...)';
+            urlInput.style.cssText = 'flex: 2; min-width: 200px;';
+
+            const addBtn = document.createElement('button');
+            addBtn.setAttribute('is', 'emby-button');
+            addBtn.className = 'raised button-submit emby-button';
+            addBtn.innerHTML = '<i class="md-icon">check</i> 添加';
+            addBtn.style.cssText = 'height: 2.5em; flex: 0 0 auto;';
+            addBtn.onclick = () => {
+                const name = nameInput.value.trim();
+                let url = urlInput.value.trim();
+                if (!name || !url) {
+                    embyToast({ text: '请填写完整' });
+                    return;
+                }
+                if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                    embyToast({ text: '请输入有效的URL（以 http:// 或 https:// 开头）' });
+                    return;
+                }
+                if (url.endsWith('/')) url = url.slice(0, -1);
+                addCustomApiSource(name, url);
+                nameInput.value = '';
+                urlInput.value = '';
+                renderSourceList();
+                embyToast({ text: '已添加弹幕源', secondaryText: name });
+            };
+
+            // 回车添加
+            urlInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') addBtn.click();
+            });
+
+            addForm.append(nameInput, urlInput, addBtn);
+            customApiContainer.append(addForm);
+
+            // 列表容器
+            const listDiv = document.createElement('div');
+            listDiv.style.cssText = 'max-height: 250px; overflow-y: auto; overflow-x: hidden; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 0.5em;';
+
+            if (list.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'fieldDescription';
+                empty.style.cssText = 'color: #888; padding: 0.5em; font-size: 0.9em;';
+                empty.textContent = '暂无自定义源，请在上方添加';
+                listDiv.append(empty);
+            } else {
+                list.forEach((item, index) => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display: flex; align-items: center; margin-bottom: 0.5em; background: rgba(0,0,0,0.2); padding: 0.5em; border-radius: 4px;';
+
+                    // 启用开关
+                    const switchDiv = document.createElement('div');
+                    switchDiv.style.cssText = 'margin-right: 0.5em; flex-shrink: 0;';
+                    switchDiv.append(embyCheckbox({ label: '' }, item.enabled, (checked) => {
+                        toggleCustomApiSource(index, checked);
+                        renderSourceList();
+                    }));
+                    row.append(switchDiv);
+
+                    // 信息显示
+                    const infoDiv = document.createElement('div');
+                    infoDiv.style.cssText = 'flex: 1; min-width: 0; overflow: hidden;';
+                    const nameStyle = item.enabled ? 'font-weight:bold;' : 'font-weight:bold; color: #999;';
+                    const urlStyle = 'font-size:0.8em; opacity:0.7; word-break: break-all; overflow: hidden; text-overflow: ellipsis;';
+                    infoDiv.innerHTML = `<div style="${nameStyle}">${item.name}</div><div style="${urlStyle}" title="${item.url}">${item.url}</div>`;
+                    row.append(infoDiv);
+
+                    // 上移按钮
+                    if (index > 0) {
+                        const upBtn = document.createElement('button');
+                        upBtn.setAttribute('is', 'emby-button');
+                        upBtn.className = 'paper-icon-button-light';
+                        upBtn.innerHTML = '<i class="md-icon">arrow_upward</i>';
+                        upBtn.title = '上移';
+                        upBtn.style.cssText = 'padding: 0.2em; flex-shrink: 0;';
+                        upBtn.onclick = () => {
+                            moveCustomApiSource(index, index - 1);
+                            renderSourceList();
+                        };
+                        row.append(upBtn);
+                    }
+
+                    // 下移按钮
+                    if (index < list.length - 1) {
+                        const downBtn = document.createElement('button');
+                        downBtn.setAttribute('is', 'emby-button');
+                        downBtn.className = 'paper-icon-button-light';
+                        downBtn.innerHTML = '<i class="md-icon">arrow_downward</i>';
+                        downBtn.title = '下移';
+                        downBtn.style.cssText = 'padding: 0.2em; flex-shrink: 0;';
+                        downBtn.onclick = () => {
+                            moveCustomApiSource(index, index + 1);
+                            renderSourceList();
+                        };
+                        row.append(downBtn);
+                    }
+
+                    // 删除按钮
+                    const delBtn = document.createElement('button');
+                    delBtn.setAttribute('is', 'emby-button');
+                    delBtn.className = 'paper-icon-button-light';
+                    delBtn.innerHTML = '<i class="md-icon">close</i>';
+                    delBtn.title = '删除';
+                    delBtn.style.cssText = 'padding: 0.2em; color: #f44336; flex-shrink: 0;';
+                    delBtn.onclick = () => {
+                        removeCustomApiSource(index);
+                        renderSourceList();
+                        embyToast({ text: '已删除弹幕源' });
+                    };
+                    row.append(delBtn);
+
+                    listDiv.append(row);
+                });
             }
-        }, (e) => {
-            // 失焦自动保存
-            const val = e.target.value.trim();
-            lsSetItem(lsKeys.customApiPrefix.id, val);
-        });
-        customApiDiv.append(customApiInput);
-        const customApiDesc = document.createElement('div');
-        customApiDesc.className = 'emby-field-desc';
-        customApiDesc.innerHTML = '如需自定义弹幕API地址，请填写完整URL（如 https://api.example.com ），<br>留空则使用原生API';
-        customApiDiv.append(customApiDesc);
-        customApiContainer.append(customApiDiv);
+
+            customApiContainer.append(listDiv);
+        };
+
+        // 初始渲染列表
+        renderSourceList();
 
         const searchNameDiv = getById(eleIds.danmakuSearchNameDiv);
         searchNameDiv.append(embyInput({ id: eleIds.danmakuSearchName, value: window.ede.searchDanmakuOpts.animeName, type: 'search' }
             , doDanmakuSearchEpisode));
         searchNameDiv.append(embyButton({ label: '搜索', iconKey: iconKeys.search}, doDanmakuSearchEpisode));
-        
-        // --- API选择和优先级设置 ---
+
+        // --- API选择和优先级设置 (PR #167 优化布局) ---
         const apiSelectDiv = getById(eleIds.apiSelectDiv);
-        apiSelectDiv.innerHTML = ''; // 清空旧内容
-        apiSelectDiv.style.display = 'block'; // 垂直布局
+        apiSelectDiv.innerHTML = '';
+        apiSelectDiv.style.display = 'block';
 
-        // 官方API启用开关
-        apiSelectDiv.append(embyCheckbox({ label: lsKeys.useOfficialApi.name }, lsGetItem(lsKeys.useOfficialApi.id), (checked) => {
-            lsSetItem(lsKeys.useOfficialApi.id, checked);
-        }));
+        // 控制栏：左侧优先级滑块，右侧启用开关组 - 同一行
+        const controlBar = document.createElement('div');
+        controlBar.style.cssText = 'display: flex; align-items: center; gap: 15px; margin-bottom: 1em;';
 
-        // 自定义API启用开关
-        apiSelectDiv.append(embyCheckbox({ label: lsKeys.useCustomApi.name }, lsGetItem(lsKeys.useCustomApi.id), (checked) => {
-            lsSetItem(lsKeys.useCustomApi.id, checked);
-        }));
+        // --- 左侧：优先级滑块 ---
+        const leftGroup = document.createElement('div');
+        leftGroup.style.cssText = 'display: flex; align-items: center; gap: 8px; flex-shrink: 0;';
 
-        // API优先级开关
         const priorityLabel = document.createElement('label');
         priorityLabel.className = classes.embyLabel;
-        priorityLabel.textContent = 'API 优先级:';
-        priorityLabel.style.marginTop = '1em';
-        priorityLabel.style.display = 'block';
-        apiSelectDiv.append(priorityLabel);
-
-        const priorityContainer = document.createElement('div');
-        priorityContainer.style.display = 'flex';
-        priorityContainer.style.alignItems = 'center';
-        priorityContainer.style.marginTop = '0.5em';
+        priorityLabel.textContent = '优先级:';
+        priorityLabel.style.cssText = 'margin-bottom: 0; white-space: nowrap;';
 
         const prioritySwitch = document.createElement('div');
         prioritySwitch.className = 'emby-toggle-switch';
-        prioritySwitch.style.position = 'relative';
-        prioritySwitch.style.width = '200px';
-        prioritySwitch.style.height = '40px';
-        prioritySwitch.style.backgroundColor = '#333';
-        prioritySwitch.style.borderRadius = '20px';
-        prioritySwitch.style.cursor = 'pointer';
-        prioritySwitch.style.transition = 'all 0.3s ease';
+        prioritySwitch.style.cssText = 'position: relative; width: 110px; height: 32px; background-color: #333; border-radius: 16px; cursor: pointer; transition: all 0.3s ease; flex-shrink: 0;';
 
         const prioritySlider = document.createElement('div');
-        prioritySlider.style.position = 'absolute';
-        prioritySlider.style.top = '2px';
-        prioritySlider.style.width = '96px';
-        prioritySlider.style.height = '36px';
-        prioritySlider.style.backgroundColor = '#4a90e2';
-        prioritySlider.style.borderRadius = '18px';
-        prioritySlider.style.transition = 'all 0.3s ease';
-        prioritySlider.style.display = 'flex';
-        prioritySlider.style.alignItems = 'center';
-        prioritySlider.style.justifyContent = 'center';
-        prioritySlider.style.color = 'white';
-        prioritySlider.style.fontSize = '12px';
-        prioritySlider.style.fontWeight = 'bold';
+        prioritySlider.style.cssText = 'position: absolute; top: 2px; width: 58px; height: 28px; background-color: #4a90e2; border-radius: 14px; transition: all 0.3s ease; display: flex; align-items: center; justify-content: center; color: white; font-size: 12px; font-weight: bold;';
 
         const leftLabel = document.createElement('div');
-        leftLabel.style.position = 'absolute';
-        leftLabel.style.left = '10px';
-        leftLabel.style.top = '50%';
-        leftLabel.style.transform = 'translateY(-50%)';
-        leftLabel.style.fontSize = '12px';
-        leftLabel.style.color = '#999';
-        leftLabel.style.pointerEvents = 'none';
-        leftLabel.textContent = '自定义API优先';
+        leftLabel.style.cssText = 'position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 11px; color: #999; pointer-events: none;';
+        leftLabel.textContent = '自定义';
 
         const rightLabel = document.createElement('div');
-        rightLabel.style.position = 'absolute';
-        rightLabel.style.right = '10px';
-        rightLabel.style.top = '50%';
-        rightLabel.style.transform = 'translateY(-50%)';
-        rightLabel.style.fontSize = '12px';
-        rightLabel.style.color = '#999';
-        rightLabel.style.pointerEvents = 'none';
-        rightLabel.textContent = '官方API优先';
+        rightLabel.style.cssText = 'position: absolute; right: 12px; top: 50%; transform: translateY(-50%); font-size: 11px; color: #999; pointer-events: none;';
+        rightLabel.textContent = '官方';
 
         prioritySwitch.append(leftLabel, rightLabel, prioritySlider);
 
-        // 获取当前优先级设置
         const currentPriority = lsGetItem(lsKeys.apiPriority.id);
         const isOfficialFirst = currentPriority[0] === 'official';
 
-        function updatePrioritySwitch(officialFirst) {
+        const updatePrioritySwitch = (officialFirst) => {
             if (officialFirst) {
-                prioritySlider.style.left = '102px';
-                prioritySlider.textContent = '官方API优先';
+                prioritySlider.style.left = '50px';
+                prioritySlider.textContent = '官方';
                 leftLabel.style.color = '#999';
                 rightLabel.style.color = 'white';
             } else {
                 prioritySlider.style.left = '2px';
-                prioritySlider.textContent = '自定义API优先';
+                prioritySlider.textContent = '自定义';
                 leftLabel.style.color = 'white';
                 rightLabel.style.color = '#999';
             }
-        }
-
+        };
         updatePrioritySwitch(isOfficialFirst);
 
         prioritySwitch.onclick = () => {
@@ -3183,11 +3334,42 @@
             const newPriority = currentPriority[0] === 'official' ? ['custom', 'official'] : ['official', 'custom'];
             lsSetItem(lsKeys.apiPriority.id, newPriority);
             updatePrioritySwitch(newPriority[0] === 'official');
-            console.log('[API优先级] 切换为:', newPriority[0] === 'official' ? '官方API优先' : '自定义API优先');
         };
 
-        priorityContainer.append(prioritySwitch);
-        apiSelectDiv.append(priorityContainer);
+        leftGroup.append(priorityLabel, prioritySwitch);
+
+        // --- 右侧：启用开关组 (官方 / 自定义) - 同一行显示 ---
+        const rightGroup = document.createElement('div');
+        rightGroup.style.cssText = 'display: flex; align-items: center; gap: 15px;';
+
+        // 官方API开关
+        const officialCb = embyCheckbox({ label: '启用官方' }, lsGetItem(lsKeys.useOfficialApi.id), (checked) => {
+            lsSetItem(lsKeys.useOfficialApi.id, checked);
+        });
+        officialCb.style.cssText = 'display: inline-flex !important; align-items: center; margin: 0 !important; white-space: nowrap;';
+
+        // 自定义API开关
+        const customCb = embyCheckbox({ label: '启用自定义' }, lsGetItem(lsKeys.useCustomApi.id), (checked) => {
+            lsSetItem(lsKeys.useCustomApi.id, checked);
+            const customContainer = getById('customApiContainer');
+            if (customContainer) {
+                customContainer.style.opacity = checked ? '1' : '0.5';
+                customContainer.style.pointerEvents = checked ? 'auto' : 'none';
+            }
+        });
+        customCb.style.cssText = 'display: inline-flex !important; align-items: center; margin: 0 !important; white-space: nowrap;';
+
+        rightGroup.append(officialCb, customCb);
+        controlBar.append(leftGroup, rightGroup);
+        apiSelectDiv.append(controlBar);
+
+        // 初始化自定义API容器的透明度
+        const customContainer = getById('customApiContainer');
+        if (customContainer) {
+            const customEnabled = lsGetItem(lsKeys.useCustomApi.id);
+            customContainer.style.opacity = customEnabled ? '1' : '0.5';
+            customContainer.style.pointerEvents = customEnabled ? 'auto' : 'none';
+        }
 
         searchNameDiv.append(embyButton({ label: '切换[原]标题', iconKey: iconKeys.text_format }, doSearchTitleSwtich));
         getById(eleIds.danmakuEpisodeLoad).append(
@@ -4150,16 +4332,45 @@
         // [修正] 手动匹配严格遵循API优先级
         // [新逻辑] 合并所有启用源的搜索结果，并按优先级排序
         const apiPriority = lsGetItem(lsKeys.apiPriority.id);
+
+        // [修改] 构建API配置，支持多个自定义源（新数据结构）
+        const customApiList = getCustomApiList();
         const apiConfigs = {
             official: { name: '官方API', prefix: corsProxy + 'https://api.dandanplay.net/api/v2', enabled: lsGetItem(lsKeys.useOfficialApi.id) },
-            custom: { name: '自定义API', prefix: lsGetItem(lsKeys.customApiPrefix.id), enabled: lsGetItem(lsKeys.useCustomApi.id) }
         };
 
+        // 为每个启用的自定义源创建配置
+        if (lsGetItem(lsKeys.useCustomApi.id) && customApiList.length > 0) {
+            customApiList.forEach((item, index) => {
+                if (item.enabled) {
+                    apiConfigs[`custom_${index}`] = {
+                        name: item.name || `自定义源${index + 1}`,
+                        prefix: item.url,
+                        enabled: true
+                    };
+                }
+            });
+        }
+
+        // 构建实际的优先级列表
+        const actualPriority = [];
+        for (const key of apiPriority) {
+            if (key === 'official') {
+                actualPriority.push('official');
+            } else if (key === 'custom') {
+                customApiList.forEach((item, index) => {
+                    if (item.enabled) {
+                        actualPriority.push(`custom_${index}`);
+                    }
+                });
+            }
+        }
+
         let allAnimes = [];
-        for (const apiKey of apiPriority) {
+        for (const apiKey of actualPriority) {
             const config = apiConfigs[apiKey];
             // [修正] 确保自定义API有地址时才使用
-            if (!config || !config.enabled || (apiKey === 'custom' && !config.prefix)) {
+            if (!config || !config.enabled || !config.prefix) {
                 continue;
             }
 
@@ -4882,6 +5093,104 @@
             .map(([key, value]) => [value.id, value.defaultValue])
         );
         lsBatchSet(defaultSettings);
+    }
+
+    // --- 自定义弹幕源列表操作函数 ---
+
+    /**
+     * 获取自定义弹幕源列表
+     * 数据结构: [{name: string, url: string, enabled: boolean}]
+     * 兼容旧版单一 customApiPrefix 配置和旧版字符串数组
+     */
+    function getCustomApiList() {
+        let list = lsGetItem(lsKeys.customApiList.id) || [];
+
+        // 兼容旧版字符串数组格式，转换为新格式
+        if (list.length > 0 && typeof list[0] === 'string') {
+            list = list.map((url, index) => ({
+                name: `自定义源${index + 1}`,
+                url: url,
+                enabled: true
+            }));
+            lsSetItem(lsKeys.customApiList.id, list);
+        }
+
+        // 兼容旧版：如果列表为空但旧配置有值，则迁移
+        if (list.length === 0) {
+            const oldPrefix = lsGetItem(lsKeys.customApiPrefix.id);
+            if (oldPrefix && oldPrefix.trim()) {
+                list.push({ name: '自定义源1', url: oldPrefix.trim(), enabled: true });
+                lsSetItem(lsKeys.customApiList.id, list);
+            }
+        }
+        return list;
+    }
+
+    /**
+     * 获取启用的自定义弹幕源URL列表（用于搜索逻辑）
+     */
+    function getEnabledCustomApiUrls() {
+        const list = getCustomApiList();
+        return list.filter(item => item.enabled).map(item => item.url);
+    }
+
+    /**
+     * 添加自定义弹幕源
+     */
+    function addCustomApiSource(name, url) {
+        const list = getCustomApiList();
+        // 检查URL是否已存在
+        if (!list.some(item => item.url === url)) {
+            list.push({ name: name || `自定义源${list.length + 1}`, url: url, enabled: true });
+            lsSetItem(lsKeys.customApiList.id, list);
+            // 同时更新旧配置（兼容性）
+            if (list.length === 1) {
+                lsSetItem(lsKeys.customApiPrefix.id, url);
+            }
+        }
+    }
+
+    /**
+     * 删除自定义弹幕源
+     */
+    function removeCustomApiSource(index) {
+        const list = getCustomApiList();
+        if (index >= 0 && index < list.length) {
+            list.splice(index, 1);
+            lsSetItem(lsKeys.customApiList.id, list);
+            // 更新旧配置（兼容性）
+            const enabledUrls = list.filter(item => item.enabled).map(item => item.url);
+            lsSetItem(lsKeys.customApiPrefix.id, enabledUrls[0] || '');
+        }
+    }
+
+    /**
+     * 切换自定义弹幕源启用状态
+     */
+    function toggleCustomApiSource(index, enabled) {
+        const list = getCustomApiList();
+        if (index >= 0 && index < list.length) {
+            list[index].enabled = enabled;
+            lsSetItem(lsKeys.customApiList.id, list);
+            // 更新旧配置（兼容性）
+            const enabledUrls = list.filter(item => item.enabled).map(item => item.url);
+            lsSetItem(lsKeys.customApiPrefix.id, enabledUrls[0] || '');
+        }
+    }
+
+    /**
+     * 移动自定义弹幕源位置
+     */
+    function moveCustomApiSource(fromIndex, toIndex) {
+        const list = getCustomApiList();
+        if (fromIndex >= 0 && fromIndex < list.length && toIndex >= 0 && toIndex < list.length) {
+            const [item] = list.splice(fromIndex, 1);
+            list.splice(toIndex, 0, item);
+            lsSetItem(lsKeys.customApiList.id, list);
+            // 更新旧配置（兼容性）
+            const enabledUrls = list.filter(item => item.enabled).map(item => item.url);
+            lsSetItem(lsKeys.customApiPrefix.id, enabledUrls[0] || '');
+        }
     }
 
     // 缓存相关方法
