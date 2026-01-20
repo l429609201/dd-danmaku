@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.1.2
+// @version      1.1.3
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -25,7 +25,7 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.1.2', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.1.3', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -36,7 +36,9 @@
     };
     const dandanplayApi = {
         get prefix() {
-            const custom = lsGetItem(lsKeys.customApiPrefix.id);
+            // [修改] 支持多源：使用第一个自定义源
+            const customList = typeof getCustomApiList === 'function' ? getCustomApiList() : [];
+            const custom = customList.length > 0 ? customList[0] : lsGetItem(lsKeys.customApiPrefix.id);
             if (custom && custom.length > 0 && !lsGetItem(lsKeys.useOfficialApi.id)) {
                 return custom;
             }
@@ -51,7 +53,9 @@
     };
     const dandanplayApiCustom = {
         get prefix() {
-            const custom = lsGetItem(lsKeys.customApiPrefix.id);
+            // [修改] 支持多源：使用第一个自定义源
+            const customList = typeof getCustomApiList === 'function' ? getCustomApiList() : [];
+            const custom = customList.length > 0 ? customList[0] : lsGetItem(lsKeys.customApiPrefix.id);
             // 自定义API可以不走代理
             return custom && custom.length > 0 ? custom : dandanplayApi.prefix;
         },
@@ -270,7 +274,7 @@
         customeGetExtcommentUrl: { id: 'danmakuCustomeGetExtcommentUrl', defaultValue: getApiTl(dandanplayApi.getExtcomment), name: '获取指定第三方url的弹幕' },
         customePosterImgUrl: { id: 'danmakuCustomePosterImgUrl', defaultValue: getApiTl(dandanplayApi.posterImg), name: '媒体海报' },
         customApiPrefix: { id: 'danmakuCustomApiPrefix', defaultValue: '', name: '自定义弹弹play API地址' },
-        customApiList: { id: 'danmakuCustomApiList', defaultValue: [], name: '自定义API源列表' },
+        customApiList: { id: 'danmakuCustomApiList', defaultValue: [], name: '自定义弹幕源列表' },
         apiPriority: { id: 'danmakuApiPriority', defaultValue: ['official', 'custom'], name: 'API 优先级' },
     };
     const lsLocalKeys = {
@@ -732,18 +736,15 @@
             } else {
                 wrapper.append(menubar);
             }
-            // ------ [Fix] 修复开始：根据缓存状态更新按钮图标 ------
-           const isDanmakuOn = lsGetItem(lsKeys.switch.id);
-           const switchBtnOpt = mediaBtnOpts.find(opt => opt.id === eleIds.danmakuSwitchBtn);
-           if (switchBtnOpt) {
-            // 如果开启，显示评论图标；如果关闭，显示禁止评论图标
-              switchBtnOpt.iconKey = isDanmakuOn ? iconKeys.comment : iconKeys.comments_disabled;
-           }
-            // ------ [Fix] 修复结束 ------
-
             mediaBtnOpts.forEach(opt => {
                 menubar.appendChild(embyButton(opt, opt.onClick));
             });
+            // [修复] 初始化时检查弹幕开关状态，确保按钮图标与实际状态一致
+            const danmakuEnabled = lsGetItem(lsKeys.switch.id);
+            const osdDanmakuSwitchBtn = getById(eleIds.danmakuSwitchBtn);
+            if (osdDanmakuSwitchBtn && osdDanmakuSwitchBtn.firstChild) {
+                osdDanmakuSwitchBtn.firstChild.innerHTML = danmakuEnabled ? iconKeys.comment : iconKeys.comments_disabled;
+            }
             console.log('播放器弹幕UI初始化完成');
         }, 0);
     }
@@ -1660,123 +1661,135 @@
     async function searchEpisodes(itemInfoMap) {
         const { animeName, episode, seriesOrMovieId, streamUrl, size, duration } = itemInfoMap;
         console.log(`[Debug] searchEpisodes调用 - streamUrl: ${streamUrl ? '已获取' : '未获取'}, size: ${size}, duration: ${duration}`);
-        
+
+        // 新增：读取用户定义的API优先级
         const apiPriority = lsGetItem(lsKeys.apiPriority.id);
-        const useOfficialApi = lsGetItem(lsKeys.useOfficialApi.id);
-        const useCustomApi = lsGetItem(lsKeys.useCustomApi.id);
+
+        // [修改] 构建API配置，支持多个自定义源
+        const customApiList = getCustomApiList();
+        const apiConfigs = {
+            official: { name: '官方API', prefix: corsProxy + 'https://api.dandanplay.net/api/v2', enabled: lsGetItem(lsKeys.useOfficialApi.id) },
+        };
+
+        // 为每个自定义源创建配置
+        if (lsGetItem(lsKeys.useCustomApi.id) && customApiList.length > 0) {
+            // 将多个自定义源作为 custom_0, custom_1, ... 添加到配置中
+            customApiList.forEach((url, index) => {
+                apiConfigs[`custom_${index}`] = {
+                    name: `自定义源${index + 1}`,
+                    prefix: url,
+                    enabled: true
+                };
+            });
+        }
+
+        // 构建实际的优先级列表
+        const actualPriority = [];
+        for (const key of apiPriority) {
+            if (key === 'official') {
+                actualPriority.push('official');
+            } else if (key === 'custom') {
+                // 将 'custom' 展开为所有自定义源
+                customApiList.forEach((_, index) => {
+                    actualPriority.push(`custom_${index}`);
+                });
+            }
+        }
 
         // 准备 /match 接口的请求体
         const matchPayload = {
             fileName: animeName,
             fileHash: null,
             fileSize: size || 0,
-            videoDuration: Math.floor(duration || 0),// [修复] 转换为整数
-            matchMode: "hashAndFileName" 
+            videoDuration: Math.floor(duration || 0), // [修复] 转换为整数
+            matchMode: "hashAndFileName" // [修正] 始终使用 hashAndFileName 模式
         };
 
-        // 计算文件哈希
+        // 仅在有文件路径时才计算哈希值
         if (streamUrl && size > 0) {
+            console.log(`准备通过播放链接计算文件哈希`);
             matchPayload.fileHash = await calculateFileHash(streamUrl, size);
-            if (!matchPayload.fileHash) {
+            if (matchPayload.fileHash) { 
+                console.log(`文件哈希计算完成: ${matchPayload.fileHash}`);
+            } else {
+                console.warn('[Hash] 文件哈希计算失败，将使用假哈希值进行匹配。');
                 matchPayload.fileHash = 'a1b2c3d4e5f67890abcd1234ef567890';
             }
         } else {
+            console.warn('未找到播放链接或文件大小，将使用假哈希值进行匹配。');
             matchPayload.fileHash = 'a1b2c3d4e5f67890abcd1234ef567890';
         }
 
-        // 遍历 API 优先级
-        for (const apiKey of apiPriority) {
-            let currentSources = [];
-
-            // --- 组装当前优先级的源列表 ---
-            if (apiKey === 'official' && useOfficialApi) {
-                currentSources.push({
-                    name: '官方API',
-                    prefix: corsProxy + 'https://api.dandanplay.net/api/v2',
-                    isOfficial: true
-                });
-            } else if (apiKey === 'custom' && useCustomApi) {
-                const list = lsGetItem(lsKeys.customApiList.id) || [];
-                // 仅读取开启的源，直接忽略旧的单源配置
-                currentSources = list.filter(s => s.enabled).map(s => ({
-                    name: s.name,
-                    prefix: s.url,
-                    isOfficial: false
-                }));
+        // 1. 严格按照优先级顺序进行匹配
+        for (const apiKey of actualPriority) {
+            const config = apiConfigs[apiKey];
+            if (!config || !config.enabled || !config.prefix) {
+                continue;
             }
 
-            if (currentSources.length === 0) continue;
+            console.log(`[自动匹配][${config.name}] 开始按优先级进行匹配...`);
 
-            // 遍历当前优先级下的所有源
-            for (const config of currentSources) {
-                console.log(`[自动匹配][${config.name}] 开始匹配...`);
+            // 1a. 尝试 /match 接口 (对所有API都尝试，有哈希时使用哈希)
+            console.log(`[自动匹配][${config.name}] 尝试 /match 接口, 请求体:`, {...matchPayload, fileHash: matchPayload.fileHash ? '...' : null});
+            const matchResult = await fetchMatchApi(matchPayload, config.prefix);
+            if (matchResult && matchResult.isMatched && matchResult.animes && matchResult.animes.length > 0) {
+                console.log(`[${config.name}] /match 接口直接匹配成功，将直接使用返回的 episodeId`);
+                const match = matchResult.animes[0];
+                return { directMatch: true, apiPrefix: config.prefix, apiName: config.name, episodeInfo: { ...match, episodes: [{ episodeId: match.episodeId, episodeTitle: match.episodeTitle }], imageUrl: match.imageUrl } };
+            }
 
-                // 1. 尝试 /match 接口
-                const matchResult = await fetchMatchApi(matchPayload, config.prefix);
-                
-                // 1a. 直接匹配
-                if (matchResult && matchResult.isMatched && matchResult.animes && matchResult.animes.length > 0) {
-                    console.log(`[${config.name}] /match 接口直接匹配成功`);
-                    const match = matchResult.animes[0];
-                    return { 
-                        directMatch: true, 
-                        apiPrefix: config.prefix, 
-                        apiName: config.name, 
-                        episodeInfo: { ...match, episodes: [{ episodeId: match.episodeId, episodeTitle: match.episodeTitle }], imageUrl: match.imageUrl } 
-                    };
+            // 1a.1. 如果 /match 接口返回了候选列表但没有直接匹配，尝试智能选择
+            if (matchResult && !matchResult.isMatched && matchResult.animes && matchResult.animes.length > 0) {
+                console.log(`[${config.name}] /match 接口返回候选列表，尝试智能匹配...`);
+                const bestMatch = selectBestMatch(animeName, matchResult.animes);
+                if (bestMatch) {
+                    console.log(`[${config.name}] 智能匹配选择:`, bestMatch.animeTitle);
+                    return { directMatch: true, apiPrefix: config.prefix, apiName: config.name, episodeInfo: { ...bestMatch, episodes: [{ episodeId: bestMatch.episodeId, episodeTitle: bestMatch.episodeTitle }], imageUrl: bestMatch.imageUrl } };
                 }
+            }
 
-                // 1b. 智能匹配
-                if (matchResult && !matchResult.isMatched && matchResult.animes && matchResult.animes.length > 0) {
-                    const bestMatch = selectBestMatch(animeName, matchResult.animes);
-                    if (bestMatch) {
-                        return { 
-                            directMatch: true, 
-                            apiPrefix: config.prefix, 
-                            apiName: config.name, 
-                            episodeInfo: { ...bestMatch, episodes: [{ episodeId: bestMatch.episodeId, episodeTitle: bestMatch.episodeTitle }], imageUrl: bestMatch.imageUrl } 
-                        };
-                    }
+            // 1b. 尝试 /search/episodes 接口 (带集数)
+            let searchTitle = animeName;
+            let searchEpisode = episode;
+
+            // [新增] 针对官方API的特殊处理逻辑
+            if (apiKey === 'official') {
+                const parsed = parseAnimeName(animeName);
+                if (parsed.season !== null) {
+                    searchTitle = `${parsed.title} 第${parsed.season}季`;
+                    searchEpisode = parsed.episode; // 使用从文件名解析出的集数
+                    console.log(`[自动匹配][官方API优化] 格式化搜索: 标题='${searchTitle}', 集数=${searchEpisode}`);
                 }
+            }
+            console.log(`[自动匹配][${config.name}] 尝试 /search/episodes 接口, 标题名: ${searchTitle}, 集数: ${searchEpisode}`);
+            let animaInfo = await fetchSearchEpisodes(searchTitle, searchEpisode, config.prefix);
+            if (animaInfo && animaInfo.animes.length > 0) {
+                console.log(`[${config.name}] 带集数搜索成功`);
+                return { animaInfo, apiPrefix: config.prefix, apiName: config.name };
+            }
 
-                // 2. 尝试 /search/episodes (带集数)
-                let searchTitle = animeName;
-                let searchEpisode = episode;
+            // 1c. 尝试 /search/episodes 接口 (不带集数)
+            console.log(`[${config.name}] 带集数搜索失败，尝试不带集数...`);
+            animaInfo = await fetchSearchEpisodes(animeName, null, config.prefix);
+            if (animaInfo && animaInfo.animes.length > 0) {
+                console.log(`[${config.name}] 不带集数搜索成功`);
+                return { animaInfo, apiPrefix: config.prefix, apiName: config.name };
+            }
 
-                if (config.isOfficial) {
-                    const parsed = parseAnimeName(animeName);
-                    if (parsed.season !== null) {
-                        searchTitle = `${parsed.title} 第${parsed.season}季`;
-                        searchEpisode = parsed.episode;
-                    }
-                }
-                
-                let animaInfo = await fetchSearchEpisodes(searchTitle, searchEpisode, config.prefix);
+            // 1d. 尝试使用原始标题
+            const seriesOrMovieInfo = await fatchEmbyItemInfo(seriesOrMovieId);
+            if (seriesOrMovieInfo && seriesOrMovieInfo.OriginalTitle) {
+                const originalTitle = seriesOrMovieInfo.OriginalTitle;
+                console.log(`[${config.name}] 尝试使用原始标题搜索: ${originalTitle}`);
+                animaInfo = await fetchSearchEpisodes(originalTitle, episode, config.prefix);
                 if (animaInfo && animaInfo.animes.length > 0) {
-                    console.log(`[${config.name}] 带集数搜索成功`);
-                    return { animaInfo, apiPrefix: config.prefix, apiName: config.name };
-                }
-
-                // 3. 尝试 /search/episodes (不带集数)
-                animaInfo = await fetchSearchEpisodes(animeName, null, config.prefix);
-                if (animaInfo && animaInfo.animes.length > 0) {
-                    console.log(`[${config.name}] 不带集数搜索成功`);
-                    return { animaInfo, apiPrefix: config.prefix, apiName: config.name };
-                }
-
-                // 4. 尝试使用原始标题
-                const seriesOrMovieInfo = await fatchEmbyItemInfo(seriesOrMovieId);
-                if (seriesOrMovieInfo && seriesOrMovieInfo.OriginalTitle) {
-                    const originalTitle = seriesOrMovieInfo.OriginalTitle;
-                    animaInfo = await fetchSearchEpisodes(originalTitle, episode, config.prefix);
-                    if (animaInfo && animaInfo.animes.length > 0) {
-                        console.log(`[${config.name}] 使用原始标题搜索成功`);
-                        return { animaInfo, animeOriginalTitle: originalTitle, apiPrefix: config.prefix, apiName: config.name };
-                    }
+                    console.log(`[${config.name}] 使用原始标题搜索成功`);
+                    return { animaInfo, animeOriginalTitle: originalTitle, apiPrefix: config.prefix, apiName: config.name };
                 }
             }
         }
 
+        // 2. 如果所有API都失败了
         return null;
     }
 
@@ -1998,17 +2011,14 @@
         // wrapper.style.opacity = lsGetItem(lsKeys.fontOpacity.id); // 弹幕整体透明度
         wrapper.style.top = wrapperTop + 'px';
         wrapper.style.pointerEvents = 'none';
-        // 告诉浏览器这个层是会变的，让 GPU 提前准备
-        wrapper.style.willChange = 'transform, opacity';
         // const _container = document.querySelector(mediaContainerQueryStr);
         const _container = await waitForElement(mediaContainerQueryStr);
         _container.prepend(wrapper);
         let _speed = 144 * (lsGetItem(lsKeys.speed.id) / 100);
-        
-        // 检查 Danmaku 库是否已加载
+        // 检查 Danmaku 库是否已加载，如果未加载则等待
         if (typeof Danmaku === 'undefined' && typeof window.Danmaku === 'undefined') {
             console.log('[Danmaku] 弹幕库未加载，尝试等待加载...');
-             // 尝试等待 Danmaku 库加载完成，最多等待 3 秒
+            // 尝试等待 Danmaku 库加载完成，最多等待 3 秒
             let waitCount = 0;
             const maxWait = 30; // 30 * 100ms = 3秒
             while (typeof window.Danmaku === 'undefined' && waitCount < maxWait) {
@@ -2016,8 +2026,8 @@
                 waitCount++;
             }
             if (typeof window.Danmaku === 'undefined') {
-                 console.error('[Danmaku] 弹幕库加载超时，尝试重新加载...');
-                 // 尝试重新加载
+                console.error('[Danmaku] 弹幕库加载超时，尝试重新加载...');
+                // 尝试重新加载
                 try {
                     const module = await Emby.importModule(requireDanmakuPath);
                     window.Danmaku = module;
@@ -2026,6 +2036,8 @@
                     console.error('[Danmaku] 弹幕库加载失败:', error);
                     throw new Error('创建弹幕失败：Danmaku 库未能加载。请检查网络连接或刷新页面重试。');
                 }
+            } else {
+                console.log('[Danmaku] 弹幕库加载完成');
             }
         }
         const DanmakuClass = window.Danmaku || Danmaku;
@@ -2050,7 +2062,6 @@
             }
         });
         window.ede.ob.observe(_container);
-
         // 自定义的 initH5VideoAdapter 下,解决暂停时暂停的弹幕再次加载会自动恢复问题
         if (_media.id) {
             require(['playbackManager'], (playbackManager) => {
@@ -2059,28 +2070,15 @@
                 }
             });
         }
-
-        // 1. 更新“弹幕信息”页面
+        // 设置弹窗内的弹幕信息
         buildCurrentDanmakuInfo(currentDanmakuInfoContainerId);
-
-        // 2. [新增修复] 更新“手动匹配”页面中的总量显示
-        const currentMatchedDiv = getById(eleIds.currentMatchedDiv);
-        if (currentMatchedDiv) {
-            const label = currentMatchedDiv.querySelector('label');
-            if (label) {
-                label.textContent = `弹弹 play 总量: ${comments.length}`;
-            }
-        }
-
-        // 3. 更新播放界面右下角信息
+        // 播放界面右下角添加弹幕信息
         appendvideoOsdDanmakuInfo(_comments.length);
-        
-        // 4. 更新进度条
+        // 绘制弹幕进度条
         if (lsGetItem(lsKeys.osdLineChartEnable.id)) {
             buildProgressBarChart(20);
         }
     }
-
 
     function buildProgressBarChart(chartHeightNum) {
         const chartEle = getById(eleIds.progressBarLineChart);
@@ -2304,18 +2302,16 @@
             lsSetItem(lsKeys.typeFilter.id, typeFilterTemp);
             msg += `\n已自动添加 ${lsKeys.typeFilter.name}:${danmakuTypeFilterOpts.bottom.name}`;
         }
-        // 弹幕数量上来后合并弹幕真的很卡
-       // const mergeSimilarEnable = lsGetItem(lsKeys.mergeSimilarEnable.id);
-       // if (!mergeSimilarEnable) {
-       //     window.ede.tempLsValues[lsKeys.mergeSimilarEnable.id] = mergeSimilarEnable;
-       //     lsSetItem(lsKeys.mergeSimilarEnable.id, true);
-       //     msg += `\n已自动调整 ${lsKeys.mergeSimilarEnable.name}:true`;
-      //  }
-      //  if (msg.length != initMsgLenth) {
-      //      embyToast({ text: msg });
-       //     console.log('[自动过滤] ' + msg);
-      //  }
-
+        const mergeSimilarEnable = lsGetItem(lsKeys.mergeSimilarEnable.id);
+        if (!mergeSimilarEnable) {
+            window.ede.tempLsValues[lsKeys.mergeSimilarEnable.id] = mergeSimilarEnable;
+            lsSetItem(lsKeys.mergeSimilarEnable.id, true);
+            msg += `\n已自动调整 ${lsKeys.mergeSimilarEnable.name}:true`;
+        }
+        if (msg.length != initMsgLenth) {
+            embyToast({ text: msg });
+            console.log('[自动过滤] ' + msg);
+        }
     }
 
     function danmakuAutoFilterCancel() {
@@ -2411,74 +2407,40 @@
     function danmakuMergeSimilar(comments, threshold = 50, timeWindow = 15) {
         if (!lsGetItem(lsKeys.mergeSimilarEnable.id)) { return comments; }
 
-        const startTime = performance.now();
         const mergedComments = [];
-        
-        // 使用一个特殊的属性名作为标记，避免与原有属性冲突
-        const MERGED_FLAG = '_is_merged_temp';
-
-        // 1. 预处理：初始化所有弹幕的标记为 false
-        for (let k = 0; k < comments.length; k++) {
-            comments[k][MERGED_FLAG] = false;
-        }
+        // [优化] 使用 Set 替代数组，提升 includes 查找性能 O(n) -> O(1)
+        const mergedIndexes = new Set();
+        const startTime = new Date().getTime();
 
         for (let i = 0; i < comments.length; i++) {
-            // 如果这条弹幕已经被标记为合并过，直接跳过
-            if (comments[i][MERGED_FLAG]) { continue; }
+            if (mergedIndexes.has(i)) { continue; }
 
-            let rootComment = comments[i];
+            let mergedComment = comments[i];
             let count = 1;
-            
-            // 缓存基准弹幕的文本和长度，避免在循环中重复读取
-            const rootText = rootComment.text;
-            const rootLen = rootText.length;
+            let totalSimilarity = 0;
 
-            // 内层循环：只向后查找 timeWindow 秒内的弹幕
-            for (let j = i + 1; j < comments.length; j++) {
-                const compareComment = comments[j];
+            for (let j = i + 1; j < comments.length && Math.abs(comments[j].time - comments[i].time) <= timeWindow; j++) {
+                if (mergedIndexes.has(j)) { continue; }
 
-                // 如果已经被合并过，跳过
-                if (compareComment[MERGED_FLAG]) { continue; }
-
-                // 【关键优化1】快速退出：如果时间差超过窗口，直接中断内层循环
-                // 因为弹幕是按时间排序的，后面的肯定更远，没必要再看了
-                if ((compareComment.time - rootComment.time) > timeWindow) {
-                    break; 
-                }
-
-                // 【关键优化2】快速退出：根据长度差异预判
-                // 如果两个字符串长度差距太大，相似度绝对不可能达到阈值，直接跳过昂贵的计算
-                // 例如：阈值80%，长度差超过20%，则不可能相似
-                const compareLen = compareComment.text.length;
-                const lenDiff = Math.abs(rootLen - compareLen);
-                const maxLen = Math.max(rootLen, compareLen);
-                
-                // 只有当最大长度不为0且长度差异比例可能满足阈值时，才进行计算
-                if (maxLen > 0 && (1 - (lenDiff / maxLen)) * 100 < threshold) {
-                    continue;
-                }
-
-                // 【执行计算】调用下方优化后的算法函数
-                const similarity = similarityPercentage(rootText, compareComment.text);
-                
+                const similarity = similarityPercentage(mergedComment.text, comments[j].text, threshold);
                 if (similarity >= threshold) {
                     count++;
-                    // 【关键优化3】O(1) 标记：直接在对象上打标，比数组 includes 快无数倍
-                    compareComment[MERGED_FLAG] = true; 
+                    mergedIndexes.add(j);
+                    totalSimilarity += similarity;
                 }
             }
 
-            // 如果发现有相似弹幕，更新显示的文本
             if (count > 1) {
-                rootComment.text += ` [x${count}]`;
-                rootComment.xCount = count;
+                mergedComment.text += ` [x${count}]`;
+                mergedComment.xCount = count;
+                mergedComment.xTotalSimilarity = totalSimilarity / count;
             }
 
-            mergedComments.push(rootComment);
+            mergedComments.push(mergedComment);
         }
 
-        const endTime = performance.now();
-        console.log(`合并相似弹幕耗时: ${(endTime - startTime).toFixed(2)} ms，原始数量: ${comments.length}，合并后: ${mergedComments.length}`);
+        const endTime = new Date().getTime();
+        console.log(`合并相似弹幕 (danmakuMergeSimilar) 耗时: ${endTime - startTime} 毫秒`);
 
         return mergedComments;
     }
@@ -2491,63 +2453,65 @@
      *
      * @param {string} a - 第一个字符串
      * @param {string} b - 第二个字符串
-     * @returns {Object} - 包含 Levenshtein 距离和相似度百分比的对象
+     * @param {number} threshold - 相似度阈值，用于提前剪枝优化
      * @returns {number} - 两个字符串之间的相似度百分比,范围为 0 到 100
      */
-   function similarityPercentage(s, t) {
-        if (s === t) return 100;
-        if (s.length === 0) return t.length === 0 ? 100 : 0;
-        if (t.length === 0) return 0;
-
-        const n = s.length;
-        const m = t.length;
-        
-        // 确保 s 是较短的字符串，这样申请的内存数组更小
-        if (n > m) {
-            return similarityPercentage(t, s);
+    function similarityPercentage(a, b, threshold = 0) {
+        if (a === b) {
+            return 100;
         }
 
-        // 使用 TypedArray (Int32Array) 代替普通数组，性能更好
-        // 只需要两行数组（当前行和上一行），不需要 n*m 的大矩阵
-        let p = new Int32Array(n + 1); // 'previous' row
-        let c = new Int32Array(n + 1); // 'current' row
+        const lenA = a.length;
+        const lenB = b.length;
+        const maxLength = Math.max(lenA, lenB);
+
+        // [优化] 长度差异预判剪枝：如果长度差异过大，理论最大相似度低于阈值，直接返回 0
+        if (threshold > 0) {
+            const minLength = Math.min(lenA, lenB);
+            const maxPossibleSimilarity = (minLength / maxLength) * 100;
+            if (maxPossibleSimilarity < threshold) {
+                return 0;
+            }
+        }
+
+        if (lenA > lenB) {
+            [a, b] = [b, a];
+        }
+
+        // [优化] 使用 Int32Array 替代普通数组，减少内存开销和 GC 压力
+        const aLen = a.length;
+        const bLen = b.length;
+        let previousRow = new Int32Array(aLen + 1);
+        let currentRow = new Int32Array(aLen + 1);
 
         // 初始化第一行
-        for (let i = 0; i <= n; i++) {
-            p[i] = i;
+        for (let i = 0; i <= aLen; i++) {
+            previousRow[i] = i;
         }
 
-        for (let j = 1; j <= m; j++) {
-            const t_j = t.charCodeAt(j - 1); // 使用 charCodeAt 也是一个小优化
-            c[0] = j;
+        for (let j = 1; j <= bLen; j++) {
+            currentRow[0] = j;
 
-            for (let i = 1; i <= n; i++) {
-                const cost = s.charCodeAt(i - 1) === t_j ? 0 : 1;
-                
-                // 经典的 Levenshtein 状态转移方程
-                // c[i] = Math.min(insert, delete, substitute)
-                // 展开写比 Math.min 稍微快一点点
-                const insert = p[i] + 1;
-                const del = c[i - 1] + 1;
-                const sub = p[i - 1] + cost;
+            for (let i = 1; i <= aLen; i++) {
+                const substitutionCost = (a[i - 1] === b[j - 1]) ? 0 : 1;
+                const insertionCost = previousRow[i] + 1;
+                const deletionCost = currentRow[i - 1] + 1;
 
-                let min = insert;
-                if (del < min) min = del;
-                if (sub < min) min = sub;
-                
-                c[i] = min;
+                currentRow[i] = Math.min(
+                    previousRow[i - 1] + substitutionCost,
+                    insertionCost,
+                    deletionCost,
+                );
             }
 
-            // 交换数组引用，复用内存，避免每行都创建新数组
-            let temp = p;
-            p = c;
-            c = temp;
+            // 交换行
+            [previousRow, currentRow] = [currentRow, previousRow];
         }
 
-        const distance = p[n]; // 结果现在存储在 p 数组中（因为最后交换了一次）
-        const maxLength = Math.max(n, m);
-        
-        return ((maxLength - distance) / maxLength) * 100;
+        const distance = previousRow[a.length];
+        const similarity = ((maxLength - distance) / maxLength) * 100;
+
+        return similarity;
     }
 
     function danmakuParser($obj) {
@@ -3048,7 +3012,8 @@
                             <img id="${eleIds.searchImg}" style="width: 100%; height: auto;"
                                 loading="lazy" decoding="async" draggable="false" class="coveredImage-noScale"></img>
                             <div id="${eleIds.searchApiSource}" class="${classes.embyFieldDesc}" style="margin-top: 0.5em;">
-                                </div>
+                                <!-- API来源将在这里显示 -->
+                            </div>
                         </div>
                     </div>
                     </div>
@@ -3080,21 +3045,27 @@
                         </div>
                     </div>
                 </div>
-                
-                <div is="emby-collapse" title="API选择、自定义API配置">
+                <div is="emby-collapse" title="服务端 Danmu 插件">
                     <div class="${classes.collapseContentNav}">
-                        <div id="${eleIds.apiSelectDiv}" class="${classes.embyCheckboxList}" style="${styles.embyCheckboxList} align-items: center;">
-                            </div>
-                        <div id="customApiContainer" style="margin-top: 1em;">
-                            </div>
+                        <div id="${eleIds.danmuPluginDiv}" class="${classes.embyCheckboxList}" style="${styles.embyCheckboxList}"></div>
                     </div>
-                </div>
+            <div is="emby-collapse" title="API选择、自定义API配置">
+                <div class="${classes.collapseContentNav}">
+                    <div id="${eleIds.apiSelectDiv}" class="${classes.embyCheckboxList}" style="${styles.embyCheckboxList} align-items: center;">
+                        <!-- API 优先级列表将在这里创建 -->
+                    </div>
+                    <div id="customApiContainer" style="margin-top: 1em;">
+                        <!-- 自定义API地址输入框将在这里创建 -->
+                    </div>
+            </div>
             </div>
         `;
         container.innerHTML = template.trim();
         buildSearchEpisodeEle();
         buildExtCommentDiv();
-        // buildDanmuPluginDiv(); // 【修改点】已删除此调用
+        buildDanmuPluginDiv();
+
+        // 绑定手动匹配页面的额外按钮事件
         bindManualMatchButtons();
     }
 
@@ -3136,307 +3107,286 @@
         }
     }
 
+    function buildSearchEpisodeEle() {
+        const customApiContainer = getById('customApiContainer');
 
+        // --- 多自定义弹幕源列表 UI ---
+        const customApiListDiv = document.createElement('div');
+        customApiListDiv.className = 'emby-field';
+        customApiListDiv.id = 'customApiListDiv';
+        customApiListDiv.style.cssText = 'width: 100%; max-width: 600px;'; // 设置整体宽度
 
+        const customApiListLabel = document.createElement('label');
+        customApiListLabel.className = 'emby-label';
+        customApiListLabel.textContent = '自定义弹幕源列表（按顺序依次尝试）：';
+        customApiListDiv.append(customApiListLabel);
 
+        // 源列表容器
+        const sourceListContainer = document.createElement('div');
+        sourceListContainer.id = 'customApiSourceList';
+        sourceListContainer.style.cssText = 'margin: 0.5em 0; max-height: 250px; overflow-y: auto; width: 100%;';
+        customApiListDiv.append(sourceListContainer);
 
- function buildSearchEpisodeEle() {
-        // ==================== 1. 搜索框与顶部按钮区域 ====================
+        // 渲染源列表的函数
+        const renderSourceList = () => {
+            sourceListContainer.innerHTML = '';
+            const apiList = getCustomApiList();
+
+            if (apiList.length === 0) {
+                const emptyTip = document.createElement('div');
+                emptyTip.style.cssText = 'color: #888; padding: 0.5em; font-size: 0.9em;';
+                emptyTip.textContent = '暂无自定义源，请在下方添加';
+                sourceListContainer.append(emptyTip);
+                return;
+            }
+
+            apiList.forEach((url, index) => {
+                const itemDiv = document.createElement('div');
+                itemDiv.style.cssText = 'display: flex; align-items: center; padding: 0.4em 0.6em; margin: 0.3em 0; background: rgba(255,255,255,0.05); border-radius: 4px; width: 100%;';
+
+                // 序号
+                const indexSpan = document.createElement('span');
+                indexSpan.style.cssText = 'min-width: 1.8em; color: #888; font-size: 0.9em; flex-shrink: 0;';
+                indexSpan.textContent = `${index + 1}.`;
+                itemDiv.append(indexSpan);
+
+                // URL 显示
+                const urlSpan = document.createElement('span');
+                urlSpan.style.cssText = 'flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0 0.5em; font-size: 0.9em; min-width: 200px;';
+                urlSpan.textContent = url;
+                urlSpan.title = url;
+                itemDiv.append(urlSpan);
+
+                // 上移按钮
+                if (index > 0) {
+                    const upBtn = document.createElement('button');
+                    upBtn.setAttribute('is', 'emby-button');
+                    upBtn.className = 'paper-icon-button-light';
+                    upBtn.innerHTML = '<i class="md-icon">arrow_upward</i>';
+                    upBtn.title = '上移';
+                    upBtn.style.cssText = 'padding: 0.2em;';
+                    upBtn.onclick = () => {
+                        moveCustomApiSource(index, index - 1);
+                        renderSourceList();
+                    };
+                    itemDiv.append(upBtn);
+                }
+
+                // 下移按钮
+                if (index < apiList.length - 1) {
+                    const downBtn = document.createElement('button');
+                    downBtn.setAttribute('is', 'emby-button');
+                    downBtn.className = 'paper-icon-button-light';
+                    downBtn.innerHTML = '<i class="md-icon">arrow_downward</i>';
+                    downBtn.title = '下移';
+                    downBtn.style.cssText = 'padding: 0.2em;';
+                    downBtn.onclick = () => {
+                        moveCustomApiSource(index, index + 1);
+                        renderSourceList();
+                    };
+                    itemDiv.append(downBtn);
+                }
+
+                // 删除按钮
+                const deleteBtn = document.createElement('button');
+                deleteBtn.setAttribute('is', 'emby-button');
+                deleteBtn.className = 'paper-icon-button-light';
+                deleteBtn.innerHTML = '<i class="md-icon">delete</i>';
+                deleteBtn.title = '删除';
+                deleteBtn.style.cssText = 'padding: 0.2em; color: #f44336;';
+                deleteBtn.onclick = () => {
+                    removeCustomApiSource(index);
+                    renderSourceList();
+                    embyToast({ text: '已删除弹幕源' });
+                };
+                itemDiv.append(deleteBtn);
+
+                sourceListContainer.append(itemDiv);
+            });
+        };
+
+        // 添加新源的输入框和按钮
+        const addSourceDiv = document.createElement('div');
+        addSourceDiv.style.cssText = 'display: flex; align-items: center; margin-top: 0.5em; width: 100%;';
+
+        const newSourceInput = document.createElement('input');
+        newSourceInput.setAttribute('is', 'emby-input');
+        newSourceInput.className = classes.embyInput;
+        newSourceInput.type = 'text';
+        newSourceInput.placeholder = '输入API地址，如 http://192.168.1.100:9321/api/v1';
+        newSourceInput.style.cssText = 'flex: 1; min-width: 300px; margin-right: 0.5em;';
+
+        const addSourceBtn = document.createElement('button');
+        addSourceBtn.setAttribute('is', 'emby-button');
+        addSourceBtn.className = 'raised button-submit block emby-button';
+        addSourceBtn.innerHTML = '<i class="md-icon">add</i> 添加';
+        addSourceBtn.style.cssText = 'padding: 0.5em 1em;';
+        addSourceBtn.onclick = () => {
+            const url = newSourceInput.value.trim();
+            if (!url) {
+                embyToast({ text: '请输入API地址' });
+                return;
+            }
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                embyToast({ text: '请输入有效的URL（以 http:// 或 https:// 开头）' });
+                return;
+            }
+            addCustomApiSource(url);
+            newSourceInput.value = '';
+            renderSourceList();
+            embyToast({ text: '已添加弹幕源', secondaryText: url });
+        };
+
+        // 回车添加
+        newSourceInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                addSourceBtn.click();
+            }
+        });
+
+        addSourceDiv.append(newSourceInput);
+        addSourceDiv.append(addSourceBtn);
+        customApiListDiv.append(addSourceDiv);
+
+        // 提示信息
+        const customApiDesc = document.createElement('div');
+        customApiDesc.className = 'emby-field-desc';
+        customApiDesc.innerHTML = '添加多个弹幕源，系统将按顺序依次尝试匹配，直到成功。<br>支持弹弹play兼容API格式。';
+        customApiListDiv.append(customApiDesc);
+
+        customApiContainer.append(customApiListDiv);
+
+        // 初始渲染列表
+        renderSourceList();
+
         const searchNameDiv = getById(eleIds.danmakuSearchNameDiv);
-        searchNameDiv.innerHTML = ''; 
-        
         searchNameDiv.append(embyInput({ id: eleIds.danmakuSearchName, value: window.ede.searchDanmakuOpts.animeName, type: 'search' }
             , doDanmakuSearchEpisode));
-        
         searchNameDiv.append(embyButton({ label: '搜索', iconKey: iconKeys.search}, doDanmakuSearchEpisode));
         
-        if (typeof doSearchTitleSwtich !== 'undefined') {
-             searchNameDiv.append(embyButton({ label: '切换[原]标题', iconKey: iconKeys.text_format }, doSearchTitleSwtich));
-        }
-
-        // ==================== 2. 功能按钮区域 ====================
-        const loadDiv = getById(eleIds.danmakuEpisodeLoad);
-        if (loadDiv) {
-            loadDiv.innerHTML = ''; 
-            loadDiv.append(
-                embyButton({ id: eleIds.danmakuSwitchEpisode, label: '加载弹幕', iconKey: iconKeys.done }, doDanmakuSwitchEpisode)
-            );
-        }
-
-        const currentMatchedDiv = getById(eleIds.currentMatchedDiv);
-        if (currentMatchedDiv && currentMatchedDiv.querySelectorAll('button').length === 0) {
-             currentMatchedDiv.append(
-                embyButton({ label: '取消匹配/清空弹幕', iconKey: iconKeys.close }, (e) => {
-                    if (window.ede.episode_info && window.ede.episode_info.episodeId) {
-                        window.ede.episode_info.episodeId = null;
-                    }
-                    if (window.ede.danmaku) {
-                        createDanmaku([]);
-                    }
-                    const label = currentMatchedDiv.querySelector('label');
-                    if (label) label.textContent = '弹弹 play 总量: 0';
-                })
-            );
-        }
-
-        // ==================== 3. API 控制栏 ====================
+        // --- API选择和优先级设置 ---
         const apiSelectDiv = getById(eleIds.apiSelectDiv);
-        if (apiSelectDiv) {
-            apiSelectDiv.innerHTML = ''; 
-            apiSelectDiv.style.display = 'block';
+        apiSelectDiv.innerHTML = ''; // 清空旧内容
+        apiSelectDiv.style.display = 'block'; // 垂直布局
 
-            const controlBar = document.createElement('div');
-            controlBar.style.cssText = 'display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 1em;';
+        // 官方API启用开关
+        apiSelectDiv.append(embyCheckbox({ label: lsKeys.useOfficialApi.name }, lsGetItem(lsKeys.useOfficialApi.id), (checked) => {
+            lsSetItem(lsKeys.useOfficialApi.id, checked);
+        }));
 
-            // --- 左侧：优先级滑块 ---
-            const leftGroup = document.createElement('div');
-            leftGroup.style.cssText = 'display: flex; align-items: center; gap: 8px;';
+        // 自定义API启用开关
+        apiSelectDiv.append(embyCheckbox({ label: lsKeys.useCustomApi.name }, lsGetItem(lsKeys.useCustomApi.id), (checked) => {
+            lsSetItem(lsKeys.useCustomApi.id, checked);
+        }));
 
-            const priorityLabel = document.createElement('label');
-            priorityLabel.className = classes.embyLabel;
-            priorityLabel.textContent = '优先级:';
-            priorityLabel.style.marginBottom = '0'; 
+        // API优先级开关
+        const priorityLabel = document.createElement('label');
+        priorityLabel.className = classes.embyLabel;
+        priorityLabel.textContent = 'API 优先级:';
+        priorityLabel.style.marginTop = '1em';
+        priorityLabel.style.display = 'block';
+        apiSelectDiv.append(priorityLabel);
 
-            const prioritySwitch = document.createElement('div');
-            prioritySwitch.className = 'emby-toggle-switch';
-            prioritySwitch.style.position = 'relative';
-            prioritySwitch.style.width = '110px'; 
-            prioritySwitch.style.height = '32px';
-            prioritySwitch.style.backgroundColor = '#333';
-            prioritySwitch.style.borderRadius = '16px'; 
-            prioritySwitch.style.cursor = 'pointer';
-            prioritySwitch.style.transition = 'all 0.3s ease';
+        const priorityContainer = document.createElement('div');
+        priorityContainer.style.display = 'flex';
+        priorityContainer.style.alignItems = 'center';
+        priorityContainer.style.marginTop = '0.5em';
 
-            const prioritySlider = document.createElement('div');
-            prioritySlider.style.position = 'absolute';
-            prioritySlider.style.top = '2px';
-            prioritySlider.style.width = '58px'; 
-            prioritySlider.style.height = '28px'; 
-            prioritySlider.style.backgroundColor = '#4a90e2';
-            prioritySlider.style.borderRadius = '14px';
-            prioritySlider.style.transition = 'all 0.3s ease';
-            prioritySlider.style.display = 'flex';
-            prioritySlider.style.alignItems = 'center';
-            prioritySlider.style.justifyContent = 'center';
-            prioritySlider.style.color = 'white';
-            prioritySlider.style.fontSize = '12px';
-            prioritySlider.style.fontWeight = 'bold';
+        const prioritySwitch = document.createElement('div');
+        prioritySwitch.className = 'emby-toggle-switch';
+        prioritySwitch.style.position = 'relative';
+        prioritySwitch.style.width = '200px';
+        prioritySwitch.style.height = '40px';
+        prioritySwitch.style.backgroundColor = '#333';
+        prioritySwitch.style.borderRadius = '20px';
+        prioritySwitch.style.cursor = 'pointer';
+        prioritySwitch.style.transition = 'all 0.3s ease';
 
-            const leftLabel = document.createElement('div');
-            leftLabel.style.position = 'absolute';
-            leftLabel.style.left = '12px';
-            leftLabel.style.top = '50%';
-            leftLabel.style.transform = 'translateY(-50%)';
-            leftLabel.style.fontSize = '11px'; 
-            leftLabel.style.color = '#999';
-            leftLabel.style.pointerEvents = 'none';
-            leftLabel.textContent = '自定义';
+        const prioritySlider = document.createElement('div');
+        prioritySlider.style.position = 'absolute';
+        prioritySlider.style.top = '2px';
+        prioritySlider.style.width = '96px';
+        prioritySlider.style.height = '36px';
+        prioritySlider.style.backgroundColor = '#4a90e2';
+        prioritySlider.style.borderRadius = '18px';
+        prioritySlider.style.transition = 'all 0.3s ease';
+        prioritySlider.style.display = 'flex';
+        prioritySlider.style.alignItems = 'center';
+        prioritySlider.style.justifyContent = 'center';
+        prioritySlider.style.color = 'white';
+        prioritySlider.style.fontSize = '12px';
+        prioritySlider.style.fontWeight = 'bold';
 
-            const rightLabel = document.createElement('div');
-            rightLabel.style.position = 'absolute';
-            rightLabel.style.right = '12px';
-            rightLabel.style.top = '50%';
-            rightLabel.style.transform = 'translateY(-50%)';
-            rightLabel.style.fontSize = '11px';
-            rightLabel.style.color = '#999';
-            rightLabel.style.pointerEvents = 'none';
-            rightLabel.textContent = '官方';
+        const leftLabel = document.createElement('div');
+        leftLabel.style.position = 'absolute';
+        leftLabel.style.left = '10px';
+        leftLabel.style.top = '50%';
+        leftLabel.style.transform = 'translateY(-50%)';
+        leftLabel.style.fontSize = '12px';
+        leftLabel.style.color = '#999';
+        leftLabel.style.pointerEvents = 'none';
+        leftLabel.textContent = '自定义API优先';
 
-            prioritySwitch.append(leftLabel, rightLabel, prioritySlider);
+        const rightLabel = document.createElement('div');
+        rightLabel.style.position = 'absolute';
+        rightLabel.style.right = '10px';
+        rightLabel.style.top = '50%';
+        rightLabel.style.transform = 'translateY(-50%)';
+        rightLabel.style.fontSize = '12px';
+        rightLabel.style.color = '#999';
+        rightLabel.style.pointerEvents = 'none';
+        rightLabel.textContent = '官方API优先';
 
+        prioritySwitch.append(leftLabel, rightLabel, prioritySlider);
+
+        // 获取当前优先级设置
+        const currentPriority = lsGetItem(lsKeys.apiPriority.id);
+        const isOfficialFirst = currentPriority[0] === 'official';
+
+        function updatePrioritySwitch(officialFirst) {
+            if (officialFirst) {
+                prioritySlider.style.left = '102px';
+                prioritySlider.textContent = '官方API优先';
+                leftLabel.style.color = '#999';
+                rightLabel.style.color = 'white';
+            } else {
+                prioritySlider.style.left = '2px';
+                prioritySlider.textContent = '自定义API优先';
+                leftLabel.style.color = 'white';
+                rightLabel.style.color = '#999';
+            }
+        }
+
+        updatePrioritySwitch(isOfficialFirst);
+
+        prioritySwitch.onclick = () => {
             const currentPriority = lsGetItem(lsKeys.apiPriority.id);
-            const isOfficialFirst = currentPriority[0] === 'official';
+            const newPriority = currentPriority[0] === 'official' ? ['custom', 'official'] : ['official', 'custom'];
+            lsSetItem(lsKeys.apiPriority.id, newPriority);
+            updatePrioritySwitch(newPriority[0] === 'official');
+            console.log('[API优先级] 切换为:', newPriority[0] === 'official' ? '官方API优先' : '自定义API优先');
+        };
 
-            const updatePrioritySwitch = (officialFirst) => {
-                if (officialFirst) {
-                    prioritySlider.style.left = '60px'; 
-                    prioritySlider.textContent = '官方';
-                    leftLabel.style.color = '#999';
-                    rightLabel.style.color = 'white';
-                } else {
-                    prioritySlider.style.left = '2px';
-                    prioritySlider.textContent = '自定义';
-                    leftLabel.style.color = 'white';
-                    rightLabel.style.color = '#999';
+        priorityContainer.append(prioritySwitch);
+        apiSelectDiv.append(priorityContainer);
+
+        searchNameDiv.append(embyButton({ label: '切换[原]标题', iconKey: iconKeys.text_format }, doSearchTitleSwtich));
+        getById(eleIds.danmakuEpisodeLoad).append(
+            embyButton({ id: eleIds.danmakuSwitchEpisode, label: '加载弹幕', iconKey: iconKeys.done }, doDanmakuSwitchEpisode)
+        );
+        const currentMatchedDiv = getById(eleIds.currentMatchedDiv);
+        currentMatchedDiv.append(
+            embyButton({ label: '取消匹配/清空弹幕', iconKey: iconKeys.close }, (e) => {
+                if (window.ede.episode_info && window.ede.episode_info.episodeId) {
+                    window.ede.episode_info.episodeId = null;
                 }
-            };
-            updatePrioritySwitch(isOfficialFirst);
-
-            prioritySwitch.onclick = () => {
-                const currentPriority = lsGetItem(lsKeys.apiPriority.id);
-                const newPriority = currentPriority[0] === 'official' ? ['custom', 'official'] : ['official', 'custom'];
-                lsSetItem(lsKeys.apiPriority.id, newPriority);
-                updatePrioritySwitch(newPriority[0] === 'official');
-            };
-
-            leftGroup.append(priorityLabel, prioritySwitch);
-
-            // --- 右侧：启用开关组 (官方 / 自定义 / 插件) ---
-            const rightGroup = document.createElement('div');
-            // gap 稍微调小一点，防止一行放不下换行太难看
-            rightGroup.style.cssText = 'display: flex; align-items: center; gap: 10px; flex-wrap: wrap;';
-
-            // 1. 官方
-            const officialCb = embyCheckbox({ label: '启用官方' }, lsGetItem(lsKeys.useOfficialApi.id), (checked) => {
-                lsSetItem(lsKeys.useOfficialApi.id, checked);
-            });
-            officialCb.style.display = 'inline-flex';
-            officialCb.style.alignItems = 'center';
-
-            // 2. 自定义
-            const customCb = embyCheckbox({ label: '启用自定义' }, lsGetItem(lsKeys.useCustomApi.id), (checked) => {
-                lsSetItem(lsKeys.useCustomApi.id, checked);
-                const customContainer = getById('customApiContainer');
-                if (customContainer) {
-                    customContainer.style.opacity = checked ? '1' : '0.5';
-                    customContainer.style.pointerEvents = checked ? 'auto' : 'none';
+                if (window.ede.danmaku) {
+                    createDanmaku([]);
                 }
-            });
-            customCb.style.display = 'inline-flex';
-            customCb.style.alignItems = 'center';
-
-            // 3. 服务端插件
-            const pluginCb = embyCheckbox({ label: '服务端弹幕插件' }, lsGetItem(lsKeys.useFetchPluginXml.id), (checked) => {
-                lsSetItem(lsKeys.useFetchPluginXml.id, checked);
-            });
-            pluginCb.style.display = 'inline-flex';
-            pluginCb.style.alignItems = 'center';
-
-            rightGroup.append(officialCb, customCb, pluginCb);
-            controlBar.append(leftGroup, rightGroup);
-            apiSelectDiv.append(controlBar);
-        }
-
-        // ==================== 4. 自定义源列表管理 (带拖拽功能) ====================
-        const customApiContainer = getById('customApiContainer');
-        if (customApiContainer) {
-            customApiContainer.innerHTML = '';
-            
-            const renderSourceList = () => {
-                customApiContainer.innerHTML = '';
-                const list = lsGetItem(lsKeys.customApiList.id) || [];
-
-                // 添加表单
-                const addForm = document.createElement('div');
-                addForm.style.cssText = `
-                    display: flex; 
-                    gap: 0.5em; 
-                    align-items: center; 
-                    background: rgba(0, 0, 0, 0.3); 
-                    padding: 1em; 
-                    border-radius: 4px;
-                    margin-bottom: 1em;
-                `;
-
-                const nameInput = embyInput({ placeholder: '源名称 (备注)', style: 'flex: 1;' });
-                const urlInput = embyInput({ placeholder: 'API 地址 (http://...)', type: 'search', style: 'flex: 2;' });
-
-                const addBtn = embyButton({ label: '添加', iconKey: iconKeys.check, class: 'raised emby-button' }, () => {
-                    const name = nameInput.value.trim();
-                    let url = urlInput.value.trim();
-                    if (!name || !url) return embyToast({ text: '请填写完整' });
-                    if (url.endsWith('/')) url = url.slice(0, -1);
-                    
-                    list.push({ name, url, enabled: true });
-                    lsSetItem(lsKeys.customApiList.id, list);
-                    renderSourceList();
-                });
-                addBtn.style.height = '2.5em';
-                addBtn.style.flex = '0 0 auto';
-
-                addForm.append(nameInput, urlInput, addBtn);
-                customApiContainer.append(addForm);
-                
-                // 列表容器
-                const listDiv = document.createElement('div');
-                listDiv.style.cssText = 'max-height: 250px; overflow-y: auto; overflow-x: hidden; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 0.5em;';
-
-                if (list.length === 0) {
-                    const empty = document.createElement('div');
-                    empty.className = 'fieldDescription';
-                    empty.textContent = '暂无自定义源，请在上方添加';
-                    listDiv.append(empty);
-                } else {
-                    list.forEach((item, index) => {
-                        const row = document.createElement('div');
-                        row.style.cssText = 'display: flex; align-items: center; margin-bottom: 0.5em; background: rgba(0,0,0,0.2); padding: 0.5em; border-radius: 4px; cursor: move; transition: all 0.2s ease;';
-                        
-                        row.draggable = true;
-                        
-                        row.addEventListener('dragstart', (e) => {
-                            e.dataTransfer.effectAllowed = 'move';
-                            e.dataTransfer.setData('text/plain', index); 
-                            row.style.opacity = '0.5'; 
-                        });
-
-                        row.addEventListener('dragend', () => {
-                            row.style.opacity = '1';
-                            Array.from(listDiv.children).forEach(child => child.style.background = 'rgba(0,0,0,0.2)');
-                        });
-
-                        row.addEventListener('dragover', (e) => {
-                            e.preventDefault(); 
-                            e.dataTransfer.dropEffect = 'move';
-                            row.style.background = 'rgba(255,255,255,0.1)'; 
-                        });
-
-                        row.addEventListener('dragleave', () => {
-                             row.style.background = 'rgba(0,0,0,0.2)'; 
-                        });
-
-                        row.addEventListener('drop', (e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            const fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
-                            const toIndex = index;
-
-                            if (fromIndex !== toIndex) {
-                                const movedItem = list[fromIndex];
-                                list.splice(fromIndex, 1);
-                                list.splice(toIndex, 0, movedItem);
-                                
-                                lsSetItem(lsKeys.customApiList.id, list);
-                                renderSourceList();
-                            }
-                        });
-
-                        const switchDiv = document.createElement('div');
-                        switchDiv.style.marginRight = '0.5em';
-                        switchDiv.style.pointerEvents = 'auto'; 
-                        switchDiv.append(embyCheckbox({ label: '' }, item.enabled, (checked) => {
-                            list[index].enabled = checked;
-                            lsSetItem(lsKeys.customApiList.id, list);
-                            renderSourceList();
-                        }));
-                        row.append(switchDiv);
-
-                        const infoDiv = document.createElement('div');
-                        infoDiv.style.flex = '1';
-                        infoDiv.style.pointerEvents = 'none'; 
-                        const nameStyle = item.enabled ? 'font-weight:bold' : 'font-weight:bold; color: #999';
-                        const urlStyle = 'font-size:0.8em; opacity:0.7; word-break: break-all;';
-                        infoDiv.innerHTML = `<div style="${nameStyle}">${item.name}</div><div style="${urlStyle}">${item.url}</div>`;
-                        row.append(infoDiv);
-
-                        const delBtn = embyButton({ iconKey: iconKeys.close, title: '删除' }, () => {
-                            list.splice(index, 1);
-                            lsSetItem(lsKeys.customApiList.id, list);
-                            renderSourceList();
-                        });
-                        delBtn.style.pointerEvents = 'auto'; 
-                        row.append(delBtn);
-                        
-                        listDiv.append(row);
-                    });
-                }
-                customApiContainer.append(listDiv);
-            };
-
-            renderSourceList();
-        }
+                currentMatchedDiv.querySelector('label').textContent = '弹弹 play 总量: 0';
+            })
+        );
     }
-
-
 
     function buildExtCommentDiv() {
         const extCommentSearchDiv = getById(eleIds.extCommentSearchDiv);
@@ -4378,58 +4328,68 @@
         const spinnerEle = getByClass(classes.mdlSpinner);
         spinnerEle && spinnerEle.classList.remove('hide');
 
+        // [修正] 手动匹配严格遵循API优先级
+        // [新逻辑] 合并所有启用源的搜索结果，并按优先级排序
         const apiPriority = lsGetItem(lsKeys.apiPriority.id);
-        const useOfficialApi = lsGetItem(lsKeys.useOfficialApi.id);
-        const useCustomApi = lsGetItem(lsKeys.useCustomApi.id);
+
+        // [修改] 构建API配置，支持多个自定义源
+        const customApiList = getCustomApiList();
+        const apiConfigs = {
+            official: { name: '官方API', prefix: corsProxy + 'https://api.dandanplay.net/api/v2', enabled: lsGetItem(lsKeys.useOfficialApi.id) },
+        };
+
+        // 为每个自定义源创建配置
+        if (lsGetItem(lsKeys.useCustomApi.id) && customApiList.length > 0) {
+            customApiList.forEach((url, index) => {
+                apiConfigs[`custom_${index}`] = {
+                    name: `自定义源${index + 1}`,
+                    prefix: url,
+                    enabled: true
+                };
+            });
+        }
+
+        // 构建实际的优先级列表
+        const actualPriority = [];
+        for (const key of apiPriority) {
+            if (key === 'official') {
+                actualPriority.push('official');
+            } else if (key === 'custom') {
+                customApiList.forEach((_, index) => {
+                    actualPriority.push(`custom_${index}`);
+                });
+            }
+        }
 
         let allAnimes = [];
+        for (const apiKey of actualPriority) {
+            const config = apiConfigs[apiKey];
+            // [修正] 确保自定义API有地址时才使用
+            if (!config || !config.enabled || !config.prefix) {
+                continue;
+            }
 
-        for (const apiKey of apiPriority) {
-            if (apiKey === 'official' && useOfficialApi) {
-                const config = { name: '官方API', prefix: corsProxy + 'https://api.dandanplay.net/api/v2' };
-                let manualSearchTitle = searchName;
-                let manualSearchEpisode = null;
+            let manualSearchTitle = searchName;
+            let manualSearchEpisode = null;
 
+            // [新增] 手动搜索时，同样为官方API优化SXXEXX格式
+            if (apiKey === 'official') {
                 const parsed = parseAnimeName(searchName);
                 if (parsed.season !== null) {
                     manualSearchTitle = parsed.season === 1 ? parsed.title : `${parsed.title} 第${parsed.season}季`;
-                    manualSearchEpisode = parsed.episode;
-                }
-
-                console.log(`[手动匹配][${config.name}] 正在搜索: ${manualSearchTitle}`);
-                const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix);
-                if (animaInfo && animaInfo.animes.length > 0) {
-                    animaInfo.animes.forEach(anime => { anime.apiPrefix = config.prefix; anime.apiName = config.name; });
-                    allAnimes.push(...animaInfo.animes);
+                    manualSearchEpisode = parsed.episode; // 使用从文件名解析出的集数
+                    console.log(`[手动匹配][官方API优化] 格式化搜索: 标题='${manualSearchTitle}', 集数=${manualSearchEpisode}`);
                 }
             }
-
-            if (apiKey === 'custom' && useCustomApi) {
-                const list = lsGetItem(lsKeys.customApiList.id) || [];
-                const enabledSources = list.filter(s => s.enabled);
-
-                if (enabledSources.length > 0) {
-                    console.log(`[手动匹配] 正在并发搜索 ${enabledSources.length} 个自定义源...`);
-                    const promises = enabledSources.map(async (source) => {
-                        const config = { name: source.name, prefix: source.url };
-                        try {
-                            const animaInfo = await fetchSearchEpisodes(searchName, null, config.prefix);
-                            if (animaInfo && animaInfo.animes.length > 0) {
-                                animaInfo.animes.forEach(anime => { 
-                                    anime.apiPrefix = config.prefix; 
-                                    anime.apiName = config.name; 
-                                });
-                                return animaInfo.animes;
-                            }
-                        } catch (e) {
-                            console.error(`[手动匹配][${config.name}] 搜索失败:`, e);
-                        }
-                        return [];
-                    });
-
-                    const results = await Promise.all(promises);
-                    results.forEach(animes => allAnimes.push(...animes));
-                }
+            console.log(`[手动匹配][${config.name}] 正在搜索: 标题='${manualSearchTitle}', 集数=${manualSearchEpisode || '无'}`);
+            const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix);
+            if (animaInfo && animaInfo.animes.length > 0) {
+                console.log(`[手动匹配][${config.name}] 搜索成功，找到 ${animaInfo.animes.length} 个结果。`);
+                // 为每个结果打上来源标签
+                animaInfo.animes.forEach(anime => { anime.apiPrefix = config.prefix; anime.apiName = config.name; });
+                allAnimes.push(...animaInfo.animes);
+            } else {
+                console.log(`[手动匹配][${config.name}] 未找到结果。`);
             }
         }
 
@@ -4442,21 +4402,19 @@
         } else {
             danmakuRemarkEle.innerText = '';
         }
-        
-        window.ede.searchDanmakuOpts.animes = allAnimes;
-
         const danmakuAnimeDiv = getById(eleIds.danmakuAnimeDiv);
         const danmakuEpisodeNumDiv = getById(eleIds.danmakuEpisodeNumDiv);
         danmakuAnimeDiv.innerHTML = '';
         danmakuEpisodeNumDiv.innerHTML = '';
+        window.ede.searchDanmakuOpts.animes = allAnimes;
 
         let selectAnimeIdx = allAnimes.findIndex(anime => anime.animeId == window.ede.searchDanmakuOpts.animeId);
         selectAnimeIdx = selectAnimeIdx !== -1 ? selectAnimeIdx : 0;
-        
         const animeSelect = embySelect({ id: eleIds.danmakuAnimeSelect, label: '剧集: ', style: 'width: auto;max-width: 100%;' }
-            , selectAnimeIdx, allAnimes, 'animeId', opt => `${opt.animeTitle} [${opt.apiName || 'API'}]`, doDanmakuAnimeSelect);
+            , selectAnimeIdx, allAnimes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription} 来源：${opt.apiName}`, doDanmakuAnimeSelect);
         danmakuAnimeDiv.append(animeSelect);
 
+        // [修改] 只有当选中的动画有 episodes 时才显示集数选择器
         const selectedAnime = allAnimes[selectAnimeIdx];
         if (selectedAnime.episodes && selectedAnime.episodes.length > 0) {
             const episodeNumSelect = embySelect({ id: eleIds.danmakuEpisodeNumSelect, label: '集数: ', style: 'width: auto;max-width: 100%;' }
@@ -4468,44 +4426,85 @@
 
         getById(eleIds.danmakuEpisodeFlag).hidden = false;
         getById(eleIds.danmakuSwitchEpisode).disabled = false;
-        
+
+        // [修正] 始终使用匹配到的海报，如果没有则使用官方API拼接
         getById(eleIds.searchImg).src = selectedAnime.imageUrl || dandanplayApi.posterImg(selectedAnime.animeId);
+
+        // [新增] 显示API来源
         const apiSourceDiv = getById(eleIds.searchApiSource);
         if (apiSourceDiv) apiSourceDiv.innerText = `来源: ${selectedAnime.apiName}`;
     }
 
-    async function doDanmakuAnimeSelect(value, index, selectedAnime) {
+    function doSearchTitleSwtich(e) {
+        const searchInputEle = getById(eleIds.danmakuSearchName);
+        const attrKey = 'isOriginalTitle';
+        if ('1' === e.target.getAttribute(attrKey)) {
+            e.target.setAttribute(attrKey, '0');
+            return searchInputEle.value = window.ede.searchDanmakuOpts.animeName;
+        }
+        const { _episode_key, seriesOrMovieId } = window.ede.searchDanmakuOpts;
+        const episode_info = JSON.parse(localStorage.getItem(_episode_key));
+        const { animeOriginalTitle } = episode_info;
+        if (animeOriginalTitle) {
+            e.target.setAttribute(attrKey, '1');
+            return searchInputEle.value = animeOriginalTitle;
+        }
+        ApiClient.getItem(ApiClient.getCurrentUserId(), seriesOrMovieId).then(item => {
+            if (item.OriginalTitle) {
+                e.target.setAttribute(attrKey, '1');
+                searchInputEle.value = item.OriginalTitle;
+                episode_info.animeOriginalTitle = item.OriginalTitle;
+                localStorage.setItem(_episode_key, JSON.stringify(episode_info));
+                window.ede.episode_info.animeOriginalTitle = item.OriginalTitle;
+            }
+        });
+    }
+
+    async function doDanmakuAnimeSelect(value, index, option) {
         const numDiv = getById(eleIds.danmakuEpisodeNumDiv);
-        if (!numDiv) return;
         numDiv.innerHTML = '';
+        const anime = window.ede.searchDanmakuOpts.animes[index];
 
-        if (!selectedAnime.episodes && selectedAnime.bangumiId) {
-             numDiv.innerHTML = '<span style="color: #52b54b;">正在加载分集信息...</span>';
-             const apiPrefix = selectedAnime.apiPrefix || window.ede.searchDanmakuOpts.apiPrefix;
-             try {
-                const bangumiUrl = `${apiPrefix}/bangumi/${selectedAnime.bangumiId}`;
-                const res = await fetchJson(bangumiUrl);
-                 if (res && res.bangumi && res.bangumi.episodes) {
-                     selectedAnime.episodes = res.bangumi.episodes;
-                 }
-             } catch(e) { console.error(e); }
-             numDiv.innerHTML = '';
+        // [新增] 如果该动画还没有分集信息，先获取
+        if (!anime.episodes && anime.bangumiId) {
+            console.log(`[手动匹配] 动画 ${anime.animeTitle} 缺少分集信息，正在获取...`);
+            numDiv.innerHTML = '<span style="color: #52b54b;">正在加载分集信息...</span>';
+
+            const apiPrefix = anime.apiPrefix || window.ede.searchDanmakuOpts.apiPrefix;
+            const bangumiUrl = `${apiPrefix}/bangumi/${anime.bangumiId}`;
+
+            try {
+                const bangumiResult = await fetchJson(bangumiUrl);
+                if (bangumiResult && bangumiResult.bangumi && bangumiResult.bangumi.episodes) {
+                    // 更新动画对象，添加分集信息
+                    anime.episodes = bangumiResult.bangumi.episodes;
+                    anime.seasons = bangumiResult.bangumi.seasons;
+                    console.log(`[手动匹配] 获取分集信息成功: ${anime.animeTitle}, 共 ${anime.episodes.length} 集`);
+                } else {
+                    console.error(`[手动匹配] 获取分集信息失败: 返回数据格式错误`);
+                    numDiv.innerHTML = '<span style="color: #e23636;">获取分集信息失败</span>';
+                    return;
+                }
+            } catch (error) {
+                console.error(`[手动匹配] 获取分集信息失败: ${error.message}`);
+                numDiv.innerHTML = '<span style="color: #e23636;">获取分集信息失败</span>';
+                return;
+            }
+
+            numDiv.innerHTML = '';
         }
 
-        if (selectedAnime.episodes && selectedAnime.episodes.length > 0) {
-            const select = embySelect({ id: eleIds.danmakuEpisodeNumSelect, label: '集数: ' }, 0, selectedAnime.episodes, 'episodeId', (opt, i) => `${i + 1} - ${opt.episodeTitle}`);
-            numDiv.append(select);
-        } else {
-             numDiv.innerHTML = '<span style="color: red;">暂无分集信息</span>';
-        }
+        // 切换剧集时，默认选中第一个分集
+        const episodeNumSelect = embySelect({ id: eleIds.danmakuEpisodeNumSelect, label: '集数: ' }, 0, anime.episodes, 'episodeId', (opt, i) => `${i + 1} - ${opt.episodeTitle}`);
+        episodeNumSelect.style.maxWidth = '100%';
+        numDiv.append(episodeNumSelect);
 
-        const searchImg = getById(eleIds.searchImg);
-        if (searchImg) {
-            searchImg.src = selectedAnime.imageUrl || dandanplayApi.posterImg(selectedAnime.animeId);
-        }
-        
+        // [修正] 始终使用匹配到的海报
+        getById(eleIds.searchImg).src = anime.imageUrl || dandanplayApi.posterImg(anime.animeId);
+
+        // [新增] 更新API来源显示
         const apiSourceDiv = getById(eleIds.searchApiSource);
-        if (apiSourceDiv) apiSourceDiv.innerText = `来源: ${selectedAnime.apiName || '未知'}`;
+        if (apiSourceDiv) apiSourceDiv.innerText = `来源: ${anime.apiName}`;
     }
 
     function doDanmakuSwitchEpisode() {
@@ -5089,6 +5088,67 @@
             .map(([key, value]) => [value.id, value.defaultValue])
         );
         lsBatchSet(defaultSettings);
+    }
+
+    // --- 自定义弹幕源列表操作函数 ---
+
+    /**
+     * 获取自定义弹幕源列表
+     * 兼容旧版单一 customApiPrefix 配置
+     */
+    function getCustomApiList() {
+        const list = lsGetItem(lsKeys.customApiList.id) || [];
+        // 兼容旧版：如果列表为空但旧配置有值，则迁移
+        if (list.length === 0) {
+            const oldPrefix = lsGetItem(lsKeys.customApiPrefix.id);
+            if (oldPrefix && oldPrefix.trim()) {
+                list.push(oldPrefix.trim());
+                lsSetItem(lsKeys.customApiList.id, list);
+            }
+        }
+        return list;
+    }
+
+    /**
+     * 添加自定义弹幕源
+     */
+    function addCustomApiSource(url) {
+        const list = getCustomApiList();
+        if (!list.includes(url)) {
+            list.push(url);
+            lsSetItem(lsKeys.customApiList.id, list);
+            // 同时更新旧配置（兼容性）
+            if (list.length === 1) {
+                lsSetItem(lsKeys.customApiPrefix.id, url);
+            }
+        }
+    }
+
+    /**
+     * 删除自定义弹幕源
+     */
+    function removeCustomApiSource(index) {
+        const list = getCustomApiList();
+        if (index >= 0 && index < list.length) {
+            list.splice(index, 1);
+            lsSetItem(lsKeys.customApiList.id, list);
+            // 更新旧配置（兼容性）
+            lsSetItem(lsKeys.customApiPrefix.id, list[0] || '');
+        }
+    }
+
+    /**
+     * 移动自定义弹幕源位置
+     */
+    function moveCustomApiSource(fromIndex, toIndex) {
+        const list = getCustomApiList();
+        if (fromIndex >= 0 && fromIndex < list.length && toIndex >= 0 && toIndex < list.length) {
+            const [item] = list.splice(fromIndex, 1);
+            list.splice(toIndex, 0, item);
+            lsSetItem(lsKeys.customApiList.id, list);
+            // 更新旧配置（兼容性）
+            lsSetItem(lsKeys.customApiPrefix.id, list[0] || '');
+        }
     }
 
     // 缓存相关方法
