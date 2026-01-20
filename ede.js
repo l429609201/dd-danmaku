@@ -1458,7 +1458,7 @@
             const container = item.Path ? item.Path.split('.').pop() : 'mkv';
             streamUrl = `${serverAddress}${extraStr}/videos/${itemId}/stream?DeviceId=${deviceId}&MediaSourceId=${mediaSourceId}&api_key=${apiKey}&Static=true&Container=${container}`;
 
-            console.log(`[Stream] 认证信息 - ApiKey: ${apiKey ? '已获取' : '未获取'}, DeviceId: ${deviceId}`);
+            console.log(`[Stream] 认证信息 - ApiKey: ${apiKey ? '已获取' : '未获取'}, DeviceId: ${deviceId ? '已获取' : '未获取'}`);
         } else {
             console.warn(`[Stream] 无MediaSource，无法构建流媒体URL`);
         }
@@ -1665,21 +1665,22 @@
         // 新增：读取用户定义的API优先级
         const apiPriority = lsGetItem(lsKeys.apiPriority.id);
 
-        // [修改] 构建API配置，支持多个自定义源
+        // [修改] 构建API配置，支持多个自定义源（新数据结构）
         const customApiList = getCustomApiList();
         const apiConfigs = {
             official: { name: '官方API', prefix: corsProxy + 'https://api.dandanplay.net/api/v2', enabled: lsGetItem(lsKeys.useOfficialApi.id) },
         };
 
-        // 为每个自定义源创建配置
+        // 为每个启用的自定义源创建配置
         if (lsGetItem(lsKeys.useCustomApi.id) && customApiList.length > 0) {
-            // 将多个自定义源作为 custom_0, custom_1, ... 添加到配置中
-            customApiList.forEach((url, index) => {
-                apiConfigs[`custom_${index}`] = {
-                    name: `自定义源${index + 1}`,
-                    prefix: url,
-                    enabled: true
-                };
+            customApiList.forEach((item, index) => {
+                if (item.enabled) {
+                    apiConfigs[`custom_${index}`] = {
+                        name: item.name || `自定义源${index + 1}`,
+                        prefix: item.url,
+                        enabled: true
+                    };
+                }
             });
         }
 
@@ -2011,6 +2012,8 @@
         // wrapper.style.opacity = lsGetItem(lsKeys.fontOpacity.id); // 弹幕整体透明度
         wrapper.style.top = wrapperTop + 'px';
         wrapper.style.pointerEvents = 'none';
+        // [优化] 告诉浏览器这个层是会变的，让 GPU 提前准备
+        wrapper.style.willChange = 'transform, opacity';
         // const _container = document.querySelector(mediaContainerQueryStr);
         const _container = await waitForElement(mediaContainerQueryStr);
         _container.prepend(wrapper);
@@ -2415,14 +2418,29 @@
         for (let i = 0; i < comments.length; i++) {
             if (mergedIndexes.has(i)) { continue; }
 
-            let mergedComment = comments[i];
+            const rootComment = comments[i];
+            // [优化] 缓存基准弹幕的文本和长度，避免在内层循环中重复读取属性
+            const rootText = rootComment.text;
+            const rootLen = rootText.length;
+            const rootTime = rootComment.time;
             let count = 1;
             let totalSimilarity = 0;
 
-            for (let j = i + 1; j < comments.length && Math.abs(comments[j].time - comments[i].time) <= timeWindow; j++) {
+            for (let j = i + 1; j < comments.length; j++) {
+                const compareComment = comments[j];
+                // [优化] 时间窗口快速退出
+                if ((compareComment.time - rootTime) > timeWindow) { break; }
                 if (mergedIndexes.has(j)) { continue; }
 
-                const similarity = similarityPercentage(mergedComment.text, comments[j].text, threshold);
+                // [优化] 长度差异预判剪枝：在调用 similarityPercentage 之前先检查
+                const compareText = compareComment.text;
+                const compareLen = compareText.length;
+                const maxLen = Math.max(rootLen, compareLen);
+                const minLen = Math.min(rootLen, compareLen);
+                const maxPossibleSimilarity = (minLen / maxLen) * 100;
+                if (maxPossibleSimilarity < threshold) { continue; }
+
+                const similarity = similarityPercentage(rootText, compareText, threshold);
                 if (similarity >= threshold) {
                     count++;
                     mergedIndexes.add(j);
@@ -2431,12 +2449,12 @@
             }
 
             if (count > 1) {
-                mergedComment.text += ` [x${count}]`;
-                mergedComment.xCount = count;
-                mergedComment.xTotalSimilarity = totalSimilarity / count;
+                rootComment.text += ` [x${count}]`;
+                rootComment.xCount = count;
+                rootComment.xTotalSimilarity = totalSimilarity / count;
             }
 
-            mergedComments.push(mergedComment);
+            mergedComments.push(rootComment);
         }
 
         const endTime = new Date().getTime();
@@ -3109,152 +3127,146 @@
 
     function buildSearchEpisodeEle() {
         const customApiContainer = getById('customApiContainer');
+        if (!customApiContainer) return;
+        customApiContainer.innerHTML = '';
 
-        // --- 多自定义弹幕源列表 UI ---
-        const customApiListDiv = document.createElement('div');
-        customApiListDiv.className = 'emby-field';
-        customApiListDiv.id = 'customApiListDiv';
-        customApiListDiv.style.cssText = 'width: 100%; max-width: 600px;'; // 设置整体宽度
-
-        const customApiListLabel = document.createElement('label');
-        customApiListLabel.className = 'emby-label';
-        customApiListLabel.textContent = '自定义弹幕源列表（按顺序依次尝试）：';
-        customApiListDiv.append(customApiListLabel);
-
-        // 源列表容器
-        const sourceListContainer = document.createElement('div');
-        sourceListContainer.id = 'customApiSourceList';
-        sourceListContainer.style.cssText = 'margin: 0.5em 0; max-height: 250px; overflow-y: auto; width: 100%;';
-        customApiListDiv.append(sourceListContainer);
-
-        // 渲染源列表的函数
+        // --- 多自定义弹幕源列表 UI (PR #167 优化) ---
         const renderSourceList = () => {
-            sourceListContainer.innerHTML = '';
-            const apiList = getCustomApiList();
+            customApiContainer.innerHTML = '';
+            const list = getCustomApiList();
 
-            if (apiList.length === 0) {
-                const emptyTip = document.createElement('div');
-                emptyTip.style.cssText = 'color: #888; padding: 0.5em; font-size: 0.9em;';
-                emptyTip.textContent = '暂无自定义源，请在下方添加';
-                sourceListContainer.append(emptyTip);
-                return;
-            }
+            // 添加表单
+            const addForm = document.createElement('div');
+            addForm.style.cssText = 'display: flex; gap: 0.5em; align-items: center; background: rgba(0, 0, 0, 0.3); padding: 1em; border-radius: 4px; margin-bottom: 1em; flex-wrap: wrap;';
 
-            apiList.forEach((url, index) => {
-                const itemDiv = document.createElement('div');
-                itemDiv.style.cssText = 'display: flex; align-items: center; padding: 0.4em 0.6em; margin: 0.3em 0; background: rgba(255,255,255,0.05); border-radius: 4px; width: 100%;';
+            const nameInput = document.createElement('input');
+            nameInput.setAttribute('is', 'emby-input');
+            nameInput.className = classes.embyInput;
+            nameInput.type = 'text';
+            nameInput.placeholder = '源名称 (备注)';
+            nameInput.style.cssText = 'flex: 1; min-width: 120px;';
 
-                // 序号
-                const indexSpan = document.createElement('span');
-                indexSpan.style.cssText = 'min-width: 1.8em; color: #888; font-size: 0.9em; flex-shrink: 0;';
-                indexSpan.textContent = `${index + 1}.`;
-                itemDiv.append(indexSpan);
+            const urlInput = document.createElement('input');
+            urlInput.setAttribute('is', 'emby-input');
+            urlInput.className = classes.embyInput;
+            urlInput.type = 'text';
+            urlInput.placeholder = 'API 地址 (http://...)';
+            urlInput.style.cssText = 'flex: 2; min-width: 200px;';
 
-                // URL 显示
-                const urlSpan = document.createElement('span');
-                urlSpan.style.cssText = 'flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0 0.5em; font-size: 0.9em; min-width: 200px;';
-                urlSpan.textContent = url;
-                urlSpan.title = url;
-                itemDiv.append(urlSpan);
-
-                // 上移按钮
-                if (index > 0) {
-                    const upBtn = document.createElement('button');
-                    upBtn.setAttribute('is', 'emby-button');
-                    upBtn.className = 'paper-icon-button-light';
-                    upBtn.innerHTML = '<i class="md-icon">arrow_upward</i>';
-                    upBtn.title = '上移';
-                    upBtn.style.cssText = 'padding: 0.2em;';
-                    upBtn.onclick = () => {
-                        moveCustomApiSource(index, index - 1);
-                        renderSourceList();
-                    };
-                    itemDiv.append(upBtn);
+            const addBtn = document.createElement('button');
+            addBtn.setAttribute('is', 'emby-button');
+            addBtn.className = 'raised button-submit emby-button';
+            addBtn.innerHTML = '<i class="md-icon">check</i> 添加';
+            addBtn.style.cssText = 'height: 2.5em; flex: 0 0 auto;';
+            addBtn.onclick = () => {
+                const name = nameInput.value.trim();
+                let url = urlInput.value.trim();
+                if (!name || !url) {
+                    embyToast({ text: '请填写完整' });
+                    return;
                 }
-
-                // 下移按钮
-                if (index < apiList.length - 1) {
-                    const downBtn = document.createElement('button');
-                    downBtn.setAttribute('is', 'emby-button');
-                    downBtn.className = 'paper-icon-button-light';
-                    downBtn.innerHTML = '<i class="md-icon">arrow_downward</i>';
-                    downBtn.title = '下移';
-                    downBtn.style.cssText = 'padding: 0.2em;';
-                    downBtn.onclick = () => {
-                        moveCustomApiSource(index, index + 1);
-                        renderSourceList();
-                    };
-                    itemDiv.append(downBtn);
+                if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                    embyToast({ text: '请输入有效的URL（以 http:// 或 https:// 开头）' });
+                    return;
                 }
+                if (url.endsWith('/')) url = url.slice(0, -1);
+                addCustomApiSource(name, url);
+                nameInput.value = '';
+                urlInput.value = '';
+                renderSourceList();
+                embyToast({ text: '已添加弹幕源', secondaryText: name });
+            };
 
-                // 删除按钮
-                const deleteBtn = document.createElement('button');
-                deleteBtn.setAttribute('is', 'emby-button');
-                deleteBtn.className = 'paper-icon-button-light';
-                deleteBtn.innerHTML = '<i class="md-icon">delete</i>';
-                deleteBtn.title = '删除';
-                deleteBtn.style.cssText = 'padding: 0.2em; color: #f44336;';
-                deleteBtn.onclick = () => {
-                    removeCustomApiSource(index);
-                    renderSourceList();
-                    embyToast({ text: '已删除弹幕源' });
-                };
-                itemDiv.append(deleteBtn);
-
-                sourceListContainer.append(itemDiv);
+            // 回车添加
+            urlInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') addBtn.click();
             });
+
+            addForm.append(nameInput, urlInput, addBtn);
+            customApiContainer.append(addForm);
+
+            // 列表容器
+            const listDiv = document.createElement('div');
+            listDiv.style.cssText = 'max-height: 250px; overflow-y: auto; overflow-x: hidden; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 0.5em;';
+
+            if (list.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'fieldDescription';
+                empty.style.cssText = 'color: #888; padding: 0.5em; font-size: 0.9em;';
+                empty.textContent = '暂无自定义源，请在上方添加';
+                listDiv.append(empty);
+            } else {
+                list.forEach((item, index) => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display: flex; align-items: center; margin-bottom: 0.5em; background: rgba(0,0,0,0.2); padding: 0.5em; border-radius: 4px;';
+
+                    // 启用开关
+                    const switchDiv = document.createElement('div');
+                    switchDiv.style.cssText = 'margin-right: 0.5em; flex-shrink: 0;';
+                    switchDiv.append(embyCheckbox({ label: '' }, item.enabled, (checked) => {
+                        toggleCustomApiSource(index, checked);
+                        renderSourceList();
+                    }));
+                    row.append(switchDiv);
+
+                    // 信息显示
+                    const infoDiv = document.createElement('div');
+                    infoDiv.style.cssText = 'flex: 1; min-width: 0; overflow: hidden;';
+                    const nameStyle = item.enabled ? 'font-weight:bold;' : 'font-weight:bold; color: #999;';
+                    const urlStyle = 'font-size:0.8em; opacity:0.7; word-break: break-all; overflow: hidden; text-overflow: ellipsis;';
+                    infoDiv.innerHTML = `<div style="${nameStyle}">${item.name}</div><div style="${urlStyle}" title="${item.url}">${item.url}</div>`;
+                    row.append(infoDiv);
+
+                    // 上移按钮
+                    if (index > 0) {
+                        const upBtn = document.createElement('button');
+                        upBtn.setAttribute('is', 'emby-button');
+                        upBtn.className = 'paper-icon-button-light';
+                        upBtn.innerHTML = '<i class="md-icon">arrow_upward</i>';
+                        upBtn.title = '上移';
+                        upBtn.style.cssText = 'padding: 0.2em; flex-shrink: 0;';
+                        upBtn.onclick = () => {
+                            moveCustomApiSource(index, index - 1);
+                            renderSourceList();
+                        };
+                        row.append(upBtn);
+                    }
+
+                    // 下移按钮
+                    if (index < list.length - 1) {
+                        const downBtn = document.createElement('button');
+                        downBtn.setAttribute('is', 'emby-button');
+                        downBtn.className = 'paper-icon-button-light';
+                        downBtn.innerHTML = '<i class="md-icon">arrow_downward</i>';
+                        downBtn.title = '下移';
+                        downBtn.style.cssText = 'padding: 0.2em; flex-shrink: 0;';
+                        downBtn.onclick = () => {
+                            moveCustomApiSource(index, index + 1);
+                            renderSourceList();
+                        };
+                        row.append(downBtn);
+                    }
+
+                    // 删除按钮
+                    const delBtn = document.createElement('button');
+                    delBtn.setAttribute('is', 'emby-button');
+                    delBtn.className = 'paper-icon-button-light';
+                    delBtn.innerHTML = '<i class="md-icon">close</i>';
+                    delBtn.title = '删除';
+                    delBtn.style.cssText = 'padding: 0.2em; color: #f44336; flex-shrink: 0;';
+                    delBtn.onclick = () => {
+                        removeCustomApiSource(index);
+                        renderSourceList();
+                        embyToast({ text: '已删除弹幕源' });
+                    };
+                    row.append(delBtn);
+
+                    listDiv.append(row);
+                });
+            }
+
+            customApiContainer.append(listDiv);
         };
-
-        // 添加新源的输入框和按钮
-        const addSourceDiv = document.createElement('div');
-        addSourceDiv.style.cssText = 'display: flex; align-items: center; margin-top: 0.5em; width: 100%;';
-
-        const newSourceInput = document.createElement('input');
-        newSourceInput.setAttribute('is', 'emby-input');
-        newSourceInput.className = classes.embyInput;
-        newSourceInput.type = 'text';
-        newSourceInput.placeholder = '输入API地址，如 http://192.168.1.100:9321/api/v1';
-        newSourceInput.style.cssText = 'flex: 1; min-width: 300px; margin-right: 0.5em;';
-
-        const addSourceBtn = document.createElement('button');
-        addSourceBtn.setAttribute('is', 'emby-button');
-        addSourceBtn.className = 'raised button-submit block emby-button';
-        addSourceBtn.innerHTML = '<i class="md-icon">add</i> 添加';
-        addSourceBtn.style.cssText = 'padding: 0.5em 1em;';
-        addSourceBtn.onclick = () => {
-            const url = newSourceInput.value.trim();
-            if (!url) {
-                embyToast({ text: '请输入API地址' });
-                return;
-            }
-            if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                embyToast({ text: '请输入有效的URL（以 http:// 或 https:// 开头）' });
-                return;
-            }
-            addCustomApiSource(url);
-            newSourceInput.value = '';
-            renderSourceList();
-            embyToast({ text: '已添加弹幕源', secondaryText: url });
-        };
-
-        // 回车添加
-        newSourceInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                addSourceBtn.click();
-            }
-        });
-
-        addSourceDiv.append(newSourceInput);
-        addSourceDiv.append(addSourceBtn);
-        customApiListDiv.append(addSourceDiv);
-
-        // 提示信息
-        const customApiDesc = document.createElement('div');
-        customApiDesc.className = 'emby-field-desc';
-        customApiDesc.innerHTML = '添加多个弹幕源，系统将按顺序依次尝试匹配，直到成功。<br>支持弹弹play兼容API格式。';
-        customApiListDiv.append(customApiDesc);
-
-        customApiContainer.append(customApiListDiv);
 
         // 初始渲染列表
         renderSourceList();
@@ -3263,100 +3275,58 @@
         searchNameDiv.append(embyInput({ id: eleIds.danmakuSearchName, value: window.ede.searchDanmakuOpts.animeName, type: 'search' }
             , doDanmakuSearchEpisode));
         searchNameDiv.append(embyButton({ label: '搜索', iconKey: iconKeys.search}, doDanmakuSearchEpisode));
-        
-        // --- API选择和优先级设置 ---
+
+        // --- API选择和优先级设置 (PR #167 优化布局) ---
         const apiSelectDiv = getById(eleIds.apiSelectDiv);
-        apiSelectDiv.innerHTML = ''; // 清空旧内容
-        apiSelectDiv.style.display = 'block'; // 垂直布局
+        apiSelectDiv.innerHTML = '';
+        apiSelectDiv.style.display = 'block';
 
-        // 官方API启用开关
-        apiSelectDiv.append(embyCheckbox({ label: lsKeys.useOfficialApi.name }, lsGetItem(lsKeys.useOfficialApi.id), (checked) => {
-            lsSetItem(lsKeys.useOfficialApi.id, checked);
-        }));
+        // 控制栏：左侧优先级滑块，右侧启用开关组 - 同一行
+        const controlBar = document.createElement('div');
+        controlBar.style.cssText = 'display: flex; align-items: center; gap: 15px; margin-bottom: 1em;';
 
-        // 自定义API启用开关
-        apiSelectDiv.append(embyCheckbox({ label: lsKeys.useCustomApi.name }, lsGetItem(lsKeys.useCustomApi.id), (checked) => {
-            lsSetItem(lsKeys.useCustomApi.id, checked);
-        }));
+        // --- 左侧：优先级滑块 ---
+        const leftGroup = document.createElement('div');
+        leftGroup.style.cssText = 'display: flex; align-items: center; gap: 8px; flex-shrink: 0;';
 
-        // API优先级开关
         const priorityLabel = document.createElement('label');
         priorityLabel.className = classes.embyLabel;
-        priorityLabel.textContent = 'API 优先级:';
-        priorityLabel.style.marginTop = '1em';
-        priorityLabel.style.display = 'block';
-        apiSelectDiv.append(priorityLabel);
-
-        const priorityContainer = document.createElement('div');
-        priorityContainer.style.display = 'flex';
-        priorityContainer.style.alignItems = 'center';
-        priorityContainer.style.marginTop = '0.5em';
+        priorityLabel.textContent = '优先级:';
+        priorityLabel.style.cssText = 'margin-bottom: 0; white-space: nowrap;';
 
         const prioritySwitch = document.createElement('div');
         prioritySwitch.className = 'emby-toggle-switch';
-        prioritySwitch.style.position = 'relative';
-        prioritySwitch.style.width = '200px';
-        prioritySwitch.style.height = '40px';
-        prioritySwitch.style.backgroundColor = '#333';
-        prioritySwitch.style.borderRadius = '20px';
-        prioritySwitch.style.cursor = 'pointer';
-        prioritySwitch.style.transition = 'all 0.3s ease';
+        prioritySwitch.style.cssText = 'position: relative; width: 110px; height: 32px; background-color: #333; border-radius: 16px; cursor: pointer; transition: all 0.3s ease; flex-shrink: 0;';
 
         const prioritySlider = document.createElement('div');
-        prioritySlider.style.position = 'absolute';
-        prioritySlider.style.top = '2px';
-        prioritySlider.style.width = '96px';
-        prioritySlider.style.height = '36px';
-        prioritySlider.style.backgroundColor = '#4a90e2';
-        prioritySlider.style.borderRadius = '18px';
-        prioritySlider.style.transition = 'all 0.3s ease';
-        prioritySlider.style.display = 'flex';
-        prioritySlider.style.alignItems = 'center';
-        prioritySlider.style.justifyContent = 'center';
-        prioritySlider.style.color = 'white';
-        prioritySlider.style.fontSize = '12px';
-        prioritySlider.style.fontWeight = 'bold';
+        prioritySlider.style.cssText = 'position: absolute; top: 2px; width: 58px; height: 28px; background-color: #4a90e2; border-radius: 14px; transition: all 0.3s ease; display: flex; align-items: center; justify-content: center; color: white; font-size: 12px; font-weight: bold;';
 
         const leftLabel = document.createElement('div');
-        leftLabel.style.position = 'absolute';
-        leftLabel.style.left = '10px';
-        leftLabel.style.top = '50%';
-        leftLabel.style.transform = 'translateY(-50%)';
-        leftLabel.style.fontSize = '12px';
-        leftLabel.style.color = '#999';
-        leftLabel.style.pointerEvents = 'none';
-        leftLabel.textContent = '自定义API优先';
+        leftLabel.style.cssText = 'position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 11px; color: #999; pointer-events: none;';
+        leftLabel.textContent = '自定义';
 
         const rightLabel = document.createElement('div');
-        rightLabel.style.position = 'absolute';
-        rightLabel.style.right = '10px';
-        rightLabel.style.top = '50%';
-        rightLabel.style.transform = 'translateY(-50%)';
-        rightLabel.style.fontSize = '12px';
-        rightLabel.style.color = '#999';
-        rightLabel.style.pointerEvents = 'none';
-        rightLabel.textContent = '官方API优先';
+        rightLabel.style.cssText = 'position: absolute; right: 12px; top: 50%; transform: translateY(-50%); font-size: 11px; color: #999; pointer-events: none;';
+        rightLabel.textContent = '官方';
 
         prioritySwitch.append(leftLabel, rightLabel, prioritySlider);
 
-        // 获取当前优先级设置
         const currentPriority = lsGetItem(lsKeys.apiPriority.id);
         const isOfficialFirst = currentPriority[0] === 'official';
 
-        function updatePrioritySwitch(officialFirst) {
+        const updatePrioritySwitch = (officialFirst) => {
             if (officialFirst) {
-                prioritySlider.style.left = '102px';
-                prioritySlider.textContent = '官方API优先';
+                prioritySlider.style.left = '50px';
+                prioritySlider.textContent = '官方';
                 leftLabel.style.color = '#999';
                 rightLabel.style.color = 'white';
             } else {
                 prioritySlider.style.left = '2px';
-                prioritySlider.textContent = '自定义API优先';
+                prioritySlider.textContent = '自定义';
                 leftLabel.style.color = 'white';
                 rightLabel.style.color = '#999';
             }
-        }
-
+        };
         updatePrioritySwitch(isOfficialFirst);
 
         prioritySwitch.onclick = () => {
@@ -3364,11 +3334,42 @@
             const newPriority = currentPriority[0] === 'official' ? ['custom', 'official'] : ['official', 'custom'];
             lsSetItem(lsKeys.apiPriority.id, newPriority);
             updatePrioritySwitch(newPriority[0] === 'official');
-            console.log('[API优先级] 切换为:', newPriority[0] === 'official' ? '官方API优先' : '自定义API优先');
         };
 
-        priorityContainer.append(prioritySwitch);
-        apiSelectDiv.append(priorityContainer);
+        leftGroup.append(priorityLabel, prioritySwitch);
+
+        // --- 右侧：启用开关组 (官方 / 自定义) - 同一行显示 ---
+        const rightGroup = document.createElement('div');
+        rightGroup.style.cssText = 'display: flex; align-items: center; gap: 15px;';
+
+        // 官方API开关
+        const officialCb = embyCheckbox({ label: '启用官方' }, lsGetItem(lsKeys.useOfficialApi.id), (checked) => {
+            lsSetItem(lsKeys.useOfficialApi.id, checked);
+        });
+        officialCb.style.cssText = 'display: inline-flex !important; align-items: center; margin: 0 !important; white-space: nowrap;';
+
+        // 自定义API开关
+        const customCb = embyCheckbox({ label: '启用自定义' }, lsGetItem(lsKeys.useCustomApi.id), (checked) => {
+            lsSetItem(lsKeys.useCustomApi.id, checked);
+            const customContainer = getById('customApiContainer');
+            if (customContainer) {
+                customContainer.style.opacity = checked ? '1' : '0.5';
+                customContainer.style.pointerEvents = checked ? 'auto' : 'none';
+            }
+        });
+        customCb.style.cssText = 'display: inline-flex !important; align-items: center; margin: 0 !important; white-space: nowrap;';
+
+        rightGroup.append(officialCb, customCb);
+        controlBar.append(leftGroup, rightGroup);
+        apiSelectDiv.append(controlBar);
+
+        // 初始化自定义API容器的透明度
+        const customContainer = getById('customApiContainer');
+        if (customContainer) {
+            const customEnabled = lsGetItem(lsKeys.useCustomApi.id);
+            customContainer.style.opacity = customEnabled ? '1' : '0.5';
+            customContainer.style.pointerEvents = customEnabled ? 'auto' : 'none';
+        }
 
         searchNameDiv.append(embyButton({ label: '切换[原]标题', iconKey: iconKeys.text_format }, doSearchTitleSwtich));
         getById(eleIds.danmakuEpisodeLoad).append(
@@ -4332,20 +4333,22 @@
         // [新逻辑] 合并所有启用源的搜索结果，并按优先级排序
         const apiPriority = lsGetItem(lsKeys.apiPriority.id);
 
-        // [修改] 构建API配置，支持多个自定义源
+        // [修改] 构建API配置，支持多个自定义源（新数据结构）
         const customApiList = getCustomApiList();
         const apiConfigs = {
             official: { name: '官方API', prefix: corsProxy + 'https://api.dandanplay.net/api/v2', enabled: lsGetItem(lsKeys.useOfficialApi.id) },
         };
 
-        // 为每个自定义源创建配置
+        // 为每个启用的自定义源创建配置
         if (lsGetItem(lsKeys.useCustomApi.id) && customApiList.length > 0) {
-            customApiList.forEach((url, index) => {
-                apiConfigs[`custom_${index}`] = {
-                    name: `自定义源${index + 1}`,
-                    prefix: url,
-                    enabled: true
-                };
+            customApiList.forEach((item, index) => {
+                if (item.enabled) {
+                    apiConfigs[`custom_${index}`] = {
+                        name: item.name || `自定义源${index + 1}`,
+                        prefix: item.url,
+                        enabled: true
+                    };
+                }
             });
         }
 
@@ -4355,8 +4358,10 @@
             if (key === 'official') {
                 actualPriority.push('official');
             } else if (key === 'custom') {
-                customApiList.forEach((_, index) => {
-                    actualPriority.push(`custom_${index}`);
+                customApiList.forEach((item, index) => {
+                    if (item.enabled) {
+                        actualPriority.push(`custom_${index}`);
+                    }
                 });
             }
         }
@@ -5094,15 +5099,27 @@
 
     /**
      * 获取自定义弹幕源列表
-     * 兼容旧版单一 customApiPrefix 配置
+     * 数据结构: [{name: string, url: string, enabled: boolean}]
+     * 兼容旧版单一 customApiPrefix 配置和旧版字符串数组
      */
     function getCustomApiList() {
-        const list = lsGetItem(lsKeys.customApiList.id) || [];
+        let list = lsGetItem(lsKeys.customApiList.id) || [];
+
+        // 兼容旧版字符串数组格式，转换为新格式
+        if (list.length > 0 && typeof list[0] === 'string') {
+            list = list.map((url, index) => ({
+                name: `自定义源${index + 1}`,
+                url: url,
+                enabled: true
+            }));
+            lsSetItem(lsKeys.customApiList.id, list);
+        }
+
         // 兼容旧版：如果列表为空但旧配置有值，则迁移
         if (list.length === 0) {
             const oldPrefix = lsGetItem(lsKeys.customApiPrefix.id);
             if (oldPrefix && oldPrefix.trim()) {
-                list.push(oldPrefix.trim());
+                list.push({ name: '自定义源1', url: oldPrefix.trim(), enabled: true });
                 lsSetItem(lsKeys.customApiList.id, list);
             }
         }
@@ -5110,12 +5127,21 @@
     }
 
     /**
+     * 获取启用的自定义弹幕源URL列表（用于搜索逻辑）
+     */
+    function getEnabledCustomApiUrls() {
+        const list = getCustomApiList();
+        return list.filter(item => item.enabled).map(item => item.url);
+    }
+
+    /**
      * 添加自定义弹幕源
      */
-    function addCustomApiSource(url) {
+    function addCustomApiSource(name, url) {
         const list = getCustomApiList();
-        if (!list.includes(url)) {
-            list.push(url);
+        // 检查URL是否已存在
+        if (!list.some(item => item.url === url)) {
+            list.push({ name: name || `自定义源${list.length + 1}`, url: url, enabled: true });
             lsSetItem(lsKeys.customApiList.id, list);
             // 同时更新旧配置（兼容性）
             if (list.length === 1) {
@@ -5133,7 +5159,22 @@
             list.splice(index, 1);
             lsSetItem(lsKeys.customApiList.id, list);
             // 更新旧配置（兼容性）
-            lsSetItem(lsKeys.customApiPrefix.id, list[0] || '');
+            const enabledUrls = list.filter(item => item.enabled).map(item => item.url);
+            lsSetItem(lsKeys.customApiPrefix.id, enabledUrls[0] || '');
+        }
+    }
+
+    /**
+     * 切换自定义弹幕源启用状态
+     */
+    function toggleCustomApiSource(index, enabled) {
+        const list = getCustomApiList();
+        if (index >= 0 && index < list.length) {
+            list[index].enabled = enabled;
+            lsSetItem(lsKeys.customApiList.id, list);
+            // 更新旧配置（兼容性）
+            const enabledUrls = list.filter(item => item.enabled).map(item => item.url);
+            lsSetItem(lsKeys.customApiPrefix.id, enabledUrls[0] || '');
         }
     }
 
@@ -5147,7 +5188,8 @@
             list.splice(toIndex, 0, item);
             lsSetItem(lsKeys.customApiList.id, list);
             // 更新旧配置（兼容性）
-            lsSetItem(lsKeys.customApiPrefix.id, list[0] || '');
+            const enabledUrls = list.filter(item => item.enabled).map(item => item.url);
+            lsSetItem(lsKeys.customApiPrefix.id, enabledUrls[0] || '');
         }
     }
 
