@@ -191,8 +191,16 @@
         { id: '1', name: '屏中', onChange: (ede) => ede.danmaku ? ede.danmaku._.runningList : [] },
         { id: '2', name: '所有', onChange: (ede) => ede.commentsParsed },
         { id: '3', name: '已加载', onChange: getDanmakuComments },
-        { id: '4', name: '被过滤', onChange: (ede) => { // 取差集慢,减轻负担,默认不启用
-            return ede.commentsParsed.filter(p => !getDanmakuComments(ede).some(c => p.cuid === c.cuid))
+        { id: '4', name: '被过滤', onChange: (ede) => {
+            // [优化] 使用 Set 优化差集计算性能，防止卡死
+            const loadedComments = getDanmakuComments(ede);
+            if (!loadedComments || loadedComments.length === 0) return ede.commentsParsed;
+            
+            // 将已加载弹幕的 cuid 存入 Set，查找速度极快
+            const loadedCuids = new Set(loadedComments.map(c => c.cuid));
+            
+            // 只需要遍历一次即可
+            return ede.commentsParsed.filter(p => !loadedCuids.has(p.cuid));
         } },
         { id: '5', name: '已相似合并', onChange: (ede) => ede.commentsParsed.filter(p => p.xCount) },
         { id: '100', name: '通知', onChange: (ede) => ede.danmaku ? ede.danmaku.comments.filter(c => hasToastPrefixes(c, toastPrefixes)) : [] },
@@ -2408,130 +2416,160 @@
     }
 
     function danmakuMergeSimilar(comments, threshold = 50, timeWindow = 15) {
-        if (!lsGetItem(lsKeys.mergeSimilarEnable.id)) { return comments; }
+        // 1. 基础检查
+        if (!lsGetItem(lsKeys.mergeSimilarEnable.id) || !comments || comments.length === 0) return comments;
 
-        const mergedComments = [];
-        // [优化] 使用 Set 替代数组，提升 includes 查找性能 O(n) -> O(1)
-        const mergedIndexes = new Set();
-        const startTime = new Date().getTime();
+        const startTime = performance.now();
+        const result = [];
+        const mergedIndices = new Set();
+        const totalLen = comments.length;
+        const errorRate = (100 - threshold) / 100;
 
-        for (let i = 0; i < comments.length; i++) {
-            if (mergedIndexes.has(i)) { continue; }
+        // [核心优化] 共享内存池：只创建一个大数组供所有计算复用，彻底消除 GC 开销
+        // 预分配 1024 长度，绝大多数弹幕都够用，不够会自动扩容
+        let sharedBuffer = new Int32Array(1024);
 
-            const rootComment = comments[i];
-            // [优化] 缓存基准弹幕的文本和长度，避免在内层循环中重复读取属性
-            const rootText = rootComment.text;
+        // --- 预处理：生成位掩码 ---
+        for (let i = 0; i < totalLen; i++) {
+            const text = comments[i].text;
+            let mask = 0;
+            // [采样优化] 只取前 50 个字符做指纹，兼顾速度与精度
+            // 经验表明：如果前50个字完全没交集，整句相似的概率极低
+            const len = text.length > 50 ? 50 : text.length;
+            for (let k = 0; k < len; k++) {
+                mask |= (1 << (text.charCodeAt(k) & 31));
+            }
+            comments[i]._mask = mask;
+        }
+
+        for (let i = 0; i < totalLen; i++) {
+            if (mergedIndices.has(i)) continue;
+
+            const root = comments[i];
+            const rootText = root.text;
             const rootLen = rootText.length;
-            const rootTime = rootComment.time;
+            const rootTime = root.time;
+            const rootMask = root._mask;
             let count = 1;
-            let totalSimilarity = 0;
 
-            for (let j = i + 1; j < comments.length; j++) {
-                const compareComment = comments[j];
-                // [优化] 时间窗口快速退出
-                if ((compareComment.time - rootTime) > timeWindow) { break; }
-                if (mergedIndexes.has(j)) { continue; }
+            for (let j = i + 1; j < totalLen; j++) {
+                if (mergedIndices.has(j)) continue;
 
-                // [优化] 长度差异预判剪枝：在调用 similarityPercentage 之前先检查
-                const compareText = compareComment.text;
+                const compare = comments[j];
+                // 时间窗口判断
+                if ((compare.time - rootTime) > timeWindow) break;
+
+                // [优化A] 长度快速预判
+                // 如果长度差已经超过了最大允许错误量，直接跳过
+                const compareText = compare.text;
                 const compareLen = compareText.length;
-                const maxLen = Math.max(rootLen, compareLen);
-                const minLen = Math.min(rootLen, compareLen);
-                const maxPossibleSimilarity = (minLen / maxLen) * 100;
-                if (maxPossibleSimilarity < threshold) { continue; }
+                const maxLen = rootLen > compareLen ? rootLen : compareLen;
+                const maxDiff = maxLen * errorRate; 
+                
+                if (Math.abs(rootLen - compareLen) > maxDiff) continue;
 
-                const similarity = similarityPercentage(rootText, compareText, threshold);
-                if (similarity >= threshold) {
+                // [优化B] 字符掩码预判 (极速过滤)
+                // 位运算 O(1) 过滤掉完全不相关的弹幕
+                if ((rootMask & compare._mask) === 0 && rootLen > 2) continue;
+
+                // [优化C] 传入 sharedBuffer 和 maxDiff，启用零GC和提前退出
+                // 如果 buffer 不够大，similarityPercentage 会返回新的 buffer，我们需要更新它
+                const res = similarityPercentage(rootText, compareText, maxDiff, sharedBuffer);
+                
+                // 处理扩容情况 (极少发生)
+                let score = res;
+                if (typeof res === 'object') {
+                    score = res.score;
+                    sharedBuffer = res.buffer; // 更新为更大的 buffer
+                }
+
+                if (score >= threshold) {
                     count++;
-                    mergedIndexes.add(j);
-                    totalSimilarity += similarity;
+                    mergedIndices.add(j);
                 }
             }
 
             if (count > 1) {
-                rootComment.text += ` [x${count}]`;
-                rootComment.xCount = count;
-                rootComment.xTotalSimilarity = totalSimilarity / count;
+                root.text = rootText + " [x" + count + "]";
+                root.xCount = count;
             }
-
-            mergedComments.push(rootComment);
+            result.push(root);
         }
 
-        const endTime = new Date().getTime();
-        console.log(`合并相似弹幕 (danmakuMergeSimilar) 耗时: ${endTime - startTime} 毫秒`);
-
-        return mergedComments;
+        const endTime = performance.now();
+        console.log(`[合并相似弹幕] 耗时: ${(endTime - startTime).toFixed(2)}ms, 屏蔽: ${comments.length - result.length}`);
+        
+        return result;
     }
 
     /**
-     * 计算两个字符串之间的 Levenshtein 距离和相似度百分比
-     * Levenshtein 距离表示将一个字符串转换为另一个字符串所需的最少单字符编辑操作次数(插入、删除、替换)
-     * 相似度百分比是基于 Levenshtein 距离计算的,它表示两个字符串的相似程度,范围为 0 到 100
-     * 相似度百分比的计算方式为：100 - (Levenshtein 距离 / 最大长度) * 100,确保结果在 0 到 100 的范围内
-     *
-     * @param {string} a - 第一个字符串
-     * @param {string} b - 第二个字符串
-     * @param {number} threshold - 相似度阈值，用于提前剪枝优化
-     * @returns {number} - 两个字符串之间的相似度百分比,范围为 0 到 100
+     * Levenshtein 距离算法 (高性能魔改版)
+     * 特性: 
+     * 1. Buffer Reuse: 复用传入的 Int32Array，零内存分配
+     * 2. Early Exit: 差异超过 maxAllowedDiff 立即停止
+     * 3. CharCode: 使用 charCodeAt 代替字符串访问，微幅提升速度
      */
-    function similarityPercentage(a, b, threshold = 0) {
-        if (a === b) {
-            return 100;
+    function similarityPercentage(a, b, maxAllowedDiff, buffer) {
+        if (a === b) return 100;
+        
+        const n = a.length;
+        const m = b.length;
+        
+        if (n === 0 || m === 0) return 0;
+
+        // 确保 a 是短的，减少内层循环次数
+        if (n > m) return similarityPercentage(b, a, maxAllowedDiff, buffer);
+        
+        // 检查 buffer 是否够用，不够则扩容并返回新 buffer (这种情况极少)
+        if (buffer.length <= n + 1) {
+            const newBuffer = new Int32Array(n + 128);
+            const score = similarityPercentage(a, b, maxAllowedDiff, newBuffer);
+            return { score: score, buffer: newBuffer };
         }
 
-        const lenA = a.length;
-        const lenB = b.length;
-        const maxLength = Math.max(lenA, lenB);
-
-        // [优化] 长度差异预判剪枝：如果长度差异过大，理论最大相似度低于阈值，直接返回 0
-        if (threshold > 0) {
-            const minLength = Math.min(lenA, lenB);
-            const maxPossibleSimilarity = (minLength / maxLength) * 100;
-            if (maxPossibleSimilarity < threshold) {
-                return 0;
-            }
-        }
-
-        if (lenA > lenB) {
-            [a, b] = [b, a];
-        }
-
-        // [优化] 使用 Int32Array 替代普通数组，减少内存开销和 GC 压力
-        const aLen = a.length;
-        const bLen = b.length;
-        let previousRow = new Int32Array(aLen + 1);
-        let currentRow = new Int32Array(aLen + 1);
+        const v = buffer; // 使用共享内存
 
         // 初始化第一行
-        for (let i = 0; i <= aLen; i++) {
-            previousRow[i] = i;
-        }
+        for (let i = 0; i <= n; i++) v[i] = i;
 
-        for (let j = 1; j <= bLen; j++) {
-            currentRow[0] = j;
-
-            for (let i = 1; i <= aLen; i++) {
-                const substitutionCost = (a[i - 1] === b[j - 1]) ? 0 : 1;
-                const insertionCost = previousRow[i] + 1;
-                const deletionCost = currentRow[i - 1] + 1;
-
-                currentRow[i] = Math.min(
-                    previousRow[i - 1] + substitutionCost,
-                    insertionCost,
-                    deletionCost,
-                );
+        for (let j = 1; j <= m; j++) {
+            let pre = v[0];
+            v[0] = j;
+            
+            // 记录当前行的最小值，用于提前退出判断
+            let rowMin = j;
+            
+            // [微调] 使用 charCodeAt 提升比较速度
+            const charB = b.charCodeAt(j - 1); 
+            
+            for (let i = 1; i <= n; i++) {
+                const tmp = v[i];
+                const cost = (a.charCodeAt(i - 1) === charB) ? 0 : 1;
+                
+                // 手写 Math.min 逻辑，JS中比调用 Math.min 快
+                let val = v[i] + 1;       // 删除
+                const ins = v[i-1] + 1;   // 插入
+                if (ins < val) val = ins;
+                const sub = pre + cost;   // 替换
+                if (sub < val) val = sub;
+                
+                v[i] = val;
+                pre = tmp;
+                
+                if (val < rowMin) rowMin = val;
             }
 
-            // 交换行
-            [previousRow, currentRow] = [currentRow, previousRow];
+            // [核心优化] 提前退出：如果当前行所有位置的差异都已超过允许值，后续只会更大，直接放弃
+            if (rowMin > maxAllowedDiff) {
+                return 0; 
+            }
         }
 
-        const distance = previousRow[a.length];
-        const similarity = ((maxLength - distance) / maxLength) * 100;
-
-        return similarity;
+        const maxLen = m; // m 是较长的那个
+        const distance = v[n];
+        return ((maxLen - distance) / maxLen) * 100;
     }
-
+ 
     function danmakuParser($obj) {
         //const fontSize = Number(values[2]) || 25
         const fontSizeRate = lsGetItem(lsKeys.fontSizeRate.id) / 100;
@@ -2548,7 +2586,9 @@
             );
         }
         const fontWeight = lsGetItem(lsKeys.fontWeight.id);
-        const fontStyle = styles.fontStyles[lsGetItem(lsKeys.fontStyle.id)].id;
+        const fontStyleIdx = lsGetItem(lsKeys.fontStyle.id);
+        const fontStyleObj = styles.fontStyles[fontStyleIdx] || styles.fontStyles[0];
+        const fontStyle = fontStyleObj.id;
         const fontFamily = lsGetItem(lsKeys.fontFamily.id);
         // 弹幕透明度
         const fontOpacity = Math.round(lsGetItem(lsKeys.fontOpacity.id) / 100 * 255).toString(16).padStart(2, '0');
@@ -2750,13 +2790,18 @@
                             <div style="${styles.embySlider}">
                                 <label class="${classes.embyLabel}" style="width: 5em;">${lsKeys.fontWeight.name}: </label>
                                 <div id="${eleIds.danmakuFontWeightDiv}" style="width: 15.5em; text-align: center;"></div>
-                                <label style="${styles.embySliderLabel}"></label>
+                                <label>
+                                    <label style="${styles.embySliderLabel}"></label>
+                                </label>
                             </div>
                             <div style="${styles.embySlider}">
                                 <label class="${classes.embyLabel}" style="width: 5em;">${lsKeys.fontStyle.name}: </label>
                                 <div id="${eleIds.danmakuFontStyleDiv}" style="width: 15.5em; text-align: center;"></div>
-                                <label style="${styles.embySliderLabel}">正常</label>
+                                <label>
+                                    <label style="${styles.embySliderLabel}"></label>
+                                </label>
                             </div>
+                            
                             <div id="${eleIds.fontFamilyCtrl}" style="margin: 0.6em 0;"></div>
                             <div style="${styles.embySlider}">
                                 <label class="${classes.embyLabel}" style="width: 5em;">${lsKeys.fontFamily.name}: </label>
@@ -2866,14 +2911,38 @@
     }
 
     function buildFontStyleSetting() {
-        getById(eleIds.danmakuFontWeightDiv).append(
+        // --- 1. 弹幕粗细 ---
+        var weightDiv = getById(eleIds.danmakuFontWeightDiv);
+        weightDiv.append(
             embySlider({ lsKey: lsKeys.fontWeight }, onSliderChange, onSliderChangeLabel)
         );
-        getById(eleIds.danmakuFontStyleDiv).append(
+        var savedWeight = lsGetItem(lsKeys.fontWeight.id);
+        if (weightDiv.nextElementSibling) {
+            var label = weightDiv.nextElementSibling.querySelector('label');
+            if (label) label.innerText = savedWeight;
+        }
+
+        // --- 2. 弹幕斜体 ---
+        var styleDiv = getById(eleIds.danmakuFontStyleDiv);
+        styleDiv.append(
             embySlider({ lsKey: lsKeys.fontStyle }
-            , (val, opts) => onSliderChange(styles.fontStyles[val].name, opts)
-            , (val, opts) => onSliderChangeLabel(styles.fontStyles[val].name, opts))
+            , (val, opts) => {
+                onSliderChange(val, opts); // 保存
+                onSliderChangeLabel(styles.fontStyles[val].name, opts); 
+            }
+            , (val, opts) => {
+                onSliderChangeLabel(styles.fontStyles[val].name, opts); 
+            })
         );
+        // 使用 || 0 确保如果是空值或0，也能正确识别为第0项
+        var savedStyleIdx = parseInt(lsGetItem(lsKeys.fontStyle.id)) || 0;
+        var styleName = (styles.fontStyles[savedStyleIdx] || styles.fontStyles[0]).name;
+        
+        if (styleDiv.nextElementSibling) {
+             var label = styleDiv.nextElementSibling.querySelector('label');
+             if (label) label.innerText = styleName;
+        }
+
         buildFontFamilySetting();
     }
 
@@ -2991,9 +3060,13 @@
     }
 
     function changeFontStylePreview() {
-        const fontStylePreview = getById(eleIds.fontStylePreview);
-        const fontWeight = lsGetItem(lsKeys.fontWeight.id);
-        const fontStyle = styles.fontStyles[lsGetItem(lsKeys.fontStyle.id)].id;
+    const fontStylePreview = getById(eleIds.fontStylePreview);
+    if (!fontStylePreview) return; // 增加判空
+    const fontWeight = lsGetItem(lsKeys.fontWeight.id);
+    const fontStyleIdx = lsGetItem(lsKeys.fontStyle.id);
+    const fontStyleObj = styles.fontStyles[fontStyleIdx] || styles.fontStyles[0]; 
+    const fontStyle = fontStyleObj.id;
+
         const fontFamily = lsGetItem(lsKeys.fontFamily.id);
         const fontOpacity = Math.round(lsGetItem(lsKeys.fontOpacity.id) / 100 * 255).toString(16).padStart(2, '0');
         const baseColor = Number(styles.colors.info).toString(16).padStart(6, '0');
@@ -3648,10 +3721,13 @@
                                 </label>
                             </div>
                             <div style="${styles.embySlider}">
-                                <label class="${classes.embyLabel}" style="width: 10em;">${lsKeys.mergeSimilarTime.name}: </label>
-                                <div id="${eleIds.mergeSimilarTimeDiv}" style="width: 15.5em; text-align: center;"></div>
-                                <label style="${styles.embySliderLabel}">-1</label>
-                            </div>
+                            <label class="${classes.embyLabel}" style="width: 10em;">${lsKeys.mergeSimilarTime.name}: </label>
+                            <div id="${eleIds.mergeSimilarTimeDiv}" style="width: 15.5em; text-align: center;"></div>
+                            <label>
+                               <label style="${styles.embySliderLabel}"></label>
+                               <label>秒</label>
+                            </label>
+                        </div>
                         </div>
                         <div id="${eleIds.filterKeywordsDiv}" style="margin-bottom: 0.2em;">
                             <label class="${classes.embyLabel}">${lsKeys.filterKeywords.name}: </label>
@@ -3675,10 +3751,13 @@
                         <div>
                             <div id="${eleIds.osdLineChartDiv}" class="${classes.embyCheckboxList}" style="${styles.embyCheckboxList}"></div>
                             <div style="${styles.embySlider}">
-                                <label class="${classes.embyLabel}" style="width: 12em;">${lsKeys.osdLineChartTime.name}: </label>
-                                <div id="${eleIds.osdLineChartTimeDiv}" style="width: 15.5em; text-align: center;"></div>
-                                <label style="${styles.embySliderLabel}"></label>
-                            </div>
+                    <label class="${classes.embyLabel}" style="width: 12em;">${lsKeys.osdLineChartTime.name}: </label>
+                          <div id="${eleIds.osdLineChartTimeDiv}" style="width: 15.5em; text-align: center;"></div>
+                          <label>
+                             <label style="${styles.embySliderLabel}"></label>
+                          <label>秒</label>
+                          </label>
+                        </div>
                         </div>
                     </div>
                 </div>
@@ -4590,17 +4669,93 @@
 
     function doDanmuListOptsChange(value, index) {
         const danmuListEle = getById(eleIds.danmuListText);
-        danmuListEle.style.display = index == lsKeys.danmuList.defaultValue ? 'none' : '';
-        const f = new Intl.DateTimeFormat('default', { minute: '2-digit', second: '2-digit' });
+        
+        // 1. 清理工作：如果之前绑定过滚动事件，先移除，防止重复绑定导致内存泄漏或逻辑混乱
+        if (danmuListEle._scrollHandler) {
+            danmuListEle.removeEventListener('scroll', danmuListEle._scrollHandler);
+            danmuListEle._scrollHandler = null;
+        }
+
+        // 2. 如果选中的是“不展示”，隐藏并清空
+        if (index == lsKeys.danmuList.defaultValue) {
+            danmuListEle.style.display = 'none';
+            danmuListEle.value = '';
+            return;
+        }
+        danmuListEle.style.display = '';
+
+        // 3. 获取全量数据
+        const list = value.onChange(window.ede);
+        if (!list || list.length === 0) {
+            danmuListEle.value = '无数据';
+            return;
+        }
+
+        // --- 核心逻辑开始 ---
+        
+        // 配置：每次加载多少条（建议 200-500 条，太大会卡，太小滚动太频繁）
+        const BATCH_SIZE = 500;
         const hasShowSourceIds = lsGetItem(lsKeys.showSource.id).length > 0;
-        danmuListEle.value = value.onChange(window.ede)
-            .map((c, i) => `[${i + 1}][${f.format(new Date(c.time * 1000))}] : `
+        
+        // 在元素对象上存储当前的状态，避免全局变量污染
+        danmuListEle._allData = list;       // 存所有数据
+        danmuListEle._renderedCount = 0;    // 当前已渲染的数量
+        danmuListEle.value = '';            // 先清空文本框
+
+        // 辅助函数：时间格式化
+        const formatTime = (seconds) => {
+            const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+            const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+            return `${m}:${s}`;
+        };
+
+        // 核心函数：渲染下一批数据
+        const renderNextBatch = () => {
+            const total = danmuListEle._allData.length;
+            const current = danmuListEle._renderedCount;
+
+            // 如果已经全部渲染完了，就不用再处理了
+            if (current >= total) return;
+
+            // 截取下一批数据
+            const nextBatch = danmuListEle._allData.slice(current, current + BATCH_SIZE);
+            
+            // 生成字符串
+            const textChunk = nextBatch.map((c, i) => 
+                `[${current + i + 1}][${formatTime(c.time)}] : `
                 + (hasShowSourceIds ? c.originalText : c.text)
                 + (c.source ? ` [${c.source}]` : '')
                 + (c.originalUserId ? `[${c.originalUserId}]` : '')
                 + (c.cid ? `[${c.cid}]` : '')
                 + `[${c.mode}]`
             ).join('\n');
+
+            // 追加到文本框
+            const prefix = current > 0 ? '\n' : '';
+            danmuListEle.value += prefix + textChunk;
+
+            // 更新计数器
+            danmuListEle._renderedCount += nextBatch.length;
+
+            // 如果还有剩余数据，在末尾临时添加一个提示
+            // 但在 textarea 里反复修改 value 性能一般，这里选择静默追加
+        };
+
+        // 4. 首次渲染：立即执行一次，填满首屏
+        renderNextBatch();
+
+        // 5. 绑定滚动事件：监听 textarea 的滚动
+        danmuListEle._scrollHandler = () => {
+            // scrollTop: 滚动条距离顶部的位置
+            // clientHeight: 可视区域高度
+            // scrollHeight: 内容总高度
+            // 当 (滚动距离 + 可视高度) 接近 (总高度) 时，说明到底了。预留 50px 的缓冲。
+            if (danmuListEle.scrollTop + danmuListEle.clientHeight >= danmuListEle.scrollHeight - 50) {
+                renderNextBatch();
+            }
+        };
+
+        danmuListEle.addEventListener('scroll', danmuListEle._scrollHandler);
     }
 
     function doDanmakuTypeFilterSelect() {
@@ -5645,8 +5800,8 @@
 
     function pemToArrayBuffer(pem) {
         const b64 = pem.replace(/-----BEGIN (PRIVATE|PUBLIC) KEY-----/, '')
-                       。replace(/-----END (PRIVATE|PUBLIC) KEY-----/, '')
-                       。replace(/\s/g, '');
+                       .replace(/-----END (PRIVATE|PUBLIC) KEY-----/, '')
+                       .replace(/\s/g, '');
         return base64ToArrayBuffer(b64);
     }
 
