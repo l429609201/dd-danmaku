@@ -3564,8 +3564,10 @@
             <div style="margin-top: 2%;">
                 <label class="${classes.embyLabel}">${lsKeys.danmuList.name}: </label>
                 <div id="${eleIds.danmuListDiv}" style="margin: 1% 0;"></div>
-                <textarea id="${eleIds.danmuListText}" readOnly style="display: none;resize: vertical;width: 100%" rows="8"
-                    is="emby-textarea" class="txtOverview emby-textarea"></textarea>
+                <div id="${eleIds.danmuListText}" style="display: none; height: 300px; overflow-y: auto; position: relative; border: 1px solid #444; background:                       rgba(0,0,0,0.3);">
+                <div id="danmuListPhantom" style="position: absolute; left: 0; top: 0; right: 0; z-index: -1;"></div>
+                <div id="danmuListContent" style="position: absolute; left: 0; right: 0; top: 0;"></div>
+                </div>
                 <div class="${classes.embyFieldDesc}">列表展示格式为: [序号][分:秒] : 弹幕正文 [来源平台][用户ID][弹幕CID][模式]</div>
             </div>
             <div id="${eleIds.extInfoCtrlDiv}" style="margin: 0.6em 0;"></div>
@@ -4668,95 +4670,86 @@
     }
 
     function doDanmuListOptsChange(value, index) {
-        const danmuListEle = getById(eleIds.danmuListText);
+    const container = getById(eleIds.danmuListText);
+    const phantom = getById('danmuListPhantom');
+    const content = getById('danmuListContent');
+
+    // 1. 清理旧事件
+    if (container._scrollHandler) {
+        container.removeEventListener('scroll', container._scrollHandler);
+    }
+
+    // 2. 处理“不展示”
+    if (index == lsKeys.danmuList.defaultValue) {
+        container.style.display = 'none';
+        return;
+    }
+    container.style.display = 'block';
+
+    // 3. 获取数据
+    const list = value.onChange(window.ede);
+    if (!list || list.length === 0) {
+        content.innerHTML = '无数据';
+        phantom.style.height = '0px';
+        return;
+    }
+
+    // --- 配置项 ---
+    const ITEM_HEIGHT = 28; // 单行高度(px)，根据字号微调
+    const TOTAL_COUNT = list.length;
+    const CONTAINER_HEIGHT = container.clientHeight || 350;
+    
+    // 设置幽灵高度，撑开滚动条
+    phantom.style.height = `${TOTAL_COUNT * ITEM_HEIGHT}px`;
+
+    // 辅助函数：时间格式化 mm:ss
+    const formatTime = (seconds) => {
+        const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+        const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+        return `${m}:${s}`;
+    };
+
+    // 核心渲染函数
+    const render = () => {
+        const scrollTop = container.scrollTop;
         
-        // 1. 清理工作：如果之前绑定过滚动事件，先移除，防止重复绑定导致内存泄漏或逻辑混乱
-        if (danmuListEle._scrollHandler) {
-            danmuListEle.removeEventListener('scroll', danmuListEle._scrollHandler);
-            danmuListEle._scrollHandler = null;
-        }
+        // 计算渲染范围 (缓冲区加大一点，防止快速滚动白屏)
+        const BUFFER = 10; 
+        let startIndex = Math.floor(scrollTop / ITEM_HEIGHT) - BUFFER;
+        let endIndex = Math.ceil((scrollTop + CONTAINER_HEIGHT) / ITEM_HEIGHT) + BUFFER;
 
-        // 2. 如果选中的是“不展示”，隐藏并清空
-        if (index == lsKeys.danmuList.defaultValue) {
-            danmuListEle.style.display = 'none';
-            danmuListEle.value = '';
-            return;
-        }
-        danmuListEle.style.display = '';
+        if (startIndex < 0) startIndex = 0;
+        if (endIndex > TOTAL_COUNT) endIndex = TOTAL_COUNT;
 
-        // 3. 获取全量数据
-        const list = value.onChange(window.ede);
-        if (!list || list.length === 0) {
-            danmuListEle.value = '无数据';
-            return;
-        }
-
-        // --- 核心逻辑开始 ---
-        
-        // 配置：每次加载多少条（建议 200-500 条，太大会卡，太小滚动太频繁）
-        const BATCH_SIZE = 500;
+        let html = '';
         const hasShowSourceIds = lsGetItem(lsKeys.showSource.id).length > 0;
-        
-        // 在元素对象上存储当前的状态，避免全局变量污染
-        danmuListEle._allData = list;       // 存所有数据
-        danmuListEle._renderedCount = 0;    // 当前已渲染的数量
-        danmuListEle.value = '';            // 先清空文本框
 
-        // 辅助函数：时间格式化
-        const formatTime = (seconds) => {
-            const m = Math.floor(seconds / 60).toString().padStart(2, '0');
-            const s = Math.floor(seconds % 60).toString().padStart(2, '0');
-            return `${m}:${s}`;
-        };
-
-        // 核心函数：渲染下一批数据
-        const renderNextBatch = () => {
-            const total = danmuListEle._allData.length;
-            const current = danmuListEle._renderedCount;
-
-            // 如果已经全部渲染完了，就不用再处理了
-            if (current >= total) return;
-
-            // 截取下一批数据
-            const nextBatch = danmuListEle._allData.slice(current, current + BATCH_SIZE);
-            
-            // 生成字符串
-            const textChunk = nextBatch.map((c, i) => 
-                `[${current + i + 1}][${formatTime(c.time)}] : `
+        for (let i = startIndex; i < endIndex; i++) {
+            const c = list[i];
+            const textContent = 
+                `[${i + 1}][${formatTime(c.time)}] : `
                 + (hasShowSourceIds ? c.originalText : c.text)
                 + (c.source ? ` [${c.source}]` : '')
                 + (c.originalUserId ? `[${c.originalUserId}]` : '')
                 + (c.cid ? `[${c.cid}]` : '')
-                + `[${c.mode}]`
-            ).join('\n');
+                + `[${c.mode}]`;
+            
+            // 使用 div 包裹纯文本，单行显示
+            html += `<div style="height:${ITEM_HEIGHT}px; line-height:${ITEM_HEIGHT}px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${textContent.replace(/</g, '&lt;')}</div>`;
+        }
 
-            // 追加到文本框
-            const prefix = current > 0 ? '\n' : '';
-            danmuListEle.value += prefix + textChunk;
+        content.innerHTML = html;
+        // 关键：偏移 content 位置，让它永远处于可视区域
+        content.style.transform = `translateY(${startIndex * ITEM_HEIGHT}px)`;
+    };
 
-            // 更新计数器
-            danmuListEle._renderedCount += nextBatch.length;
-
-            // 如果还有剩余数据，在末尾临时添加一个提示
-            // 但在 textarea 里反复修改 value 性能一般，这里选择静默追加
-        };
-
-        // 4. 首次渲染：立即执行一次，填满首屏
-        renderNextBatch();
-
-        // 5. 绑定滚动事件：监听 textarea 的滚动
-        danmuListEle._scrollHandler = () => {
-            // scrollTop: 滚动条距离顶部的位置
-            // clientHeight: 可视区域高度
-            // scrollHeight: 内容总高度
-            // 当 (滚动距离 + 可视高度) 接近 (总高度) 时，说明到底了。预留 50px 的缓冲。
-            if (danmuListEle.scrollTop + danmuListEle.clientHeight >= danmuListEle.scrollHeight - 50) {
-                renderNextBatch();
-            }
-        };
-
-        danmuListEle.addEventListener('scroll', danmuListEle._scrollHandler);
-    }
+    // 首次渲染
+    render();
+    
+    // 绑定滚动事件 (使用 rAF 保证丝滑)
+    container._scrollHandler = () => window.requestAnimationFrame(render);
+    container.addEventListener('scroll', container._scrollHandler);
+}
 
     function doDanmakuTypeFilterSelect() {
         const checkList = Array.from(document.getElementsByName(eleIds.danmakuTypeFilterSelectName))
