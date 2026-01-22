@@ -4,7 +4,7 @@
 
 这是一个为 Emby 设计的弹幕插件，它能够从弹弹play获取弹幕并显示在播放器中。
 
-<img width="1847" height="995" alt="image" src="https://github.com/user-attachments/assets/6995d4d2-7bb4-433b-90a1-a3a1921f9a30" />
+<img width="1847" height="996" alt="QQ20260121-003523" src="https://github.com/user-attachments/assets/e9a295b2-eac8-41af-a355-bcc4900f2332" />
 
 
 ## 食用方法 (手动注入)
