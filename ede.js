@@ -202,7 +202,13 @@
             // 只需要遍历一次即可
             return ede.commentsParsed.filter(p => !loadedCuids.has(p.cuid));
         } },
-        { id: '5', name: '已相似合并', onChange: (ede) => ede.commentsParsed.filter(p => p.xCount) },
+        { id: '5', name: '已相似合并', onChange: (ede) => {
+        if (ede.danmaku && ede.danmaku.comments) {
+            return ede.danmaku.comments.filter(p => p.xCount); 
+        }
+        return [];
+        } 
+    },
         { id: '100', name: '通知', onChange: (ede) => ede.danmaku ? ede.danmaku.comments.filter(c => hasToastPrefixes(c, toastPrefixes)) : [] },
     ];
     const timeoutCallbackUnitOpts = [
@@ -535,8 +541,21 @@
         });
     }
     // ------ require end ------
+    // ================== Worker 核心定义开始 ==================
+    // 1. 通用 Worker 创建器
+    function createWorker(workerFunction) {
+        const dataObj = `(${workerFunction})();`;
+        const blob = new Blob([dataObj], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(blob);
+        const worker = new Worker(workerUrl);
+        // 创建完实例后，URL 就可以释放了，不影响 worker 运行
+        URL.revokeObjectURL(workerUrl); 
+        return worker;
+    }
 
-    /*
+    // 2. MD5 Worker (包含你原本的 Mock 逻辑)
+    const md5WorkerBody = function() {
+        /*
      * A JavaScript implementation of the RSA Data Security, Inc. MD5 Message
      * Digest Algorithm, as defined in RFC 1321.
      * Version 2.2 Copyright (C) Paul Johnston 1999 - 2009
@@ -545,26 +564,144 @@
      * See http://pajhome.org.uk/crypt/md5 for more info.
      */
     // 简化的MD5实现，用于文件哈希计算
-    var SparkMD5 = {
-        ArrayBuffer: function() {
-            this._buff = new DataView(new ArrayBuffer(0));
-            this._length = 0;
-            this._hash = [1732584193, -271733879, -1732584194, 271733878];
-        }
+        var SparkMD5 = {
+            ArrayBuffer: function() {
+                this._buff = new DataView(new ArrayBuffer(0));
+                this._length = 0;
+                this._hash = [1732584193, -271733879, -1732584194, 271733878];
+            }
+        };
+        SparkMD5.ArrayBuffer.prototype.append = function(arrayBuffer) {
+            console.log('[SparkMD5] append called with buffer size:', arrayBuffer.byteLength);
+             // 简化实现：直接使用crypto API如果可用
+            return this;
+        };
+        SparkMD5.ArrayBuffer.prototype.end = function() {
+            // 返回32位MD5哈希值（官方API要求）
+            const mockHash = 'a1b2c3d4e5f6789012345678901234567890abcd'.substring(0, 32);
+            console.log('[SparkMD5-Worker] end called, returning 32-bit MD5 hash:', mockHash);
+            return mockHash;
+        };
+
+        let spark = null;
+
+        self.onmessage = function(e) {
+            const { type, chunk, isLast } = e.data;
+            if (type === 'INIT') {
+                spark = new SparkMD5.ArrayBuffer();
+            } else if (type === 'APPEND') {
+                if (!spark) spark = new SparkMD5.ArrayBuffer();
+                spark.append(chunk);
+                if (isLast) {
+                    const hash = spark.end();
+                    self.postMessage({ success: true, hash: hash });
+                    spark = null;
+                    self.close();
+                }
+            }
+        };
     };
 
-    SparkMD5.ArrayBuffer.prototype.append = function(arrayBuffer) {
-        console.log('[SparkMD5] append called with buffer size:', arrayBuffer.byteLength);
-        // 简化实现：直接使用crypto API如果可用
-        return this;
-    };
+    // 3. 弹幕去重 Worker (高性能版：只接收轻量数据)
+    const mergeWorkerBody = function() {
+        self.onmessage = function(e) {
+            // 接收的数据结构变化了：lightComments 只有 {t: text, m: time, i: index}
+            const { lightComments, threshold, timeWindow, enable } = e.data;
+            
+            if (!enable || !lightComments || lightComments.length === 0) {
+                // 如果没开启，返回 null，主线程会直接使用原数据
+                self.postMessage(null); 
+                return;
+            }
 
-    SparkMD5.ArrayBuffer.prototype.end = function() {
-        // 返回32位MD5哈希值（官方API要求）
-        const mockHash = 'a1b2c3d4e5f6789012345678901234567890abcd'.substring(0, 32);
-        console.log('[SparkMD5] end called, returning 32-bit MD5 hash:', mockHash);
-        return mockHash;
+            // --- 移植原本的 similarityPercentage 函数 ---
+            function similarityPercentage(a, b, maxAllowedDiff, buffer) {
+                if (a === b) return 100;
+                const n = a.length; const m = b.length;
+                if (n === 0 || m === 0) return 0;
+                if (n > m) return similarityPercentage(b, a, maxAllowedDiff, buffer);
+                if (buffer.length <= n + 1) {
+                    const newBuffer = new Int32Array(n + 128);
+                    const score = similarityPercentage(a, b, maxAllowedDiff, newBuffer);
+                    return { score: score, buffer: newBuffer };
+                }
+                const v = buffer; 
+                for (let i = 0; i <= n; i++) v[i] = i;
+                for (let j = 1; j <= m; j++) {
+                    let pre = v[0]; v[0] = j; let rowMin = j;
+                    const charB = b.charCodeAt(j - 1); 
+                    for (let i = 1; i <= n; i++) {
+                        const tmp = v[i];
+                        const cost = (a.charCodeAt(i - 1) === charB) ? 0 : 1;
+                        let val = v[i] + 1;
+                        const ins = v[i-1] + 1; if (ins < val) val = ins;
+                        const sub = pre + cost; if (sub < val) val = sub;
+                        v[i] = val; pre = tmp; if (val < rowMin) rowMin = val;
+                    }
+                    if (rowMin > maxAllowedDiff) return 0; 
+                }
+                const maxLen = m; const distance = v[n];
+                return ((maxLen - distance) / maxLen) * 100;
+            }
+
+            const resultIndices = []; // 只存保留下来的索引和修改后的文本
+            const mergedIndices = new Set();
+            const totalLen = lightComments.length;
+            const errorRate = (100 - threshold) / 100;
+            let sharedBuffer = new Int32Array(1024);
+
+            // 预处理 Mask (使用简写属性 t, m)
+            for (let i = 0; i < totalLen; i++) {
+                const text = lightComments[i].t;
+                let mask = 0;
+                const len = text.length > 50 ? 50 : text.length;
+                for (let k = 0; k < len; k++) { mask |= (1 << (text.charCodeAt(k) & 31)); }
+                lightComments[i]._mask = mask;
+            }
+
+            for (let i = 0; i < totalLen; i++) {
+                if (mergedIndices.has(i)) continue;
+                const root = lightComments[i];
+                // 注意这里取的是 root.t (text) 和 root.m (time)
+                const rootText = root.t;
+                const rootLen = rootText.length;
+                let count = 1;
+
+                for (let j = i + 1; j < totalLen; j++) {
+                    if (mergedIndices.has(j)) continue;
+                    const compare = lightComments[j];
+                    if ((compare.m - root.m) > timeWindow) break;
+
+                    const compareLen = compare.t.length;
+                    const maxLen = rootLen > compareLen ? rootLen : compareLen;
+                    const maxDiff = maxLen * errorRate; 
+                    
+                    if (Math.abs(rootLen - compareLen) > maxDiff) continue;
+                    if ((root._mask & compare._mask) === 0 && rootLen > 2) continue;
+
+                    let res = similarityPercentage(rootText, compare.t, maxDiff, sharedBuffer);
+                    let score = typeof res === 'object' ? (sharedBuffer = res.buffer, res.score) : res;
+
+                    if (score >= threshold) {
+                        count++;
+                        mergedIndices.add(j);
+                    }
+                }
+                
+                // 我们不返回整个对象，只返回：原始索引(i) 和 最终文本(t)
+                // 这样回传的数据量非常小
+                const finalStr = count > 1 ? (rootText + " [x" + count + "]") : null;
+                resultIndices.push({ 
+                    i: root.i, // 原始数组的下标
+                    t: finalStr // 如果没合并，传null省流量；合并了传新文本
+                });
+            }
+            
+            // 传回轻量级结果
+            self.postMessage(resultIndices);
+        };
     };
+    // ================== Worker 核心定义结束 ==================
 
     class EDE {
         constructor() {
@@ -573,18 +710,18 @@
             this.episode_info = null;
             this.ob = null;
             this.loading = false;
-            this.danmuCache = {}; // 只包含 comment 未解析
-            this.commentsParsed = []; // 包含 comment 和 extComment 解析后全量
-            this.extCommentCache = {}; // 只包含 extComment 未解析
+            this.danmuCache = {};   // 只包含 comment 未解析
+            this.commentsParsed = [];   // 包含 comment 和 extComment 解析后全量
+            this.extCommentCache = {};   // 只包含 extComment 未解析
             this.destroyIntervalIds = [];
-            this.searchDanmakuOpts = {}; // 手动搜索变量
-            this.appLogAspect = null; // 应用日志切面
+            this.searchDanmakuOpts = {};   // 手动搜索变量
+            this.appLogAspect = null;   // 应用日志切面
             this.bangumiInfo = {};
             this.itemId = '';
-            this.tempLsValues = {}; // 临时存储的由程序更改后的 ls 值
-            // [新增] 非对称验证配置
+            this.tempLsValues = {};   // 临时存储的由程序更改后的 ls 值
             this.asymmetricAuthEnabled = false;
-            this.publicKeyPem = null; // 客户端公钥（用于验证Worker签名）
+            this.publicKeyPem = null;   // 客户端公钥（用于验证Worker签名）
+            this.abortControllers = new Set();  // 全局请求控制器集合 (用于组件销毁时取消所有网络请求)
         }
     }
 
@@ -1148,35 +1285,36 @@
         }
     }
     async function fetchComment(episodeId) {
-        // [修正] 优先使用当前匹配信息中记录的 API 地址
+         // [修正] 优先使用当前匹配信息中记录的 API 地址
         const prefix = window.ede.episode_info?.apiPrefix || dandanplayApi.prefix;
         const url = `${prefix}/comment/${episodeId}?withRelated=true&chConvert=${window.ede.chConvert}`;
-        return fetchJson(url) // 直接使用 fetchJson
+        
+        const startTime = performance.now(); // [Log] 开始计时
+
+        return fetchJson(url)   // 直接使用 fetchJson
             .then((data) => {
-                // 兼容不同 API 的返回格式：
+                const endTime = performance.now();
+                const duration = (endTime - startTime).toFixed(0);
+                
+                 // 兼容不同 API 的返回格式：
                 // - 标准格式: { comments: [...] }
                 // - 嵌套格式: { data: { comments: [...] } }
                 // - 直接数组: [...]
                 let comments = null;
-                if (Array.isArray(data)) {
-                    // 直接返回数组
-                    comments = data;
-                } else if (data && Array.isArray(data.comments)) {
-                    // 标准格式: { comments: [...] }
-                    comments = data.comments;
-                } else if (data && data.data && Array.isArray(data.data.comments)) {
-                    // 嵌套格式: { data: { comments: [...] } }
-                    comments = data.data.comments;
-                } else if (data && data.result && Array.isArray(data.result)) {
-                    // 其他格式: { result: [...] }
-                    comments = data.result;
-                }
+                // 直接返回数组
+                if (Array.isArray(data)) comments = data;
+                // 标准格式: { comments: [...] }
+                else if (data?.comments) comments = data.comments;
+                // 嵌套格式: { data: { comments: [...] } }
+                else if (data?.data?.comments) comments = data.data.comments;
+                // 其他格式: { result: [...] }
+                else if (data?.result) comments = data.result;
 
                 if (comments) {
-                    console.log(`[API请求] comment 获取弹幕成功，数量: ${comments.length}`);
+                    console.log(`[API请求] comment 获取弹幕成功, 耗时: ${duration}ms, 数量: ${comments.length}`);
                     return comments;
                 } else {
-                    console.error(`[API请求] comment 返回数据格式不兼容，结构:`, data ? Object.keys(data) : 'null');
+                    console.error(`[API请求] comment 返回数据格式不兼容，结构: ${data ? JSON.stringify(Object.keys(data)) : 'null'}, 耗时: ${duration}ms`);
                     return null;
                 }
             })
@@ -1322,10 +1460,8 @@
     async function fetchJson(url, opts = {}) {
         const { token, headers, body } = opts;
         let { method = 'GET' } = opts;
-        if (method === 'GET' && body) {
-            method = 'POST';
-        }
-
+        if (method === 'GET' && body) method = 'POST';
+        
         // [修复] 判断是否为自定义 API（非弹弹play官方API）
         // 自定义 API 不发送 X-User-Agent 头，避免 CORS 问题
         const isDandanplayApi = url.includes('api.dandanplay.net') || url.includes('dandanplay');
@@ -1334,10 +1470,9 @@
 
         const requestHeaders = {
             'Accept-Encoding': 'gzip',
-            Accept: 'application/json',
+            'Accept': 'application/json',
             'Content-Type': 'application/json',
         };
-
         // 只有弹弹play和Bangumi官方API才发送 X-User-Agent
         if (shouldSendUserAgent) {
             requestHeaders['X-User-Agent'] = userAgent;
@@ -1346,24 +1481,30 @@
             console.log(`[DEBUG] fetchJson 跳过 X-User-Agent (自定义API): ${url.substring(0, 80)}...`);
         }
 
-        if (token) {
-            requestHeaders.Authorization = `Bearer ${token}`;
-        }
-        if (headers) {
-            Object.assign(requestHeaders, headers);
-        }
+        if (token) requestHeaders.Authorization = `Bearer ${token}`;
+        if (headers) Object.assign(requestHeaders, headers);
+        
         const requestBody = body ? JSON.stringify(body) : null;
 
-        // [优化] 添加超时控制（30秒）
+        // [优化] 统一生命周期管理
+        // 创建一个新的控制器，用于本次请求的超时或组件销毁
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s 超时
+        
+        // 将控制器注册到全局集合
+        if (window.ede?.abortControllers) {
+            window.ede.abortControllers.add(controller);
+        }
 
         try {
+            // 优先使用传入的 signal，否则使用内部创建的
+            const signal = opts.signal || controller.signal;
+
             const response = await fetch(url, {
-                method: method,
+                method,
                 headers: requestHeaders,
                 body: requestBody,
-                signal: controller.signal,
+                signal: signal,
             });
 
             clearTimeout(timeoutId);
@@ -1373,21 +1514,33 @@
             }
 
             const responseText = await response.text();
-            if (responseText.length > 0) {
+            // [现代化] 使用可选链和空值合并
+            if (responseText?.length > 0) {
                 try {
                     return JSON.parse(responseText);
                 } catch (parseError) {
-                    console.warn('responseText not is JSON:', parseError);
+                    console.warn('responseText is not JSON:', parseError);
                 }
             }
             return { success: true };
         } catch (error) {
             clearTimeout(timeoutId);
-            // [优化] 区分超时错误和其他错误
             if (error.name === 'AbortError') {
-                throw new Error(`请求超时 (30s): ${url}`);
+                // 区分是被组件销毁取消的(人为)，还是超时取消的
+                if (window.ede?.lastLoadId?.toString().startsWith('DESTROYED')) {
+                    console.log(`[Network] 请求已因组件销毁而取消: ${url}`);
+                } else {
+                    console.warn(`[Network] 请求超时或被中断: ${url}`);
+                }
+                // 抛出错误以便上层停止逻辑，但在 Promise.allSettled 中会被捕获
+                throw error; 
             }
             throw error;
+        } finally {
+            // [GC] 请求结束（无论成功失败），从集合中移除
+            if (window.ede?.abortControllers) {
+                window.ede.abortControllers.delete(controller);
+            }
         }
     }
 
@@ -1539,109 +1692,63 @@
         return { animeName, animeOriginalTitle, animaInfo, };
     }
 
+    // --- 替换后的 calculateFileHash (使用 Worker) ---
     async function calculateFileHash(streamUrl, fileSize) {
         if (!streamUrl || !fileSize) {
             console.warn('缺少 streamUrl 或 fileSize，无法计算哈希。');
             return null;
         }
 
-        // [修改] 简化认证逻辑 - streamUrl已包含api_key参数，无需额外认证头
-        console.log(`[Hash] 使用流媒体URL: ${streamUrl ? '已获取' : '未获取'}`);
-
-        // 检查URL是否包含api_key
-        if (!streamUrl.includes('api_key=')) {
-            console.warn('[Hash] 流媒体URL缺少api_key参数，可能导致认证失败');
-        }
-
-        // 基本请求头，不需要复杂的认证
-        const authHeaders = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': '*/*',
-            'Accept-Encoding': 'identity'  // 避免压缩，确保获取原始数据
-        };
-
-        const CHUNK_SIZE = 16 * 1024 * 1024; // 16MB
-        const spark = new SparkMD5.ArrayBuffer();
-
-        try {
-            if (fileSize < CHUNK_SIZE * 2) {
-                // 文件较小，直接下载整个文件
-                console.log(`[Hash] 文件大小 (${(fileSize / 1024 / 1024).toFixed(2)}MB) 小于32MB，将下载整个文件计算哈希。`);
-
-                const response = await fetch(streamUrl, {
-                    headers: authHeaders,
-                    timeout: 30000 // 30秒超时
-                });
-
-                if (!response.ok) {
-                    throw new Error(`下载文件失败: ${response.status} ${response.statusText}`);
+        return new Promise(async (resolve, reject) => {
+            const worker = createWorker(md5WorkerBody);
+            worker.onmessage = (e) => {
+                if (e.data.success) {
+                    console.log(`[Hash-Worker] 计算完成: ${e.data.hash}`);
+                    resolve(e.data.hash);
+                    worker.terminate();
                 }
+            };
+            worker.onerror = (err) => {
+                console.error("[Hash-Worker] Error:", err);
+                worker.terminate();
+                resolve(null);
+            };
+            worker.postMessage({ type: 'INIT' });
 
-                console.log(`[Hash] 响应状态: ${response.status}, Content-Length: ${response.headers.get('content-length')}`);
-                const arrayBuffer = await response.arrayBuffer();
-                spark.append(arrayBuffer);
-            } else {
-                // 文件较大，分块下载
-                console.log(`[Hash] 文件大小 (${(fileSize / 1024 / 1024).toFixed(2)}MB)，将分块下载计算哈希。`);
+            const authHeaders = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': '*/*',
+                'Accept-Encoding': 'identity'
+            };
+            const CHUNK_SIZE = 16 * 1024 * 1024;
 
-                // 下载文件头
-                console.log('[Hash] 正在下载文件头部 16MB...');
-                const headRequestHeaders = {
-                    ...authHeaders,
-                    'Range': `bytes=0-${CHUNK_SIZE - 1}`,
-                    'Accept-Ranges': 'bytes'
-                };
+            try {
+                if (fileSize < CHUNK_SIZE * 2) {
+                    console.log(`[Hash] 文件较小，下载全量计算...`);
+                    const response = await fetch(streamUrl, { headers: authHeaders });
+                    if (!response.ok) throw new Error(`Fetch error: ${response.status}`);
+                    const buffer = await response.arrayBuffer();
+                    worker.postMessage({ type: 'APPEND', chunk: buffer, isLast: true }, [buffer]);
+                } else {
+                    console.log(`[Hash] 文件较大，下载头尾分片计算...`);
+                    const headRes = await fetch(streamUrl, { 
+                        headers: { ...authHeaders, 'Range': `bytes=0-${CHUNK_SIZE - 1}` } 
+                    });
+                    const headBuffer = await headRes.arrayBuffer();
+                    worker.postMessage({ type: 'APPEND', chunk: headBuffer, isLast: false }, [headBuffer]);
 
-                const headResponse = await fetch(streamUrl, {
-                    headers: headRequestHeaders,
-                    timeout: 30000
-                });
-
-                if (!headResponse.ok) {
-                    throw new Error(`下载文件头部失败: ${headResponse.status} ${headResponse.statusText}`);
+                    const tailRes = await fetch(streamUrl, { 
+                        headers: { ...authHeaders, 'Range': `bytes=${fileSize - CHUNK_SIZE}-${fileSize - 1}` } 
+                    });
+                    const tailBuffer = await tailRes.arrayBuffer();
+                    worker.postMessage({ type: 'APPEND', chunk: tailBuffer, isLast: true }, [tailBuffer]);
                 }
-
-                console.log(`[Hash] 头部响应状态: ${headResponse.status}, Content-Range: ${headResponse.headers.get('content-range')}`);
-                const headBuffer = await headResponse.arrayBuffer();
-                spark.append(headBuffer);
-                console.log('[Hash] 文件头部下载完成。');
-
-                // 下载文件尾
-                console.log('[Hash] 正在下载文件尾部 16MB...');
-                const tailRequestHeaders = {
-                    ...authHeaders,
-                    'Range': `bytes=${fileSize - CHUNK_SIZE}-${fileSize - 1}`,
-                    'Accept-Ranges': 'bytes'
-                };
-
-                const tailResponse = await fetch(streamUrl, {
-                    headers: tailRequestHeaders,
-                    timeout: 30000
-                });
-
-                if (!tailResponse.ok) {
-                    throw new Error(`下载文件尾部失败: ${tailResponse.status} ${tailResponse.statusText}`);
-                }
-
-                console.log(`[Hash] 尾部响应状态: ${tailResponse.status}, Content-Range: ${tailResponse.headers.get('content-range')}`);
-                const tailBuffer = await tailResponse.arrayBuffer();
-                spark.append(tailBuffer);
-                console.log('[Hash] 文件尾部下载完成。');
+            } catch (error) {
+                console.error('[Hash] 下载或通信失败:', error);
+                worker.terminate();
+                resolve(null);
             }
-            const hash = spark.end();
-            console.log(`[Hash] 文件哈希计算成功: ${hash}`);
-            console.log(`[Hash] 哈希值详情 - 长度: ${hash.length}, 值: ${hash}`);
-            return hash;
-        } catch (error) {
-            console.error('[Hash] 文件哈希计算过程中发生错误:', error);
-            console.error('[Hash] 错误详情:', {
-                message: error.message,
-                streamUrl: streamUrl,
-                fileSize: fileSize,
-                authHeaders: Object.keys(authHeaders)
-            });
-            return null;
-        }
+        });
     }
 
     /**
@@ -1666,139 +1773,134 @@
         };
     }
 
+    // --- 优化：串行请求 (节省流量) & 耗时日志 ---
     async function searchEpisodes(itemInfoMap) {
         const { animeName, episode, seriesOrMovieId, streamUrl, size, duration } = itemInfoMap;
         console.log(`[Debug] searchEpisodes调用 - streamUrl: ${streamUrl ? '已获取' : '未获取'}, size: ${size}, duration: ${duration}`);
-
-        // 新增：读取用户定义的API优先级
+        const startTime = performance.now(); 
+        
+        // 读取用户定义的API优先级
         const apiPriority = lsGetItem(lsKeys.apiPriority.id);
-
-        // [修改] 构建API配置，支持多个自定义源（新数据结构）
+        // 构建API配置，支持多个自定义源（新数据结构）
         const customApiList = getCustomApiList();
         const apiConfigs = {
             official: { name: '官方API', prefix: corsProxy + 'https://api.dandanplay.net/api/v2', enabled: lsGetItem(lsKeys.useOfficialApi.id) },
         };
-
         // 为每个启用的自定义源创建配置
         if (lsGetItem(lsKeys.useCustomApi.id) && customApiList.length > 0) {
             customApiList.forEach((item, index) => {
                 if (item.enabled) {
-                    apiConfigs[`custom_${index}`] = {
-                        name: item.name || `自定义源${index + 1}`,
-                        prefix: item.url,
-                        enabled: true
-                    };
+                    apiConfigs[`custom_${index}`] = { name: item.name || `自定义源${index + 1}`, prefix: item.url, enabled: true };
                 }
             });
         }
-
-        // 构建实际的优先级列表
+        
+        // 构建优先级队列
         const actualPriority = [];
         for (const key of apiPriority) {
-            if (key === 'official') {
-                actualPriority.push('official');
-            } else if (key === 'custom') {
-                // 将 'custom' 展开为所有自定义源
-                customApiList.forEach((_, index) => {
-                    actualPriority.push(`custom_${index}`);
-                });
-            }
+            if (key === 'official') actualPriority.push('official');
+            else if (key === 'custom') customApiList.forEach((item, i) => item.enabled && actualPriority.push(`custom_${i}`));
         }
-
+        
         // 准备 /match 接口的请求体
         const matchPayload = {
             fileName: animeName,
             fileHash: null,
             fileSize: size || 0,
             videoDuration: Math.floor(duration || 0), // [修复] 转换为整数
-            matchMode: "hashAndFileName" // [修正] 始终使用 hashAndFileName 模式
+            matchMode: "hashAndFileName"// [修正] 始终使用 hashAndFileName 模式
         };
-
-        // 仅在有文件路径时才计算哈希值
+        
+        // 计算哈希 (Worker)
         if (streamUrl && size > 0) {
-            console.log(`准备通过播放链接计算文件哈希`);
-            matchPayload.fileHash = await calculateFileHash(streamUrl, size);
-            if (matchPayload.fileHash) { 
-                console.log(`文件哈希计算完成: ${matchPayload.fileHash}`);
-            } else {
-                console.warn('[Hash] 文件哈希计算失败，将使用假哈希值进行匹配。');
-                matchPayload.fileHash = 'a1b2c3d4e5f67890abcd1234ef567890';
-            }
+             matchPayload.fileHash = await calculateFileHash(streamUrl, size) || 'a1b2c3d4e5f67890abcd1234ef567890';
         } else {
-            console.warn('未找到播放链接或文件大小，将使用假哈希值进行匹配。');
-            matchPayload.fileHash = 'a1b2c3d4e5f67890abcd1234ef567890';
+             matchPayload.fileHash = 'a1b2c3d4e5f67890abcd1234ef567890';
         }
 
-        // 1. 严格按照优先级顺序进行匹配
+        console.log(`[自动匹配] 开始串行搜索... 目标: ${animeName}`);
+
+        // --- 3. 串行执行逻辑 (回归) ---
         for (const apiKey of actualPriority) {
             const config = apiConfigs[apiKey];
-            if (!config || !config.enabled || !config.prefix) {
-                continue;
-            }
+            // 跳过未启用或配置错误的源
+            if (!config?.enabled || !config?.prefix) continue;
 
-            console.log(`[自动匹配][${config.name}] 开始按优先级进行匹配...`);
+            console.log(`[自动匹配] 正在尝试源: ${config.name}...`);
+            const providerStart = performance.now();
+            
+            try {
+                let result = null;
 
-            // 1a. 尝试 /match 接口 (对所有API都尝试，有哈希时使用哈希)
-            console.log(`[自动匹配][${config.name}] 尝试 /match 接口, 请求体:`, {...matchPayload, fileHash: matchPayload.fileHash ? '...' : null});
-            const matchResult = await fetchMatchApi(matchPayload, config.prefix);
-            if (matchResult && matchResult.isMatched && matchResult.animes && matchResult.animes.length > 0) {
-                console.log(`[${config.name}] /match 接口直接匹配成功，将直接使用返回的 episodeId`);
-                const match = matchResult.animes[0];
-                return { directMatch: true, apiPrefix: config.prefix, apiName: config.name, episodeInfo: { ...match, episodes: [{ episodeId: match.episodeId, episodeTitle: match.episodeTitle }], imageUrl: match.imageUrl } };
-            }
-
-            // 1a.1. 如果 /match 接口返回了候选列表但没有直接匹配，尝试智能选择
-            if (matchResult && !matchResult.isMatched && matchResult.animes && matchResult.animes.length > 0) {
-                console.log(`[${config.name}] /match 接口返回候选列表，尝试智能匹配...`);
-                const bestMatch = selectBestMatch(animeName, matchResult.animes);
-                if (bestMatch) {
-                    console.log(`[${config.name}] 智能匹配选择:`, bestMatch.animeTitle);
-                    return { directMatch: true, apiPrefix: config.prefix, apiName: config.name, episodeInfo: { ...bestMatch, episodes: [{ episodeId: bestMatch.episodeId, episodeTitle: bestMatch.episodeTitle }], imageUrl: bestMatch.imageUrl } };
+                // A. 尝试 /match 接口
+                const matchResult = await fetchMatchApi(matchPayload, config.prefix);
+                
+                if (matchResult?.isMatched && matchResult?.animes?.length > 0) {
+                    const match = matchResult.animes[0];
+                    result = { directMatch: true, apiPrefix: config.prefix, apiName: config.name, episodeInfo: { ...match, episodes: [{ episodeId: match.episodeId, episodeTitle: match.episodeTitle }], imageUrl: match.imageUrl } };
                 }
-            }
-
-            // 1b. 尝试 /search/episodes 接口 (带集数)
-            let searchTitle = animeName;
-            let searchEpisode = episode;
-
-            // [新增] 针对官方API的特殊处理逻辑
-            if (apiKey === 'official') {
-                const parsed = parseAnimeName(animeName);
-                if (parsed.season !== null) {
-                    searchTitle = `${parsed.title} 第${parsed.season}季`;
-                    searchEpisode = parsed.episode; // 使用从文件名解析出的集数
-                    console.log(`[自动匹配][官方API优化] 格式化搜索: 标题='${searchTitle}', 集数=${searchEpisode}`);
+                // 智能匹配 (Candidate Selection)
+                else if (matchResult?.animes?.length > 0) {
+                    const bestMatch = selectBestMatch(animeName, matchResult.animes);
+                    if (bestMatch) {
+                        result = { directMatch: true, apiPrefix: config.prefix, apiName: config.name, episodeInfo: { ...bestMatch, episodes: [{ episodeId: bestMatch.episodeId, episodeTitle: bestMatch.episodeTitle }], imageUrl: bestMatch.imageUrl } };
+                    }
                 }
-            }
-            console.log(`[自动匹配][${config.name}] 尝试 /search/episodes 接口, 标题名: ${searchTitle}, 集数: ${searchEpisode}`);
-            let animaInfo = await fetchSearchEpisodes(searchTitle, searchEpisode, config.prefix);
-            if (animaInfo && animaInfo.animes.length > 0) {
-                console.log(`[${config.name}] 带集数搜索成功`);
-                return { animaInfo, apiPrefix: config.prefix, apiName: config.name };
-            }
 
-            // 1c. 尝试 /search/episodes 接口 (不带集数)
-            console.log(`[${config.name}] 带集数搜索失败，尝试不带集数...`);
-            animaInfo = await fetchSearchEpisodes(animeName, null, config.prefix);
-            if (animaInfo && animaInfo.animes.length > 0) {
-                console.log(`[${config.name}] 不带集数搜索成功`);
-                return { animaInfo, apiPrefix: config.prefix, apiName: config.name };
-            }
+                // B. 尝试 /search/episodes 接口 (如果 match 没结果)
+                if (!result) {
+                    let searchTitle = animeName;
+                    let searchEpisode = episode;
+                    
+                    // 官方源特殊优化
+                    if (apiKey === 'official') {
+                        const parsed = parseAnimeName(animeName);
+                        if (parsed.season !== null) {
+                            searchTitle = parsed.season === 1 ? parsed.title : `${parsed.title} 第${parsed.season}季`;
+                            searchEpisode = parsed.episode;
+                        }
+                    }
 
-            // 1d. 尝试使用原始标题
-            const seriesOrMovieInfo = await fatchEmbyItemInfo(seriesOrMovieId);
-            if (seriesOrMovieInfo && seriesOrMovieInfo.OriginalTitle) {
-                const originalTitle = seriesOrMovieInfo.OriginalTitle;
-                console.log(`[${config.name}] 尝试使用原始标题搜索: ${originalTitle}`);
-                animaInfo = await fetchSearchEpisodes(originalTitle, episode, config.prefix);
-                if (animaInfo && animaInfo.animes.length > 0) {
-                    console.log(`[${config.name}] 使用原始标题搜索成功`);
-                    return { animaInfo, animeOriginalTitle: originalTitle, apiPrefix: config.prefix, apiName: config.name };
+                    // 带集数搜索
+                    let animaInfo = await fetchSearchEpisodes(searchTitle, searchEpisode, config.prefix);
+                    
+                    if (animaInfo?.animes?.length > 0) {
+                        result = { animaInfo, apiPrefix: config.prefix, apiName: config.name };
+                    } 
+                    // 降级：不带集数搜索
+                    else {
+                        animaInfo = await fetchSearchEpisodes(animeName, null, config.prefix);
+                        if (animaInfo?.animes?.length > 0) {
+                            result = { animaInfo, apiPrefix: config.prefix, apiName: config.name };
+                        }
+                        // 降级：原始标题搜索
+                        else {
+                            const seriesOrMovieInfo = await fatchEmbyItemInfo(seriesOrMovieId);
+                            if (seriesOrMovieInfo?.OriginalTitle) {
+                                animaInfo = await fetchSearchEpisodes(seriesOrMovieInfo.OriginalTitle, episode, config.prefix);
+                                if (animaInfo?.animes?.length > 0) {
+                                    result = { animaInfo, animeOriginalTitle: seriesOrMovieInfo.OriginalTitle, apiPrefix: config.prefix, apiName: config.name };
+                                }
+                            }
+                        }
+                    }
                 }
+
+                // --- 4. 关键：如果找到了，直接返回 (Short-Circuit) ---
+                if (result) {
+                    const totalTime = (performance.now() - startTime).toFixed(0);
+                    console.log(`[自动匹配] 在源 [${config.name}] 匹配成功! 耗时: ${(performance.now() - providerStart).toFixed(0)}ms (累计: ${totalTime}ms)`);
+                    appendvideoOsdDanmakuInfo(null, `匹配耗时: ${totalTime}ms`);
+                    return result; // <--- 之后的循环不会执行，请求被节省了
+                }
+
+            } catch (e) {
+                console.warn(`[自动匹配] 源 ${config.name} 发生错误:`, e);
+                // 继续下一个循环
             }
         }
 
-        // 2. 如果所有API都失败了
+        console.log(`[自动匹配] 所有源均未匹配成功, 总耗时: ${(performance.now() - startTime).toFixed(0)}ms`);
         return null;
     }
 
@@ -1985,15 +2087,40 @@
         }
     }
 
-    async function createDanmaku(comments) {
+    async function createDanmaku(comments, sessionId) {
+        // [核心修复] 1. 入口身份核验
+        // 如果调用者传了身份证(sessionId)，必须和全局最新的(lastLoadId)一致
+        if (sessionId && window.ede && sessionId !== window.ede.lastLoadId) {
+            console.warn(`[防串台] 拦截旧任务(入口): ${sessionId}, 当前: ${window.ede.lastLoadId}`);
+            return;
+        }
+
         if (!comments) { return; }
-        if (window.ede.danmaku != null) {
-            window.ede.danmaku.destroy();
+
+        if (window.ede.danmaku) {
+            try { window.ede.danmaku.hide(); window.ede.danmaku.destroy(); } catch (e) {
+                console.warn('旧弹幕实例销毁异常', e);
+            }
             window.ede.danmaku = null;
         }
+        
+        const ghostWrappers = document.querySelectorAll(`#${eleIds.danmakuWrapper}`);
+        ghostWrappers.forEach(el => el.remove());
+
         const commentsParsed = danmakuParser(comments);
         window.ede.commentsParsed = commentsParsed;
-        let _comments = danmakuFilter(commentsParsed);
+
+        console.log('开始过滤和合并弹幕 (异步)...');
+        
+        // --- 异步等待 (这里耗时 1秒左右) ---
+        let _comments = await danmakuFilter(commentsParsed); 
+        
+        // [核心修复] 2. 出口身份核验 (防止 await 期间切集)
+        if (sessionId && window.ede && sessionId !== window.ede.lastLoadId) {
+            console.warn(`[防串台] 拦截旧任务(出口): ${sessionId}, 当前: ${window.ede.lastLoadId}`);
+            return;
+        }
+        
         console.log('弹幕加载成功: ' + _comments.length);
 
         const _media = document.querySelector(mediaQueryStr);
@@ -2004,11 +2131,14 @@
             }
             // 设置弹窗内的弹幕信息
             buildCurrentDanmakuInfo(currentDanmakuInfoContainerId);
-            throw new Error('创建弹幕失败：用户已退出视频播放页面。');
+            // throw new Error('创建弹幕失败：用户已退出视频播放页面。');
+            console.warn('用户已退出视频播放页面，停止创建。');
+            return;
         }
         if (!isVersionOld) { _media.style.position = 'absolute'; }
         // from https://github.com/Izumiko/jellyfin-danmaku/blob/jellyfin/ede.js#L1104
-        const wrapperTop = 0; // 播放器 UI 顶部阴影
+        const wrapperTop = 0;
+        // 播放器 UI 顶部阴影
         let wrapper = getById(eleIds.danmakuWrapper);
         wrapper && wrapper.remove();
         wrapper = document.createElement('div');
@@ -2017,7 +2147,8 @@
         wrapper.style.width = '100%';
         wrapper.style.height = `calc(${lsGetItem(lsKeys.heightPercent.id)}% - ${wrapperTop}px)`;
         wrapper.style.backgroundColor = lsGetItem(lsKeys.debugShowDanmakuWrapper.id) ? styles.colors.highlight : '';
-        // wrapper.style.opacity = lsGetItem(lsKeys.fontOpacity.id); // 弹幕整体透明度
+        // wrapper.style.opacity = lsGetItem(lsKeys.fontOpacity.id);
+        // 弹幕整体透明度
         wrapper.style.top = wrapperTop + 'px';
         wrapper.style.pointerEvents = 'none';
         // [优化] 告诉浏览器这个层是会变的，让 GPU 提前准备
@@ -2144,16 +2275,53 @@
         console.log('已重绘进度条弹幕数量折线图');
     }
 
+    // [新增] 强制清理 UI 函数
+    function clearDanmakuUI() {
+        // 1. 隐藏并清空现有弹幕
+        if (window.ede.danmaku) {
+            window.ede.danmaku.hide();
+            window.ede.danmaku.clear(); 
+            // 注意：不在这里 destroy，因为 createDanmaku 会复用或重新创建
+        }
+
+        // 2. 重置右下角 OSD 信息
+        const videoOsdDanmakuTitle = getById(eleIds.videoOsdDanmakuTitle);
+        if (videoOsdDanmakuTitle) {
+            videoOsdDanmakuTitle.innerText = ''; 
+        }
+
+        // 3. 移除高能进度条
+        const chartEle = getById(eleIds.progressBarLineChart);
+        if (chartEle) {
+            chartEle.remove();
+        }
+        
+        // 4. 清空当前的弹幕数据缓存（视觉上防止闪烁）
+        window.ede.commentsParsed = [];
+    }
+
     function loadDanmaku(loadType = LOAD_TYPE.CHECK) {
         const _media = document.querySelector(mediaQueryStr);
         if (!_media) {
             return console.warn('用户已退出视频播放，停止加载弹幕');
         }
-        if (window.ede.loading) {
-            console.log('已有弹幕加载任务正在进行中，请稍后...');
-            return;
+        
+        // [关键修复] 2. 在加载的最开始就生成新的任务 ID (Session ID)
+        // 这样 B 剧集一开始加载，A 的 ID (上一个时间戳) 就已经失效了
+        const currentSessionId = Date.now();
+        if (window.ede) {
+            window.ede.lastLoadId = currentSessionId;
+            
+            // =========== [修改开始] ===========
+            // 在这里调用清理函数，确保发起请求前，上一集的 UI 已经被清除
+            clearDanmakuUI();
+            console.log('开始加载新弹幕，已清除上一集 UI');
+            // =========== [修改结束] ===========
         }
-        window.ede.loading = true;
+
+        // 注意：这里不再设置 window.ede.loading = true，因为并发时无法准确控制
+        // 我们改用 ID 校验来控制
+
         if (lsGetItem(lsKeys.useFetchPluginXml.id)) {
             // if (lsGetItem(lsKeys.refreshPluginXml.id)) {
             //     refreshPluginXml(window.ede.itemId).catch((error) => {
@@ -2178,17 +2346,19 @@
                 getCommentsByPluginApi(window.ede.itemId)
                 .then((comments) => {
                     if (comments && comments.length > 0) {
-                        return createDanmaku(comments).then(() => {
-                            console.log('服务端Danmu插件弹幕加载就位');
-                        }).then(() => {
-                            window.ede.loading = false;
-                            const danmakuCtrEle = getById(eleIds.danmakuCtr);
-                            if (danmakuCtrEle && danmakuCtrEle.style.opacity !== '1') {
-                                danmakuCtrEle.style.opacity = '1';
-                            }
-                            const videoOsdDanmakuTitle = getById(eleIds.videoOsdDanmakuTitle);
-                            if (videoOsdDanmakuTitle && videoOsdDanmakuTitle.innerText.includes('未匹配')) {
-                                videoOsdDanmakuTitle.innerText = `弹幕：${lsKeys.useFetchPluginXml.name} - ${comments.length}条`;
+                        // [传证] 将 currentSessionId 传给 createDanmaku 进行核验
+                        return createDanmaku(comments, currentSessionId).then(() => {
+                            // 只有当全局 ID 依然匹配时，才做后续 UI 更新
+                            if (window.ede && window.ede.lastLoadId === currentSessionId) {
+                                console.log('服务端Danmu插件弹幕加载就位');
+                                const danmakuCtrEle = getById(eleIds.danmakuCtr);
+                                if (danmakuCtrEle && danmakuCtrEle.style.opacity !== '1') {
+                                    danmakuCtrEle.style.opacity = '1';
+                                }
+                                const videoOsdDanmakuTitle = getById(eleIds.videoOsdDanmakuTitle);
+                                if (videoOsdDanmakuTitle && videoOsdDanmakuTitle.innerText.includes('未匹配')) {
+                                    videoOsdDanmakuTitle.innerText = `弹幕：${lsKeys.useFetchPluginXml.name} - ${comments.length}条`;
+                                }
                             }
                         }).catch((error) => {
                             console.error(error);
@@ -2199,18 +2369,31 @@
                 })
                 .catch((error) => {
                     console.error(error);
-                    return loadOnlineDanmaku(loadType);
+                    // [传证] 将 ID 传给 loadOnlineDanmaku
+                    return loadOnlineDanmaku(loadType, currentSessionId);
                 });
             });
         } else {
-            loadOnlineDanmaku(loadType);
+            // [传证] 将 ID 传给 loadOnlineDanmaku
+            loadOnlineDanmaku(loadType, currentSessionId);
         }
     }
 
-    function loadOnlineDanmaku(loadType) {
+    function loadOnlineDanmaku(loadType, sessionId) {
+        // 安全检查：如果这个任务还没开始跑就已经过时了，直接停止
+        if (sessionId && window.ede && sessionId !== window.ede.lastLoadId) {
+            console.warn('任务已过期，停止在线加载');
+            return;
+        }
+
         getEpisodeInfo(loadType !== LOAD_TYPE.SEARCH)
             .then((info) => {
                 return new Promise((resolve, reject) => {
+                    // 二次检查
+                    if (sessionId && window.ede && sessionId !== window.ede.lastLoadId) {
+                        reject('任务已过期'); return;
+                    }
+
                     if (!info) {
                         if (loadType !== LOAD_TYPE.INIT) {
                             reject('播放器未完成加载');
@@ -2237,21 +2420,29 @@
             .then(
                 (episodeId) => {
                     if (episodeId) {
+                        // 再次检查
+                        if (sessionId && window.ede && sessionId !== window.ede.lastLoadId) return;
+
                         if (loadType === LOAD_TYPE.RELOAD && window.ede.danmuCache[episodeId]) {
-                            createDanmaku(window.ede.danmuCache[episodeId])
+                            // [传证]
+                            createDanmaku(window.ede.danmuCache[episodeId], sessionId)
                                 .then(() => {
-                                    console.log('弹幕已从缓存加载就位');
+                                    if (window.ede && sessionId === window.ede.lastLoadId)
+                                        console.log('弹幕已从缓存加载就位');
                                 })
                                 .catch((err) => {
                                     console.log(err);
                                 });
                         } else {
                             fetchComment(episodeId).then((comments) => {
+                                // [传证]
+                                if (sessionId && window.ede && sessionId !== window.ede.lastLoadId) return;
+                                
                                 window.ede.danmuCache[episodeId] = comments;
-                                createDanmaku(comments)
+                                createDanmaku(comments, sessionId)
                                     .then(() => {
-                                        console.log('弹幕已从网络加载就位');
-                                        // embyToast({ text: `弹幕就位,已获取 ${comments.length} 条弹幕` });
+                                        if (window.ede && sessionId === window.ede.lastLoadId)
+                                            console.log('弹幕已从网络加载就位');
                                     })
                                     .catch((err) => {
                                         console.log(err);
@@ -2267,6 +2458,8 @@
                 },
             )
             .then(() => {
+                if (sessionId && window.ede && sessionId !== window.ede.lastLoadId) return;
+
                 const extCommentCache = window.ede.extCommentCache[window.ede.itemId] || {};
                 objectEntries(extCommentCache).forEach(([key, val]) => {
                     addExtComments(key, val);
@@ -2282,14 +2475,14 @@
             });
     }
 
-    function danmakuFilter(comments) {
+    async function danmakuFilter(comments) { 
         let _comments = [...comments];
         danmakuAutoFilter(_comments);
         _comments = danmakuTypeFilter(_comments);
         _comments = danmakuSourceFilter(_comments);
         _comments = danmakuDensityLevelFilter(_comments);
         _comments = danmakuKeywordsFilter(_comments);
-        _comments = danmakuMergeSimilar(_comments, lsGetItem(lsKeys.mergeSimilarPercent.id), lsGetItem(lsKeys.mergeSimilarTime.id));
+        _comments = await danmakuMergeSimilar(_comments, lsGetItem(lsKeys.mergeSimilarPercent.id), lsGetItem(lsKeys.mergeSimilarTime.id));
         return _comments;
     }
 
@@ -2415,91 +2608,70 @@
         );
     }
 
+    // --- 优化：复用 Worker 实例的合并函数 ---
     function danmakuMergeSimilar(comments, threshold = 50, timeWindow = 15) {
-        // 1. 基础检查
-        if (!lsGetItem(lsKeys.mergeSimilarEnable.id) || !comments || comments.length === 0) return comments;
-
-        const startTime = performance.now();
-        const result = [];
-        const mergedIndices = new Set();
-        const totalLen = comments.length;
-        const errorRate = (100 - threshold) / 100;
-
-        // [核心优化] 共享内存池：只创建一个大数组供所有计算复用，彻底消除 GC 开销
-        // 预分配 1024 长度，绝大多数弹幕都够用，不够会自动扩容
-        let sharedBuffer = new Int32Array(1024);
-
-        // --- 预处理：生成位掩码 ---
-        for (let i = 0; i < totalLen; i++) {
-            const text = comments[i].text;
-            let mask = 0;
-            // [采样优化] 只取前 50 个字符做指纹，兼顾速度与精度
-            // 经验表明：如果前50个字完全没交集，整句相似的概率极低
-            const len = text.length > 50 ? 50 : text.length;
-            for (let k = 0; k < len; k++) {
-                mask |= (1 << (text.charCodeAt(k) & 31));
+        return new Promise((resolve) => {
+            const enable = lsGetItem(lsKeys.mergeSimilarEnable.id);
+            if (!enable || !comments || comments.length === 0) {
+                resolve(comments);
+                return;
             }
-            comments[i]._mask = mask;
-        }
 
-        for (let i = 0; i < totalLen; i++) {
-            if (mergedIndices.has(i)) continue;
+            // [优化] 复用 Worker，避免重复创建销毁的开销
+            if (!window.ede.mergeWorker) {
+                console.log('[合并Worker] 初始化新线程...');
+                window.ede.mergeWorker = createWorker(mergeWorkerBody);
+            }
 
-            const root = comments[i];
-            const rootText = root.text;
-            const rootLen = rootText.length;
-            const rootTime = root.time;
-            const rootMask = root._mask;
-            let count = 1;
+            const worker = window.ede.mergeWorker;
+            const startTime = performance.now();
 
-            for (let j = i + 1; j < totalLen; j++) {
-                if (mergedIndices.has(j)) continue;
+            // 1. 数据精简 (Data Slimming)
+            // 只提取 text(t) 和 time(m) 以及原始索引(i)
+            // 5万条数据，这个 map 操作非常快 (<10ms)，但能减少传输体积 80%
+            const lightComments = comments.map((c, index) => ({
+                t: c.text,
+                m: c.time,
+                i: index
+            }));
 
-                const compare = comments[j];
-                // 时间窗口判断
-                if ((compare.time - rootTime) > timeWindow) break;
-
-                // [优化A] 长度快速预判
-                // 如果长度差已经超过了最大允许错误量，直接跳过
-                const compareText = compare.text;
-                const compareLen = compareText.length;
-                const maxLen = rootLen > compareLen ? rootLen : compareLen;
-                const maxDiff = maxLen * errorRate; 
+            const onMessage = (e) => {
+                const results = e.data; // 这是一个轻量数组 [{i:0, t:null}, {i:3, t:"xxx [x2]"}...]
+                const endTime = performance.now();
                 
-                if (Math.abs(rootLen - compareLen) > maxDiff) continue;
+                worker.removeEventListener('message', onMessage);
 
-                // [优化B] 字符掩码预判 (极速过滤)
-                // 位运算 O(1) 过滤掉完全不相关的弹幕
-                if ((rootMask & compare._mask) === 0 && rootLen > 2) continue;
-
-                // [优化C] 传入 sharedBuffer 和 maxDiff，启用零GC和提前退出
-                // 如果 buffer 不够大，similarityPercentage 会返回新的 buffer，我们需要更新它
-                const res = similarityPercentage(rootText, compareText, maxDiff, sharedBuffer);
-                
-                // 处理扩容情况 (极少发生)
-                let score = res;
-                if (typeof res === 'object') {
-                    score = res.score;
-                    sharedBuffer = res.buffer; // 更新为更大的 buffer
+                if (!results) { // Worker 说没开启或出错
+                    resolve(comments);
+                    return;
                 }
 
-                if (score >= threshold) {
-                    count++;
-                    mergedIndices.add(j);
-                }
-            }
+                // 2. 数据重组 (Rehydration)
+                // 根据 Worker 返回的“保留名单”和“新文本”，重建完整的弹幕对象数组
+                const finalComments = results.map(item => {
+                    const originalComment = comments[item.i]; // 通过索引找回原始完整对象(带style等)
+                    if (item.t) {
+                        // 如果有合并，创建一个新对象修改 text，避免污染源数据
+                        // 浅拷贝速度很快
+                        return { ...originalComment, text: item.t, xCount: true }; // 标记一下
+                    }
+                    return originalComment;
+                });
 
-            if (count > 1) {
-                root.text = rootText + " [x" + count + "]";
-                root.xCount = count;
-            }
-            result.push(root);
-        }
+                console.log(`[合并相似弹幕] 完成, 耗时: ${(endTime - startTime).toFixed(2)}ms, 屏蔽: ${comments.length - finalComments.length}`);
+                resolve(finalComments);
+            };
 
-        const endTime = performance.now();
-        console.log(`[合并相似弹幕] 耗时: ${(endTime - startTime).toFixed(2)}ms, 屏蔽: ${comments.length - result.length}`);
-        
-        return result;
+            worker.addEventListener('message', onMessage);
+
+            // 发送精简数据
+            worker.postMessage({
+                lightComments: lightComments,
+                threshold: threshold,
+                timeWindow: timeWindow,
+                enable: enable
+            });
+        });
     }
 
     /**
@@ -4400,84 +4572,87 @@
         lsSetItem(lsKeys.switch.id, flag);
     }
 
+    // --- 手动搜索：并行模式 (速度优先，聚合结果) ---
     async function doDanmakuSearchEpisode() {
         let embySearch = getById(eleIds.danmakuSearchName);
         if (!embySearch) { return; }
-        let searchName = embySearch.value
+        let searchName = embySearch.value;
         const danmakuRemarkEle = getById(eleIds.danmakuRemark);
         danmakuRemarkEle.parentNode.hidden = false;
         danmakuRemarkEle.innerText = searchName ? '' : '请填写标题';
         const spinnerEle = getByClass(classes.mdlSpinner);
         spinnerEle && spinnerEle.classList.remove('hide');
 
-        // [修正] 手动匹配严格遵循API优先级
-        // [新逻辑] 合并所有启用源的搜索结果，并按优先级排序
+        // --- 1. 准备 API 配置 ---
         const apiPriority = lsGetItem(lsKeys.apiPriority.id);
-
-        // [修改] 构建API配置，支持多个自定义源（新数据结构）
         const customApiList = getCustomApiList();
         const apiConfigs = {
             official: { name: '官方API', prefix: corsProxy + 'https://api.dandanplay.net/api/v2', enabled: lsGetItem(lsKeys.useOfficialApi.id) },
         };
-
-        // 为每个启用的自定义源创建配置
         if (lsGetItem(lsKeys.useCustomApi.id) && customApiList.length > 0) {
             customApiList.forEach((item, index) => {
                 if (item.enabled) {
-                    apiConfigs[`custom_${index}`] = {
-                        name: item.name || `自定义源${index + 1}`,
-                        prefix: item.url,
-                        enabled: true
-                    };
+                    apiConfigs[`custom_${index}`] = { name: item.name || `自定义源${index + 1}`, prefix: item.url, enabled: true };
                 }
             });
         }
 
-        // 构建实际的优先级列表
         const actualPriority = [];
         for (const key of apiPriority) {
-            if (key === 'official') {
-                actualPriority.push('official');
-            } else if (key === 'custom') {
-                customApiList.forEach((item, index) => {
-                    if (item.enabled) {
-                        actualPriority.push(`custom_${index}`);
-                    }
-                });
-            }
+            if (key === 'official') actualPriority.push('official');
+            else if (key === 'custom') customApiList.forEach((item, i) => item.enabled && actualPriority.push(`custom_${i}`));
         }
 
         let allAnimes = [];
-        for (const apiKey of actualPriority) {
+        console.log(`[手动匹配] 开始并行搜索: ${searchName}`);
+
+        // --- 2. 定义单个搜索任务 ---
+        const searchTask = async (apiKey) => {
             const config = apiConfigs[apiKey];
-            // [修正] 确保自定义API有地址时才使用
-            if (!config || !config.enabled || !config.prefix) {
-                continue;
-            }
+            if (!config?.enabled || !config?.prefix) return [];
 
             let manualSearchTitle = searchName;
             let manualSearchEpisode = null;
 
-            // [新增] 手动搜索时，同样为官方API优化SXXEXX格式
             if (apiKey === 'official') {
                 const parsed = parseAnimeName(searchName);
                 if (parsed.season !== null) {
                     manualSearchTitle = parsed.season === 1 ? parsed.title : `${parsed.title} 第${parsed.season}季`;
-                    manualSearchEpisode = parsed.episode; // 使用从文件名解析出的集数
+                    manualSearchEpisode = parsed.episode;
                     console.log(`[手动匹配][官方API优化] 格式化搜索: 标题='${manualSearchTitle}', 集数=${manualSearchEpisode}`);
                 }
             }
-            console.log(`[手动匹配][${config.name}] 正在搜索: 标题='${manualSearchTitle}', 集数=${manualSearchEpisode || '无'}`);
-            const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix);
-            if (animaInfo && animaInfo.animes.length > 0) {
-                console.log(`[手动匹配][${config.name}] 搜索成功，找到 ${animaInfo.animes.length} 个结果。`);
-                // 为每个结果打上来源标签
-                animaInfo.animes.forEach(anime => { anime.apiPrefix = config.prefix; anime.apiName = config.name; });
-                allAnimes.push(...animaInfo.animes);
-            } else {
-                console.log(`[手动匹配][${config.name}] 未找到结果。`);
+
+            try {
+                const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix);
+                if (animaInfo && animaInfo.animes.length > 0) {
+                    // 标记来源
+                    animaInfo.animes.forEach(anime => { 
+                        anime.apiPrefix = config.prefix; 
+                        anime.apiName = config.name; 
+                    });
+                    return animaInfo.animes;
+                }
+            } catch (e) {
+                console.warn(`[手动匹配] 源 ${config.name} 搜索失败`, e);
+            }
+            return [];
+        };
+
+        // --- 3. 并行执行所有任务 ---
+        const promises = actualPriority.map(key => searchTask(key));
+        const results = await Promise.allSettled(promises);
+
+        // --- 4. 按优先级顺序合并结果 ---
+        // 虽然是并行请求，但展示顺序依然遵循你的优先级设置
+        for (let i = 0; i < actualPriority.length; i++) {
+            const result = results[i];
+            if (result.status === 'fulfilled' && result.value.length > 0) {
+                allAnimes.push(...result.value);
             }
         }
+
+        console.log(`[手动匹配] 搜索完成，共找到 ${allAnimes.length} 个结果`);
 
         spinnerEle && spinnerEle.classList.add('hide');
         if (allAnimes.length < 1) {
@@ -4488,6 +4663,8 @@
         } else {
             danmakuRemarkEle.innerText = '';
         }
+
+
         const danmakuAnimeDiv = getById(eleIds.danmakuAnimeDiv);
         const danmakuEpisodeNumDiv = getById(eleIds.danmakuEpisodeNumDiv);
         danmakuAnimeDiv.innerHTML = '';
@@ -4499,7 +4676,6 @@
         const animeSelect = embySelect({ id: eleIds.danmakuAnimeSelect, label: '剧集: ', style: 'width: auto;max-width: 100%;' }
             , selectAnimeIdx, allAnimes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription} 来源：${opt.apiName}`, doDanmakuAnimeSelect);
         danmakuAnimeDiv.append(animeSelect);
-
         // [修改] 只有当选中的动画有 episodes 时才显示集数选择器
         const selectedAnime = allAnimes[selectAnimeIdx];
         if (selectedAnime.episodes && selectedAnime.episodes.length > 0) {
@@ -4512,11 +4688,7 @@
 
         getById(eleIds.danmakuEpisodeFlag).hidden = false;
         getById(eleIds.danmakuSwitchEpisode).disabled = false;
-
-        // [修正] 始终使用匹配到的海报，如果没有则使用官方API拼接
         getById(eleIds.searchImg).src = selectedAnime.imageUrl || dandanplayApi.posterImg(selectedAnime.animeId);
-
-        // [新增] 显示API来源
         const apiSourceDiv = getById(eleIds.searchApiSource);
         if (apiSourceDiv) apiSourceDiv.innerText = `来源: ${selectedAnime.apiName}`;
     }
@@ -5587,56 +5759,58 @@
         if (OS.isApple()) { _media.src = ''; }
         _media.style.display = 'none';
         _media.id = eleIds.h5VideoAdapter;
-        _media.classList.add('htmlvideoplayer', 'moveUpSubtitles'); // 沿用 Emby class
+        _media.classList.add('htmlvideoplayer', 'moveUpSubtitles');   // 沿用 Emby class
         document.body.prepend(_media);
 
         _media.play();
         videoTimeUpdateInterval(_media, true);
-
-        // 以下暂未遇到匿名函数导致的事件重复,等出现时再匿名转命名函数
+         // 以下暂未遇到匿名函数导致的事件重复,等出现时再匿名转命名函数
         // [修复] 添加seeking检测的防抖和初始化标志
         let lastSeekingTime = 0;
         let isFirstTimeUpdate = true;
-        const SEEKING_THRESHOLD = 2; // 时间差阈值（秒）
-        const SEEKING_DEBOUNCE = 500; // 防抖时间（毫秒）
+        const SEEKING_THRESHOLD = 2;    // 时间差阈值（秒）
+        const SEEKING_DEBOUNCE = 500;   // 防抖时间（毫秒）
 
         require(['playbackManager'], (playbackManager) => {
             playbackEventsRefresh({
                 'timeupdate': (e) => {
+                    // [修复] 安全获取播放器状态，防止报错
+                    const player = playbackManager.getCurrentPlayer();
+                    if (!player) return; // 播放器都没了，直接退出
+
                     // conver to seconds from Ticks
-                    const realCurrentTime = playbackManager.currentTime(playbackManager.getCurrentPlayer()) / 10000000;
+                    const realCurrentTime = playbackManager.currentTime(player) / 10000000;
                     const mediaTime = _media.currentTime;
                     const timeDiff = Math.abs(mediaTime - realCurrentTime);
 
                     _media.currentTime = realCurrentTime;
-                    // playbackRate 同步依赖至少 100ms currentTime 变更
-                    const embyPlaybackRate = playbackManager.getPlayerState().PlayState.PlaybackRate;
+                    
+                    // [关键修复] 安全获取 PlaybackRate
+                    const playerState = playbackManager.getPlayerState();
+                    // 使用可选链 (?.) 避免 undefined 报错
+                    const embyPlaybackRate = playerState?.PlayState?.PlaybackRate;
                     _media.playbackRate = embyPlaybackRate ? embyPlaybackRate : 1;
 
-                    // [修复] 跳过第一次时间更新（初始化时可能有大的时间差）
+                     // [修复] 跳过第一次时间更新（初始化时可能有大的时间差）
                     if (isFirstTimeUpdate) {
                         isFirstTimeUpdate = false;
                         if (lsGetItem(lsKeys.debugH5VideoAdapterEnable.id)) {
-                            console.log(`[虚拟播放器] 初始化时间: ${realCurrentTime}, 跳过seeking检测`);
+                             console.log(`[虚拟播放器] 初始化时间: ${realCurrentTime}, 跳过seeking检测`);
                         }
                         return;
                     }
-
-                    // [修复] 当前时间与上次记录时间差值大于阈值,且距离上次seeking超过防抖时间,则判定为用户操作进度
-                    // seeking 事件必须在 currentTime 更改后触发,否则回退后弹幕将消失
+                     // [修复] 当前时间与上次记录时间差值大于阈值,且距离上次seeking超过防抖时间,则判定为用户操作进度
+                     // seeking 事件必须在 currentTime 更改后触发,否则回退后弹幕将消失
                     const now = Date.now();
                     if (timeDiff > SEEKING_THRESHOLD && (now - lastSeekingTime) > SEEKING_DEBOUNCE) {
                         lastSeekingTime = now;
                         _media.dispatchEvent(new Event('seeking'));
-                        console.warn(`[虚拟播放器] 检测到拖动进度条 (seeking), Emby时间: ${realCurrentTime}, 虚拟播放器时间: ${mediaTime}, 时间差: ${timeDiff.toFixed(2)}秒`);
-                    }
-
-                    if (lsGetItem(lsKeys.debugH5VideoAdapterEnable.id)) {
-                        console.log(`[虚拟播放器] 时间更新: currentTime=${_media.currentTime}, playbackRate=${_media.playbackRate}, 时间差=${timeDiff.toFixed(2)}秒`);
+                        // console.warn(`[虚拟播放器] seeking detected...`);
                     }
                 },
             });
         });
+        
         playbackEventsRefresh({
             'pause': (e) => {
                 console.warn('[虚拟播放器] 监听到暂停事件 (pause)');
@@ -5651,45 +5825,94 @@
                 videoTimeUpdateInterval(_media, true);
             },
         });
-        console.log('已创建虚拟 video 标签,适配器处理正确结束');
+       console.log('已创建虚拟 video 标签,适配器处理正确结束');
     }
 
-    // 平滑补充<video> timeupdate 中秒级间隔缺失的 100ms 间隙
+   // 平滑补充<video> timeupdate 中秒级间隔缺失的 100ms 间隙
     function videoTimeUpdateInterval(media, enable) {
         const _media = media || document.querySelector(mediaQueryStr);
         if (!_media) { return; }
         if (enable && !_media.timeupdateIntervalId) {
-            // [修复] 移除重复的 setInterval 调用，只保留一个
-            _media.timeupdateIntervalId = setInterval(() => { _media.currentTime += 100 / 1000 }, 100);
+             // [修复] 移除重复的 setInterval 调用，只保留一个
+             _media.timeupdateIntervalId = setInterval(() => { _media.currentTime += 100 / 1000 }, 100);
         } else if (!enable && _media.timeupdateIntervalId) {
-            clearInterval(_media.timeupdateIntervalId);
-            _media.timeupdateIntervalId = null;
+             clearInterval(_media.timeupdateIntervalId);
+             _media.timeupdateIntervalId = null;
         }
     }
 
     function beforeDestroy(e) {
-        if (e.detail.type !== 'video-osd') {
-            return;
+        if (e.detail.type !== 'video-osd') { return; }
+
+        // [备份逻辑] 智能推断需要这个，必须放在清空前
+        if (window.ede && window.ede.episode_info) {
+            window.ede.previous_episode_info = window.ede.episode_info;
         }
-        // 此段销毁不重要,可有可无,仅是规范使用,清除弹幕,但未销毁 danmaku 实例
-        if (window.ede.danmaku) {
+
+        // =========== [UI 瞬间清空区] ===========
+        // 1. 立即清空 OSD 文字 (解决右下角残留)
+        const videoOsdDanmakuTitle = getById(eleIds.videoOsdDanmakuTitle);
+        if (videoOsdDanmakuTitle) {
+            videoOsdDanmakuTitle.innerText = ''; // <--- 关键：直接置空 DOM，不要等数据
+        }
+
+        // 2. 立即隐藏/清空弹幕画布 (解决屏幕弹幕残留)
+        if (window.ede && window.ede.danmaku) {
+            window.ede.danmaku.hide();
             window.ede.danmaku.clear();
         }
+
+        // 3. 移除高能进度条 (如果有)
+        const chartEle = getById(eleIds.progressBarLineChart);
+        if (chartEle) chartEle.remove();
+        // =====================================
+
+        // [数据清空]
+        if (window.ede) {
+            window.ede.episode_info = null; // 防止数据串台
+            window.ede.lastLoadId = 'DESTROYED_' + Date.now();
+            
+            // [新增] 终止所有挂起的网络请求 (Fetch/Worker)
+            if (window.ede.abortControllers) {
+                for (const controller of window.ede.abortControllers) {
+                    controller.abort();
+                }
+                window.ede.abortControllers.clear();
+                console.log('[GC] 已终止所有挂起的网络请求');
+            }
+
+            // [新增] 修复 ResizeObserver 内存泄漏：必须显式断开连接
+            if (window.ede.ob) {
+                window.ede.ob.disconnect();
+                window.ede.ob = null;
+                console.log('[GC] ResizeObserver 已断开');
+            }
+        }
+
+        // 清理弹幕实例
+        if (window.ede.danmaku) { 
+            window.ede.danmaku.clear();
+        }
+
         // 销毁弹幕按钮容器简单,双 mediaContainerQueryStr 下免去 DOM 位移操作
         const danmakuCtr = getById(eleIds.danmakuCtr);
-        if (danmakuCtr) {
+        if (danmakuCtr) { 
             danmakuCtr.remove();
         }
-        // const h5VideoAdapterEle = getById(eleIds.h5VideoAdapter);
-        // if (h5VideoAdapterEle) {
-        //     h5VideoAdapterEle.remove();
-        // }
-        // 销毁平滑补充 timeupdate 定时器
+       // const h5VideoAdapterEle = getById(eleIds.h5VideoAdapter);
+       // if (h5VideoAdapterEle) {
+       //     h5VideoAdapterEle.remove();
+       // }
+       // 销毁平滑补充 timeupdate 定时器
         videoTimeUpdateInterval(null, false);
-        // 销毁可能残留的定时器
+        
+         // 销毁可能残留的定时器
         destroyAllInterval();
+        
         // 退出播放页面重置轴偏秒
         lsSetItem(lsKeys.timelineOffset.id, lsKeys.timelineOffset.defaultValue);
+        
+        console.log('[生命周期] 播放页环境已销毁 (beforeDestroy)');
     }
 
     function onViewShow(e) {
@@ -5697,8 +5920,15 @@
         customeUrl.init();
         lsGetItem(lsKeys.quickDebugOn.id) && !getById(eleIds.danmakuSettingBtnDebug) && quickDebug();
         addEasterEggListener();
+
+        // 仅在进入播放页(video-osd)时才初始化和设置数据
         if (e.detail.type === 'video-osd') {
+            // 1. 确保对象已初始化
             if (!window.ede) { window.ede = new EDE(); }
+            
+            // [修复] 2. 移到这里：确保 window.ede 存在后再赋值
+            window.ede.itemId = e.detail.params.id ? e.detail.params.id : '';
+
             if (!window.ede.appLogAspect && lsGetItem(lsKeys.consoleLogEnable.id)) {
                 window.ede.appLogAspect = new AppLogAspect().init();
             }
@@ -5708,7 +5938,6 @@
             initListener();
             initCss();
         }
-        window.ede.itemId = e.detail.params.id ? e.detail.params.id : '';
     }
 
     // [新增] 挑战-响应认证相关函数
