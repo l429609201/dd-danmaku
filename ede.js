@@ -2277,28 +2277,32 @@
 
     // [新增] 强制清理 UI 函数
     function clearDanmakuUI() {
-        // 1. 隐藏并清空现有弹幕
-        if (window.ede.danmaku) {
-            window.ede.danmaku.hide();
-            window.ede.danmaku.clear(); 
-            // 注意：不在这里 destroy，因为 createDanmaku 会复用或重新创建
-        }
-
-        // 2. 重置右下角 OSD 信息
-        const videoOsdDanmakuTitle = getById(eleIds.videoOsdDanmakuTitle);
-        if (videoOsdDanmakuTitle) {
-            videoOsdDanmakuTitle.innerText = ''; 
-        }
-
-        // 3. 移除高能进度条
-        const chartEle = getById(eleIds.progressBarLineChart);
-        if (chartEle) {
-            chartEle.remove();
-        }
-        
-        // 4. 清空当前的弹幕数据缓存（视觉上防止闪烁）
-        window.ede.commentsParsed = [];
+    // 1. 隐藏并清空现有弹幕
+    if (window.ede.danmaku) {
+        window.ede.danmaku.hide();
+        window.ede.danmaku.clear(); 
     }
+
+    // 2. [关键修改] 立即重置剧集元数据信息，防止旧标题残留
+    if (window.ede) {
+        window.ede.episode_info = null; 
+    }
+
+    // 3. 重置右下角 OSD 信息
+    const videoOsdDanmakuTitle = getById(eleIds.videoOsdDanmakuTitle);
+    if (videoOsdDanmakuTitle) {
+        videoOsdDanmakuTitle.innerText = '';
+    }
+
+    // 4. 移除高能进度条
+    const chartEle = getById(eleIds.progressBarLineChart);
+    if (chartEle) {
+        chartEle.remove();
+    }
+    
+    // 5. 清空当前的弹幕数据缓存
+    window.ede.commentsParsed = [];
+}
 
     function loadDanmaku(loadType = LOAD_TYPE.CHECK) {
         const _media = document.querySelector(mediaQueryStr);
