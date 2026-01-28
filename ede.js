@@ -1458,91 +1458,155 @@
     }
 
     async function fetchJson(url, opts = {}) {
-        const { token, headers, body } = opts;
-        let { method = 'GET' } = opts;
-        if (method === 'GET' && body) method = 'POST';
-        
-        // [修复] 判断是否为自定义 API（非弹弹play官方API）
-        // 自定义 API 不发送 X-User-Agent 头，避免 CORS 问题
-        const isDandanplayApi = url.includes('api.dandanplay.net') || url.includes('dandanplay');
-        const isBangumiApi = url.includes('api.bgm.tv') || url.includes('bgm.tv');
-        const shouldSendUserAgent = isDandanplayApi || isBangumiApi;
+    const { token, headers, body } = opts;
+    let { method = 'GET' } = opts;
+    if (method === 'GET' && body) method = 'POST';
+    
+    // 判断是否为弹弹play 或 Bangumi 官方 API，用于决定是否发送 X-User-Agent
+    const isDandanplayApi = url.includes('api.dandanplay.net') || url.includes('dandanplay');
+    const isBangumiApi = url.includes('api.bgm.tv') || url.includes('bgm.tv');
+    const shouldSendUserAgent = isDandanplayApi || isBangumiApi;
 
-        const requestHeaders = {
-            'Accept-Encoding': 'gzip',
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-        };
-        // 只有弹弹play和Bangumi官方API才发送 X-User-Agent
-        if (shouldSendUserAgent) {
-            requestHeaders['X-User-Agent'] = userAgent;
-            console.log(`[DEBUG] fetchJson 使用的 X-User-Agent: ${userAgent}`);
-        } else {
-            console.log(`[DEBUG] fetchJson 跳过 X-User-Agent (自定义API): ${url.substring(0, 80)}...`);
-        }
+    const requestHeaders = {
+        'Accept-Encoding': 'gzip',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+    };
+    // 只有弹弹play和Bangumi官方API才发送 X-User-Agent
+    if (shouldSendUserAgent) {
+        requestHeaders['X-User-Agent'] = userAgent;
+        console.log(`[DEBUG] fetchJson 使用的 X-User-Agent: ${userAgent}`);
+    } else {
+        console.log(`[DEBUG] fetchJson 跳过 X-User-Agent (自定义API): ${url.substring(0, 80)}...`);
+    }
 
-        if (token) requestHeaders.Authorization = `Bearer ${token}`;
-        if (headers) Object.assign(requestHeaders, headers);
-        
-        const requestBody = body ? JSON.stringify(body) : null;
+    if (token) requestHeaders.Authorization = `Bearer ${token}`;
+    if (headers) Object.assign(requestHeaders, headers);
 
-        // [优化] 统一生命周期管理
-        // 创建一个新的控制器，用于本次请求的超时或组件销毁
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s 超时
-        
-        // 将控制器注册到全局集合
-        if (window.ede?.abortControllers) {
-            window.ede.abortControllers.add(controller);
-        }
+    const requestBody = body ? JSON.stringify(body) : null;
 
+    // 统一生命周期管理：可中止的请求
+    const controller = new AbortController();
+    const timeoutMs = 30000;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs); // 30s 超时
+
+    // 将控制器注册到全局集合，便于销毁时统一取消
+    if (window.ede?.abortControllers) {
+        window.ede.abortControllers.add(controller);
+    }
+
+    const startTime = performance.now(); // 网络请求开始时间（用于测量耗时）
+    try {
+        // 优先使用传入的 signal，否则使用内部创建的
+        const signal = opts.signal || controller.signal;
+
+        // 发起请求（fetch resolves when response headers are received）
+        const response = await fetch(url, {
+            method,
+            headers: requestHeaders,
+            body: requestBody,
+            signal: signal,
+        });
+
+        const ttfbMs = (performance.now() - startTime).toFixed(0); // time to first byte (近似: fetch resolve 时刻)
+
+        clearTimeout(timeoutId);
+
+        // 试图从 PerformanceResourceTiming 获取更细粒度的网络阶段耗时（若可用）
+        let perfTiming = null;
         try {
-            // 优先使用传入的 signal，否则使用内部创建的
-            const signal = opts.signal || controller.signal;
-
-            const response = await fetch(url, {
-                method,
-                headers: requestHeaders,
-                body: requestBody,
-                signal: signal,
-            });
-
-            clearTimeout(timeoutId);
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! Status: ${response.status}`);
-            }
-
-            const responseText = await response.text();
-            // [现代化] 使用可选链和空值合并
-            if (responseText?.length > 0) {
-                try {
-                    return JSON.parse(responseText);
-                } catch (parseError) {
-                    console.warn('responseText is not JSON:', parseError);
+            // Performance entries 可能需要服务器返回 Timing-Allow-Origin 才能看到跨域详细信息
+            const entries = performance.getEntriesByName(url);
+            if (entries && entries.length > 0) {
+                // 取最近的一条同名记录
+                const entry = entries[entries.length - 1];
+                perfTiming = {
+                    name: entry.name,
+                    startTime: entry.startTime,
+                    fetchStart: entry.fetchStart,
+                    domainLookupTime: (entry.domainLookupEnd && entry.domainLookupStart) ? (entry.domainLookupEnd - entry.domainLookupStart) : null,
+                    connectTime: (entry.connectEnd && entry.connectStart) ? (entry.connectEnd - entry.connectStart) : null,
+                    secureConnectionTime: (entry.secureConnectionStart && entry.connectEnd) ? (entry.connectEnd - entry.secureConnectionStart) : null,
+                    requestStartToResponseStart: (entry.responseStart && entry.requestStart) ? (entry.responseStart - entry.requestStart) : null,
+                    responseDownloadTime: (entry.responseEnd && entry.responseStart) ? (entry.responseEnd - entry.responseStart) : null,
+                    totalTime: (entry.responseEnd && entry.startTime) ? (entry.responseEnd - entry.startTime) : null,
+                };
+            } else {
+                // 另一次尝试：按短名匹配（有些平台会在 URL 加上额外查询）
+                const all = performance.getEntries();
+                for (let i = all.length - 1; i >= 0; i--) {
+                    if (all[i].name && all[i].name.indexOf(url) !== -1) {
+                        const entry = all[i];
+                        perfTiming = {
+                            name: entry.name,
+                            startTime: entry.startTime,
+                            domainLookupTime: (entry.domainLookupEnd && entry.domainLookupStart) ? (entry.domainLookupEnd - entry.domainLookupStart) : null,
+                            connectTime: (entry.connectEnd && entry.connectStart) ? (entry.connectEnd - entry.connectStart) : null,
+                            secureConnectionTime: (entry.secureConnectionStart && entry.connectEnd) ? (entry.connectEnd - entry.secureConnectionStart) : null,
+                            requestStartToResponseStart: (entry.responseStart && entry.requestStart) ? (entry.responseStart - entry.requestStart) : null,
+                            responseDownloadTime: (entry.responseEnd && entry.responseStart) ? (entry.responseEnd - entry.responseStart) : null,
+                            totalTime: (entry.responseEnd && entry.startTime) ? (entry.responseEnd - entry.startTime) : null,
+                        };
+                        break;
+                    }
                 }
             }
-            return { success: true };
-        } catch (error) {
-            clearTimeout(timeoutId);
-            if (error.name === 'AbortError') {
-                // 区分是被组件销毁取消的(人为)，还是超时取消的
-                if (window.ede?.lastLoadId?.toString().startsWith('DESTROYED')) {
-                    console.log(`[Network] 请求已因组件销毁而取消: ${url}`);
-                } else {
-                    console.warn(`[Network] 请求超时或被中断: ${url}`);
-                }
-                // 抛出错误以便上层停止逻辑，但在 Promise.allSettled 中会被捕获
-                throw error; 
+        } catch (perfErr) {
+            // ignore perf errors
+            perfTiming = null;
+        }
+
+        // 读取 body（测量下载耗时）
+        const downloadStart = performance.now();
+        const responseText = await response.text();
+        const downloadMs = (performance.now() - downloadStart).toFixed(0);
+        const totalMs = (performance.now() - startTime).toFixed(0);
+
+        // 统一日志输出（包含 PerformanceResourceTiming 的更精细数据，如果可用）
+        if (perfTiming) {
+            console.log(`[Network] fetch ${url} | status=${response.status} | ttfb=${ttfbMs}ms | download=${downloadMs}ms | total=${totalMs}ms | perfTiming=`, perfTiming);
+        } else {
+            console.log(`[Network] fetch ${url} | status=${response.status} | ttfb=${ttfbMs}ms | download=${downloadMs}ms | total=${totalMs}ms`);
+            console.log(`[Network] Tip: 若需更详细的 DNS/TCP/TLS/响应头到首字节等分段耗时，请确保后端返回 Timing-Allow-Origin 响应头以允许 PerformanceResourceTiming 获取跨域详细信息。`);
+        }
+
+        if (!response.ok) {
+            console.warn(`[Network] fetch 错误响应: ${url} | status=${response.status} | total=${totalMs}ms | bodySnippet=${responseText?.slice(0,200)}`);
+            throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+
+        if (responseText?.length > 0) {
+            try {
+                return JSON.parse(responseText);
+            } catch (parseError) {
+                console.warn('responseText is not JSON:', parseError);
+            }
+        }
+        return { success: true };
+    } catch (error) {
+        clearTimeout(timeoutId);
+        const endTime = performance.now();
+        const duration = (endTime - startTime).toFixed(0);
+
+        if (error.name === 'AbortError') {
+            // 区分是被组件销毁取消的(人为)，还是超时取消的
+            if (window.ede?.lastLoadId?.toString().startsWith('DESTROYED')) {
+                console.log(`[Network] 请求已因组件销毁而取消: ${url} | duration=${duration}ms`);
+            } else {
+                console.warn(`[Network] 请求超时或被中断: ${url} | duration=${duration}ms`);
             }
             throw error;
-        } finally {
-            // [GC] 请求结束（无论成功失败），从集合中移除
-            if (window.ede?.abortControllers) {
-                window.ede.abortControllers.delete(controller);
-            }
+        }
+
+        console.error(`[Network] fetch 异常: ${url} | duration=${duration}ms | error: ${error.message || error}`);
+        throw error;
+    } finally {
+        // 请求结束（无论成功失败），从集合中移除控制器
+        if (window.ede?.abortControllers) {
+            window.ede.abortControllers.delete(controller);
         }
     }
+}
 
     async function getMapByEmbyItemInfo() {
         let item = await getEmbyItemInfo();
@@ -6026,8 +6090,8 @@
 
     function pemToArrayBuffer(pem) {
         const b64 = pem.replace(/-----BEGIN (PRIVATE|PUBLIC) KEY-----/, '')
-                       .replace(/-----END (PRIVATE|PUBLIC) KEY-----/, '')
-                       .replace(/\s/g, '');
+                       。replace(/-----END (PRIVATE|PUBLIC) KEY-----/, '')
+                       。replace(/\s/g, '');
         return base64ToArrayBuffer(b64);
     }
 
