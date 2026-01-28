@@ -6090,8 +6090,8 @@
 
     function pemToArrayBuffer(pem) {
         const b64 = pem.replace(/-----BEGIN (PRIVATE|PUBLIC) KEY-----/, '')
-                       。replace(/-----END (PRIVATE|PUBLIC) KEY-----/, '')
-                       。replace(/\s/g, '');
+                       .replace(/-----END (PRIVATE|PUBLIC) KEY-----/, '')
+                       .replace(/\s/g, '');
         return base64ToArrayBuffer(b64);
     }
 
