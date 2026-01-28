@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.1.4
+// @version      1.1.5
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -25,7 +25,7 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.1.4', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.1.5', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -115,6 +115,7 @@
         sentiment_very_satisfied: 'sentiment_very_satisfied',
         check: 'check',
         edit: 'edit',
+        layers_clear: 'layers_clear',  // 防重叠图标
     };
     // 此 id 等同于 danmakuTabOpts 内的弹幕信息的 id
     const currentDanmakuInfoContainerId = 'danmakuTab2';
@@ -234,6 +235,7 @@
     const lsKeys = { // id 统一使用 danmaku 前缀
         chConvert: { id: 'danmakuChConvert', defaultValue: 1, name: '简繁转换' },
         switch: { id: 'danmakuSwitch', defaultValue: true, name: '弹幕开关' },
+        antiOverlap: { id: 'danmakuAntiOverlap', defaultValue: false, name: '防重叠' },
         filterLevel: { id: 'danmakuFilterLevel', defaultValue: 0, name: '过滤强度', min: 0, max: 3, step: 1 },
         heightPercent: { id: 'danmakuHeightPercent', defaultValue: 70, name: '显示区域', min: 3, max: 100, step: 1 },
         fontSizeRate: { id: 'danmakuFontSizeRate', defaultValue: 150, name: '弹幕大小', min: 10, max: 300, step: 10 },
@@ -403,6 +405,8 @@
         danmuPluginDiv: 'danmuPluginDiv',
         danmakuSettingBtnDebug: 'danmakuSettingBtnDebug',
         progressBarLineChart: 'progressBarLineChart',
+        antiOverlapBtn: 'antiOverlapBtn',
+        antiOverlapDiv: 'antiOverlapDiv',
     };
     // 播放界面下方按钮
     const mediaBtnOpts = [
@@ -553,7 +557,7 @@
         return worker;
     }
 
-    // 2. MD5 Worker (包含你原本的 Mock 逻辑)
+    // 2. MD5 Worker (使用真正的 SparkMD5 库计算文件哈希)
     const md5WorkerBody = function() {
         /*
      * A JavaScript implementation of the RSA Data Security, Inc. MD5 Message
@@ -563,25 +567,10 @@
      * Distributed under the BSD License
      * See http://pajhome.org.uk/crypt/md5 for more info.
      */
-    // 简化的MD5实现，用于文件哈希计算
-        var SparkMD5 = {
-            ArrayBuffer: function() {
-                this._buff = new DataView(new ArrayBuffer(0));
-                this._length = 0;
-                this._hash = [1732584193, -271733879, -1732584194, 271733878];
-            }
-        };
-        SparkMD5.ArrayBuffer.prototype.append = function(arrayBuffer) {
-            console.log('[SparkMD5] append called with buffer size:', arrayBuffer.byteLength);
-             // 简化实现：直接使用crypto API如果可用
-            return this;
-        };
-        SparkMD5.ArrayBuffer.prototype.end = function() {
-            // 返回32位MD5哈希值（官方API要求）
-            const mockHash = 'a1b2c3d4e5f6789012345678901234567890abcd'.substring(0, 32);
-            console.log('[SparkMD5-Worker] end called, returning 32-bit MD5 hash:', mockHash);
-            return mockHash;
-        };
+        // SparkMD5 库 - 真正的 MD5 实现 (v3.0.2)
+        // https://github.com/nicmart/SparkMD5
+        (function(factory){if(typeof exports==="object"){module.exports=factory()}else if(typeof define==="function"&&define.amd){define(factory)}else{var glob;try{glob=window}catch(e){glob=self}glob.SparkMD5=factory()}})(function(undefined){"use strict";var add32=function(a,b){return a+b&4294967295},hex_chr=["0","1","2","3","4","5","6","7","8","9","a","b","c","d","e","f"];function cmn(q,a,b,x,s,t){a=add32(add32(a,q),add32(x,t));return add32(a<<s|a>>>32-s,b)}function md5cycle(x,k){var a=x[0],b=x[1],c=x[2],d=x[3];a+=(b&c|~b&d)+k[0]-680876936|0;a=(a<<7|a>>>25)+b|0;d+=(a&b|~a&c)+k[1]-389564586|0;d=(d<<12|d>>>20)+a|0;c+=(d&a|~d&b)+k[2]+606105819|0;c=(c<<17|c>>>15)+d|0;b+=(c&d|~c&a)+k[3]-1044525330|0;b=(b<<22|b>>>10)+c|0;a+=(b&c|~b&d)+k[4]-176418897|0;a=(a<<7|a>>>25)+b|0;d+=(a&b|~a&c)+k[5]+1200080426|0;d=(d<<12|d>>>20)+a|0;c+=(d&a|~d&b)+k[6]-1473231341|0;c=(c<<17|c>>>15)+d|0;b+=(c&d|~c&a)+k[7]-45705983|0;b=(b<<22|b>>>10)+c|0;a+=(b&c|~b&d)+k[8]+1770035416|0;a=(a<<7|a>>>25)+b|0;d+=(a&b|~a&c)+k[9]-1958414417|0;d=(d<<12|d>>>20)+a|0;c+=(d&a|~d&b)+k[10]-42063|0;c=(c<<17|c>>>15)+d|0;b+=(c&d|~c&a)+k[11]-1990404162|0;b=(b<<22|b>>>10)+c|0;a+=(b&c|~b&d)+k[12]+1804603682|0;a=(a<<7|a>>>25)+b|0;d+=(a&b|~a&c)+k[13]-40341101|0;d=(d<<12|d>>>20)+a|0;c+=(d&a|~d&b)+k[14]-1502002290|0;c=(c<<17|c>>>15)+d|0;b+=(c&d|~c&a)+k[15]+1236535329|0;b=(b<<22|b>>>10)+c|0;a+=(b&d|c&~d)+k[1]-165796510|0;a=(a<<5|a>>>27)+b|0;d+=(a&c|b&~c)+k[6]-1069501632|0;d=(d<<9|d>>>23)+a|0;c+=(d&b|a&~b)+k[11]+643717713|0;c=(c<<14|c>>>18)+d|0;b+=(c&a|d&~a)+k[0]-373897302|0;b=(b<<20|b>>>12)+c|0;a+=(b&d|c&~d)+k[5]-701558691|0;a=(a<<5|a>>>27)+b|0;d+=(a&c|b&~c)+k[10]+38016083|0;d=(d<<9|d>>>23)+a|0;c+=(d&b|a&~b)+k[15]-660478335|0;c=(c<<14|c>>>18)+d|0;b+=(c&a|d&~a)+k[4]-405537848|0;b=(b<<20|b>>>12)+c|0;a+=(b&d|c&~d)+k[9]+568446438|0;a=(a<<5|a>>>27)+b|0;d+=(a&c|b&~c)+k[14]-1019803690|0;d=(d<<9|d>>>23)+a|0;c+=(d&b|a&~b)+k[3]-187363961|0;c=(c<<14|c>>>18)+d|0;b+=(c&a|d&~a)+k[8]+1163531501|0;b=(b<<20|b>>>12)+c|0;a+=(b&d|c&~d)+k[13]-1444681467|0;a=(a<<5|a>>>27)+b|0;d+=(a&c|b&~c)+k[2]-51403784|0;d=(d<<9|d>>>23)+a|0;c+=(d&b|a&~b)+k[7]+1735328473|0;c=(c<<14|c>>>18)+d|0;b+=(c&a|d&~a)+k[12]-1926607734|0;b=(b<<20|b>>>12)+c|0;a+=(b^c^d)+k[5]-378558|0;a=(a<<4|a>>>28)+b|0;d+=(a^b^c)+k[8]-2022574463|0;d=(d<<11|d>>>21)+a|0;c+=(d^a^b)+k[11]+1839030562|0;c=(c<<16|c>>>16)+d|0;b+=(c^d^a)+k[14]-35309556|0;b=(b<<23|b>>>9)+c|0;a+=(b^c^d)+k[1]-1530992060|0;a=(a<<4|a>>>28)+b|0;d+=(a^b^c)+k[4]+1272893353|0;d=(d<<11|d>>>21)+a|0;c+=(d^a^b)+k[7]-155497632|0;c=(c<<16|c>>>16)+d|0;b+=(c^d^a)+k[10]-1094730640|0;b=(b<<23|b>>>9)+c|0;a+=(b^c^d)+k[13]+681279174|0;a=(a<<4|a>>>28)+b|0;d+=(a^b^c)+k[0]-358537222|0;d=(d<<11|d>>>21)+a|0;c+=(d^a^b)+k[3]-722521979|0;c=(c<<16|c>>>16)+d|0;b+=(c^d^a)+k[6]+76029189|0;b=(b<<23|b>>>9)+c|0;a+=(b^c^d)+k[9]-640364487|0;a=(a<<4|a>>>28)+b|0;d+=(a^b^c)+k[12]-421815835|0;d=(d<<11|d>>>21)+a|0;c+=(d^a^b)+k[15]+530742520|0;c=(c<<16|c>>>16)+d|0;b+=(c^d^a)+k[2]-995338651|0;b=(b<<23|b>>>9)+c|0;a+=(c^(b|~d))+k[0]-198630844|0;a=(a<<6|a>>>26)+b|0;d+=(b^(a|~c))+k[7]+1126891415|0;d=(d<<10|d>>>22)+a|0;c+=(a^(d|~b))+k[14]-1416354905|0;c=(c<<15|c>>>17)+d|0;b+=(d^(c|~a))+k[5]-57434055|0;b=(b<<21|b>>>11)+c|0;a+=(c^(b|~d))+k[12]+1700485571|0;a=(a<<6|a>>>26)+b|0;d+=(b^(a|~c))+k[3]-1894986606|0;d=(d<<10|d>>>22)+a|0;c+=(a^(d|~b))+k[10]-1051523|0;c=(c<<15|c>>>17)+d|0;b+=(d^(c|~a))+k[1]-2054922799|0;b=(b<<21|b>>>11)+c|0;a+=(c^(b|~d))+k[8]+1873313359|0;a=(a<<6|a>>>26)+b|0;d+=(b^(a|~c))+k[15]-30611744|0;d=(d<<10|d>>>22)+a|0;c+=(a^(d|~b))+k[6]-1560198380|0;c=(c<<15|c>>>17)+d|0;b+=(d^(c|~a))+k[13]+1309151649|0;b=(b<<21|b>>>11)+c|0;a+=(c^(b|~d))+k[4]-145523070|0;a=(a<<6|a>>>26)+b|0;d+=(b^(a|~c))+k[11]-1120210379|0;d=(d<<10|d>>>22)+a|0;c+=(a^(d|~b))+k[2]+718787259|0;c=(c<<15|c>>>17)+d|0;b+=(d^(c|~a))+k[9]-343485551|0;b=(b<<21|b>>>11)+c|0;x[0]=a+x[0]|0;x[1]=b+x[1]|0;x[2]=c+x[2]|0;x[3]=d+x[3]|0}function md5blk(s){var md5blks=[],i;for(i=0;i<64;i+=4){md5blks[i>>2]=s.charCodeAt(i)+(s.charCodeAt(i+1)<<8)+(s.charCodeAt(i+2)<<16)+(s.charCodeAt(i+3)<<24)}return md5blks}function md5blk_array(a){var md5blks=[],i;for(i=0;i<64;i+=4){md5blks[i>>2]=a[i]+(a[i+1]<<8)+(a[i+2]<<16)+(a[i+3]<<24)}return md5blks}function md51(s){var n=s.length,state=[1732584193,-271733879,-1732584194,271733878],i,length,tail,tmp,lo,hi;for(i=64;i<=n;i+=64){md5cycle(state,md5blk(s.substring(i-64,i)))}s=s.substring(i-64);length=s.length;tail=[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];for(i=0;i<length;i+=1){tail[i>>2]|=s.charCodeAt(i)<<(i%4<<3)}tail[i>>2]|=128<<(i%4<<3);if(i>55){md5cycle(state,tail);for(i=0;i<16;i+=1){tail[i]=0}}tmp=n*8;tmp=tmp.toString(16).match(/(.*?)(.{0,8})$/);lo=parseInt(tmp[2],16);hi=parseInt(tmp[1],16)||0;tail[14]=lo;tail[15]=hi;md5cycle(state,tail);return state}function md51_array(a){var n=a.length,state=[1732584193,-271733879,-1732584194,271733878],i,length,tail,tmp,lo,hi;for(i=64;i<=n;i+=64){md5cycle(state,md5blk_array(a.subarray(i-64,i)))}a=i-64<n?a.subarray(i-64):new Uint8Array(0);length=a.length;tail=[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];for(i=0;i<length;i+=1){tail[i>>2]|=a[i]<<(i%4<<3)}tail[i>>2]|=128<<(i%4<<3);if(i>55){md5cycle(state,tail);for(i=0;i<16;i+=1){tail[i]=0}}tmp=n*8;tmp=tmp.toString(16).match(/(.*?)(.{0,8})$/);lo=parseInt(tmp[2],16);hi=parseInt(tmp[1],16)||0;tail[14]=lo;tail[15]=hi;md5cycle(state,tail);return state}function rhex(n){var s="",j;for(j=0;j<4;j+=1){s+=hex_chr[n>>j*8+4&15]+hex_chr[n>>j*8&15]}return s}function hex(x){var i;for(i=0;i<x.length;i+=1){x[i]=rhex(x[i])}return x.join("")}if(hex(md51("hello"))!=="5d41402abc4b2a76b9719d911017c592"){add32=function(x,y){var lsw=(x&65535)+(y&65535),msw=(x>>16)+(y>>16)+(lsw>>16);return msw<<16|lsw&65535}}if(typeof ArrayBuffer!=="undefined"&&!ArrayBuffer.prototype.slice){(function(){function clamp(val,length){val=val|0||0;if(val<0){return Math.max(val+length,0)}return Math.min(val,length)}ArrayBuffer.prototype.slice=function(from,to){var length=this.byteLength,begin=clamp(from,length),end=length,num,target,targetArray,sourceArray;if(to!==undefined){end=clamp(to,length)}if(begin>end){return new ArrayBuffer(0)}num=end-begin;target=new ArrayBuffer(num);targetArray=new Uint8Array(target);sourceArray=new Uint8Array(this,begin,num);targetArray.set(sourceArray);return target}})()}function toUtf8(str){if(/[\u0080-\uFFFF]/.test(str)){str=unescape(encodeURIComponent(str))}return str}function utf8Str2ArrayBuffer(str,returnUInt8Array){var length=str.length,buff=new ArrayBuffer(length),arr=new Uint8Array(buff),i;for(i=0;i<length;i+=1){arr[i]=str.charCodeAt(i)}return returnUInt8Array?arr:buff}function arrayBuffer2Utf8Str(buff){return String.fromCharCode.apply(null,new Uint8Array(buff))}function concatenateArrayBuffers(first,second,returnUInt8Array){var result=new Uint8Array(first.byteLength+second.byteLength);result.set(new Uint8Array(first));result.set(new Uint8Array(second),first.byteLength);return returnUInt8Array?result:result.buffer}function hexToBinaryString(hex){var bytes=[],length=hex.length,x;for(x=0;x<length-1;x+=2){bytes.push(parseInt(hex.substr(x,2),16))}return String.fromCharCode.apply(String,bytes)}function SparkMD5(){this.reset()}SparkMD5.prototype.append=function(str){this.appendBinary(toUtf8(str));return this};SparkMD5.prototype.appendBinary=function(contents){this._buff+=contents;this._length+=contents.length;var length=this._buff.length,i;for(i=64;i<=length;i+=64){md5cycle(this._hash,md5blk(this._buff.substring(i-64,i)))}this._buff=this._buff.substring(i-64);return this};SparkMD5.prototype.end=function(raw){var buff=this._buff,length=buff.length,i,tail=[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],ret;for(i=0;i<length;i+=1){tail[i>>2]|=buff.charCodeAt(i)<<(i%4<<3)}this._finish(tail,length);ret=hex(this._hash);if(raw){ret=hexToBinaryString(ret)}this.reset();return ret};SparkMD5.prototype.reset=function(){this._buff="";this._length=0;this._hash=[1732584193,-271733879,-1732584194,271733878];return this};SparkMD5.prototype.getState=function(){return{buff:this._buff,length:this._length,hash:this._hash.slice()}};SparkMD5.prototype.setState=function(state){this._buff=state.buff;this._length=state.length;this._hash=state.hash;return this};SparkMD5.prototype.destroy=function(){delete this._hash;delete this._buff;delete this._length};SparkMD5.prototype._finish=function(tail,length){var i=length,tmp,lo,hi;tail[i>>2]|=128<<(i%4<<3);if(i>55){md5cycle(this._hash,tail);for(i=0;i<16;i+=1){tail[i]=0}}tmp=this._length*8;tmp=tmp.toString(16).match(/(.*?)(.{0,8})$/);lo=parseInt(tmp[2],16);hi=parseInt(tmp[1],16)||0;tail[14]=lo;tail[15]=hi;md5cycle(this._hash,tail)};SparkMD5.hash=function(str,raw){return SparkMD5.hashBinary(toUtf8(str),raw)};SparkMD5.hashBinary=function(content,raw){var hash=md51(content),ret=hex(hash);return raw?hexToBinaryString(ret):ret};SparkMD5.ArrayBuffer=function(){this.reset()};SparkMD5.ArrayBuffer.prototype.append=function(arr){var buff=concatenateArrayBuffers(this._buff.buffer,arr,true),length=buff.length,i;this._length+=arr.byteLength;for(i=64;i<=length;i+=64){md5cycle(this._hash,md5blk_array(buff.subarray(i-64,i)))}this._buff=i-64<length?new Uint8Array(buff.buffer.slice(i-64)):new Uint8Array(0);return this};SparkMD5.ArrayBuffer.prototype.end=function(raw){var buff=this._buff,length=buff.length,tail=[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],i,ret;for(i=0;i<length;i+=1){tail[i>>2]|=buff[i]<<(i%4<<3)}this._finish(tail,length);ret=hex(this._hash);if(raw){ret=hexToBinaryString(ret)}this.reset();return ret};SparkMD5.ArrayBuffer.prototype.reset=function(){this._buff=new Uint8Array(0);this._length=0;this._hash=[1732584193,-271733879,-1732584194,271733878];return this};SparkMD5.ArrayBuffer.prototype.getState=function(){var state=SparkMD5.prototype.getState.call(this);state.buff=arrayBuffer2Utf8Str(state.buff);return state};SparkMD5.ArrayBuffer.prototype.setState=function(state){state.buff=utf8Str2ArrayBuffer(state.buff,true);return SparkMD5.prototype.setState.call(this,state)};SparkMD5.ArrayBuffer.prototype.destroy=SparkMD5.prototype.destroy;SparkMD5.ArrayBuffer.prototype._finish=SparkMD5.prototype._finish;SparkMD5.ArrayBuffer.hash=function(arr,raw){var hash=md51_array(new Uint8Array(arr)),ret=hex(hash);return raw?hexToBinaryString(ret):ret};return SparkMD5});
+
 
         let spark = null;
 
@@ -1875,11 +1864,13 @@
             matchMode: "hashAndFileName"// [修正] 始终使用 hashAndFileName 模式
         };
         
-        // 计算哈希 (Worker)
+        // 计算哈希 (Worker) - 使用真正的 SparkMD5 库计算文件 MD5
+        // 如果计算失败，使用 fallback 值（仅用于 API 兼容，不会匹配到正确的弹幕）
+        const FALLBACK_HASH = 'a1b2c3d4e5f67890abcd1234ef567890';
         if (streamUrl && size > 0) {
-             matchPayload.fileHash = await calculateFileHash(streamUrl, size) || 'a1b2c3d4e5f67890abcd1234ef567890';
+             matchPayload.fileHash = await calculateFileHash(streamUrl, size) || FALLBACK_HASH;
         } else {
-             matchPayload.fileHash = 'a1b2c3d4e5f67890abcd1234ef567890';
+             matchPayload.fileHash = FALLBACK_HASH;
         }
 
         console.log(`[自动匹配] 开始串行搜索... 目标: ${animeName}`);
@@ -2543,7 +2534,7 @@
             });
     }
 
-    async function danmakuFilter(comments) { 
+    async function danmakuFilter(comments) {
         let _comments = [...comments];
         danmakuAutoFilter(_comments);
         _comments = danmakuTypeFilter(_comments);
@@ -2551,7 +2542,109 @@
         _comments = danmakuDensityLevelFilter(_comments);
         _comments = danmakuKeywordsFilter(_comments);
         _comments = await danmakuMergeSimilar(_comments, lsGetItem(lsKeys.mergeSimilarPercent.id), lsGetItem(lsKeys.mergeSimilarTime.id));
+        _comments = danmakuAntiOverlapFilter(_comments);
         return _comments;
+    }
+
+    /**
+     * 防重叠过滤器
+     * 根据显示区域计算可用轨道数，模拟轨道分配，过滤掉会超出轨道的弹幕
+     *
+     * 原理：
+     * 1. 根据 heightPercent 和字体大小计算可用轨道数
+     * 2. 按时间顺序遍历弹幕，模拟轨道分配
+     * 3. 滚动弹幕的轨道占用时间 = 弹幕完全进入屏幕的时间 + 缓冲时间
+     * 4. 顶部/底部弹幕的轨道占用时间 = 整个显示时间
+     * 5. 无法分配轨道的弹幕被过滤掉
+     */
+    function danmakuAntiOverlapFilter(comments) {
+        if (!lsGetItem(lsKeys.antiOverlap.id)) {
+            return comments;
+        }
+
+        const beforeCount = comments.length;
+        if (beforeCount === 0) return comments;
+
+        // 获取配置参数
+        const heightPercent = lsGetItem(lsKeys.heightPercent.id);
+        const fontSizeRate = lsGetItem(lsKeys.fontSizeRate.id);
+        const speedRate = lsGetItem(lsKeys.speed.id);
+
+        // 计算弹幕高度（基础字体 25px * 缩放比例 * 行高系数 + 描边）
+        const baseFontSize = 25;
+        const fontSize = baseFontSize * (fontSizeRate / 100);
+        const lineHeight = 1.2;
+        const strokeWidth = 4;
+        const danmakuHeight = fontSize * lineHeight + strokeWidth;
+
+        // 获取容器尺寸
+        const container = document.querySelector(mediaContainerQueryStr);
+        const containerHeight = container ? container.offsetHeight : 720;
+        const containerWidth = container ? container.offsetWidth : 1280;
+
+        // 计算实际可用高度和轨道数
+        const availableHeight = containerHeight * (heightPercent / 100);
+        const maxTracks = Math.max(1, Math.floor(availableHeight / danmakuHeight));
+
+        // 速度计算（像素/秒）- Danmaku 库基础速度是 144
+        const baseSpeed = 144;
+        const speed = baseSpeed * (speedRate / 100);
+
+        // 弹幕飞行时间（整个屏幕宽度）
+        const duration = containerWidth / speed;
+
+        // 估算平均弹幕宽度（用于计算轨道占用时间）
+        // 假设平均弹幕长度约 10 个字符，每个字符宽度约等于字体大小
+        const avgDanmakuWidth = fontSize * 10;
+        // 弹幕完全进入屏幕的时间（这是轨道的最小占用时间）
+        const minOccupyTime = avgDanmakuWidth / speed;
+
+        // 为不同弹幕类型维护独立的轨道释放时间表
+        const tracks = {
+            rtl: new Array(maxTracks).fill(-Infinity),
+            ltr: new Array(maxTracks).fill(-Infinity),
+            top: new Array(maxTracks).fill(-Infinity),
+            bottom: new Array(maxTracks).fill(-Infinity),
+        };
+
+        // 按时间排序（确保按顺序分配轨道）
+        const sortedComments = [...comments].sort((a, b) => a.time - b.time);
+
+        const filteredComments = sortedComments.filter(c => {
+            const mode = c.mode || 'rtl';
+            const trackList = tracks[mode];
+            if (!trackList) return true; // 未知模式，保留
+
+            const time = c.time;
+
+            // 计算轨道占用时间
+            let occupyDuration;
+            if (mode === 'top' || mode === 'bottom') {
+                // 顶部/底部弹幕：占用整个显示时间
+                occupyDuration = duration;
+            } else {
+                // 滚动弹幕：只需要等弹幕完全进入屏幕即可
+                // 加一点缓冲时间（0.5秒）避免弹幕太紧凑
+                occupyDuration = minOccupyTime + 0.5;
+            }
+
+            // 尝试找一个空闲轨道
+            for (let i = 0; i < trackList.length; i++) {
+                if (trackList[i] <= time) {
+                    trackList[i] = time + occupyDuration;
+                    return true; // 找到空闲轨道，保留弹幕
+                }
+            }
+            return false; // 没有空闲轨道，丢弃弹幕
+        });
+
+        const afterCount = filteredComments.length;
+        const filteredCount = beforeCount - afterCount;
+        if (filteredCount > 0) {
+            console.log(`[防重叠] 容器: ${containerWidth}x${containerHeight}, 可用高度: ${availableHeight.toFixed(0)}px, 弹幕高度: ${danmakuHeight.toFixed(1)}px, 可用轨道: ${maxTracks}, 过滤前: ${beforeCount}, 过滤后: ${afterCount}, 丢弃: ${filteredCount}`);
+        }
+
+        return filteredComments;
     }
 
     function danmakuAutoFilter(comments) {
@@ -2977,8 +3070,13 @@
         let template =  `
             <div style="display: flex; justify-content: center;">
                 <div>
-                    <div id="${eleIds.danmakuSwitchDiv}" style="margin-bottom: 0.2em;">
-                        <label class="${classes.embyLabel}">${lsKeys.switch.name} </label>
+                    <div id="${eleIds.danmakuSwitchDiv}" style="margin-bottom: 0.2em; display: flex; align-items: center; justify-content: space-between;">
+                        <div style="display: flex; align-items: center;">
+                            <label class="${classes.embyLabel}">${lsKeys.switch.name} </label>
+                        </div>
+                        <div id="${eleIds.antiOverlapDiv}" style="display: flex; align-items: center;">
+                            <label class="${classes.embyLabel}">${lsKeys.antiOverlap.name} </label>
+                        </div>
                     </div>
                     <div style="${styles.embySlider}">
                         <label class="${classes.embyLabel}" style="width: 5em;">${lsKeys.filterLevel.name}: </label>
@@ -3075,12 +3173,19 @@
         `;
         container.innerHTML = template.trim();
 
-        getById(eleIds.danmakuSwitchDiv, container).prepend(
+        getById(eleIds.danmakuSwitchDiv, container).querySelector('div:first-child').prepend(
             embyButton({ id: eleIds.danmakuSwitch, label: '弹幕开关'
                 , iconKey: lsGetItem(lsKeys.switch.id) ? iconKeys.switch_on : iconKeys.switch_off
                 , style: (lsGetItem(lsKeys.switch.id) ? 'color:#52b54b;' : '') + 'font-size:1.5em;padding:0;' }
                 // , style: lsGetItem(lsKeys.switch.id) ? 'color:#52b54b;font-size:1.5em;padding:0;': 'font-size:1.5em;padding:0;'}
                 , doDanmakuSwitch)
+        );
+        // 防重叠按钮
+        getById(eleIds.antiOverlapDiv, container).prepend(
+            embyButton({ id: eleIds.antiOverlapBtn, label: '防重叠开关'
+                , iconKey: lsGetItem(lsKeys.antiOverlap.id) ? iconKeys.switch_on : iconKeys.switch_off
+                , style: (lsGetItem(lsKeys.antiOverlap.id) ? 'color:#52b54b;' : '') + 'font-size:1.5em;padding:0;' }
+                , doAntiOverlapSwitch)
         );
         // 滑块
         getById(eleIds.filterLevelDiv, container).append(
@@ -4638,6 +4743,26 @@
             switchElement.style.color = flag ? styles.colors.switchActiveColor : '';
         }
         lsSetItem(lsKeys.switch.id, flag);
+    }
+
+    /**
+     * 防重叠开关
+     * 开启后会根据显示区域计算可用轨道数，过滤掉超出轨道的弹幕，避免弹幕重叠
+     * 适用于显示区域较小（如 10%-50%）时，防止弹幕挤在一起
+     */
+    function doAntiOverlapSwitch() {
+        console.log('切换' + lsKeys.antiOverlap.name);
+        const flag = !lsGetItem(lsKeys.antiOverlap.id);
+        lsSetItem(lsKeys.antiOverlap.id, flag);
+        // 更新弹幕设置弹窗中的按钮状态
+        const antiOverlapBtn = getById(eleIds.antiOverlapBtn);
+        if (antiOverlapBtn) {
+            antiOverlapBtn.firstChild.innerHTML = flag ? iconKeys.switch_on : iconKeys.switch_off;
+            antiOverlapBtn.style.color = flag ? styles.colors.switchActiveColor : '';
+        }
+        // 重新加载弹幕以应用过滤
+        loadDanmaku(LOAD_TYPE.RELOAD);
+        embyToast({ text: `防重叠: ${flag ? '开启 - 超出轨道的弹幕将被过滤' : '关闭 - 允许弹幕重叠显示'}` });
     }
 
     // --- 手动搜索：并行模式 (速度优先，聚合结果) ---
