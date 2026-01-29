@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.1.5
+// @version      1.1.6
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -25,7 +25,7 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.1.5', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.1.6', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -292,6 +292,8 @@
         customApiPrefix: { id: 'danmakuCustomApiPrefix', defaultValue: '', name: '自定义弹弹play API地址' },
         customApiList: { id: 'danmakuCustomApiList', defaultValue: [], name: '自定义弹幕源列表' },
         apiPriority: { id: 'danmakuApiPriority', defaultValue: ['official', 'custom'], name: 'API 优先级' },
+        // [新增] 排除的媒体库列表（不加载弹幕）
+        excludedLibraries: { id: 'danmakuExcludedLibraries', defaultValue: [], name: '排除的媒体库' },
     };
     const lsLocalKeys = {
         animePrefix: '_anime_id_rel_',
@@ -407,6 +409,10 @@
         progressBarLineChart: 'progressBarLineChart',
         antiOverlapBtn: 'antiOverlapBtn',
         antiOverlapDiv: 'antiOverlapDiv',
+        // [新增] 媒体库排除设置
+        excludedLibrariesDiv: 'excludedLibrariesDiv',
+        excludedLibrariesInput: 'excludedLibrariesInput',
+        currentLibraryInfo: 'currentLibraryInfo',
     };
     // 播放界面下方按钮
     const mediaBtnOpts = [
@@ -838,8 +844,26 @@
         if (getById(eleIds.danmakuCtr)) { return; }
         console.log('正在初始化UI');
 
-        // ApiClient.isMinServerVersion("4.8.0.00"); 可以精确对比客户端指定版本小于当前版本,但此处暂时不需要
-        if (parseFloat(ApiClient.serverVersion()) < 4.8) {
+        // [修复] 使用 Emby 提供的版本比较方法，避免 parseFloat("4.10.0.1") = 4.1 的问题
+        // ApiClient.isMinServerVersion("4.8.0.0") 返回 true 表示当前版本 >= 4.8.0.0
+        const serverVersion = ApiClient.serverVersion ? ApiClient.serverVersion() : '';
+        console.log('[dd-danmaku] 服务器版本:', serverVersion);
+
+        let isOldVersion = false;
+        if (ApiClient.isMinServerVersion) {
+            // 使用 Emby 官方的版本比较方法
+            isOldVersion = !ApiClient.isMinServerVersion("4.8.0.0");
+        } else {
+            // 回退方案：手动比较版本号
+            const versionParts = serverVersion.split('.').map(Number);
+            const major = versionParts[0] || 0;
+            const minor = versionParts[1] || 0;
+            isOldVersion = major < 4 || (major === 4 && minor < 8);
+        }
+
+        console.log('[dd-danmaku] 是否旧版本 (<4.8):', isOldVersion);
+
+        if (isOldVersion) {
             mediaContainerQueryStr = 'div[data-type="video-osd"]';
             isVersionOld = true;
         }
@@ -1597,6 +1621,161 @@
     }
 }
 
+    /**
+     * 获取所有媒体库列表
+     * @returns {Promise<Array<{id: string, name: string, collectionType: string}>>}
+     */
+    async function getAllLibraries() {
+        try {
+            const userId = ApiClient.getCurrentUserId();
+            // 通过 Views API 获取用户可见的媒体库
+            const viewsUrl = ApiClient.getUrl(`Users/${userId}/Views`);
+            const viewsResult = await ApiClient.getJSON(viewsUrl).catch(() => null);
+
+            if (viewsResult && viewsResult.Items && viewsResult.Items.length > 0) {
+                return viewsResult.Items.map(item => ({
+                    id: item.Id,
+                    name: item.Name,
+                    collectionType: item.CollectionType || item.Type || ''
+                }));
+            }
+        } catch (error) {
+            console.error('[dd-danmaku] 获取媒体库列表失败:', error);
+        }
+        return [];
+    }
+
+    /**
+     * 获取当前播放项目所属的媒体库信息（简化版，使用 Views API 匹配）
+     * @param {Object} item - Emby item 对象
+     * @returns {Promise<{libraryId: string, libraryName: string, collectionType: string}|null>}
+     */
+    async function getItemLibraryInfo(item) {
+        if (!item) return null;
+
+        try {
+            // 获取所有媒体库列表
+            const libraries = await getAllLibraries();
+            console.log('[dd-danmaku] 媒体库列表:', libraries.map(l => ({ id: l.id, name: l.name })));
+            if (!libraries || libraries.length === 0) {
+                console.warn('[dd-danmaku] 无法获取媒体库列表');
+                return null;
+            }
+
+            // 如果 item 信息不完整，重新获取完整信息
+            let fullItem = item;
+            if (!item.ParentId && !item.SeriesId) {
+                console.log('[dd-danmaku] Item 信息不完整，重新获取...');
+                fullItem = await fatchEmbyItemInfo(item.Id) || item;
+            }
+
+            // 打印 item 的关键信息用于调试
+            console.log('[dd-danmaku] Item 信息:', {
+                Id: fullItem.Id,
+                Name: fullItem.Name,
+                Type: fullItem.Type,
+                ParentId: fullItem.ParentId,
+                SeriesId: fullItem.SeriesId,
+                SeasonId: fullItem.SeasonId,
+                Path: fullItem.Path
+            });
+
+            // 方法1: 通过 Ancestors API 获取
+            const userId = ApiClient.getCurrentUserId();
+            const ancestorsUrl = ApiClient.getUrl(`Users/${userId}/Items/${fullItem.Id}/Ancestors`);
+            const ancestorsResult = await ApiClient.getJSON(ancestorsUrl).catch((e) => {
+                console.log('[dd-danmaku] Ancestors API 失败:', e);
+                return null;
+            });
+            // 检查返回值是否为有效数组
+            const ancestors = Array.isArray(ancestorsResult) ? ancestorsResult : null;
+            console.log('[dd-danmaku] Ancestors:', ancestors ? ancestors.map(a => ({ Id: a.Id, Name: a.Name, Type: a.Type })) : 'null');
+
+            if (ancestors && ancestors.length > 0) {
+                // 在祖先中查找匹配的媒体库
+                for (const ancestor of ancestors) {
+                    const matchedLib = libraries.find(lib => lib.id === ancestor.Id || lib.name === ancestor.Name);
+                    if (matchedLib) {
+                        console.log(`[dd-danmaku] 通过 Ancestors 匹配到媒体库: ${matchedLib.name}`);
+                        return {
+                            libraryId: matchedLib.id,
+                            libraryName: matchedLib.name,
+                            collectionType: matchedLib.collectionType || ''
+                        };
+                    }
+                }
+
+                // 如果没有精确匹配，尝试返回最顶层的祖先作为媒体库
+                const topAncestor = ancestors[ancestors.length - 1];
+                console.log(`[dd-danmaku] 使用最顶层祖先作为媒体库: ${topAncestor.Name}`);
+                return {
+                    libraryId: topAncestor.Id,
+                    libraryName: topAncestor.Name,
+                    collectionType: topAncestor.CollectionType || ''
+                };
+            }
+
+            // 方法2: 通过 SeriesId 或 ParentId 递归查找
+            let currentId = fullItem.SeriesId || fullItem.SeasonId || fullItem.ParentId;
+            console.log('[dd-danmaku] 开始 ParentId 递归查找, 起始ID:', currentId);
+            let maxDepth = 10;
+            while (currentId && maxDepth > 0) {
+                // 检查当前 ID 是否是媒体库
+                const matchedLib = libraries.find(lib => lib.id === currentId);
+                if (matchedLib) {
+                    console.log(`[dd-danmaku] 通过 ParentId 匹配到媒体库: ${matchedLib.name}`);
+                    return {
+                        libraryId: matchedLib.id,
+                        libraryName: matchedLib.name,
+                        collectionType: matchedLib.collectionType || ''
+                    };
+                }
+
+                // 获取父级信息继续查找
+                const parentItem = await fatchEmbyItemInfo(currentId);
+                console.log('[dd-danmaku] 递归查找父级:', parentItem ? { Id: parentItem.Id, Name: parentItem.Name, ParentId: parentItem.ParentId } : 'null');
+                if (!parentItem) break;
+
+                // 检查父级名称是否匹配媒体库名称
+                const matchedByName = libraries.find(lib => lib.name === parentItem.Name);
+                if (matchedByName) {
+                    console.log(`[dd-danmaku] 通过父级名称匹配到媒体库: ${matchedByName.name}`);
+                    return {
+                        libraryId: matchedByName.id,
+                        libraryName: matchedByName.name,
+                        collectionType: matchedByName.collectionType || ''
+                    };
+                }
+
+                currentId = parentItem.ParentId;
+                maxDepth--;
+            }
+
+            console.warn('[dd-danmaku] 无法匹配到媒体库');
+        } catch (error) {
+            console.warn('[dd-danmaku] 获取媒体库信息失败:', error);
+        }
+
+        return null;
+    }
+
+    /**
+     * 检查当前媒体库是否在排除列表中
+     * @param {Object} libraryInfo - 媒体库信息
+     * @returns {boolean} - true 表示应该禁用弹幕
+     */
+    function isLibraryExcluded(libraryInfo) {
+        if (!libraryInfo) return false;
+
+        const excludedLibraries = lsGetItem(lsKeys.excludedLibraries.id) || [];
+        if (excludedLibraries.length === 0) return false;
+
+        // 检查媒体库名称是否在排除列表中
+        const isExcluded = excludedLibraries.some(excluded => excluded === libraryInfo.libraryName);
+        console.log(`[dd-danmaku] 检查媒体库排除: "${libraryInfo.libraryName}" 在排除列表 [${excludedLibraries.join(', ')}] 中: ${isExcluded}`);
+        return isExcluded;
+    }
+
     async function getMapByEmbyItemInfo() {
         let item = await getEmbyItemInfo();
         if (!item) {
@@ -1608,6 +1787,12 @@
             return console.error('不支持的类型');
         }
 
+        // [新增] 获取并记录媒体库信息（仅记录，不在此处检查排除）
+        const libraryInfo = await getItemLibraryInfo(item);
+        if (libraryInfo) {
+            console.log(`[dd-danmaku] 媒体库信息 - ID: ${libraryInfo.libraryId}, 名称: ${libraryInfo.libraryName}, 类型: ${libraryInfo.collectionType}`);
+            window.ede.currentLibraryInfo = libraryInfo;
+        }
 
         window.ede.itemId = item.Id;
         let _id;
@@ -2359,18 +2544,34 @@
     window.ede.commentsParsed = [];
 }
 
-    function loadDanmaku(loadType = LOAD_TYPE.CHECK) {
+    async function loadDanmaku(loadType = LOAD_TYPE.CHECK) {
         const _media = document.querySelector(mediaQueryStr);
         if (!_media) {
             return console.warn('用户已退出视频播放，停止加载弹幕');
         }
-        
+
+        // [新增] 先获取媒体库信息并检查排除
+        console.log('[dd-danmaku] 开始检查媒体库排除...');
+        const item = await getEmbyItemInfo();
+        console.log('[dd-danmaku] getEmbyItemInfo 返回:', item ? item.Name : 'null');
+        if (item) {
+            const libraryInfo = await getItemLibraryInfo(item);
+            console.log('[dd-danmaku] getItemLibraryInfo 返回:', libraryInfo);
+            if (libraryInfo) {
+                window.ede.currentLibraryInfo = libraryInfo;
+                if (isLibraryExcluded(libraryInfo)) {
+                    console.log(`[dd-danmaku] 媒体库 "${libraryInfo.libraryName}" 在排除列表中，跳过弹幕搜索和加载`);
+                    return;
+                }
+            }
+        }
+
         // [关键修复] 2. 在加载的最开始就生成新的任务 ID (Session ID)
         // 这样 B 剧集一开始加载，A 的 ID (上一个时间戳) 就已经失效了
         const currentSessionId = Date.now();
         if (window.ede) {
             window.ede.lastLoadId = currentSessionId;
-            
+
             // =========== [修改开始] ===========
             // 在这里调用清理函数，确保发起请求前，上一集的 UI 已经被清除
             clearDanmakuUI();
@@ -2388,8 +2589,14 @@
             //     });
             // }
             getMapByEmbyItemInfo().then((itemInfoMap) => {
+                // 检查是否获取到信息
+                if (!itemInfoMap) {
+                    console.log('[dd-danmaku] 获取视频信息失败，停止弹幕加载');
+                    return;
+                }
+
                 // [新增] 在插件API成功时也计算文件哈希
-                if (itemInfoMap && itemInfoMap.streamUrl && itemInfoMap.size > 0) {
+                if (itemInfoMap.streamUrl && itemInfoMap.size > 0) {
                     console.log(`[插件API] 准备计算文件哈希`);
                     calculateFileHash(itemInfoMap.streamUrl, itemInfoMap.size).then(hash => {
                         if (hash) {
@@ -2455,10 +2662,11 @@
 
                     if (!info) {
                         if (loadType !== LOAD_TYPE.INIT) {
-                            reject('播放器未完成加载');
+                            reject('播放器未完成加载或媒体库被排除');
                         } else {
                             reject(null);
                         }
+                        return; // [修复] 添加 return 防止继续执行
                     }
                     if (
                         loadType !== LOAD_TYPE.SEARCH &&
@@ -4148,6 +4356,9 @@
                         </div>
                     </div>
                 </div>
+                <div is="emby-collapse" title="媒体库排除设置">
+                    <div id="${eleIds.excludedLibrariesDiv}" class="${classes.collapseContentNav}"></div>
+                </div>
                 <div is="emby-collapse" title="自定义接口地址">
                     <div id="${eleIds.customeUrlsDiv}" class="${classes.collapseContentNav}"></div>
                 </div>
@@ -4159,6 +4370,7 @@
         buildOsdSetting();
         buildPlaySetting(container);
         buildBangumiSetting(container);
+        buildExcludedLibrariesSetting(container);
         buildCustomUrlSetting(container);
     }
 
@@ -4347,6 +4559,75 @@
             console.error('Bangumi Token 验证失败', error);
             throw error;
         }
+    }
+
+    /**
+     * 构建媒体库排除设置界面
+     */
+    function buildExcludedLibrariesSetting(container) {
+        const excludedDiv = getById(eleIds.excludedLibrariesDiv, container);
+        if (!excludedDiv) return;
+
+        // 初始模板 - 显示加载中
+        excludedDiv.innerHTML = `
+            <div class="${classes.embyFieldDesc}" style="margin-bottom: 0.5em;">
+                勾选不需要加载弹幕的媒体库：
+            </div>
+            <div id="libraryListContainer" style="padding: 0.5em;">
+                <span style="color: #888;">正在加载媒体库列表...</span>
+            </div>
+        `;
+
+        // 异步加载媒体库列表
+        getAllLibraries().then(libraries => {
+            const listContainer = getById('libraryListContainer');
+            if (!listContainer) return;
+
+            if (libraries.length === 0) {
+                listContainer.innerHTML = '<span style="color: #f44;">无法获取媒体库列表，请确保已登录</span>';
+                return;
+            }
+
+            // 获取当前排除列表
+            const excludedList = lsGetItem(lsKeys.excludedLibraries.id) || [];
+
+            // 构建复选框列表
+            let checkboxHtml = '';
+            libraries.forEach(lib => {
+                const isChecked = excludedList.includes(lib.name) || excludedList.includes(lib.id);
+                const typeLabel = lib.collectionType ? ` <span style="color: #888; font-size: 0.85em;">(${lib.collectionType})</span>` : '';
+                checkboxHtml += `
+                    <label class="emby-checkbox-label" style="display: flex; align-items: center; padding: 0.4em 0; cursor: pointer;">
+                        <input type="checkbox" is="emby-checkbox" class="libraryExcludeCheckbox"
+                            data-library-id="${lib.id}" data-library-name="${lib.name}"
+                            ${isChecked ? 'checked' : ''} />
+                        <span style="margin-left: 0.5em;">${lib.name}${typeLabel}</span>
+                    </label>
+                `;
+            });
+
+            listContainer.innerHTML = `
+                <div style="max-height: 200px; overflow-y: auto; border: 1px solid rgba(128,128,128,0.3); border-radius: 4px; padding: 0.5em;">
+                    ${checkboxHtml}
+                </div>
+                <div style="margin-top: 0.5em; color: #888; font-size: 0.85em;">
+                    共 ${libraries.length} 个媒体库，已排除 ${excludedList.length} 个
+                </div>
+            `;
+
+            // 绑定复选框事件 - 实时保存
+            const checkboxes = listContainer.querySelectorAll('.libraryExcludeCheckbox');
+            checkboxes.forEach(checkbox => {
+                checkbox.addEventListener('change', () => {
+                    const newExcludedList = [];
+                    listContainer.querySelectorAll('.libraryExcludeCheckbox:checked').forEach(cb => {
+                        newExcludedList.push(cb.dataset.libraryName);
+                    });
+                    lsSetItem(lsKeys.excludedLibraries.id, newExcludedList);
+                    console.log('[dd-danmaku] 已更新排除媒体库列表:', newExcludedList);
+                });
+            });
+        });
     }
 
     function buildCustomUrlSetting(container) {
@@ -6232,5 +6513,39 @@
     // emby/jellyfin CustomEvent. see: https://github.com/MediaBrowser/emby-web-defaultskin/blob/822273018b82a4c63c2df7618020fb837656868d/nowplaying/videoosd.js#L698
     refreshEventListener({ 'viewshow': onViewShow });
     refreshEventListener({ 'viewbeforehide': beforeDestroy });
+
+    // [修复] CustomCssJS 兼容：如果脚本在页面已加载后注入，viewshow 事件可能已经错过
+    // 需要立即检查当前是否已在播放页面，如果是则手动触发初始化
+    console.log('[dd-danmaku] 插件已加载，正在检查当前页面状态...');
+
+    // 延迟执行，确保 Emby 的路由系统已经就绪
+    setTimeout(() => {
+        // 检查当前 URL 是否包含 videoosd（播放页面）
+        const currentPath = window.location.hash || window.location.pathname;
+        const isVideoOsdPage = currentPath.includes('videoosd') ||
+                               document.querySelector(mediaContainerQueryStr + ' video');
+
+        // 检查是否已经有视频元素（说明已经在播放页面）
+        const hasVideoElement = document.querySelector('video');
+
+        console.log(`[dd-danmaku] 当前路径: ${currentPath}, 是否播放页: ${isVideoOsdPage}, 是否有视频元素: ${!!hasVideoElement}`);
+
+        if (isVideoOsdPage || hasVideoElement) {
+            console.log('[dd-danmaku] 检测到已在播放页面，手动触发初始化...');
+
+            // 模拟 viewshow 事件的参数
+            const mockEvent = {
+                detail: {
+                    type: 'video-osd',
+                    params: {
+                        id: new URLSearchParams(window.location.search).get('id') || ''
+                    }
+                }
+            };
+
+            // 手动调用初始化
+            onViewShow(mockEvent);
+        }
+    }, 500); // 延迟 500ms 确保 DOM 已就绪
 
 })();
