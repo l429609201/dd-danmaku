@@ -542,16 +542,49 @@
         /* eslint-disable */
         // prettier-ignore
         // 注意: 原版使用 this 作为全局对象，但在严格模式下 this 为 undefined，改用 window 确保兼容性
-        !function(t,e){"object"==typeof exports&&"undefined"!=typeof module?module.exports=e():"function"==typeof define&&define.amd?define(e):(t="undefined"!=typeof globalThis?globalThis:t||self).Danmaku=e()}(window,(function(){"use strict";var t=function(){if("undefined"==typeof document)return"transform";for(var t=["oTransform","msTransform","mozTransform","webkitTransform","transform"],e=document.createElement("div").style,i=0;i<t.length;i++)if(t[i]in e)return t[i];return"transform"}();function e(t){var e=document.createElement("div");if(e.style.cssText="position:absolute;","function"==typeof t.render){var i=t.render();if(i instanceof HTMLElement)return e.appendChild(i),e}if(e.textContent=t.text,t.style)for(var n in t.style)e.style[n]=t.style[n];return e}var i={name:"dom",init:function(){var t=document.createElement("div");return t.style.cssText="overflow:hidden;white-space:nowrap;transform:translateZ(0);",t},clear:function(t){for(var e=t.lastChild;e;)t.removeChild(e),e=t.lastChild},resize:function(t,e,i){t.style.width=e+"px",t.style.height=i+"px"},framing:function(){},setup:function(t,i){var n=document.createDocumentFragment(),s=0,r=null;for(s=0;s<i.length;s++)(r=i[s]).node=r.node||e(r),n.appendChild(r.node);for(i.length&&t.appendChild(n),s=0;s<i.length;s++)(r=i[s]).width=r.width||r.node.offsetWidth,r.height=r.height||r.node.offsetHeight},render:function(e,i){i.node.style[t]="translate("+i.x+"px,"+i.y+"px)"},remove:function(t,e){t.removeChild(e.node),this.media||(e.node=null)}},n="undefined"!=typeof window&&window.devicePixelRatio||1,s=Object.create(null);function r(t,e){if("function"==typeof t.render){var i=t.render();if(i instanceof HTMLCanvasElement)return t.width=i.width,t.height=i.height,i}var r=document.createElement("canvas"),h=r.getContext("2d"),o=t.style||{};o.font=o.font||"10px sans-serif",o.textBaseline=o.textBaseline||"bottom";var a=1*o.lineWidth;for(var d in a=a>0&&a!==1/0?Math.ceil(a):1*!!o.strokeStyle,h.font=o.font,t.width=t.width||Math.max(1,Math.ceil(h.measureText(t.text).width)+2*a),t.height=t.height||Math.ceil(function(t,e){if(s[t])return s[t];var i=12,n=t.match(/(\d+(?:\.\d+)?)(px|%|em|rem)(?:\s*\/\s*(\d+(?:\.\d+)?)(px|%|em|rem)?)?/);if(n){var r=1*n[1]||10,h=n[2],o=1*n[3]||1.2,a=n[4];"%"===h&&(r*=e.container/100),"em"===h&&(r*=e.container),"rem"===h&&(r*=e.root),"px"===a&&(i=o),"%"===a&&(i=r*o/100),"em"===a&&(i=r*o),"rem"===a&&(i=e.root*o),void 0===a&&(i=r*o)}return s[t]=i,i}(o.font,e))+2*a,r.width=t.width*n,r.height=t.height*n,h.scale(n,n),o)h[d]=o[d];var u=0;switch(o.textBaseline){case"top":case"hanging":u=a;break;case"middle":u=t.height>>1;break;default:u=t.height-a}return o.strokeStyle&&h.strokeText(t.text,a,u),h.fillText(t.text,a,u),r}function h(t){return 1*window.getComputedStyle(t,null).getPropertyValue("font-size").match(/(.+)px/)[1]}var o={name:"canvas",init:function(t){var e=document.createElement("canvas");return e.context=e.getContext("2d"),e._fontSize={root:h(document.getElementsByTagName("html")[0]),container:h(t)},e},clear:function(t,e){t.context.clearRect(0,0,t.width,t.height);for(var i=0;i<e.length;i++)e[i].canvas=null},resize:function(t,e,i){t.width=e*n,t.height=i*n,t.style.width=e+"px",t.style.height=i+"px"},framing:function(t){t.context.clearRect(0,0,t.width,t.height)},setup:function(t,e){for(var i=0;i<e.length;i++){var n=e[i];n.canvas=r(n,t._fontSize)}},render:function(t,e){t.context.drawImage(e.canvas,e.x*n,e.y*n)},remove:function(t,e){e.canvas=null}},a=("undefined"!=typeof window&&(window.requestAnimationFrame||window.mozRequestAnimationFrame||window.webkitRequestAnimationFrame)||function(t){return setTimeout(t,50/3)}).bind(window),d=("undefined"!=typeof window&&(window.cancelAnimationFrame||window.mozCancelAnimationFrame||window.webkitCancelAnimationFrame)||clearTimeout).bind(window);function u(t,e,i){for(var n=0,s=0,r=t.length;s<r-1;)i>=t[n=s+r>>1][e]?s=n:r=n;return t[s]&&i<t[s][e]?s:r}function m(t){return/^(ltr|top|bottom)$/i.test(t)?t.toLowerCase():"rtl"}function c(){var t=9007199254740991;return[{range:0,time:-t,width:t,height:0},{range:t,time:t,width:0,height:0}]}function l(t){t.ltr=c(),t.rtl=c(),t.top=c(),t.bottom=c()}function f(){return void 0!==window.performance&&window.performance.now?window.performance.now():Date.now()}function p(t){var e=this,i=this.media?this.media.currentTime:f()/1e3,n=this.media?this.media.playbackRate:1;function s(t,s){if("top"===s.mode||"bottom"===s.mode)return i-t.time<e._.duration;var r=(e._.width+t.width)*(i-t.time)*n/e._.duration;if(t.width>r)return!0;var h=e._.duration+t.time-i,o=e._.width+s.width,a=e.media?s.time:s._utc,d=o*(i-a)*n/e._.duration,u=e._.width-d;return h>e._.duration*u/(e._.width+s.width)}for(var r=this._.space[t.mode],h=0,o=0,a=1;a<r.length;a++){var d=r[a],u=t.height;if("top"!==t.mode&&"bottom"!==t.mode||(u+=d.height),d.range-d.height-r[h].range>=u){o=a;break}s(d,t)&&(h=a)}var m=r[h].range,c={range:m+t.height,time:this.media?t.time:t._utc,width:t.width,height:t.height};return r.splice(h+1,o-h-1,c),"bottom"===t.mode?this._.height-t.height-m%this._.height:m%(this._.height-t.height)}function g(){if(!this._.visible||!this._.paused)return this;if(this._.paused=!1,this.media)for(var t=0;t<this._.runningList.length;t++){var e=this._.runningList[t];e._utc=f()/1e3-(this.media.currentTime-e.time)}var i=this,n=function(t,e,i,n){return function(s){t(this._.stage);var r=(s||f())/1e3,h=this.media?this.media.currentTime:r,o=this.media?this.media.playbackRate:1,a=null,d=0,u=0;for(u=this._.runningList.length-1;u>=0;u--)a=this._.runningList[u],h-(d=this.media?a.time:a._utc)>this._.duration&&(n(this._.stage,a),this._.runningList.splice(u,1));for(var m=[];this._.position<this.comments.length&&(a=this.comments[this._.position],!((d=this.media?a.time:a._utc)>=h));)h-d>this._.duration||(this.media&&(a._utc=r-(this.media.currentTime-a.time)),m.push(a)),++this._.position;for(e(this._.stage,m),u=0;u<m.length;u++)(a=m[u]).y=p.call(this,a),this._.runningList.push(a);for(u=0;u<this._.runningList.length;u++){a=this._.runningList[u];var c=(this._.width+a.width)*(r-a._utc)*o/this._.duration;"ltr"===a.mode&&(a.x=c-a.width),"rtl"===a.mode&&(a.x=this._.width-c),"top"!==a.mode&&"bottom"!==a.mode||(a.x=this._.width-a.width>>1),i(this._.stage,a)}}}(this._.engine.framing.bind(this),this._.engine.setup.bind(this),this._.engine.render.bind(this),this._.engine.remove.bind(this));return this._.requestID=a((function t(e){n.call(i,e),i._.requestID=a(t)})),this}function _(){return!this._.visible||this._.paused||(this._.paused=!0,d(this._.requestID),this._.requestID=0),this}function v(){if(!this.media)return this;this.clear(),l(this._.space);var t=u(this.comments,"time",this.media.currentTime);return this._.position=Math.max(0,t-1),this}function w(t){t.play=g.bind(this),t.pause=_.bind(this),t.seeking=v.bind(this),this.media.addEventListener("play",t.play),this.media.addEventListener("pause",t.pause),this.media.addEventListener("playing",t.play),this.media.addEventListener("waiting",t.pause),this.media.addEventListener("seeking",t.seeking)}function y(t){this.media.removeEventListener("play",t.play),this.media.removeEventListener("pause",t.pause),this.media.removeEventListener("playing",t.play),this.media.removeEventListener("waiting",t.pause),this.media.removeEventListener("seeking",t.seeking),t.play=null,t.pause=null,t.seeking=null}function x(t){this._={},this.container=t.container||document.createElement("div"),this.media=t.media,this._.visible=!0,this.engine=(t.engine||"DOM").toLowerCase(),this._.engine="canvas"===this.engine?o:i,this._.requestID=0,this._.speed=Math.max(0,t.speed)||144,this._.duration=4,this.comments=t.comments||[],this.comments.sort((function(t,e){return t.time-e.time}));for(var e=0;e<this.comments.length;e++)this.comments[e].mode=m(this.comments[e].mode);return this._.runningList=[],this._.position=0,this._.paused=!0,this.media&&(this._.listener={},w.call(this,this._.listener)),this._.stage=this._.engine.init(this.container),this._.stage.style.cssText+="position:relative;pointer-events:none;",this.resize(),this.container.appendChild(this._.stage),this._.space={},l(this._.space),this.media&&this.media.paused||(v.call(this),g.call(this)),this}function b(){if(!this.container)return this;for(var t in _.call(this),this.clear(),this.container.removeChild(this._.stage),this.media&&y.call(this,this._.listener),this)Object.prototype.hasOwnProperty.call(this,t)&&(this[t]=null);return this}var L=["mode","time","text","render","style"];function T(t){if(!t||"[object Object]"!==Object.prototype.toString.call(t))return this;for(var e={},i=0;i<L.length;i++)void 0!==t[L[i]]&&(e[L[i]]=t[L[i]]);if(e.text=(e.text||"").toString(),e.mode=m(e.mode),e._utc=f()/1e3,this.media){var n=0;void 0===e.time?(e.time=this.media.currentTime,n=this._.position):(n=u(this.comments,"time",e.time))<this._.position&&(this._.position+=1),this.comments.splice(n,0,e)}else this.comments.push(e);return this}function E(){return this._.visible?this:(this._.visible=!0,this.media&&this.media.paused||(v.call(this),g.call(this)),this)}function k(){return this._.visible?(_.call(this),this.clear(),this._.visible=!1,this):this}function C(){return this._.engine.clear(this._.stage,this._.runningList),this._.runningList=[],this}function z(){return this._.width=this.container.offsetWidth,this._.height=this.container.offsetHeight,this._.engine.resize(this._.stage,this._.width,this._.height),this._.duration=this._.width/this._.speed,this}var D={get:function(){return this._.speed},set:function(t){return"number"!=typeof t||isNaN(t)||!isFinite(t)||t<=0?this._.speed:(this._.speed=t,this._.width&&(this._.duration=this._.width/t),t)}};function M(t){t&&x.call(this,t)}return M.prototype.destroy=function(){return b.call(this)},M.prototype.emit=function(t){return T.call(this,t)},M.prototype.show=function(){return E.call(this)},M.prototype.hide=function(){return k.call(this)},M.prototype.clear=function(){return C.call(this)},M.prototype.resize=function(){return z.call(this)},Object.defineProperty(M.prototype,"speed",D),M}));
+        !function(t,e){"object"==typeof exports&&"undefined"!=typeof module?module.exports=e():false && "function"==typeof define&&define.amd?define(e):(t="undefined"!=typeof globalThis?globalThis:t||self).Danmaku=e()}(window,(function(){"use strict";var t=function(){if("undefined"==typeof document)return"transform";for(var t=["oTransform","msTransform","mozTransform","webkitTransform","transform"],e=document.createElement("div").style,i=0;i<t.length;i++)if(t[i]in e)return t[i];return"transform"}();function e(t){var e=document.createElement("div");if(e.style.cssText="position:absolute;","function"==typeof t.render){var i=t.render();if(i instanceof HTMLElement)return e.appendChild(i),e}if(e.textContent=t.text,t.style)for(var n in t.style)e.style[n]=t.style[n];return e}var i={name:"dom",init:function(){var t=document.createElement("div");return t.style.cssText="overflow:hidden;white-space:nowrap;transform:translateZ(0);",t},clear:function(t){for(var e=t.lastChild;e;)t.removeChild(e),e=t.lastChild},resize:function(t,e,i){t.style.width=e+"px",t.style.height=i+"px"},framing:function(){},setup:function(t,i){var n=document.createDocumentFragment(),s=0,r=null;for(s=0;s<i.length;s++)(r=i[s]).node=r.node||e(r),n.appendChild(r.node);for(i.length&&t.appendChild(n),s=0;s<i.length;s++)(r=i[s]).width=r.width||r.node.offsetWidth,r.height=r.height||r.node.offsetHeight},render:function(e,i){i.node.style[t]="translate("+i.x+"px,"+i.y+"px)"},remove:function(t,e){t.removeChild(e.node),this.media||(e.node=null)}},n="undefined"!=typeof window&&window.devicePixelRatio||1,s=Object.create(null);function r(t,e){if("function"==typeof t.render){var i=t.render();if(i instanceof HTMLCanvasElement)return t.width=i.width,t.height=i.height,i}var r=document.createElement("canvas"),h=r.getContext("2d"),o=t.style||{};o.font=o.font||"10px sans-serif",o.textBaseline=o.textBaseline||"bottom";var a=1*o.lineWidth;for(var d in a=a>0&&a!==1/0?Math.ceil(a):1*!!o.strokeStyle,h.font=o.font,t.width=t.width||Math.max(1,Math.ceil(h.measureText(t.text).width)+2*a),t.height=t.height||Math.ceil(function(t,e){if(s[t])return s[t];var i=12,n=t.match(/(\d+(?:\.\d+)?)(px|%|em|rem)(?:\s*\/\s*(\d+(?:\.\d+)?)(px|%|em|rem)?)?/);if(n){var r=1*n[1]||10,h=n[2],o=1*n[3]||1.2,a=n[4];"%"===h&&(r*=e.container/100),"em"===h&&(r*=e.container),"rem"===h&&(r*=e.root),"px"===a&&(i=o),"%"===a&&(i=r*o/100),"em"===a&&(i=r*o),"rem"===a&&(i=e.root*o),void 0===a&&(i=r*o)}return s[t]=i,i}(o.font,e))+2*a,r.width=t.width*n,r.height=t.height*n,h.scale(n,n),o)h[d]=o[d];var u=0;switch(o.textBaseline){case"top":case"hanging":u=a;break;case"middle":u=t.height>>1;break;default:u=t.height-a}return o.strokeStyle&&h.strokeText(t.text,a,u),h.fillText(t.text,a,u),r}function h(t){return 1*window.getComputedStyle(t,null).getPropertyValue("font-size").match(/(.+)px/)[1]}var o={name:"canvas",init:function(t){var e=document.createElement("canvas");return e.context=e.getContext("2d"),e._fontSize={root:h(document.getElementsByTagName("html")[0]),container:h(t)},e},clear:function(t,e){t.context.clearRect(0,0,t.width,t.height);for(var i=0;i<e.length;i++)e[i].canvas=null},resize:function(t,e,i){t.width=e*n,t.height=i*n,t.style.width=e+"px",t.style.height=i+"px"},framing:function(t){t.context.clearRect(0,0,t.width,t.height)},setup:function(t,e){for(var i=0;i<e.length;i++){var n=e[i];n.canvas=r(n,t._fontSize)}},render:function(t,e){t.context.drawImage(e.canvas,e.x*n,e.y*n)},remove:function(t,e){e.canvas=null}},a=("undefined"!=typeof window&&(window.requestAnimationFrame||window.mozRequestAnimationFrame||window.webkitRequestAnimationFrame)||function(t){return setTimeout(t,50/3)}).bind(window),d=("undefined"!=typeof window&&(window.cancelAnimationFrame||window.mozCancelAnimationFrame||window.webkitCancelAnimationFrame)||clearTimeout).bind(window);function u(t,e,i){for(var n=0,s=0,r=t.length;s<r-1;)i>=t[n=s+r>>1][e]?s=n:r=n;return t[s]&&i<t[s][e]?s:r}function m(t){return/^(ltr|top|bottom)$/i.test(t)?t.toLowerCase():"rtl"}function c(){var t=9007199254740991;return[{range:0,time:-t,width:t,height:0},{range:t,time:t,width:0,height:0}]}function l(t){t.ltr=c(),t.rtl=c(),t.top=c(),t.bottom=c()}function f(){return void 0!==window.performance&&window.performance.now?window.performance.now():Date.now()}function p(t){var e=this,i=this.media?this.media.currentTime:f()/1e3,n=this.media?this.media.playbackRate:1;function s(t,s){if("top"===s.mode||"bottom"===s.mode)return i-t.time<e._.duration;var r=(e._.width+t.width)*(i-t.time)*n/e._.duration;if(t.width>r)return!0;var h=e._.duration+t.time-i,o=e._.width+s.width,a=e.media?s.time:s._utc,d=o*(i-a)*n/e._.duration,u=e._.width-d;return h>e._.duration*u/(e._.width+s.width)}for(var r=this._.space[t.mode],h=0,o=0,a=1;a<r.length;a++){var d=r[a],u=t.height;if("top"!==t.mode&&"bottom"!==t.mode||(u+=d.height),d.range-d.height-r[h].range>=u){o=a;break}s(d,t)&&(h=a)}var m=r[h].range,c={range:m+t.height,time:this.media?t.time:t._utc,width:t.width,height:t.height};return r.splice(h+1,o-h-1,c),"bottom"===t.mode?this._.height-t.height-m%this._.height:m%(this._.height-t.height)}function g(){if(!this._.visible||!this._.paused)return this;if(this._.paused=!1,this.media)for(var t=0;t<this._.runningList.length;t++){var e=this._.runningList[t];e._utc=f()/1e3-(this.media.currentTime-e.time)}var i=this,n=function(t,e,i,n){return function(s){t(this._.stage);var r=(s||f())/1e3,h=this.media?this.media.currentTime:r,o=this.media?this.media.playbackRate:1,a=null,d=0,u=0;for(u=this._.runningList.length-1;u>=0;u--)a=this._.runningList[u],h-(d=this.media?a.time:a._utc)>this._.duration&&(n(this._.stage,a),this._.runningList.splice(u,1));for(var m=[];this._.position<this.comments.length&&(a=this.comments[this._.position],!((d=this.media?a.time:a._utc)>=h));)h-d>this._.duration||(this.media&&(a._utc=r-(this.media.currentTime-a.time)),m.push(a)),++this._.position;for(e(this._.stage,m),u=0;u<m.length;u++)(a=m[u]).y=p.call(this,a),this._.runningList.push(a);for(u=0;u<this._.runningList.length;u++){a=this._.runningList[u];var c=(this._.width+a.width)*(r-a._utc)*o/this._.duration;"ltr"===a.mode&&(a.x=c-a.width),"rtl"===a.mode&&(a.x=this._.width-c),"top"!==a.mode&&"bottom"!==a.mode||(a.x=this._.width-a.width>>1),i(this._.stage,a)}}}(this._.engine.framing.bind(this),this._.engine.setup.bind(this),this._.engine.render.bind(this),this._.engine.remove.bind(this));return this._.requestID=a((function t(e){n.call(i,e),i._.requestID=a(t)})),this}function _(){return!this._.visible||this._.paused||(this._.paused=!0,d(this._.requestID),this._.requestID=0),this}function v(){if(!this.media)return this;this.clear(),l(this._.space);var t=u(this.comments,"time",this.media.currentTime);return this._.position=Math.max(0,t-1),this}function w(t){t.play=g.bind(this),t.pause=_.bind(this),t.seeking=v.bind(this),this.media.addEventListener("play",t.play),this.media.addEventListener("pause",t.pause),this.media.addEventListener("playing",t.play),this.media.addEventListener("waiting",t.pause),this.media.addEventListener("seeking",t.seeking)}function y(t){this.media.removeEventListener("play",t.play),this.media.removeEventListener("pause",t.pause),this.media.removeEventListener("playing",t.play),this.media.removeEventListener("waiting",t.pause),this.media.removeEventListener("seeking",t.seeking),t.play=null,t.pause=null,t.seeking=null}function x(t){this._={},this.container=t.container||document.createElement("div"),this.media=t.media,this._.visible=!0,this.engine=(t.engine||"DOM").toLowerCase(),this._.engine="canvas"===this.engine?o:i,this._.requestID=0,this._.speed=Math.max(0,t.speed)||144,this._.duration=4,this.comments=t.comments||[],this.comments.sort((function(t,e){return t.time-e.time}));for(var e=0;e<this.comments.length;e++)this.comments[e].mode=m(this.comments[e].mode);return this._.runningList=[],this._.position=0,this._.paused=!0,this.media&&(this._.listener={},w.call(this,this._.listener)),this._.stage=this._.engine.init(this.container),this._.stage.style.cssText+="position:relative;pointer-events:none;",this.resize(),this.container.appendChild(this._.stage),this._.space={},l(this._.space),this.media&&this.media.paused||(v.call(this),g.call(this)),this}function b(){if(!this.container)return this;for(var t in _.call(this),this.clear(),this.container.removeChild(this._.stage),this.media&&y.call(this,this._.listener),this)Object.prototype.hasOwnProperty.call(this,t)&&(this[t]=null);return this}var L=["mode","time","text","render","style"];function T(t){if(!t||"[object Object]"!==Object.prototype.toString.call(t))return this;for(var e={},i=0;i<L.length;i++)void 0!==t[L[i]]&&(e[L[i]]=t[L[i]]);if(e.text=(e.text||"").toString(),e.mode=m(e.mode),e._utc=f()/1e3,this.media){var n=0;void 0===e.time?(e.time=this.media.currentTime,n=this._.position):(n=u(this.comments,"time",e.time))<this._.position&&(this._.position+=1),this.comments.splice(n,0,e)}else this.comments.push(e);return this}function E(){return this._.visible?this:(this._.visible=!0,this.media&&this.media.paused||(v.call(this),g.call(this)),this)}function k(){return this._.visible?(_.call(this),this.clear(),this._.visible=!1,this):this}function C(){return this._.engine.clear(this._.stage,this._.runningList),this._.runningList=[],this}function z(){return this._.width=this.container.offsetWidth,this._.height=this.container.offsetHeight,this._.engine.resize(this._.stage,this._.width,this._.height),this._.duration=this._.width/this._.speed,this}var D={get:function(){return this._.speed},set:function(t){return"number"!=typeof t||isNaN(t)||!isFinite(t)||t<=0?this._.speed:(this._.speed=t,this._.width&&(this._.duration=this._.width/t),t)}};function M(t){t&&x.call(this,t)}return M.prototype.destroy=function(){return b.call(this)},M.prototype.emit=function(t){return T.call(this,t)},M.prototype.show=function(){return E.call(this)},M.prototype.hide=function(){return k.call(this)},M.prototype.clear=function(){return C.call(this)},M.prototype.resize=function(){return z.call(this)},Object.defineProperty(M.prototype,"speed",D),M}));
         /* eslint-enable */
-    } else {
-        window.Danmaku || Emby.importModule(requireDanmakuPath).then(f => {
-            console.log(f);
-            window.Danmaku = f;
-        }).catch(error => {
-            console.error(`fail Emby.importModule error:`, error);
-        });
+     } else {
+        // 网络加载 + 动态修复 AMD
+        // 必须使用 fetch 下载 -> 修改 -> Blob 执行，才能拦截 define 调用
+        console.log('正在下载网络弹幕库并应用 UWP 修复补丁:', requireDanmakuPath);
+        
+        fetch(requireDanmakuPath)
+            .then(response => {
+                if (!response.ok) throw new Error("网络请求失败: " + response.status);
+                return response.text();
+            })
+            .then(rawScript => {
+                // 把 AMD 检测代码短路掉
+                // 将 "function"==typeof define 替换为 false&&"function"==typeof define
+                const patchedScript = rawScript.replace(
+                    /"function"==typeof define&&define\.amd/g, 
+                    'false&&"function"==typeof define&&define.amd'
+                );
+
+                // 创建 Blob 对象，欺骗浏览器这是一个本地 JS 文件
+                const blob = new Blob([patchedScript], { type: 'text/javascript' });
+                const url = URL.createObjectURL(blob);
+                
+                const script = document.createElement('script');
+                script.src = url;
+                script.onload = () => {
+                    console.log('网络弹幕库加载成功');
+                    URL.revokeObjectURL(url); // 用完释放内存
+                };
+                script.onerror = (e) => {
+                    console.error('Blob 脚本执行失败', e);
+                    // 最后的保底：如果 Blob 失败，尝试回退到普通加载
+                    Emby.importModule(requireDanmakuPath).then(f => window.Danmaku = f);
+                };
+                document.head.appendChild(script);
+            })
+            .catch(error => {
+                console.error('Fetch 拦截失败,回退到默认加载:', error);
+                Emby.importModule(requireDanmakuPath).then(f => window.Danmaku = f);
+            });
     }
+
     // ------ require end ------
     // ================== Worker 核心定义开始 ==================
     // 1. 通用 Worker 创建器
@@ -2555,15 +2588,40 @@
         if (window.ede.ob) {
             window.ede.ob.disconnect();
         }
-        window.ede.ob = new ResizeObserver(() => {
-            if (window.ede.danmaku) {
-                console.log('检测到播放器尺寸变化 (Resizing)，正在重置弹幕画布...');
-                window.ede.danmaku.resize();
-                if (lsGetItem(lsKeys.osdLineChartEnable.id)) {
-                    buildProgressBarChart(20);
+
+        // 增加尺寸比对
+        // 1. 记录上一次的宽高
+        let lastWidth = _container.offsetWidth;
+        let lastHeight = _container.offsetHeight;
+        let resizeTimer;
+
+        window.ede.ob = new ResizeObserver((entries) => {
+            // ResizeObserver 可能会在初始化时立即触发一次，或者在微小布局调整时触发
+            // 通过 entries 获取精确的尺寸
+            for (let entry of entries) {
+                const { width, height } = entry.contentRect;
+
+                // 判断尺寸变化幅度
+                // 只有当 宽 或 高 的变化超过 20px 时，才执行重载逻辑
+                if (Math.abs(width - lastWidth) < 20 && Math.abs(height - lastHeight) < 20) {
+                    return; // 变化太小，认为是抖动，忽略
                 }
+
+                // 只有真的发生了大变化，才更新记录并启动计时器
+                lastWidth = width;
+                lastHeight = height;
+                if (resizeTimer) clearTimeout(resizeTimer);
+                
+                resizeTimer = setTimeout(() => {
+                    // 再次检查弹幕对象是否存在，防止报错
+                    if (window.ede.danmaku) {
+                        console.log(`[Resize] 尺寸变化 (${width|0}x${height|0})，重载弹幕轨道...`);
+                        loadDanmaku(LOAD_TYPE.RELOAD); 
+                    }
+                }, 500);
             }
         });
+
         window.ede.ob.observe(_container);
         // 自定义的 initH5VideoAdapter 下,解决暂停时暂停的弹幕再次加载会自动恢复问题
         if (_media.id) {
@@ -2617,24 +2675,60 @@
                 timeCounts[index]++;
             }
         });
+        // [修改] 内部绘制函数：改为平滑波浪线
         function drawLineChart(data) {
             ctx.clearRect(0, 0, progressBarWidth, chartHeightNum);
             const maxY = Math.max(...data);
+            if (maxY <= 0) return; // 防止除以0
+
             const scale = chartHeightNum / maxY; // 用于拉长 y 轴间距
+            
+            // 1. 预计算坐标点，方便后续计算控制点
+            const points = data.map((val, i) => ({
+                x: (i / (data.length - 1)) * progressBarWidth,
+                y: chartHeightNum - val * scale
+            }));
+
+            // 2. 开始绘制路径
             ctx.beginPath();
-            ctx.moveTo(0, chartHeightNum - data[0] * scale);
-            for (let i = 1; i < data.length; i++) {
-                const x = (i / (data.length - 1)) * progressBarWidth;
-                const y = chartHeightNum - data[i] * scale;
-                ctx.lineTo(x, y);
+            ctx.moveTo(0, chartHeightNum); // 起点：左下角
+            ctx.lineTo(points[0].x, points[0].y); // 连接到第一个数据点
+
+            // 3. 使用贝塞尔曲线连接数据点 (张力系数 tension)
+            const tension = 0.4; // 0.3~0.5 比较圆滑，0 为折线
+            
+            for (let i = 0; i < points.length - 1; i++) {
+                const p0 = points[Math.max(0, i - 1)];
+                const p1 = points[i];
+                const p2 = points[i + 1];
+                const p3 = points[Math.min(points.length - 1, i + 2)];
+
+                // 计算控制点
+                const cp1x = p1.x + (p2.x - p0.x) * tension;
+                const cp1y = p1.y + (p2.y - p0.y) * tension;
+                const cp2x = p2.x - (p3.x - p1.x) * tension;
+                const cp2y = p2.y - (p3.y - p1.y) * tension;
+
+                ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
             }
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)'; // 与次标题同色
-            ctx.lineWidth = 2;
+
+            // 4. 闭合路径 (右下角 -> 左下角)
+            ctx.lineTo(progressBarWidth, chartHeightNum);
+            ctx.closePath();
+
+            // 5. 填充颜色 
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.2)'; // 内部填充淡淡的白色
+            ctx.fill();
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)'; // 边缘描边
+            ctx.lineWidth = 1.5;
             ctx.stroke();
         }
+        
         drawLineChart(timeCounts);
         console.log('已重绘进度条弹幕数量折线图');
     }
+
 
     // [新增] 强制清理 UI 函数
     function clearDanmakuUI() {
@@ -2674,28 +2768,43 @@
         // [新增] 先获取媒体库信息并检查排除
         console.log('[dd-danmaku] 开始检查媒体库排除...');
         const item = await getEmbyItemInfo();
+        
         console.log('[dd-danmaku] getEmbyItemInfo 返回:', item ? item.Name : 'null');
         if (item) {
             const libraryInfo = await getItemLibraryInfo(item);
             console.log('[dd-danmaku] getItemLibraryInfo 返回:', libraryInfo);
             if (libraryInfo) {
                 window.ede.currentLibraryInfo = libraryInfo;
-                if (isLibraryExcluded(libraryInfo)) {
+                
+                // 直接获取排除列表进行判断 (实装逻辑)
+                const excludedList = lsGetItem(lsKeys.excludedLibraries.id) || [];
+                if (excludedList.includes(libraryInfo.libraryName)) {
                     console.log(`[dd-danmaku] 媒体库 "${libraryInfo.libraryName}" 在排除列表中，跳过弹幕搜索和加载`);
-                    return;
+                    
+                    // 更新 UI 显示“已禁用”
+                    appendvideoOsdDanmakuInfo(0);
+                    
+                    // 即使跳过，也要初始化 ID 并清空可能存在的旧弹幕
+                    const skipSessionId = Date.now().toString();
+                    window.ede.lastLoadId = skipSessionId;
+                    createDanmaku([], skipSessionId);
+                    
+                    return; // 停止后续加载
                 }
             }
         }
 
         // [关键修复] 2. 在加载的最开始就生成新的任务 ID (Session ID)
         // 这样 B 剧集一开始加载，A 的 ID (上一个时间戳) 就已经失效了
-        const currentSessionId = Date.now();
+        const currentSessionId = Date.now().toString(); 
         if (window.ede) {
             window.ede.lastLoadId = currentSessionId;
 
             // =========== [修改开始] ===========
             // 在这里调用清理函数，确保发起请求前，上一集的 UI 已经被清除
-            clearDanmakuUI();
+            if (typeof clearDanmakuUI === 'function') {
+                clearDanmakuUI();
+            }
             console.log('开始加载新弹幕，已清除上一集 UI');
             // =========== [修改结束] ===========
         }
@@ -2705,9 +2814,9 @@
 
         if (lsGetItem(lsKeys.useFetchPluginXml.id)) {
             // if (lsGetItem(lsKeys.refreshPluginXml.id)) {
-            //     refreshPluginXml(window.ede.itemId).catch((error) => {
-            //         console.error(error);
-            //     });
+            //      refreshPluginXml(window.ede.itemId).catch((error) => {
+            //          console.error(error);
+            //      });
             // }
             getMapByEmbyItemInfo().then((itemInfoMap) => {
                 // 检查是否获取到信息
@@ -2874,6 +2983,30 @@
         _comments = danmakuAntiOverlapFilter(_comments);
         return _comments;
     }
+   /**
+     * [新增] 获取统一的弹幕字体大小 (公共方法)
+     * 逻辑提取自原 danmakuParser，供 parser 和 antiOverlapFilter 复用
+     */
+    function getDanmakuFontSize() {
+        const fontSizeRate = lsGetItem(lsKeys.fontSizeRate.id) / 100;
+        let fontSize = 25;
+        // 播放页媒体次级标题 h3 元素
+        const fontSizeReferent = getByClass(classes.videoOsdTitle);
+        if (fontSizeReferent) {
+            const computed = getComputedStyle(fontSizeReferent).fontSize;
+            if (computed) {
+                fontSize = parseFloat(computed.replace('px', '')) * fontSizeRate;
+            }
+        } else {
+            fontSize = Math.round(
+                (window.screen.height > window.screen.width
+                    ? window.screen.width
+                    : window.screen.height / 1080) * 18 * fontSizeRate
+            );
+        }
+        return fontSize;
+    }
+
 
     /**
      * 防重叠过滤器
@@ -2887,94 +3020,143 @@
      * 5. 无法分配轨道的弹幕被过滤掉
      */
     function danmakuAntiOverlapFilter(comments) {
-        if (!lsGetItem(lsKeys.antiOverlap.id)) {
-            return comments;
+
+    if (!lsGetItem(lsKeys.antiOverlap.id)) {
+        return comments;
+    }
+
+    const beforeCount = comments.length;
+    if (beforeCount === 0) return comments;
+
+    // 获取配置参数
+    const heightPercent = lsGetItem(lsKeys.heightPercent.id);
+    const speedRate = lsGetItem(lsKeys.speed.id) / 100;
+
+    // 获取容器尺寸
+    const container = document.querySelector(mediaContainerQueryStr);
+    const containerHeight = container ? container.offsetHeight : (window.innerHeight || 720);
+    const containerWidth = container ? container.offsetWidth : (window.innerWidth || 1280);
+
+    // 使用公共函数获取字体大小
+    const fontSize = getDanmakuFontSize();
+
+    // 为滚动弹幕和固定弹幕使用不同的高度计算
+    
+    // 滚动弹幕高度
+    const verticalPadding = 2;
+    const scrollDanmakuHeight = (fontSize * 1.3) + verticalPadding;
+    
+    // 固定弹幕高度（顶部/底部需要更大的间距）
+    const fixedLineHeight = 1.4;  // 固定弹幕的行高系数
+    const fixedVerticalGap = Math.max(10, fontSize * 0.4);  // 固定弹幕的额外间距
+    const fixedDanmakuHeight = (fontSize * fixedLineHeight) + fixedVerticalGap;
+
+    // 计算实际可用高度和轨道数
+    const availableHeight = containerHeight * (heightPercent / 100);
+    
+    // 为滚动弹幕和固定弹幕分别计算轨道数
+    const scrollMaxTracks = Math.max(1, Math.floor(availableHeight / scrollDanmakuHeight));
+    const fixedMaxTracks = Math.max(1, Math.floor(availableHeight / fixedDanmakuHeight));
+    
+    // 顶部和底部弹幕轨道各占一部分
+    const topMaxTracks = Math.max(1, Math.floor(fixedMaxTracks / 3));
+    const bottomMaxTracks = Math.max(1, Math.floor(fixedMaxTracks / 4));
+
+    // 速度计算
+    const baseSpeed = 144;
+    const speed = baseSpeed * speedRate;
+    const duration = containerWidth / speed;
+    const screenDuration = duration;
+
+    // 估算文字宽度
+    const estimateWidth = (text) => {
+        let width = 0;
+        for (let i = 0; i < text.length; i++) {
+            width += (text.charCodeAt(i) > 127 ? 1 : 0.6);
         }
+        return (width * fontSize) + 35;
+    };
 
-        const beforeCount = comments.length;
-        if (beforeCount === 0) return comments;
+    const tracks = {
+        rtl: new Array(scrollMaxTracks).fill(null),
+        ltr: new Array(scrollMaxTracks).fill(null),
+        top: new Array(topMaxTracks).fill(null),
+        bottom: new Array(bottomMaxTracks).fill(null),
+    };
 
-        // 获取配置参数
-        const heightPercent = lsGetItem(lsKeys.heightPercent.id);
-        const fontSizeRate = lsGetItem(lsKeys.fontSizeRate.id);
-        const speedRate = lsGetItem(lsKeys.speed.id);
+    // 按时间排序
+    const sortedComments = [...comments].sort((a, b) => a.time - b.time);
 
-        // 计算弹幕高度（基础字体 25px * 缩放比例 * 行高系数 + 描边）
-        const baseFontSize = 25;
-        const fontSize = baseFontSize * (fontSizeRate / 100);
-        const lineHeight = 1.2;
-        const strokeWidth = 4;
-        const danmakuHeight = fontSize * lineHeight + strokeWidth;
+    const filteredComments = sortedComments.filter(curr => {
+        const mode = curr.mode || 'rtl';
+        const trackType = (mode === 'ltr') ? 'rtl' : mode;
+        const trackList = tracks[trackType] || tracks['rtl']; 
 
-        // 获取容器尺寸
-        const container = document.querySelector(mediaContainerQueryStr);
-        const containerHeight = container ? container.offsetHeight : 720;
-        const containerWidth = container ? container.offsetWidth : 1280;
+        if (!trackList || trackList.length === 0) return true;
 
-        // 计算实际可用高度和轨道数
-        const availableHeight = containerHeight * (heightPercent / 100);
-        const maxTracks = Math.max(1, Math.floor(availableHeight / danmakuHeight));
+        const currWidth = estimateWidth(curr.text);
+        const currTime = curr.time;
 
-        // 速度计算（像素/秒）- Danmaku 库基础速度是 144
-        const baseSpeed = 144;
-        const speed = baseSpeed * (speedRate / 100);
-
-        // 弹幕飞行时间（整个屏幕宽度）
-        const duration = containerWidth / speed;
-
-        // 估算平均弹幕宽度（用于计算轨道占用时间）
-        // 假设平均弹幕长度约 10 个字符，每个字符宽度约等于字体大小
-        const avgDanmakuWidth = fontSize * 10;
-        // 弹幕完全进入屏幕的时间（这是轨道的最小占用时间）
-        const minOccupyTime = avgDanmakuWidth / speed;
-
-        // 为不同弹幕类型维护独立的轨道释放时间表
-        const tracks = {
-            rtl: new Array(maxTracks).fill(-Infinity),
-            ltr: new Array(maxTracks).fill(-Infinity),
-            top: new Array(maxTracks).fill(-Infinity),
-            bottom: new Array(maxTracks).fill(-Infinity),
-        };
-
-        // 按时间排序（确保按顺序分配轨道）
-        const sortedComments = [...comments].sort((a, b) => a.time - b.time);
-
-        const filteredComments = sortedComments.filter(c => {
-            const mode = c.mode || 'rtl';
-            const trackList = tracks[mode];
-            if (!trackList) return true; // 未知模式，保留
-
-            const time = c.time;
-
-            // 计算轨道占用时间
-            let occupyDuration;
-            if (mode === 'top' || mode === 'bottom') {
-                // 顶部/底部弹幕：占用整个显示时间
-                occupyDuration = duration;
-            } else {
-                // 滚动弹幕：只需要等弹幕完全进入屏幕即可
-                // 加一点缓冲时间（0.5秒）避免弹幕太紧凑
-                occupyDuration = minOccupyTime + 0.5;
-            }
-
-            // 尝试找一个空闲轨道
+        // 顶部/底部弹幕处理
+        if (mode === 'top' || mode === 'bottom') {
+            // 固定弹幕的显示时长
+            const displayDuration = 5;
+            const occupyTime = displayDuration;
+            
             for (let i = 0; i < trackList.length; i++) {
-                if (trackList[i] <= time) {
-                    trackList[i] = time + occupyDuration;
-                    return true; // 找到空闲轨道，保留弹幕
+                const last = trackList[i];
+                
+                if (!last || currTime >= last.time + occupyTime) {
+                    trackList[i] = { time: currTime, width: 0 };
+                    return true;
                 }
             }
-            return false; // 没有空闲轨道，丢弃弹幕
-        });
-
-        const afterCount = filteredComments.length;
-        const filteredCount = beforeCount - afterCount;
-        if (filteredCount > 0) {
-            console.log(`[防重叠] 容器: ${containerWidth}x${containerHeight}, 可用高度: ${availableHeight.toFixed(0)}px, 弹幕高度: ${danmakuHeight.toFixed(1)}px, 可用轨道: ${maxTracks}, 过滤前: ${beforeCount}, 过滤后: ${afterCount}, 丢弃: ${filteredCount}`);
+            
+            return false;
         }
 
-        return filteredComments;
+        // 滚动弹幕碰撞检测
+        const buffer = 0.5;
+
+        for (let i = 0; i < trackList.length; i++) {
+            const last = trackList[i];
+            
+            if (!last) {
+                trackList[i] = { time: currTime, width: currWidth };
+                return true;
+            }
+
+            // 进场追尾检测
+            const timeToFullyEnter = screenDuration * (last.width / (containerWidth + last.width));
+            const safeTimeEnter = last.time + timeToFullyEnter + buffer;
+
+            // 离场追尾检测
+            const timeToCatchUp = screenDuration * (currWidth / (containerWidth + currWidth));
+            const safeTimeExit = last.time + timeToCatchUp + buffer;
+
+            const safeTime = Math.max(safeTimeEnter, safeTimeExit);
+
+            if (currTime >= safeTime) {
+                trackList[i] = { time: currTime, width: currWidth };
+                return true;
+            }
+        }
+        return false;
+    });
+
+    const afterCount = filteredComments.length;
+    const filteredCount = beforeCount - afterCount;
+    if (filteredCount > 0) {
+        console.log(`[防重叠] 容器: ${containerWidth}x${containerHeight}, 字体: ${fontSize}px`);
+        console.log(`  - 滚动弹幕高度: ${scrollDanmakuHeight.toFixed(1)}px, 轨道数: ${scrollMaxTracks}`);
+        console.log(`  - 固定弹幕高度: ${fixedDanmakuHeight.toFixed(1)}px (行高: ${fixedLineHeight}, 间距: ${fixedVerticalGap.toFixed(1)}px)`);
+        console.log(`  - 顶部轨道: ${topMaxTracks}, 底部轨道: ${bottomMaxTracks}`);
+        console.log(`  - 过滤: ${beforeCount} -> ${afterCount} (丢弃 ${filteredCount})`);
     }
+
+    return filteredComments;
+}
+
 
     function danmakuAutoFilter(comments) {
         const autoFilterCount = lsGetItem(lsKeys.autoFilterCount.id);
@@ -3233,20 +3415,7 @@
     }
  
     function danmakuParser($obj) {
-        //const fontSize = Number(values[2]) || 25
-        const fontSizeRate = lsGetItem(lsKeys.fontSizeRate.id) / 100;
-        let fontSize = 25;
-        // 播放页媒体次级标题 h3 元素
-        const fontSizeReferent = getByClass(classes.videoOsdTitle);
-        if (fontSizeReferent) {
-            fontSize = parseFloat(getComputedStyle(fontSizeReferent).fontSize.replace('px', '')) * fontSizeRate;
-        } else {
-            fontSize = Math.round(
-                (window.screen.height > window.screen.width
-                    ? window.screen.width
-                    : window.screen.height / 1080) * 18 * fontSizeRate
-            );
-        }
+        const fontSize = getDanmakuFontSize();
         const fontWeight = lsGetItem(lsKeys.fontWeight.id);
         const fontStyleIdx = lsGetItem(lsKeys.fontStyle.id);
         const fontStyleObj = styles.fontStyles[fontStyleIdx] || styles.fontStyles[0];
@@ -4688,8 +4857,7 @@
     function buildExcludedLibrariesSetting(container) {
         const excludedDiv = getById(eleIds.excludedLibrariesDiv, container);
         if (!excludedDiv) return;
-
-        // 初始模板 - 显示加载中
+         // 初始模板 - 显示加载中
         excludedDiv.innerHTML = `
             <div class="${classes.embyFieldDesc}" style="margin-bottom: 0.5em;">
                 勾选不需要加载弹幕的媒体库：
@@ -4709,9 +4877,7 @@
                 return;
             }
 
-            // 获取当前排除列表
             const excludedList = lsGetItem(lsKeys.excludedLibraries.id) || [];
-
             // 构建复选框列表
             let checkboxHtml = '';
             libraries.forEach(lib => {
@@ -4746,6 +4912,28 @@
                     });
                     lsSetItem(lsKeys.excludedLibraries.id, newExcludedList);
                     console.log('[dd-danmaku] 已更新排除媒体库列表:', newExcludedList);
+
+                    // 检查当前播放的视频是否受影响
+                    if (window.ede && window.ede.currentLibraryInfo) {
+                        const currentLibName = window.ede.currentLibraryInfo.libraryName;
+                        const isNowExcluded = newExcludedList.includes(currentLibName);
+
+                        // 如果当前播放的媒体库刚被排除 -> 清空弹幕
+                        if (isNowExcluded) {
+                            if (window.ede.danmaku) {
+                                console.log(`[设置] 媒体库 "${currentLibName}" 被排除，关闭弹幕`);
+                                // 传入空数组，清空弹幕
+                                createDanmaku([]); 
+                                // 可选：给个提示
+                                // embyToast({ text: '当前媒体库弹幕已关闭' });
+                            }
+                        } 
+                        // 如果当前播放的媒体库刚被允许 -> 重新加载
+                        else {
+                            console.log(`[设置] 媒体库 "${currentLibName}" 已允许，重新加载`);
+                            loadDanmaku(LOAD_TYPE.RELOAD);
+                        }
+                    }
                 });
             });
         });
@@ -5079,23 +5267,41 @@
         if (!lsGetItem(lsKeys.osdTitleEnable.id)) {
             return;
         }
+        
         const episode_info = window.ede.episode_info || {};
         const { episodeId, animeTitle, episodeTitle } = episode_info;
+        
         const videoOsdContainer = document.querySelector(`${mediaContainerQueryStr} .videoOsdSecondaryText`);
         let videoOsdDanmakuTitle = getById(eleIds.videoOsdDanmakuTitle, videoOsdContainer);
+        
         if (!videoOsdDanmakuTitle) {
             videoOsdDanmakuTitle = document.createElement('h3');
             videoOsdDanmakuTitle.id = eleIds.videoOsdDanmakuTitle;
             videoOsdDanmakuTitle.classList.add(classes.videoOsdTitle);
             videoOsdDanmakuTitle.style = 'margin-left: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; position: absolute; right: 0px; bottom: 0px;';
         }
+
+        //  检查排除状态 
+        const currentLibName = window.ede && window.ede.currentLibraryInfo ? window.ede.currentLibraryInfo.libraryName : null;
+        // 获取当前排除列表
+        const excludedList = lsGetItem(lsKeys.excludedLibraries.id) || [];
+        const isExcluded = currentLibName && excludedList.includes(currentLibName);
+
         let text = '弹幕：';
-        if (episodeId) {
-            text += `${animeTitle} - ${episodeTitle} - ${loadSum}条`;
+
+        if (isExcluded) {
+            // 情况1：已被排除
+            text += '已禁用';
         } else {
-            text += `未匹配`;
+            // 情况2：正常加载
+            if (episodeId) {
+                text += `${animeTitle} - ${episodeTitle} - ${loadSum}条`;
+            } else {
+                text += `未匹配`;
+            }
         }
         videoOsdDanmakuTitle.innerText = text;
+        
         if (videoOsdContainer) {
             videoOsdContainer.append(videoOsdDanmakuTitle);
         }
