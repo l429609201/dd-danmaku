@@ -1211,6 +1211,62 @@ function getAccessConfig() {
 }
 
 
+// ========================================
+// 🔧 工具文件请求处理
+// ========================================
+
+/**
+ * 处理 /tools/* 路径的静态文件请求
+ * 使用 Wrangler Assets 功能提供工具 JS 文件
+ */
+function handleToolsRequest(request, env, urlObj) {
+    // 只允许 GET 请求
+    if (request.method !== 'GET') {
+        return new Response('Method Not Allowed', {
+            status: 405,
+            headers: { 'Access-Control-Allow-Origin': '*' }
+        });
+    }
+
+    // 如果配置了 Assets binding，使用 Assets 服务
+    if (env.ASSETS) {
+        // 构建新的请求，将 /tools/xxx.js 映射到 /xxx.js
+        const assetPath = urlObj.pathname.replace('/tools/', '/');
+        const assetUrl = new URL(assetPath, request.url);
+        const assetRequest = new Request(assetUrl.toString(), request);
+
+        return env.ASSETS.fetch(assetRequest).then(response => {
+            // 添加 CORS 和缓存头
+            const newHeaders = new Headers(response.headers);
+            newHeaders.set('Access-Control-Allow-Origin', '*');
+            newHeaders.set('Cache-Control', 'public, max-age=86400'); // 缓存1天
+
+            return new Response(response.body, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: newHeaders
+            });
+        }).catch(() => {
+            return new Response('Tool not found', {
+                status: 404,
+                headers: { 'Access-Control-Allow-Origin': '*' }
+            });
+        });
+    }
+
+    // 如果没有配置 Assets，返回提示信息
+    return new Response(JSON.stringify({
+        error: 'Assets not configured',
+        message: '工具文件服务未配置，请检查 wrangler.toml 中的 [assets] 配置'
+    }), {
+        status: 503,
+        headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        }
+    });
+}
+
 
 export default {
   async fetch(request, env, ctx) {
@@ -1250,6 +1306,13 @@ async function handleRequest(request, env, ctx) {
 
     const urlObj = new URL(request.url);
     const ACCESS_CONFIG = getAccessConfig();
+
+    // ========================================
+    // 🔧 工具文件请求处理 (/tools/*)
+    // ========================================
+    if (urlObj.pathname.startsWith('/tools/')) {
+        return handleToolsRequest(request, env, urlObj);
+    }
 
     // 数据中心API端点处理（只处理Worker API路径）
     if (urlObj.pathname.startsWith('/worker-api/')) {

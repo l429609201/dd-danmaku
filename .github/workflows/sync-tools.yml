@@ -1,0 +1,69 @@
+name: Sync Tools Files
+
+on:
+  schedule:
+    # 每周一 UTC 00:00 运行 (北京时间周一早上8点)
+    - cron: '0 0 * * 1'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  sync-danmaku-engine:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Download latest danmaku.min.js
+      run: |
+        mkdir -p tools
+        curl -L -o tools/danmaku.min.js \
+          "https://raw.githubusercontent.com/weizhenye/Danmaku/master/dist/danmaku.min.js"
+        
+        # 获取上游版本信息
+        UPSTREAM_VERSION=$(curl -s "https://api.github.com/repos/weizhenye/Danmaku/commits/master" | jq -r '.sha[:7]')
+        echo "UPSTREAM_VERSION=$UPSTREAM_VERSION" >> $GITHUB_ENV
+        echo "上游版本: $UPSTREAM_VERSION"
+
+    - name: Check for changes
+      id: check_changes
+      run: |
+        if git diff --quiet tools/danmaku.min.js 2>/dev/null; then
+          echo "changed=false" >> $GITHUB_OUTPUT
+          echo "弹幕引擎无更新"
+        else
+          echo "changed=true" >> $GITHUB_OUTPUT
+          echo "检测到弹幕引擎更新"
+        fi
+
+    - name: Create Pull Request
+      if: steps.check_changes.outputs.changed == 'true'
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: "chore(tools): 同步弹幕引擎 danmaku.min.js (${{ env.UPSTREAM_VERSION }})"
+        title: "🔄 同步弹幕引擎更新 (${{ env.UPSTREAM_VERSION }})"
+        body: |
+          ## 自动同步更新
+          
+          此 PR 由 GitHub Actions 自动创建，同步上游弹幕引擎更新。
+          
+          **上游仓库**: [weizhenye/Danmaku](https://github.com/weizhenye/Danmaku)
+          **上游版本**: `${{ env.UPSTREAM_VERSION }}`
+          
+          ### 变更内容
+          - 更新 `tools/danmaku.min.js` 到最新版本
+          
+          ---
+          *请检查更新内容后合并此 PR*
+        branch: auto-sync/danmaku-engine
+        delete-branch: true
+        labels: |
+          dependencies
+          automated
+
