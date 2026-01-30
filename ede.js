@@ -22,6 +22,8 @@
     let corsProxy = 'https://danmu-api.misaka10876.top/cors/';
     // 用户代理标识
     let userAgent = 'misaka10876/v1.0.0';
+    // 日志级别: 0=关闭, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG (默认 INFO)
+    let logLevel = 3;
     // ------ 用户配置 end ------
     // note01: 部分 AndroidTV 仅支持最高 ES9 (支持 webview 内核版本 60 以上)
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
@@ -167,6 +169,12 @@
         { id: '1', name: '转换为简体' },
         { id: '2', name: '转换为繁体' },
     ];
+    // 日志级别选项
+    const logLevelOpts = [
+        { id: '2', name: 'WARN' },
+        { id: '3', name: 'INFO' },
+        { id: '4', name: 'DEBUG' },
+    ];
     const embyOffsetBtnStyle = 'margin: 0;padding: 0;';
     const timeOffsetBtns = [
         { label: '-30', valueOffset: '-30', iconKey: iconKeys.replay_30,  style: embyOffsetBtnStyle },
@@ -270,6 +278,7 @@
         bangumiToken: { id: 'danmakuBangumiToken', defaultValue: '', name: '个人令牌' },
         bangumiPostPercent: { id: 'danmakuBangumiPostPercent', defaultValue: 95, name: '时长比', min: 1, max: 99, step: 1 },
         consoleLogEnable: { id: 'danmakuConsoleLogEnable', defaultValue: false, name: '控制台日志' },
+        logLevel: { id: 'danmakuLogLevel', defaultValue: '3', name: '日志级别' },
         useFetchPluginXml: { id: 'danmakuUseFetchPluginXml', defaultValue: false, name: '加载媒体服务端xml弹幕' },
         // refreshPluginXml: { id: 'danmakuRefreshPluginXml', defaultValue: false, name: '加载前刷新媒体服务端xml弹幕' },
         useOfficialApi: { id: 'danmakuUseOfficialApi', defaultValue: true, name: '使用官方API' },
@@ -294,7 +303,6 @@
         customApiPrefix: { id: 'danmakuCustomApiPrefix', defaultValue: '', name: '自定义弹弹play API地址' },
         customApiList: { id: 'danmakuCustomApiList', defaultValue: [], name: '自定义弹幕源列表' },
         apiPriority: { id: 'danmakuApiPriority', defaultValue: ['official', 'custom'], name: 'API 优先级' },
-        // [新增] 排除的媒体库列表（不加载弹幕）
         excludedLibraries: { id: 'danmakuExcludedLibraries', defaultValue: [], name: '排除的媒体库' },
     };
     const lsLocalKeys = {
@@ -389,10 +397,12 @@
         customeGetExtcommentDiv: 'customeGetExtcommentDiv',
         customePosterImgDiv: 'customePosterImgDiv',
         consoleLogCtrl: 'consoleLogCtrl',
+        consoleLogCtrlLeft: 'consoleLogCtrlLeft',
         consoleLogInfo: 'consoleLogInfo',
         consoleLogText: 'consoleLogText',
         consoleLogTextInput: 'consoleLogTextInput',
         consoleLogCountLabel: 'consoleLogCountLabel',
+        logLevelDiv: 'logLevelDiv',
         debugCheckbox: 'debugCheckbox',
         debugButton: 'debugButton',
         tabIframe: 'tabIframe',
@@ -526,6 +536,16 @@
     };
     const emojiRegex = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1F1E6}-\u{1F1FF}]/gu;
 
+    // 日志级别常量
+    const LOG_LEVEL = { OFF: 0, ERROR: 1, WARN: 2, INFO: 3, DEBUG: 4 };
+    // 日志工具函数
+    const logger = {
+        debug: (...args) => logLevel >= LOG_LEVEL.DEBUG && console.log('[DEBUG]', ...args),
+        info: (...args) => logLevel >= LOG_LEVEL.INFO && console.log('[INFO]', ...args),
+        warn: (...args) => logLevel >= LOG_LEVEL.WARN && console.warn('[WARN]', ...args),
+        error: (...args) => logLevel >= LOG_LEVEL.ERROR && console.error('[ERROR]', ...args),
+    };
+
     // ------ 程序内部使用,请勿更改 end ------
 
     // ------ require start ------
@@ -547,8 +567,8 @@
      } else {
         // 网络加载 + 动态修复 AMD
         // 必须使用 fetch 下载 -> 修改 -> Blob 执行，才能拦截 define 调用
-        console.log('正在下载网络弹幕库并应用 UWP 修复补丁:', requireDanmakuPath);
-        
+        logger.info('正在下载网络弹幕库并应用 UWP 修复补丁:', requireDanmakuPath);
+
         fetch(requireDanmakuPath)
             .then(response => {
                 if (!response.ok) throw new Error("网络请求失败: " + response.status);
@@ -558,29 +578,29 @@
                 // 把 AMD 检测代码短路掉
                 // 将 "function"==typeof define 替换为 false&&"function"==typeof define
                 const patchedScript = rawScript.replace(
-                    /"function"==typeof define&&define\.amd/g, 
+                    /"function"==typeof define&&define\.amd/g,
                     'false&&"function"==typeof define&&define.amd'
                 );
 
                 // 创建 Blob 对象，欺骗浏览器这是一个本地 JS 文件
                 const blob = new Blob([patchedScript], { type: 'text/javascript' });
                 const url = URL.createObjectURL(blob);
-                
+
                 const script = document.createElement('script');
                 script.src = url;
                 script.onload = () => {
-                    console.log('网络弹幕库加载成功');
+                    logger.info('网络弹幕库加载成功');
                     URL.revokeObjectURL(url); // 用完释放内存
                 };
                 script.onerror = (e) => {
-                    console.error('Blob 脚本执行失败', e);
+                    logger.error('Blob 脚本执行失败', e);
                     // 最后的保底：如果 Blob 失败，尝试回退到普通加载
                     Emby.importModule(requireDanmakuPath).then(f => window.Danmaku = f);
                 };
                 document.head.appendChild(script);
             })
             .catch(error => {
-                console.error('Fetch 拦截失败,回退到默认加载:', error);
+                logger.error('Fetch 拦截失败,回退到默认加载:', error);
                 Emby.importModule(requireDanmakuPath).then(f => window.Danmaku = f);
             });
     }
@@ -762,23 +782,50 @@
             this.ERROR = { text: 'ERROR', emoji: '❗️' };
             this.WARN = { text: 'WARN', emoji: '⚠️' };
             this.INFO = { text: 'INFO', emoji: '❕' };
+            this.DEBUG = { text: 'DEBUG', emoji: '🔍' };
+            // Emby 内部日志关键词（这些日志会被降级为 DEBUG）
+            this.embyInternalPatterns = [
+                'apiclient.', 'ApiClient.', 'fetchWithFailover',
+                'ConnectionManager', 'ServerDiscovery', 'MediaSource',
+                'getJsUrlWithExtension', 'updateTransparency', 'validateFeature',
+                'getRegistrationInfo', 'nowplaying event', "on 'Cache'",
+                'WEBVTT', 'HLS Error'
+            ];
+        }
+        // 检测是否为 Emby 内部日志
+        isEmbyInternalLog(args) {
+            const str = args.map(arg => typeof arg === 'string' ? arg : '').join(' ');
+            return this.embyInternalPatterns.some(pattern => str.toLowerCase().includes(pattern.toLowerCase()));
+        }
+        // 根据日志级别决定是否记录
+        shouldLog(level) {
+            const levelMap = { 'ERROR': 1, 'WARN': 2, 'INFO': 3, 'DEBUG': 4 };
+            return logLevel >= levelMap[level.text];
         }
         init() {
             if (this.initialized) { return this; }
             console.error = (...args) => {
                 this.originalError.apply(console, args);
-                this.value += this.format(this.ERROR, args);
-                this.notifyListeners();
+                if (this.shouldLog(this.ERROR)) {
+                    this.value += this.format(this.ERROR, args);
+                    this.notifyListeners();
+                }
             };
             console.warn = (...args) => {
                 this.originalWarn.apply(console, args);
-                this.value += this.format(this.WARN, args);
-                this.notifyListeners();
+                if (this.shouldLog(this.WARN)) {
+                    this.value += this.format(this.WARN, args);
+                    this.notifyListeners();
+                }
             };
             console.log = (...args) => {
                 this.originalLog.apply(console, args);
-                this.value += this.format(this.INFO, args);
-                this.notifyListeners();
+                // 检测 Emby 内部日志，降级为 DEBUG
+                const level = this.isEmbyInternalLog(args) ? this.DEBUG : this.INFO;
+                if (this.shouldLog(level)) {
+                    this.value += this.format(level, args);
+                    this.notifyListeners();
+                }
             };
             this.originalOnerror = window.onerror;
             window.onerror = (...args) => {
@@ -827,33 +874,33 @@
             return;
         }
         if (_media.getAttribute('ede_listening')) { return; }
-        console.log('正在初始化事件监听器 (Listener)');
+        logger.info('正在初始化事件监听器 (Listener)');
         playbackEventsRefresh({ 'playbackstart': onPlaybackStart });
         playbackEventsRefresh({ 'playbackstop': onPlaybackStop });
         _media.setAttribute('ede_listening', true);
         refreshEventListener({ 'video-osd-show': onVideoOsdShow });
         refreshEventListener({ 'video-osd-hide': onVideoOsdHide });
-        console.log('事件监听器 (Listener) 初始化完成');
+        logger.info('事件监听器 (Listener) 初始化完成');
         if (OS.isAndroidEmbyNoisyX()) {
-            console.log('检测为安卓魔改版客户端，首次播放可能不触发 playbackstart 事件，在此手动初始化弹幕环境');
+            logger.info('检测为安卓魔改版客户端，首次播放可能不触发 playbackstart 事件，在此手动初始化弹幕环境');
             loadDanmaku(LOAD_TYPE.INIT);
         }
     }
 
     function onPlaybackStart(e, state) {
-        console.log('监听到事件: 播放开始 (playbackstart)');
+        logger.debug('监听到事件: 播放开始 (playbackstart)');
         loadDanmaku(LOAD_TYPE.INIT);
     }
 
     function onPlaybackStop(e, state) {
-        console.log('监听到事件: 播放停止 (playbackstop)');
+        logger.debug('监听到事件: 播放停止 (playbackstop)');
         onPlaybackStopPct(e, state);
         removeHeaderClock();
         danmakuAutoFilterCancel();
     }
 
     function onVideoOsdShow(e) {
-        console.log('监听到事件: OSD显示 (video-osd-show)');
+        logger.debug('监听到事件: OSD显示 (video-osd-show)');
         if (lsGetItem(lsKeys.osdLineChartEnable.id)) {
             buildProgressBarChart(20);
         }
@@ -863,7 +910,7 @@
     }
 
     function onVideoOsdHide(e) {
-        console.log('监听到事件: OSD隐藏 (video-osd-hide)');
+        logger.debug('监听到事件: OSD隐藏 (video-osd-hide)');
         if (lsGetItem(lsKeys.osdHeaderClockEnable.id)) {
           removeHeaderClock();
         }
@@ -872,12 +919,12 @@
     function initUI() {
         // 已初始化
         if (getById(eleIds.danmakuCtr)) { return; }
-        console.log('正在初始化UI');
+        logger.info('正在初始化UI');
 
         // [修复] 使用 Emby 提供的版本比较方法，避免 parseFloat("4.10.0.1") = 4.1 的问题
         // ApiClient.isMinServerVersion("4.8.0.0") 返回 true 表示当前版本 >= 4.8.0.0
         const serverVersion = ApiClient.serverVersion ? ApiClient.serverVersion() : '';
-        console.log('[dd-danmaku] 服务器版本:', serverVersion);
+        logger.info('[dd-danmaku] 服务器版本:', serverVersion);
 
         let isOldVersion = false;
         if (ApiClient.isMinServerVersion) {
@@ -891,7 +938,7 @@
             isOldVersion = major < 4 || (major === 4 && minor < 8);
         }
 
-        console.log('[dd-danmaku] 是否旧版本 (<4.8):', isOldVersion);
+        logger.debug('[dd-danmaku] 是否旧版本 (<4.8):', isOldVersion);
 
         if (isOldVersion) {
             mediaContainerQueryStr = 'div[data-type="video-osd"]';
@@ -933,7 +980,7 @@
             if (osdDanmakuSwitchBtn && osdDanmakuSwitchBtn.firstChild) {
                 osdDanmakuSwitchBtn.firstChild.innerHTML = danmakuEnabled ? iconKeys.comment : iconKeys.comments_disabled;
             }
-            console.log('播放器弹幕UI初始化完成');
+            logger.info('播放器弹幕UI初始化完成');
         }, 0);
     }
 
@@ -953,16 +1000,16 @@
         const searchUrl = `${prefix}/search/anime?keyword=${encodeURIComponent(anime)}`;
         const searchResult = await fetchJson(searchUrl)
             .catch((error) => {
-                console.error(`[API请求] /search/anime 查询失败: ${error.message}`);
+                logger.error(`[API请求] /search/anime 查询失败: ${error.message}`);
                 return null;
             });
 
         if (!searchResult || !searchResult.animes || searchResult.animes.length === 0) {
-            console.log(`[API请求] /search/anime 查询结果为空`);
+            logger.debug(`[API请求] /search/anime 查询结果为空`);
             return { animes: [] };
         }
 
-        console.log(`[API请求] /search/anime 查询成功，共 ${searchResult.animes.length} 个结果`);
+        logger.info(`[API请求] /search/anime 查询成功，共 ${searchResult.animes.length} 个结果`);
 
         // 步骤2: 只为第一个动画获取详细的分集信息（默认选择）
         if (searchResult.animes.length > 0 && searchResult.animes[0].bangumiId) {
@@ -970,7 +1017,7 @@
             const bangumiUrl = `${prefix}/bangumi/${firstAnime.bangumiId}`;
             const bangumiResult = await fetchJson(bangumiUrl)
                 .catch((error) => {
-                    console.error(`[API请求] /bangumi/${firstAnime.bangumiId} 查询失败: ${error.message}`);
+                    logger.error(`[API请求] /bangumi/${firstAnime.bangumiId} 查询失败: ${error.message}`);
                     return null;
                 });
 
@@ -993,14 +1040,22 @@
 
             if (episodes && episodes.length > 0) {
                 // 为第一个动画添加分集信息
+                // 同时更新 imageUrl（bangumi 接口返回的可能更准确）
+                let imageUrl = firstAnime.imageUrl;
+                if (bangumiResult?.bangumi?.imageUrl) {
+                    imageUrl = bangumiResult.bangumi.imageUrl;
+                } else if (bangumiResult?.imageUrl) {
+                    imageUrl = bangumiResult.imageUrl;
+                }
                 searchResult.animes[0] = {
                     ...firstAnime,
                     episodes: episodes,
-                    seasons: seasons
+                    seasons: seasons,
+                    imageUrl: imageUrl
                 };
-                console.log(`[API请求] 已获取第一个动画的分集信息: ${firstAnime.animeTitle}, 共 ${episodes.length} 集`);
+                logger.info(`[API请求] 已获取第一个动画的分集信息: ${firstAnime.animeTitle}, 共 ${episodes.length} 集`);
             } else {
-                console.log(`[API请求] 未能获取分集信息，bangumiResult 结构:`, bangumiResult ? Object.keys(bangumiResult) : 'null');
+                logger.debug(`[API请求] 未能获取分集信息，bangumiResult 结构:`, bangumiResult ? Object.keys(bangumiResult) : 'null');
             }
         }
 
@@ -1015,9 +1070,9 @@
             );
 
             if (matchedEpisode) {
-                console.log(`[API请求] 匹配到集数 ${episode}: ${matchedEpisode.episodeTitle}`);
+                logger.info(`[API请求] 匹配到集数 ${episode}: ${matchedEpisode.episodeTitle}`);
             } else {
-                console.log(`[API请求] 未匹配到集数 ${episode}`);
+                logger.debug(`[API请求] 未匹配到集数 ${episode}`);
             }
         }
 
@@ -1028,11 +1083,11 @@
     function selectBestMatch(searchTitle, candidates) {
         if (!candidates || candidates.length === 0) return null;
 
-        console.log(`[智能匹配] 搜索标题: "${searchTitle}", 候选数量: ${candidates.length}`);
+        logger.info(`[智能匹配] 搜索标题: "${searchTitle}", 候选数量: ${candidates.length}`);
 
         // 解析搜索标题
         const parsedSearch = parseSearchKeyword(searchTitle);
-        console.log(`[智能匹配] 解析搜索标题: ${JSON.stringify(parsedSearch)}`);
+        logger.info(`[智能匹配] 解析搜索标题: ${JSON.stringify(parsedSearch)}`);
 
         // 计算相似度得分
         const scoredCandidates = candidates.map(candidate => {
@@ -1043,7 +1098,7 @@
                 const candidateParsed = parseSearchKeyword(candidate.animeTitle);
                 if (candidateParsed.season === parsedSearch.season) {
                     score.total += 0.15; // 季度匹配加分
-                    console.log(`[智能匹配] 季度匹配加分: ${candidate.animeTitle}`);
+                    logger.debug(`[智能匹配] 季度匹配加分: ${candidate.animeTitle}`);
                 }
             }
 
@@ -1057,7 +1112,7 @@
                     if (episodeFromId === parsedSearch.episode) {
                         score.total += 0.25; // episodeId匹配加分更高
                         episodeMatched = true;
-                        console.log(`[智能匹配] episodeId集数匹配加分: ${candidate.animeTitle} (${episodeFromId})`);
+                        logger.debug(`[智能匹配] episodeId集数匹配加分: ${candidate.animeTitle} (${episodeFromId})`);
                     }
                 }
 
@@ -1066,12 +1121,12 @@
                     const episodeMatch = candidate.episodeTitle.match(/第?(\d+)[话集]/);
                     if (episodeMatch && parseInt(episodeMatch[1]) === parsedSearch.episode) {
                         score.total += 0.2; // episodeTitle匹配加分
-                        console.log(`[智能匹配] episodeTitle集数匹配加分: ${candidate.animeTitle} - ${candidate.episodeTitle}`);
+                        logger.debug(`[智能匹配] episodeTitle集数匹配加分: ${candidate.animeTitle} - ${candidate.episodeTitle}`);
                     }
                 }
             }
 
-            console.log(`[智能匹配] "${candidate.animeTitle}" (${candidate.typeDescription}) - 得分: ${score.total.toFixed(2)}`);
+            logger.debug(`[智能匹配] "${candidate.animeTitle}" (${candidate.typeDescription}) - 得分: ${score.total.toFixed(2)}`);
             return { ...candidate, score: score.total, scoreDetails: score };
         });
 
@@ -1081,11 +1136,11 @@
         // 选择得分最高的候选
         const bestMatch = scoredCandidates[0];
         if (bestMatch.score > 0.15) { // 进一步降低阈值，提高匹配成功率
-            console.log(`[智能匹配] 选择最佳匹配: "${bestMatch.animeTitle}" (得分: ${bestMatch.score.toFixed(2)})`);
+            logger.info(`[智能匹配] 选择最佳匹配: "${bestMatch.animeTitle}" (得分: ${bestMatch.score.toFixed(2)})`);
             return bestMatch;
         }
 
-        console.log(`[智能匹配] 没有找到足够好的匹配 (最高得分: ${bestMatch.score.toFixed(2)})`);
+        logger.debug(`[智能匹配] 没有找到足够好的匹配 (最高得分: ${bestMatch.score.toFixed(2)})`);
         return null;
     }
 
@@ -1262,9 +1317,9 @@
     async function fetchMatchApi(payload, prefix) {
         // [测试] 尝试不同的路径格式
         const url = `${prefix}/match`;
-        console.log(`[API请求] match 请求详情 - URL: ${url}`);
-        console.log(`[API请求] match 请求详情 - Payload:`, payload);
-        console.log(`[API请求] match 请求详情 - Prefix: ${prefix}`);
+        logger.debug(`[API请求] match 请求详情 - URL: ${url}`);
+        logger.debug(`[API请求] match 请求详情 - Payload:`, payload);
+        logger.debug(`[API请求] match 请求详情 - Prefix: ${prefix}`);
         try {
             // [修复] 判断是否为自定义 API（非弹弹play官方API）
             // 自定义 API 不发送 X-User-Agent 头，避免 CORS 问题
@@ -1280,7 +1335,7 @@
             if (isDandanplayApi) {
                 requestHeaders['X-User-Agent'] = userAgent;
             } else {
-                console.log(`[API请求] match 跳过 X-User-Agent (自定义API)`);
+                logger.debug(`[API请求] match 跳过 X-User-Agent (自定义API)`);
             }
 
             // [新增] 如果启用了非对称验证，添加挑战响应头
@@ -1292,9 +1347,9 @@
             }
             const requestBody = JSON.stringify(payload);
 
-            console.log(`[API请求] match 请求头:`, requestHeaders);
-            console.log(`[API请求] match 请求体长度:`, requestBody.length);
-            console.log(`[API请求] match 请求体内容:`, requestBody);
+            logger.debug(`[API请求] match 请求头:`, requestHeaders);
+            logger.debug(`[API请求] match 请求体长度:`, requestBody.length);
+            logger.debug(`[API请求] match 请求体内容:`, requestBody);
 
             // [修复] 直接使用 fetch，模仿 fetchJson 的请求头设置
             const response = await fetch(url, {
@@ -1303,17 +1358,17 @@
                 body: requestBody
             });
 
-            console.log(`[API请求] match 响应状态:`, response.status);
-            console.log(`[API请求] match 响应头:`, [...response.headers.entries()]);
+            logger.debug(`[API请求] match 响应状态:`, response.status);
+            logger.debug(`[API请求] match 响应头:`, [...response.headers.entries()]);
 
             if (!response.ok) {
                 const responseText = await response.text();
-                console.log(`[API请求] match 错误响应体:`, responseText);
+                logger.debug(`[API请求] match 错误响应体:`, responseText);
                 throw new Error(`HTTP error! Status: ${response.status}, Body: ${responseText}`);
             }
 
             const matchResult = await response.json();
-            console.log(`[API请求] match 查询响应:`, matchResult);
+            logger.debug(`[API请求] match 查询响应:`, matchResult);
 
             // 统一 /match 和 /search/episodes 的返回格式
             if (matchResult && matchResult.matches) {
@@ -1322,8 +1377,8 @@
             }
             return matchResult;
         } catch (error) {
-            console.warn(`[API请求] match 查询失败:`, error.message || error);
-            console.warn(`[API请求] match 失败详情 - URL: ${url}, Payload:`, payload);
+            logger.warn(`[API请求] match 查询失败:`, error.message || error);
+            logger.warn(`[API请求] match 失败详情 - URL: ${url}, Payload:`, payload);
             return null; // 匹配失败时返回 null
         }
     }
@@ -1354,15 +1409,15 @@
                 else if (data?.result) comments = data.result;
 
                 if (comments) {
-                    console.log(`[API请求] comment 获取弹幕成功, 耗时: ${duration}ms, 数量: ${comments.length}`);
+                    logger.info(`[API请求] comment 获取弹幕成功, 耗时: ${duration}ms, 数量: ${comments.length}`);
                     return comments;
                 } else {
-                    console.error(`[API请求] comment 返回数据格式不兼容，结构: ${data ? JSON.stringify(Object.keys(data)) : 'null'}, 耗时: ${duration}ms`);
+                    logger.error(`[API请求] comment 返回数据格式不兼容，结构: ${data ? JSON.stringify(Object.keys(data)) : 'null'}, 耗时: ${duration}ms`);
                     return null;
                 }
             })
             .catch((error) => {
-                console.error(`[API请求] comment 获取弹幕失败: ${error.message}`);
+                logger.error(`[API请求] comment 获取弹幕失败: ${error.message}`);
                 return null;
             });
     }
@@ -1381,7 +1436,7 @@
             window.ede.extCommentCache = { [itemId]: {} };
         }
         if (comments) {
-            console.log(`[附加弹幕] 正在为 ${extUrl} 的结果与已有弹幕取差集并覆盖`);
+            logger.debug(`[附加弹幕] 正在为 ${extUrl} 的结果与已有弹幕取差集并覆盖`);
             extComments = extComments.filter(extC => !comments.some(c => c.cid === extC.cid));
         }
         window.ede.extCommentCache[itemId][extUrl] = extComments;
@@ -1389,27 +1444,27 @@
     }
 
     function onPlaybackStopPct(e, state) {
-        if (!state.NowPlayingItem) { return console.log('跳过 Web 端自身错误触发的第二次播放停止事件'); }
-        console.log('监听到事件: 播放停止 (playbackstop)');
+        if (!state.NowPlayingItem) { return logger.debug('跳过 Web 端自身错误触发的第二次播放停止事件'); }
+        logger.debug('监听到事件: 播放停止 (playbackstop)');
         const positionTicks = state.PlayState.PositionTicks;
         const runtimeTicks = state.NowPlayingItem.RunTimeTicks;
-        if (!runtimeTicks) { return console.log('无可播放时长,跳过处理'); }
+        if (!runtimeTicks) { return logger.debug('无可播放时长,跳过处理'); }
         const pct = parseInt(positionTicks / runtimeTicks * 100);
-        console.log(`结束播放百分比: ${pct}%`);
+        logger.debug(`结束播放百分比: ${pct}%`);
         const bangumiPostPercent = lsGetItem(lsKeys.bangumiPostPercent.id);
         const bangumiToken = lsGetItem(lsKeys.bangumiToken.id);
         if (lsGetItem(lsKeys.bangumiEnable.id) && bangumiToken
             && pct >= bangumiPostPercent && window.ede.episode_info.episodeId
         ) {
-            console.log(`大于需提交的设定百分比: ${bangumiPostPercent}%`);
+            logger.debug(`大于需提交的设定百分比: ${bangumiPostPercent}%`);
             const { animeTitle, episodeTitle } = window.ede.episode_info;
             const targetName = `${animeTitle} - ${episodeTitle}`;
             putBangumiEpStatus(bangumiToken).then(res => {
                 embyToast({ text: `Bangumi收藏更新成功, 目标: ${targetName}, 结束播放百分比: ${pct}%, 大于需提交的设定百分比: ${bangumiPostPercent}%`});
-                console.log(`Bangumi收藏更新成功, 目标: ${targetName}`);
+                logger.info(`Bangumi收藏更新成功, 目标: ${targetName}`);
             }).catch(error => {
                 embyToast({ text: `Bangumi收藏更新失败, 目标: ${targetName}, ${error.message}` });
-                console.error(`putBangumiEpStatus 失败, 目标: ${targetName}`, error);
+                logger.error(`putBangumiEpStatus 失败, 目标: ${targetName}`, error);
             });
         }
     }
@@ -1447,7 +1502,7 @@
         }
         let bangumiEp = danDanPlayBangumi.episodes[currentBgmEpisodeIndex];
         if (!bangumiEp) {
-            console.log(`未匹配到 danDanPlayBangumi 番剧集数,剧集不为第一季,尝试切换接口数据匹配返回修正后的 bgmEpisodeIndex`);
+            logger.debug(`未匹配到 danDanPlayBangumi 番剧集数,剧集不为第一季,尝试切换接口数据匹配返回修正后的 bgmEpisodeIndex`);
             return danDanPlayBangumi.episodes.findIndex(ep => ep.episodeNumber == currentBgmEpisodeIndex + 1);
         } else {
             return currentBgmEpisodeIndex;
@@ -1458,7 +1513,7 @@
         const bangumiInfo = await getEpisodeBangumiRel();
         const { subjectId, bgmEpisodeIndex, } = bangumiInfo;
         const episodeIndex = bgmEpisodeIndex ? bgmEpisodeIndex : bangumiInfo.episodeIndex;
-        console.log('准备校验 Bangumi 条目收藏状态是否为看过');
+        logger.debug('准备校验 Bangumi 条目收藏状态是否为看过');
         let bangumiMe = localStorage.getItem(lsLocalKeys.bangumiMe);
         if (bangumiMe) {
             bangumiMe = JSON.parse(bangumiMe);
@@ -1469,10 +1524,10 @@
         const bangumiUserColl = await fetchJson(bangumiApi.getUserCollection(bangumiMe.username, subjectId), { token });
         if (bangumiUserColl.type === 2) { // 看过状态
             msg = 'Bangumi 条目已为看过状态,跳过更新';
-            console.log(msg, bangumiUserColl);
+            logger.debug(msg, bangumiUserColl);
             throw new Error(msg);
         }
-        console.log('准备修改 Bangumi 条目收藏状态为在看, 如果不存在则创建, 如果存在则修改');
+        logger.debug('准备修改 Bangumi 条目收藏状态为在看, 如果不存在则创建, 如果存在则修改');
         let body = { type: 3 }; // 在看状态
         await fetchJson(bangumiApi.postUserCollection(subjectId), { token, body });
         if (!bangumiInfo.bangumiEpsRes) {
@@ -1487,14 +1542,14 @@
         const bangumiEp = bangumiEpColl.episode;
         if (bangumiEpColl.type === 2) {
             msg = 'Bangumi 章节收藏已是看过状态,跳过更新';
-            console.log(msg, bangumiEp);
+            logger.debug(msg, bangumiEp);
             throw new Error(msg);
         }
-        console.log('准备更新 Bangumi 章节收藏状态, 详情: ', bangumiEp);
+        logger.debug('准备更新 Bangumi 章节收藏状态, 详情: ', bangumiEp);
         body.type = 2; // 看过状态
         await fetchJson(bangumiApi.putUserEpisodeCollection(bangumiEp.id), { token, body, method: 'PUT' });
         bangumiEp.type = body.type;
-        console.log(`成功更新 Bangumi 章节收藏状态, 在看 => 看过, 详情: `, bangumiEp);
+        logger.info(`成功更新 Bangumi 章节收藏状态, 在看 => 看过, 详情: `, bangumiEp);
         window.ede.bangumiInfo = bangumiInfo;
         localStorage.setItem(bangumiInfo._bangumi_key, JSON.stringify(bangumiInfo));
         return bangumiInfo;
@@ -1518,9 +1573,9 @@
     // 只有弹弹play和Bangumi官方API才发送 X-User-Agent
     if (shouldSendUserAgent) {
         requestHeaders['X-User-Agent'] = userAgent;
-        console.log(`[DEBUG] fetchJson 使用的 X-User-Agent: ${userAgent}`);
+        logger.debug(`fetchJson 使用的 X-User-Agent: ${userAgent}`);
     } else {
-        console.log(`[DEBUG] fetchJson 跳过 X-User-Agent (自定义API): ${url.substring(0, 80)}...`);
+        logger.debug(`fetchJson 跳过 X-User-Agent (自定义API): ${url.substring(0, 80)}...`);
     }
 
     if (token) requestHeaders.Authorization = `Bearer ${token}`;
@@ -1607,14 +1662,14 @@
 
         // 统一日志输出（包含 PerformanceResourceTiming 的更精细数据，如果可用）
         if (perfTiming) {
-            console.log(`[Network] fetch ${url} | status=${response.status} | ttfb=${ttfbMs}ms | download=${downloadMs}ms | total=${totalMs}ms | perfTiming=`, perfTiming);
+            logger.debug(`[Network] fetch ${url} | status=${response.status} | ttfb=${ttfbMs}ms | download=${downloadMs}ms | total=${totalMs}ms | perfTiming=`, perfTiming);
         } else {
-            console.log(`[Network] fetch ${url} | status=${response.status} | ttfb=${ttfbMs}ms | download=${downloadMs}ms | total=${totalMs}ms`);
-            console.log(`[Network] Tip: 若需更详细的 DNS/TCP/TLS/响应头到首字节等分段耗时，请确保后端返回 Timing-Allow-Origin 响应头以允许 PerformanceResourceTiming 获取跨域详细信息。`);
+            logger.debug(`[Network] fetch ${url} | status=${response.status} | ttfb=${ttfbMs}ms | download=${downloadMs}ms | total=${totalMs}ms`);
+            logger.debug(`[Network] Tip: 若需更详细的 DNS/TCP/TLS/响应头到首字节等分段耗时，请确保后端返回 Timing-Allow-Origin 响应头以允许 PerformanceResourceTiming 获取跨域详细信息。`);
         }
 
         if (!response.ok) {
-            console.warn(`[Network] fetch 错误响应: ${url} | status=${response.status} | total=${totalMs}ms | bodySnippet=${responseText?.slice(0,200)}`);
+            logger.warn(`[Network] fetch 错误响应: ${url} | status=${response.status} | total=${totalMs}ms | bodySnippet=${responseText?.slice(0,200)}`);
             throw new Error(`HTTP error! Status: ${response.status}`);
         }
 
@@ -1622,7 +1677,7 @@
             try {
                 return JSON.parse(responseText);
             } catch (parseError) {
-                console.warn('responseText is not JSON:', parseError);
+                logger.warn('responseText is not JSON:', parseError);
             }
         }
         return { success: true };
@@ -1634,14 +1689,14 @@
         if (error.name === 'AbortError') {
             // 区分是被组件销毁取消的(人为)，还是超时取消的
             if (window.ede?.lastLoadId?.toString().startsWith('DESTROYED')) {
-                console.log(`[Network] 请求已因组件销毁而取消: ${url} | duration=${duration}ms`);
+                logger.debug(`[Network] 请求已因组件销毁而取消: ${url} | duration=${duration}ms`);
             } else {
-                console.warn(`[Network] 请求超时或被中断: ${url} | duration=${duration}ms`);
+                logger.warn(`[Network] 请求超时或被中断: ${url} | duration=${duration}ms`);
             }
             throw error;
         }
 
-        console.error(`[Network] fetch 异常: ${url} | duration=${duration}ms | error: ${error.message || error}`);
+        logger.error(`[Network] fetch 异常: ${url} | duration=${duration}ms | error: ${error.message || error}`);
         throw error;
     } finally {
         // 请求结束（无论成功失败），从集合中移除控制器
@@ -1670,7 +1725,7 @@
                 }));
             }
         } catch (error) {
-            console.error('[dd-danmaku] 获取媒体库列表失败:', error);
+            logger.error('[dd-danmaku] 获取媒体库列表失败:', error);
         }
         return [];
     }
@@ -1687,9 +1742,9 @@
         try {
             // 获取所有媒体库列表
             const libraries = await getAllLibraries();
-            console.log('[dd-danmaku] 媒体库列表:', libraries.map(l => ({ id: l.id, name: l.name })));
+            logger.info('[dd-danmaku] 媒体库列表:', libraries.map(l => ({ id: l.id, name: l.name })));
             if (!libraries || libraries.length === 0) {
-                console.warn('[dd-danmaku] 无法获取媒体库列表');
+                logger.warn('[dd-danmaku] 无法获取媒体库列表');
                 return null;
             }
 
@@ -1700,7 +1755,7 @@
             });
             const fullItem = await ApiClient.getJSON(itemUrl).catch(() => null) || item;
 
-            console.log('[dd-danmaku] Item 完整信息:', {
+            logger.debug('[dd-danmaku] Item 完整信息:', {
                 Id: fullItem.Id,
                 Name: fullItem.Name,
                 Type: fullItem.Type,
@@ -1713,7 +1768,7 @@
 
             // 方法1: 通过 ParentId 递归查找媒体库
             let currentId = fullItem.SeriesId || fullItem.SeasonId || fullItem.ParentId;
-            console.log('[dd-danmaku] 开始 ParentId 递归查找, 起始ID:', currentId);
+            logger.debug('[dd-danmaku] 开始 ParentId 递归查找, 起始ID:', currentId);
 
             let maxDepth = 10;
             let lastFolderBeforeRoot = null; // 记录 root 之前的最后一个文件夹
@@ -1722,7 +1777,7 @@
                 // 检查当前 ID 是否是媒体库
                 const matchedLib = libraries.find(lib => lib.id === currentId);
                 if (matchedLib) {
-                    console.log(`[dd-danmaku] 通过 ParentId 匹配到媒体库: ${matchedLib.name}`);
+                    logger.info(`[dd-danmaku] 通过 ParentId 匹配到媒体库: ${matchedLib.name}`);
                     return {
                         libraryId: matchedLib.id,
                         libraryName: matchedLib.name,
@@ -1735,14 +1790,14 @@
                     Fields: 'ParentId,Name,Type,CollectionType'
                 });
                 const parentItem = await ApiClient.getJSON(parentUrl).catch(() => null);
-                console.log('[dd-danmaku] 递归查找父级:', parentItem ? { Id: parentItem.Id, Name: parentItem.Name, ParentId: parentItem.ParentId, Type: parentItem.Type } : 'null');
+                logger.debug('[dd-danmaku] 递归查找父级:', parentItem ? { Id: parentItem.Id, Name: parentItem.Name, ParentId: parentItem.ParentId, Type: parentItem.Type } : 'null');
 
                 if (!parentItem) break;
 
                 // 检查父级名称是否匹配媒体库名称
                 const matchedByName = libraries.find(lib => lib.name === parentItem.Name);
                 if (matchedByName) {
-                    console.log(`[dd-danmaku] 通过父级名称匹配到媒体库: ${matchedByName.name}`);
+                    logger.info(`[dd-danmaku] 通过父级名称匹配到媒体库: ${matchedByName.name}`);
                     return {
                         libraryId: matchedByName.id,
                         libraryName: matchedByName.name,
@@ -1752,7 +1807,7 @@
 
                 // 检查父级类型是否为 CollectionFolder（媒体库根目录）
                 if (parentItem.Type === 'CollectionFolder' || parentItem.Type === 'UserView') {
-                    console.log(`[dd-danmaku] 找到媒体库根目录: ${parentItem.Name}`);
+                    logger.info(`[dd-danmaku] 找到媒体库根目录: ${parentItem.Name}`);
                     return {
                         libraryId: parentItem.Id,
                         libraryName: parentItem.Name,
@@ -1762,7 +1817,7 @@
 
                 // 如果遇到 AggregateFolder (root)，使用之前记录的文件夹通过 VirtualFolders 匹配
                 if (parentItem.Type === 'AggregateFolder') {
-                    console.log('[dd-danmaku] 到达 AggregateFolder (root)，尝试通过 VirtualFolders 匹配');
+                    logger.debug('[dd-danmaku] 到达 AggregateFolder (root)，尝试通过 VirtualFolders 匹配');
                     if (lastFolderBeforeRoot) {
                         const vfResult = await matchLibraryByFolderName(lastFolderBeforeRoot.Name, libraries);
                         if (vfResult) return vfResult;
@@ -1781,7 +1836,7 @@
 
             // 方法2: 通过 Path 路径匹配媒体库（适用于网盘/302反代用户）
             if (fullItem.Path) {
-                console.log('[dd-danmaku] 尝试通过 Path 匹配媒体库, Path:', fullItem.Path);
+                logger.debug('[dd-danmaku] 尝试通过 Path 匹配媒体库, Path:', fullItem.Path);
 
                 // 标准化 item 路径（统一使用正斜杠，转小写用于比较）
                 const normalizedItemPath = fullItem.Path.replace(/\\/g, '/').toLowerCase();
@@ -1792,7 +1847,7 @@
                     const virtualFolders = await ApiClient.getJSON(virtualFoldersUrl).catch(() => null);
 
                     if (virtualFolders && virtualFolders.length > 0) {
-                        console.log('[dd-danmaku] VirtualFolders:', virtualFolders.map(f => ({ Name: f.Name, Locations: f.Locations })));
+                        logger.debug('[dd-danmaku] VirtualFolders:', virtualFolders.map(f => ({ Name: f.Name, Locations: f.Locations })));
 
                         for (const folder of virtualFolders) {
                             if (folder.Locations && folder.Locations.length > 0) {
@@ -1806,7 +1861,7 @@
                                         normalizedItemPath.includes('/' + normalizedLocation.split('/').pop() + '/')) {
                                         const matchedLib = libraries.find(lib => lib.name === folder.Name);
                                         if (matchedLib) {
-                                            console.log(`[dd-danmaku] 通过 Path 匹配到媒体库: ${matchedLib.name}`);
+                                            logger.info(`[dd-danmaku] 通过 Path 匹配到媒体库: ${matchedLib.name}`);
                                             return {
                                                 libraryId: matchedLib.id,
                                                 libraryName: matchedLib.name,
@@ -1814,7 +1869,7 @@
                                             };
                                         }
                                         // 即使在 libraries 中找不到，也返回 folder 信息
-                                        console.log(`[dd-danmaku] 通过 Path 匹配到媒体库 (VirtualFolder): ${folder.Name}`);
+                                        logger.info(`[dd-danmaku] 通过 Path 匹配到媒体库 (VirtualFolder): ${folder.Name}`);
                                         return {
                                             libraryId: folder.ItemId || folder.Name,
                                             libraryName: folder.Name,
@@ -1826,13 +1881,13 @@
                         }
                     }
                 } catch (e) {
-                    console.log('[dd-danmaku] VirtualFolders API 失败 (可能需要管理员权限):', e);
+                    logger.debug('[dd-danmaku] VirtualFolders API 失败 (可能需要管理员权限):', e);
                 }
 
                 // 方法3: 从 Path 中提取可能的媒体库名称（最后的回退方案）
                 // 路径格式可能是: /媒体库名/子文件夹/文件名 或 D:\媒体库名\子文件夹\文件名
                 const pathParts = fullItem.Path.replace(/\\/g, '/').split('/').filter(p => p);
-                console.log('[dd-danmaku] Path 分段:', pathParts);
+                logger.debug('[dd-danmaku] Path 分段:', pathParts);
 
                 // 尝试匹配路径中的每个部分与媒体库名称
                 for (const part of pathParts) {
@@ -1841,7 +1896,7 @@
                         lib.name.toLowerCase() === part.toLowerCase()
                     );
                     if (matchedLib) {
-                        console.log(`[dd-danmaku] 通过 Path 分段匹配到媒体库: ${matchedLib.name}`);
+                        logger.info(`[dd-danmaku] 通过 Path 分段匹配到媒体库: ${matchedLib.name}`);
                         return {
                             libraryId: matchedLib.id,
                             libraryName: matchedLib.name,
@@ -1851,9 +1906,9 @@
                 }
             }
 
-            console.warn('[dd-danmaku] 无法匹配到媒体库');
+            logger.warn('[dd-danmaku] 无法匹配到媒体库');
         } catch (error) {
-            console.warn('[dd-danmaku] 获取媒体库信息失败:', error);
+            logger.warn('[dd-danmaku] 获取媒体库信息失败:', error);
         }
 
         return null;
@@ -1872,7 +1927,7 @@
             const virtualFolders = await ApiClient.getJSON(virtualFoldersUrl).catch(() => null);
 
             if (virtualFolders && virtualFolders.length > 0) {
-                console.log('[dd-danmaku] VirtualFolders:', virtualFolders.map(f => ({ Name: f.Name, Locations: f.Locations, ItemId: f.ItemId })));
+                logger.debug('[dd-danmaku] VirtualFolders:', virtualFolders.map(f => ({ Name: f.Name, Locations: f.Locations, ItemId: f.ItemId })));
 
                 for (const folder of virtualFolders) {
                     if (folder.Locations && folder.Locations.length > 0) {
@@ -1886,7 +1941,7 @@
                             if (lastPart === folderName || lastPart.toLowerCase() === folderName.toLowerCase()) {
                                 const matchedLib = libraries.find(lib => lib.name === folder.Name);
                                 if (matchedLib) {
-                                    console.log(`[dd-danmaku] 通过 VirtualFolders 匹配到媒体库: ${matchedLib.name} (文件夹: ${folderName})`);
+                                    logger.debug(`[dd-danmaku] 通过 VirtualFolders 匹配到媒体库: ${matchedLib.name} (文件夹: ${folderName})`);
                                     return {
                                         libraryId: matchedLib.id,
                                         libraryName: matchedLib.name,
@@ -1894,7 +1949,7 @@
                                     };
                                 }
                                 // 即使在 libraries 中找不到，也返回 folder 信息
-                                console.log(`[dd-danmaku] 通过 VirtualFolders 匹配到媒体库: ${folder.Name} (文件夹: ${folderName})`);
+                                logger.debug(`[dd-danmaku] 通过 VirtualFolders 匹配到媒体库: ${folder.Name} (文件夹: ${folderName})`);
                                 return {
                                     libraryId: folder.ItemId || folder.Name,
                                     libraryName: folder.Name,
@@ -1906,7 +1961,7 @@
                 }
             }
         } catch (e) {
-            console.log('[dd-danmaku] VirtualFolders API 失败:', e);
+            logger.debug('[dd-danmaku] VirtualFolders API 失败:', e);
         }
         return null;
     }
@@ -1924,7 +1979,7 @@
 
         // 检查媒体库名称是否在排除列表中
         const isExcluded = excludedLibraries.some(excluded => excluded === libraryInfo.libraryName);
-        console.log(`[dd-danmaku] 检查媒体库排除: "${libraryInfo.libraryName}" 在排除列表 [${excludedLibraries.join(', ')}] 中: ${isExcluded}`);
+        logger.info(`[dd-danmaku] 检查媒体库排除: "${libraryInfo.libraryName}" 在排除列表 [${excludedLibraries.join(', ')}] 中: ${isExcluded}`);
         return isExcluded;
     }
 
@@ -1936,13 +1991,13 @@
         }
         if (!item) { return null; } // getEmbyItemInfo from playbackManager null, will next called
         if (!['Episode', 'Movie'].includes(item.Type)) {
-            return console.error('不支持的类型');
+            return logger.error('不支持的类型');
         }
 
         // [新增] 获取并记录媒体库信息（仅记录，不在此处检查排除）
         const libraryInfo = await getItemLibraryInfo(item);
         if (libraryInfo) {
-            console.log(`[dd-danmaku] 媒体库信息 - ID: ${libraryInfo.libraryId}, 名称: ${libraryInfo.libraryName}, 类型: ${libraryInfo.collectionType}`);
+            logger.info(`[dd-danmaku] 媒体库信息 - ID: ${libraryInfo.libraryId}, 名称: ${libraryInfo.libraryName}, 类型: ${libraryInfo.collectionType}`);
             window.ede.currentLibraryInfo = libraryInfo;
         }
 
@@ -1975,22 +2030,22 @@
         }
         // 检查是否需要重新获取完整的item信息
         if (!item.MediaSources || item.MediaSources.length === 0) {
-            console.log(`[Stream] MediaSources为空，通过API重新获取完整信息...`);
+            logger.debug(`[Stream] MediaSources为空，通过API重新获取完整信息...`);
             try {
                 const fullItem = await fatchEmbyItemInfo(item.Id);
                 if (fullItem && fullItem.MediaSources && fullItem.MediaSources.length > 0) {
                     item = fullItem;
-                    console.log(`[Stream] 重新获取成功，MediaSources数量: ${item.MediaSources.length}`);
+                    logger.debug(`[Stream] 重新获取成功，MediaSources数量: ${item.MediaSources.length}`);
                 } else {
-                    console.warn(`[Stream] 重新获取失败或仍无MediaSources`);
+                    logger.warn(`[Stream] 重新获取失败或仍无MediaSources`);
                 }
             } catch (error) {
-                console.error(`[Stream] 重新获取item信息失败:`, error);
+                logger.error(`[Stream] 重新获取item信息失败:`, error);
             }
         }
 
         const mediaSource = item.MediaSources && item.MediaSources[0];
-        console.log(`[Stream] 最终MediaSources数量: ${item.MediaSources ? item.MediaSources.length : 0}`);
+        logger.debug(`[Stream] 最终MediaSources数量: ${item.MediaSources ? item.MediaSources.length : 0}`);
 
         // 参考embyToLocalPlayer项目的方式构建流媒体URL
         let streamUrl = null;
@@ -2009,9 +2064,9 @@
             const container = item.Path ? item.Path.split('.').pop() : 'mkv';
             streamUrl = `${serverAddress}${extraStr}/videos/${itemId}/stream?DeviceId=${deviceId}&MediaSourceId=${mediaSourceId}&api_key=${apiKey}&Static=true&Container=${container}`;
 
-            console.log(`[Stream] 认证信息 - ApiKey: ${apiKey ? '已获取' : '未获取'}, DeviceId: ${deviceId ? '已获取' : '未获取'}`);
+            logger.debug(`[Stream] 认证信息 - ApiKey: ${apiKey ? '已获取' : '未获取'}, DeviceId: ${deviceId ? '已获取' : '未获取'}`);
         } else {
-            console.warn(`[Stream] 无MediaSource，无法构建流媒体URL`);
+            logger.warn(`[Stream] 无MediaSource，无法构建流媒体URL`);
         }
 
         const map = {
@@ -2050,7 +2105,7 @@
         }
         if (selectedSeasonInfo) {
             const newEpisode = episode + selectedSeasonInfo.episodeOffset;
-            console.log(`命中seasonInfo缓存: ${selectedSeasonInfo.name},偏移量: ${selectedSeasonInfo.episodeOffset},集: ${newEpisode}`);
+            logger.info(`命中seasonInfo缓存: ${selectedSeasonInfo.name},偏移量: ${selectedSeasonInfo.episodeOffset},集: ${newEpisode}`);
             const animaInfo = await fetchSearchEpisodes(selectedSeasonInfo.name, newEpisode);
             return { animaInfo, newEpisode, };
         }
@@ -2058,10 +2113,10 @@
     }
 
     async function autoFailback(animeName, episodeIndex, seriesOrMovieId) {
-        console.log(`自动匹配未查询到结果,可能为非番剧,将移除章节过滤,重试一次`);
+        logger.info(`自动匹配未查询到结果,可能为非番剧,将移除章节过滤,重试一次`);
         let animaInfo = await fetchSearchEpisodes(animeName);
         if (animaInfo.animes.length > 0) {
-            console.log(`移除章节过滤,自动匹配成功,转换为目标章节索引 0`);
+            logger.debug(`移除章节过滤,自动匹配成功,转换为目标章节索引 0`);
             if (isNaN(episodeIndex)) { episodeIndex = 0; }
             // const episodeInfo = animaInfo.animes[0].episodes[episodeIndex - 1 ?? 0];
             const episodeInfo = animaInfo.animes[0].episodes[episodeIndex];
@@ -2074,18 +2129,18 @@
         // from: https://github.com/Izumiko/jellyfin-danmaku/blob/jellyfin/ede.js#L886
         const seriesOrMovieInfo = await fatchEmbyItemInfo(seriesOrMovieId);
         if (!seriesOrMovieInfo.OriginalTitle) { return null; }
-        console.log(`标题名: ${animeName},自动匹配未查询到结果,将使用原标题名,重试一次`);
+        logger.info(`标题名: ${animeName},自动匹配未查询到结果,将使用原标题名,重试一次`);
         const animeOriginalTitle = seriesOrMovieInfo.OriginalTitle;
         animaInfo = await fetchSearchEpisodes(animeOriginalTitle, episodeIndex);
         if (animaInfo.animes.length < 1) { return null; }
-        console.log(`使用原标题名: ${animeOriginalTitle},自动匹配成功`);
+        logger.info(`使用原标题名: ${animeOriginalTitle},自动匹配成功`);
         return { animeName, animeOriginalTitle, animaInfo, };
     }
 
     // --- 替换后的 calculateFileHash (使用 Worker) ---
     async function calculateFileHash(streamUrl, fileSize) {
         if (!streamUrl || !fileSize) {
-            console.warn('缺少 streamUrl 或 fileSize，无法计算哈希。');
+            logger.warn('缺少 streamUrl 或 fileSize，无法计算哈希。');
             return null;
         }
 
@@ -2095,13 +2150,13 @@
             });
             worker.onmessage = (e) => {
                 if (e.data.success) {
-                    console.log(`[Hash-Worker] 计算完成: ${e.data.hash}`);
+                    logger.debug(`[Hash-Worker] 计算完成: ${e.data.hash}`);
                     resolve(e.data.hash);
                     worker.terminate();
                 }
             };
             worker.onerror = (err) => {
-                console.error("[Hash-Worker] Error:", err);
+                logger.error("[Hash-Worker] Error:", err);
                 worker.terminate();
                 resolve(null);
             };
@@ -2116,15 +2171,15 @@
 
             try {
                 if (fileSize < CHUNK_SIZE * 2) {
-                    console.log(`[Hash] 文件较小，下载全量计算...`);
+                    logger.debug(`[Hash] 文件较小，下载全量计算...`);
                     const response = await fetch(streamUrl, { headers: authHeaders });
                     if (!response.ok) throw new Error(`Fetch error: ${response.status}`);
                     const buffer = await response.arrayBuffer();
                     worker.postMessage({ type: 'APPEND', chunk: buffer, isLast: true }, [buffer]);
                 } else {
-                    console.log(`[Hash] 文件较大，下载头尾分片计算...`);
-                    const headRes = await fetch(streamUrl, { 
-                        headers: { ...authHeaders, 'Range': `bytes=0-${CHUNK_SIZE - 1}` } 
+                    logger.debug(`[Hash] 文件较大，下载头尾分片计算...`);
+                    const headRes = await fetch(streamUrl, {
+                        headers: { ...authHeaders, 'Range': `bytes=0-${CHUNK_SIZE - 1}` }
                     });
                     const headBuffer = await headRes.arrayBuffer();
                     worker.postMessage({ type: 'APPEND', chunk: headBuffer, isLast: false }, [headBuffer]);
@@ -2136,7 +2191,7 @@
                     worker.postMessage({ type: 'APPEND', chunk: tailBuffer, isLast: true }, [tailBuffer]);
                 }
             } catch (error) {
-                console.error('[Hash] 下载或通信失败:', error);
+                logger.error('[Hash] 下载或通信失败:', error);
                 worker.terminate();
                 resolve(null);
             }
@@ -2168,7 +2223,7 @@
     // --- 优化：串行请求 (节省流量) & 耗时日志 ---
     async function searchEpisodes(itemInfoMap) {
         const { animeName, episode, seriesOrMovieId, streamUrl, size, duration } = itemInfoMap;
-        console.log(`[Debug] searchEpisodes调用 - streamUrl: ${streamUrl ? '已获取' : '未获取'}, size: ${size}, duration: ${duration}`);
+        logger.debug(`[Debug] searchEpisodes调用 - streamUrl: ${streamUrl ? '已获取' : '未获取'}, size: ${size}, duration: ${duration}`);
         const startTime = performance.now(); 
         
         // 读取用户定义的API优先级
@@ -2212,7 +2267,7 @@
              matchPayload.fileHash = FALLBACK_HASH;
         }
 
-        console.log(`[自动匹配] 开始串行搜索... 目标: ${animeName}`);
+        logger.info(`[自动匹配] 开始串行搜索... 目标: ${animeName}`);
 
         // --- 3. 串行执行逻辑 (回归) ---
         for (const apiKey of actualPriority) {
@@ -2220,15 +2275,15 @@
             // 跳过未启用或配置错误的源
             if (!config?.enabled || !config?.prefix) continue;
 
-            console.log(`[自动匹配] 正在尝试源: ${config.name}...`);
+            logger.info(`[自动匹配] 正在尝试源: ${config.name}...`);
             const providerStart = performance.now();
-            
+
             try {
                 let result = null;
 
                 // A. 尝试 /match 接口
                 const matchResult = await fetchMatchApi(matchPayload, config.prefix);
-                
+
                 if (matchResult?.isMatched && matchResult?.animes?.length > 0) {
                     const match = matchResult.animes[0];
                     result = { directMatch: true, apiPrefix: config.prefix, apiName: config.name, episodeInfo: { ...match, episodes: [{ episodeId: match.episodeId, episodeTitle: match.episodeTitle }], imageUrl: match.imageUrl } };
@@ -2245,7 +2300,7 @@
                 if (!result) {
                     let searchTitle = animeName;
                     let searchEpisode = episode;
-                    
+
                     // 官方源特殊优化
                     if (apiKey === 'official') {
                         const parsed = parseAnimeName(animeName);
@@ -2257,10 +2312,10 @@
 
                     // 带集数搜索
                     let animaInfo = await fetchSearchEpisodes(searchTitle, searchEpisode, config.prefix);
-                    
+
                     if (animaInfo?.animes?.length > 0) {
                         result = { animaInfo, apiPrefix: config.prefix, apiName: config.name };
-                    } 
+                    }
                     // 降级：不带集数搜索
                     else {
                         animaInfo = await fetchSearchEpisodes(animeName, null, config.prefix);
@@ -2283,18 +2338,18 @@
                 // --- 4. 关键：如果找到了，直接返回 (Short-Circuit) ---
                 if (result) {
                     const totalTime = (performance.now() - startTime).toFixed(0);
-                    console.log(`[自动匹配] 在源 [${config.name}] 匹配成功! 耗时: ${(performance.now() - providerStart).toFixed(0)}ms (累计: ${totalTime}ms)`);
+                    logger.info(`[自动匹配] 在源 [${config.name}] 匹配成功! 耗时: ${(performance.now() - providerStart).toFixed(0)}ms (累计: ${totalTime}ms)`);
                     appendvideoOsdDanmakuInfo(null, `匹配耗时: ${totalTime}ms`);
                     return result; // <--- 之后的循环不会执行，请求被节省了
                 }
 
             } catch (e) {
-                console.warn(`[自动匹配] 源 ${config.name} 发生错误:`, e);
+                logger.warn(`[自动匹配] 源 ${config.name} 发生错误:`, e);
                 // 继续下一个循环
             }
         }
 
-        console.log(`[自动匹配] 所有源均未匹配成功, 总耗时: ${(performance.now() - startTime).toFixed(0)}ms`);
+        logger.info(`[自动匹配] 所有源均未匹配成功, 总耗时: ${(performance.now() - startTime).toFixed(0)}ms`);
         return null;
     }
 
@@ -2326,10 +2381,10 @@
             }
 
             if (predictedEpisodeId) {
-                console.log(`[推理匹配] 检测到播放'${direction}'，尝试使用推断的 episodeId: ${predictedEpisodeId}`);
+                logger.info(`[推理匹配] 检测到播放'${direction}'，尝试使用推断的 episodeId: ${predictedEpisodeId}`);
                 const comments = await fetchComment(predictedEpisodeId);
                 if (comments && comments.length > 0) {
-                    console.log(`[推理匹配] 成功！使用 episodeId: ${predictedEpisodeId}`);
+                    logger.info(`[推理匹配] 成功！使用 episodeId: ${predictedEpisodeId}`);
                     const predictedEpisodeInfo = {
                         ...itemInfoMap,
                         episodeId: predictedEpisodeId,
@@ -2343,7 +2398,7 @@
                     // 不写入缓存，因为这只是一个快速的推断
                     return predictedEpisodeInfo;
                 } else {
-                    console.log(`[推理匹配] 失败，episodeId: ${predictedEpisodeId} 无弹幕，回退到常规匹配。`);
+                    logger.info(`[推理匹配] 失败，episodeId: ${predictedEpisodeId} 无弹幕，回退到常规匹配。`);
                 }
             }
         }
@@ -2370,7 +2425,7 @@
             return null;
         }
         if (!res || (!res.directMatch && (!res.animaInfo || res.animaInfo.animes.length === 0))) {
-            console.log(`弹弹 Play 章节匹配失败`);
+            logger.info(`弹弹 Play 章节匹配失败`);
             // 播放界面右下角添加弹幕信息
             appendvideoOsdDanmakuInfo();
             // toastByDanmaku('弹弹 Play 章节匹配失败', 'error');
@@ -2409,7 +2464,7 @@
         const episodeIndex = isNaN(episode) ? 0 : episode - 1;
         // 健壮性检查：确保 animes[selectAnime_id] 和 episodes 存在
         if (!animaInfo.animes[selectAnime_id] || !animaInfo.animes[selectAnime_id].episodes || animaInfo.animes[selectAnime_id].episodes.length === 0) {
-            console.error('匹配逻辑错误：未能找到有效的分集信息。');
+            logger.error('匹配逻辑错误：未能找到有效的分集信息。');
             return null;
         }
         const episodeInfo = {
@@ -2466,7 +2521,7 @@
 
             return comments;
         } catch (error) {
-            console.error('Failed to parse XML data:', error);
+            logger.error('Failed to parse XML data:', error);
             return null;
         }
     }
@@ -2475,7 +2530,7 @@
         const url = `${ApiClient.serverAddress()}/api/danmu/${mediaServerItemId}?option=Refresh&X-Emby-Token=${ApiClient.accessToken()}`;
         const response = await fetch(url);
         if (response.ok) {
-            console.log(lsKeys.refreshPluginXml.name + ':成功');
+            logger.info(lsKeys.refreshPluginXml.name + ':成功');
         } else {
             throw new Error(lsKeys.refreshPluginXml.name + ':失败');
         }
@@ -2485,7 +2540,7 @@
         // [核心修复] 1. 入口身份核验
         // 如果调用者传了身份证(sessionId)，必须和全局最新的(lastLoadId)一致
         if (sessionId && window.ede && sessionId !== window.ede.lastLoadId) {
-            console.warn(`[防串台] 拦截旧任务(入口): ${sessionId}, 当前: ${window.ede.lastLoadId}`);
+            logger.warn(`[防串台] 拦截旧任务(入口): ${sessionId}, 当前: ${window.ede.lastLoadId}`);
             return;
         }
 
@@ -2493,29 +2548,29 @@
 
         if (window.ede.danmaku) {
             try { window.ede.danmaku.hide(); window.ede.danmaku.destroy(); } catch (e) {
-                console.warn('旧弹幕实例销毁异常', e);
+                logger.warn('旧弹幕实例销毁异常', e);
             }
             window.ede.danmaku = null;
         }
-        
+
         const ghostWrappers = document.querySelectorAll(`#${eleIds.danmakuWrapper}`);
         ghostWrappers.forEach(el => el.remove());
 
         const commentsParsed = danmakuParser(comments);
         window.ede.commentsParsed = commentsParsed;
 
-        console.log('开始过滤和合并弹幕 (异步)...');
-        
+        logger.debug('开始过滤和合并弹幕 (异步)...');
+
         // --- 异步等待 (这里耗时 1秒左右) ---
-        let _comments = await danmakuFilter(commentsParsed); 
-        
+        let _comments = await danmakuFilter(commentsParsed);
+
         // [核心修复] 2. 出口身份核验 (防止 await 期间切集)
         if (sessionId && window.ede && sessionId !== window.ede.lastLoadId) {
-            console.warn(`[防串台] 拦截旧任务(出口): ${sessionId}, 当前: ${window.ede.lastLoadId}`);
+            logger.warn(`[防串台] 拦截旧任务(出口): ${sessionId}, 当前: ${window.ede.lastLoadId}`);
             return;
         }
-        
-        console.log('弹幕加载成功: ' + _comments.length);
+
+        logger.info('弹幕加载成功: ' + _comments.length);
 
         const _media = document.querySelector(mediaQueryStr);
         if (!_media) {
@@ -2526,7 +2581,7 @@
             // 设置弹窗内的弹幕信息
             buildCurrentDanmakuInfo(currentDanmakuInfoContainerId);
             // throw new Error('创建弹幕失败：用户已退出视频播放页面。');
-            console.warn('用户已退出视频播放页面，停止创建。');
+            logger.warn('用户已退出视频播放页面，停止创建。');
             return;
         }
         if (!isVersionOld) { _media.style.position = 'absolute'; }
@@ -2553,7 +2608,7 @@
         let _speed = 144 * (lsGetItem(lsKeys.speed.id) / 100);
         // 检查 Danmaku 库是否已加载，如果未加载则等待
         if (typeof Danmaku === 'undefined' && typeof window.Danmaku === 'undefined') {
-            console.log('[Danmaku] 弹幕库未加载，尝试等待加载...');
+            logger.debug('[Danmaku] 弹幕库未加载，尝试等待加载...');
             // 尝试等待 Danmaku 库加载完成，最多等待 3 秒
             let waitCount = 0;
             const maxWait = 30; // 30 * 100ms = 3秒
@@ -2562,18 +2617,18 @@
                 waitCount++;
             }
             if (typeof window.Danmaku === 'undefined') {
-                console.error('[Danmaku] 弹幕库加载超时，尝试重新加载...');
+                logger.error('[Danmaku] 弹幕库加载超时，尝试重新加载...');
                 // 尝试重新加载
                 try {
                     const module = await Emby.importModule(requireDanmakuPath);
                     window.Danmaku = module;
-                    console.log('[Danmaku] 弹幕库重新加载成功');
+                    logger.info('[Danmaku] 弹幕库重新加载成功');
                 } catch (error) {
-                    console.error('[Danmaku] 弹幕库加载失败:', error);
+                    logger.error('[Danmaku] 弹幕库加载失败:', error);
                     throw new Error('创建弹幕失败：Danmaku 库未能加载。请检查网络连接或刷新页面重试。');
                 }
             } else {
-                console.log('[Danmaku] 弹幕库加载完成');
+                logger.info('[Danmaku] 弹幕库加载完成');
             }
         }
         const DanmakuClass = window.Danmaku || Danmaku;
@@ -2611,12 +2666,12 @@
                 lastWidth = width;
                 lastHeight = height;
                 if (resizeTimer) clearTimeout(resizeTimer);
-                
+
                 resizeTimer = setTimeout(() => {
                     // 再次检查弹幕对象是否存在，防止报错
                     if (window.ede.danmaku) {
-                        console.log(`[Resize] 尺寸变化 (${width|0}x${height|0})，重载弹幕轨道...`);
-                        loadDanmaku(LOAD_TYPE.RELOAD); 
+                        logger.debug(`[Resize] 尺寸变化 (${width|0}x${height|0})，重载弹幕轨道...`);
+                        loadDanmaku(LOAD_TYPE.RELOAD);
                     }
                 }, 500);
             }
@@ -2656,7 +2711,7 @@
             return;
         }
         const progressBarWidth = container.offsetWidth;
-        console.log('进度条宽度 (progressBarWidth): ' + progressBarWidth);
+        logger.debug('进度条宽度 (progressBarWidth): ' + progressBarWidth);
         const bulletChartCanvas = document.createElement('canvas');
         bulletChartCanvas.id = eleIds.progressBarLineChart;
         bulletChartCanvas.width = progressBarWidth;
@@ -2666,7 +2721,8 @@
         container.prepend(bulletChartCanvas);
         const ctx = bulletChartCanvas.getContext('2d');
         // 计算每个时间点的弹幕数量
-        const maxTime = Math.max(...comments.map(c => c.time));
+        // [修复] 使用 reduce 代替 Math.max(...array) 避免大数组栈溢出
+        const maxTime = comments.reduce((max, c) => c.time > max ? c.time : max, 0);
         const timeStep = lsGetItem(lsKeys.osdLineChartTime.id);
         const timeCounts = Array.from({ length: Math.ceil(maxTime / timeStep) }, () => 0);
         comments.forEach(c => {
@@ -2678,7 +2734,8 @@
         // [修改] 内部绘制函数：改为平滑波浪线
         function drawLineChart(data) {
             ctx.clearRect(0, 0, progressBarWidth, chartHeightNum);
-            const maxY = Math.max(...data);
+            // [修复] 使用 reduce 代替 Math.max(...array) 避免大数组栈溢出
+            const maxY = data.reduce((max, val) => val > max ? val : max, 0);
             if (maxY <= 0) return; // 防止除以0
 
             const scale = chartHeightNum / maxY; // 用于拉长 y 轴间距
@@ -2726,7 +2783,7 @@
         }
         
         drawLineChart(timeCounts);
-        console.log('已重绘进度条弹幕数量折线图');
+        logger.info('已重绘进度条弹幕数量折线图');
     }
 
 
@@ -2762,24 +2819,24 @@
     async function loadDanmaku(loadType = LOAD_TYPE.CHECK) {
         const _media = document.querySelector(mediaQueryStr);
         if (!_media) {
-            return console.warn('用户已退出视频播放，停止加载弹幕');
+            return logger.warn('用户已退出视频播放，停止加载弹幕');
         }
 
         // [新增] 先获取媒体库信息并检查排除
-        console.log('[dd-danmaku] 开始检查媒体库排除...');
+        logger.info('[dd-danmaku] 开始检查媒体库排除...');
         const item = await getEmbyItemInfo();
         
-        console.log('[dd-danmaku] getEmbyItemInfo 返回:', item ? item.Name : 'null');
+        logger.debug('[dd-danmaku] getEmbyItemInfo 返回:', item ? item.Name : 'null');
         if (item) {
             const libraryInfo = await getItemLibraryInfo(item);
-            console.log('[dd-danmaku] getItemLibraryInfo 返回:', libraryInfo);
+            logger.debug('[dd-danmaku] getItemLibraryInfo 返回:', libraryInfo);
             if (libraryInfo) {
                 window.ede.currentLibraryInfo = libraryInfo;
-                
+
                 // 直接获取排除列表进行判断 (实装逻辑)
                 const excludedList = lsGetItem(lsKeys.excludedLibraries.id) || [];
                 if (excludedList.includes(libraryInfo.libraryName)) {
-                    console.log(`[dd-danmaku] 媒体库 "${libraryInfo.libraryName}" 在排除列表中，跳过弹幕搜索和加载`);
+                    logger.info(`[dd-danmaku] 媒体库 "${libraryInfo.libraryName}" 在排除列表中，跳过弹幕搜索和加载`);
                     
                     // 更新 UI 显示“已禁用”
                     appendvideoOsdDanmakuInfo(0);
@@ -2805,7 +2862,7 @@
             if (typeof clearDanmakuUI === 'function') {
                 clearDanmakuUI();
             }
-            console.log('开始加载新弹幕，已清除上一集 UI');
+            logger.info('开始加载新弹幕，已清除上一集 UI');
             // =========== [修改结束] ===========
         }
 
@@ -2821,21 +2878,21 @@
             getMapByEmbyItemInfo().then((itemInfoMap) => {
                 // 检查是否获取到信息
                 if (!itemInfoMap) {
-                    console.log('[dd-danmaku] 获取视频信息失败，停止弹幕加载');
+                    logger.debug('[dd-danmaku] 获取视频信息失败，停止弹幕加载');
                     return;
                 }
 
                 // [新增] 在插件API成功时也计算文件哈希
                 if (itemInfoMap.streamUrl && itemInfoMap.size > 0) {
-                    console.log(`[插件API] 准备计算文件哈希`);
+                    logger.debug(`[插件API] 准备计算文件哈希`);
                     calculateFileHash(itemInfoMap.streamUrl, itemInfoMap.size).then(hash => {
                         if (hash) {
-                            console.log(`[插件API] 文件哈希计算完成: ${hash}`);
+                            logger.info(`[插件API] 文件哈希计算完成: ${hash}`);
                         } else {
-                            console.warn('[插件API] 文件哈希计算失败');
+                            logger.warn('[插件API] 文件哈希计算失败');
                         }
                     }).catch(error => {
-                        console.error('[插件API] 文件哈希计算出错:', error);
+                        logger.error('[插件API] 文件哈希计算出错:', error);
                     });
                 }
 
@@ -2846,7 +2903,7 @@
                         return createDanmaku(comments, currentSessionId).then(() => {
                             // 只有当全局 ID 依然匹配时，才做后续 UI 更新
                             if (window.ede && window.ede.lastLoadId === currentSessionId) {
-                                console.log('服务端Danmu插件弹幕加载就位');
+                                logger.info('服务端Danmu插件弹幕加载就位');
                                 const danmakuCtrEle = getById(eleIds.danmakuCtr);
                                 if (danmakuCtrEle && danmakuCtrEle.style.opacity !== '1') {
                                     danmakuCtrEle.style.opacity = '1';
@@ -2857,14 +2914,14 @@
                                 }
                             }
                         }).catch((error) => {
-                            console.error(error);
-                            console.error('使用服务端Danmu插件弹幕创建Danmaku实例时出错');
+                            logger.error(error);
+                            logger.error('使用服务端Danmu插件弹幕创建Danmaku实例时出错');
                         });
                     }
                     throw new Error('从服务端Danmu插件获取弹幕失败，尝试在线加载...');
                 })
                 .catch((error) => {
-                    console.error(error);
+                    logger.error(error);
                     // [传证] 将 ID 传给 loadOnlineDanmaku
                     return loadOnlineDanmaku(loadType, currentSessionId);
                 });
@@ -2878,7 +2935,7 @@
     function loadOnlineDanmaku(loadType, sessionId) {
         // 安全检查：如果这个任务还没开始跑就已经过时了，直接停止
         if (sessionId && window.ede && sessionId !== window.ede.lastLoadId) {
-            console.warn('任务已过期，停止在线加载');
+            logger.warn('任务已过期，停止在线加载');
             return;
         }
 
@@ -2925,24 +2982,24 @@
                             createDanmaku(window.ede.danmuCache[episodeId], sessionId)
                                 .then(() => {
                                     if (window.ede && sessionId === window.ede.lastLoadId)
-                                        console.log('弹幕已从缓存加载就位');
+                                        logger.info('弹幕已从缓存加载就位');
                                 })
                                 .catch((err) => {
-                                    console.log(err);
+                                    logger.debug(err);
                                 });
                         } else {
                             fetchComment(episodeId).then((comments) => {
                                 // [传证]
                                 if (sessionId && window.ede && sessionId !== window.ede.lastLoadId) return;
-                                
+
                                 window.ede.danmuCache[episodeId] = comments;
                                 createDanmaku(comments, sessionId)
                                     .then(() => {
                                         if (window.ede && sessionId === window.ede.lastLoadId)
-                                            console.log('弹幕已从网络加载就位');
+                                            logger.info('弹幕已从网络加载就位');
                                     })
                                     .catch((err) => {
-                                        console.log(err);
+                                        logger.debug(err);
                                     });
                             });
                         }
@@ -2950,7 +3007,7 @@
                 },
                 (msg) => {
                     if (msg) {
-                        console.log(msg);
+                        logger.debug(msg);
                     }
                 },
             )
@@ -2968,7 +3025,7 @@
                 }
             })
             .catch((err) => {
-                console.log(err);
+                logger.debug(err);
             });
     }
 
@@ -3147,11 +3204,11 @@
     const afterCount = filteredComments.length;
     const filteredCount = beforeCount - afterCount;
     if (filteredCount > 0) {
-        console.log(`[防重叠] 容器: ${containerWidth}x${containerHeight}, 字体: ${fontSize}px`);
-        console.log(`  - 滚动弹幕高度: ${scrollDanmakuHeight.toFixed(1)}px, 轨道数: ${scrollMaxTracks}`);
-        console.log(`  - 固定弹幕高度: ${fixedDanmakuHeight.toFixed(1)}px (行高: ${fixedLineHeight}, 间距: ${fixedVerticalGap.toFixed(1)}px)`);
-        console.log(`  - 顶部轨道: ${topMaxTracks}, 底部轨道: ${bottomMaxTracks}`);
-        console.log(`  - 过滤: ${beforeCount} -> ${afterCount} (丢弃 ${filteredCount})`);
+        logger.debug(`[防重叠] 容器: ${containerWidth}x${containerHeight}, 字体: ${fontSize}px`);
+        logger.debug(`  - 滚动弹幕高度: ${scrollDanmakuHeight.toFixed(1)}px, 轨道数: ${scrollMaxTracks}`);
+        logger.debug(`  - 固定弹幕高度: ${fixedDanmakuHeight.toFixed(1)}px (行高: ${fixedLineHeight}, 间距: ${fixedVerticalGap.toFixed(1)}px)`);
+        logger.debug(`  - 顶部轨道: ${topMaxTracks}, 底部轨道: ${bottomMaxTracks}`);
+        logger.debug(`  - 过滤: ${beforeCount} -> ${afterCount} (丢弃 ${filteredCount})`);
     }
 
     return filteredComments;
@@ -3186,7 +3243,7 @@
         }
         if (msg.length != initMsgLenth) {
             embyToast({ text: msg });
-            console.log('[自动过滤] ' + msg);
+            logger.debug('[自动过滤] ' + msg);
         }
     }
 
@@ -3194,7 +3251,7 @@
         if (Object.keys(window.ede.tempLsValues).length > 0) {
             objectEntries(window.ede.tempLsValues).forEach(([key, val]) => lsSetItem(key, val));
             window.ede.tempLsValues = {};
-            console.log('[自动过滤] 已从临时值恢复用户设置');
+            logger.debug('[自动过滤] 已从临时值恢复用户设置');
         }
     }
 
@@ -3291,7 +3348,7 @@
 
             // [优化] 复用 Worker，避免重复创建销毁的开销
             if (!window.ede.mergeWorker) {
-                console.log('[合并Worker] 初始化新线程...');
+                logger.debug('[合并Worker] 初始化新线程...');
                 window.ede.mergeWorker = createWorker(mergeWorkerBody);
             }
 
@@ -3330,7 +3387,7 @@
                     return originalComment;
                 });
 
-                console.log(`[合并相似弹幕] 完成, 耗时: ${(endTime - startTime).toFixed(2)}ms, 屏蔽: ${comments.length - finalComments.length}`);
+                logger.info(`[合并相似弹幕] 完成, 耗时: ${(endTime - startTime).toFixed(2)}ms, 屏蔽: ${comments.length - finalComments.length}`);
                 resolve(finalComments);
             };
 
@@ -3555,7 +3612,7 @@
             try {
                 tab.buildMethod(tab.id);
             } catch (error) {
-                console.error(error);
+                logger.error(error);
             }
         });
         if (formDialogFooter) {
@@ -3808,10 +3865,10 @@
                 const selectedIndex = availableFonts.findIndex(f => f.family === fontFamilyVal);
                 resetFontFamilyDiv(selectedIndex, availableFonts);
             }).catch(err => {
-                console.error(err);
+                logger.error(err);
             });
         } else {
-            console.info('queryLocalFonts 高级查询 API 不可用,使用预定字体列表');
+            logger.info('queryLocalFonts 高级查询 API 不可用,使用预定字体列表');
         }
         const selectedIndex = availableFonts.findIndex(f => f.family === fontFamilyVal);
         resetFontFamilyDiv(selectedIndex, availableFonts);
@@ -3852,7 +3909,7 @@
             embySelect({ id: eleIds.fontFamilySelect, label: `${lsKeys.fontFamily.name}: `, }
                 , selectedIndexOrValue, opts, 'family', 'family'
                 , (value, index, option) => {
-                    console.log('fontFamilyDivChange: ', value, index, option);
+                    logger.debug('fontFamilyDivChange: ', value, index, option);
                     // loadLocalFont(option.family);
                     if (lsCheckSet(lsKeys.fontFamily.id, value)) {
                         changeFontStylePreview();
@@ -3896,9 +3953,9 @@
         const font = new FontFace(family, `local("${family}")`);
         font.load().then(loadedFont => {
             document.fonts.add(loadedFont);
-            console.log(`The local font "${family}" has been added under the name "${family}"`);
+            logger.debug(`The local font "${family}" has been added under the name "${family}"`);
         }).catch(err => {
-            console.error(`Failed to load or add the local font "${family}"`, err);
+            logger.error(`Failed to load or add the local font "${family}"`, err);
         });
     }
 
@@ -4352,10 +4409,10 @@
         .then(() => {
             const beforeLength = window.ede.commentsParsed.length - extComments.length;
             embyToast({ text: `此次附加总量: ${extComments.length}, 附加前总量: ${beforeLength}, 附加后总量: ${allComments.length}` });
-            console.log(`附加弹幕就位, 附加前总量: ${beforeLength}`);
+            logger.info(`附加弹幕就位, 附加前总量: ${beforeLength}`);
             buildExtUrlsDiv();
         })
-        .catch(err => console.log(err));
+        .catch(err => logger.debug(err));
     }
 
     function buildDanmuPluginDiv() {
@@ -4374,7 +4431,7 @@
     function buildCurrentDanmakuInfo(containerId) {
         const container = getById(containerId);
         if (!container) { return; }
-        const { episodeTitle, animeId, animeTitle, imageUrl, apiName } = window.ede.episode_info || {};
+        const { episodeTitle, animeId, animeTitle, imageUrl, apiName, apiPrefix } = window.ede.episode_info || {};
         const loadSum = getDanmakuComments(window.ede).length;
         const downloadSum = window.ede.commentsParsed.length;
         let template = `
@@ -4431,19 +4488,26 @@
 
         let posterSrc = '';
         // 修正海报显示逻辑：
-        // 弹幕信息的来源（官方/自定义）在 getEpisodeInfo 中已经决定。
-        // 如果 episode_info 中有 imageUrl，说明弹幕来自自定义API，应优先使用自定义海报。
-        // 否则，使用官方海报。
+        // 根据使用的API源来决定图片来源
         if (imageUrl) {
+            // 如果 episode_info 中有 imageUrl，直接使用
             posterSrc = imageUrl;
         } else if (animeId) {
-            posterSrc = dandanplayApi.posterImg(animeId);
+            // 如果没有 imageUrl，只有官方 API 才显示图片
+            const isCustomApi = apiPrefix && apiPrefix !== dandanplayApi.prefix;
+            if (!isCustomApi) {
+                // 使用官方API时，用官方图片
+                posterSrc = dandanplayApi.posterImg(animeId);
+            }
+            // 使用自定义API且无 imageUrl 时，不显示图片
         }
-
+        const posterStyle = 'width: calc((var(--videoosd-tabs-height) - 3em) * (2 / 3)); margin-right: 1em;';
+        const posterDiv = getById(eleIds.posterImgDiv, container);
         if (posterSrc) {
-            getById(eleIds.posterImgDiv, container).append(
-                embyImgButton(embyImg(posterSrc), 'width: calc((var(--videoosd-tabs-height) - 3em) * (2 / 3)); margin-right: 1em;')
-            );
+            posterDiv.append(embyImgButton(embyImg(posterSrc), posterStyle));
+        } else {
+            // 没有图片时也保留空位
+            posterDiv.style.cssText = posterStyle;
         }
         buildDanmuListDiv(container);
         // 额外信息
@@ -4842,11 +4906,11 @@
     async function fetchBangumiApiGetMe(bangumiToken) {
         try {
             const res = await fetchJson(bangumiApi.getMe(), { token: bangumiToken });
-            console.log('Bangumi Token 验证成功', res);
+            logger.debug('Bangumi Token 验证成功', res);
             localStorage.setItem(lsLocalKeys.bangumiMe, JSON.stringify(res));
             return res;
         } catch (error) {
-            console.error('Bangumi Token 验证失败', error);
+            logger.error('Bangumi Token 验证失败', error);
             throw error;
         }
     }
@@ -4911,7 +4975,7 @@
                         newExcludedList.push(cb.dataset.libraryName);
                     });
                     lsSetItem(lsKeys.excludedLibraries.id, newExcludedList);
-                    console.log('[dd-danmaku] 已更新排除媒体库列表:', newExcludedList);
+                    logger.info('[dd-danmaku] 已更新排除媒体库列表:', newExcludedList);
 
                     // 检查当前播放的视频是否受影响
                     if (window.ede && window.ede.currentLibraryInfo) {
@@ -4921,16 +4985,16 @@
                         // 如果当前播放的媒体库刚被排除 -> 清空弹幕
                         if (isNowExcluded) {
                             if (window.ede.danmaku) {
-                                console.log(`[设置] 媒体库 "${currentLibName}" 被排除，关闭弹幕`);
+                                logger.info(`[设置] 媒体库 "${currentLibName}" 被排除，关闭弹幕`);
                                 // 传入空数组，清空弹幕
-                                createDanmaku([]); 
+                                createDanmaku([]);
                                 // 可选：给个提示
                                 // embyToast({ text: '当前媒体库弹幕已关闭' });
                             }
-                        } 
+                        }
                         // 如果当前播放的媒体库刚被允许 -> 重新加载
                         else {
-                            console.log(`[设置] 媒体库 "${currentLibName}" 已允许，重新加载`);
+                            logger.info(`[设置] 媒体库 "${currentLibName}" 已允许，重新加载`);
                             loadDanmaku(LOAD_TYPE.RELOAD);
                         }
                     }
@@ -4968,7 +5032,10 @@
         if (!container) { return; }
         const template = `
             <div style="height: 30em;">
-                <div id="${eleIds.consoleLogCtrl}"></div>
+                <div id="${eleIds.consoleLogCtrl}" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+                    <div id="${eleIds.consoleLogCtrlLeft}" style="display: flex; align-items: center;"></div>
+                    <div id="${eleIds.logLevelDiv}" style="display: flex; align-items: center;"></div>
+                </div>
                 <div id="${eleIds.consoleLogInfo}">
                     <textarea id="${eleIds.consoleLogText}" readOnly style="resize: vertical;margin-top: 0.6em;"
                         rows="12" is="emby-textarea" class="txtOverview emby-textarea"></textarea>
@@ -5001,11 +5068,12 @@
         const consoleLogEnable = lsGetItem(lsKeys.consoleLogEnable.id);
         getById(eleIds.consoleLogInfo, container).style.display = consoleLogEnable ? '' : 'none';
         if (consoleLogEnable) { doConsoleLogChange(consoleLogEnable); }
-        const consoleLogCtrlEle = getById(eleIds.consoleLogCtrl, container);
-        consoleLogCtrlEle.append(embyCheckbox({ label: lsKeys.consoleLogEnable.name }, consoleLogEnable, doConsoleLogChange));
+        // 左侧：日志开关和清空按钮
+        const consoleLogCtrlLeftEle = getById(eleIds.consoleLogCtrlLeft, container);
+        consoleLogCtrlLeftEle.append(embyCheckbox({ label: lsKeys.consoleLogEnable.name }, consoleLogEnable, doConsoleLogChange));
         const consoleLogCountLabel = document.createElement('label');
         consoleLogCountLabel.id = eleIds.consoleLogCountLabel;
-        consoleLogCtrlEle.append(
+        consoleLogCtrlLeftEle.append(
             embyButton({ label: '清空', iconKey: iconKeys.block }, () => {
                 getById(eleIds.consoleLogText, container).value = '';
                 getById(eleIds.consoleLogCountLabel).innerHTML = '';
@@ -5013,13 +5081,17 @@
             })
             , consoleLogCountLabel
         );
+        // 右侧：日志级别选择器
+        getById(eleIds.logLevelDiv, container).append(
+            embyTabs(logLevelOpts, lsGetItem(lsKeys.logLevel.id), 'id', 'name', doLogLevelChange)
+        );
         const consoleLogTextInput = getById(eleIds.consoleLogTextInput, container);
         consoleLogTextInput.style.display = consoleLogEnable && lsGetItem(lsKeys.quickDebugOn.id) ? '' : 'none';
         consoleLogTextInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 const inputVal = e.target.value.trim();
-                console.log('输入内容为: \n', inputVal);
+                logger.debug('输入内容为: \n', inputVal);
                 eval(inputVal);
                 e.target.value = '';
             }
@@ -5034,9 +5106,9 @@
                 const wrapper = getById(eleIds.danmakuWrapper);
                 wrapper.style.backgroundColor = checked ? styles.colors.highlight : '';
                 if (!checked) { return; }
-                console.log(`弹幕容器(#${eleIds.danmakuWrapper})宽高像素:`, wrapper.offsetWidth, wrapper.offsetHeight);
+                logger.debug(`弹幕容器(#${eleIds.danmakuWrapper})宽高像素:`, wrapper.offsetWidth, wrapper.offsetHeight);
                 const stage = wrapper.firstChild;
-                console.log(`实际舞台(${stage.tagName})宽高像素:`, stage.offsetWidth, stage.offsetHeight);
+                logger.debug(`实际舞台(${stage.tagName})宽高像素:`, stage.offsetWidth, stage.offsetHeight);
             }
         ));
         debugWrapper.append(embyCheckbox({ label: lsKeys.debugShowDanmakuCtrWrapper.name }
@@ -5045,7 +5117,7 @@
                 const wrapper = getById(eleIds.danmakuCtr);
                 wrapper.style.backgroundColor = checked ? styles.colors.highlight : '';
                 if (!checked) { return; }
-                console.log(`按钮容器(#${eleIds.danmakuCtr})宽高像素:`, wrapper.offsetWidth, wrapper.offsetHeight);
+                logger.debug(`按钮容器(#${eleIds.danmakuCtr})宽高像素:`, wrapper.offsetWidth, wrapper.offsetHeight);
             }
         ));
         debugWrapper.append(embyCheckbox({ label: lsKeys.debugReverseDanmu.name }
@@ -5057,7 +5129,7 @@
                     values[1]= { '6': '1', '1': '6', '5': '4', '4': '5' }[values[1]];
                     c.p = values.join();
                 });
-                console.log('已' + lsKeys.debugReverseDanmu.name);
+                logger.debug('已' + lsKeys.debugReverseDanmu.name);
                 createDanmaku(comments);
             }
         ));
@@ -5071,11 +5143,11 @@
                     values[2] = colorFn();
                     return { ...c, p: values.join() };
                 });
-                console.log('已' + lsKey.name);
+                logger.debug('已' + lsKey.name);
             } else {
                 comments = window.ede._oriComments;
                 window.ede.danmuCache[window.ede.episode_info.episodeId] = comments;
-                console.log('已还原' + lsKey.name);
+                logger.debug('已还原' + lsKey.name);
             }
             createDanmaku(comments);
         };
@@ -5182,38 +5254,38 @@
         const debugWrapper = getById(eleIds.debugButton, container);
         debugWrapper.append(embyButton({ label: '打印环境信息', style: 'margin: 0.3em;' }, () => {
             require(['browser'], (browser) => {
-                console.log('Emby 内部自身判断: ', browser);
+                logger.debug('Emby 内部自身判断: ', browser);
             });
         }));
         debugWrapper.append(embyButton({ label: '打印弹幕引擎信息', style: 'margin: 0.3em;' }, () => {
             const msg = `弹幕引擎是否存在: ${!!window.Danmaku}, 弹幕引擎是否实例化成功: ${!!window.ede.danmaku}`;
-            console.log(msg);
+            logger.debug(msg);
             embyToast({ text: msg });
         }));
         debugWrapper.append(embyButton({ label: '打印视频加载方', style: 'margin: 0.3em;' }, () => {
             const _media = document.querySelector(mediaQueryStr);
-            if (!_media) { return console.error('严重错误,页面中依旧不存在 <video> 标签') }
-            if (_media.currentTime < 1) { console.error('严重错误,<video> 的 currentTime < 1') }
+            if (!_media) { return logger.error('严重错误,页面中依旧不存在 <video> 标签') }
+            if (_media.currentTime < 1) { logger.error('严重错误,<video> 的 currentTime < 1') }
             if (!_media.id) {
-                console.log('视频加载方为 Web 端 <video> 标签:', _media.parentNode.outerHTML);
+                logger.debug('视频加载方为 Web 端 <video> 标签:', _media.parentNode.outerHTML);
             } else {
-                console.log('当前 <video> 标签为虚拟适配器:', _media.outerHTML);
+                logger.debug('当前 <video> 标签为虚拟适配器:', _media.outerHTML);
                 const _embed = document.querySelector('embed');
                 if (_embed) {
-                    console.log('视频加载方为 <embed> 标签占位的 Native 播放器:', _embed.parentNode.outerHTML);
+                    logger.debug('视频加载方为 <embed> 标签占位的 Native 播放器:', _embed.parentNode.outerHTML);
                 } else {
-                    console.log('视频加载方为无占位标签的 Native 播放器,无信息');
+                    logger.debug('视频加载方为无占位标签的 Native 播放器,无信息');
                 }
             }
         }));
         debugWrapper.append(embyButton({ label: '清空章节引用缓存', class: classes.embyButtons.submit, style: 'margin: 0.3em;' }, () => {
             lsBatchRemove([lsLocalKeys.animeEpisodePrefix, lsLocalKeys.bangumiEpInfoPrefix]);
-            console.log('已清空章节引用缓存');
+            logger.debug('已清空章节引用缓存');
             embyToast({ text: '已清空章节引用缓存' });
         }));
         debugWrapper.append(embyButton({ label: '重置设置', class: classes.embyButtons.submit, style: 'margin: 0.3em;' }, () => {
             settingsReset();
-            console.log(`已重置设置, 跳过了 ${lsKeys.filterKeywords.name} 重置`);
+            logger.debug(`已重置设置, 跳过了 ${lsKeys.filterKeywords.name} 重置`);
             embyToast({ text: `已重置设置, 跳过了 ${lsKeys.filterKeywords.name} 重置` });
             loadDanmaku(LOAD_TYPE.INIT);
             closeEmbyDialog();
@@ -5328,15 +5400,15 @@
     }
 
     function checkRuntimeVars(exposeGlobalThis = true) {
-        console.log('运行时变量检查');
-        console.log(lsKeys.customeCorsProxyUrl.name ,corsProxy);
-        console.log(lsKeys.customeDanmakuUrl.name, requireDanmakuPath);
-        console.log('弹弹play API 模板', dandanplayApi);
+        logger.debug('运行时变量检查');
+        logger.debug(lsKeys.customeCorsProxyUrl.name ,corsProxy);
+        logger.debug(lsKeys.customeDanmakuUrl.name, requireDanmakuPath);
+        logger.debug('弹弹play API 模板', dandanplayApi);
         if (exposeGlobalThis) { window.checkRuntimeVars = checkRuntimeVars; }
     }
 
     function doDanmakuSwitch() {
-        console.log('切换' + lsKeys.switch.name);
+        logger.debug('切换' + lsKeys.switch.name);
         const flag = !lsGetItem(lsKeys.switch.id);
         if (window.ede.danmaku) {
             flag ? window.ede.danmaku.show() : window.ede.danmaku.hide();
@@ -5359,7 +5431,7 @@
      * 适用于显示区域较小（如 10%-50%）时，防止弹幕挤在一起
      */
     function doAntiOverlapSwitch() {
-        console.log('切换' + lsKeys.antiOverlap.name);
+        logger.debug('切换' + lsKeys.antiOverlap.name);
         const flag = !lsGetItem(lsKeys.antiOverlap.id);
         lsSetItem(lsKeys.antiOverlap.id, flag);
         // 更新弹幕设置弹窗中的按钮状态
@@ -5405,7 +5477,7 @@
         }
 
         let allAnimes = [];
-        console.log(`[手动匹配] 开始并行搜索: ${searchName}`);
+        logger.info(`[手动匹配] 开始并行搜索: ${searchName}`);
 
         // --- 2. 定义单个搜索任务 ---
         const searchTask = async (apiKey) => {
@@ -5420,7 +5492,7 @@
                 if (parsed.season !== null) {
                     manualSearchTitle = parsed.season === 1 ? parsed.title : `${parsed.title} 第${parsed.season}季`;
                     manualSearchEpisode = parsed.episode;
-                    console.log(`[手动匹配][官方API优化] 格式化搜索: 标题='${manualSearchTitle}', 集数=${manualSearchEpisode}`);
+                    logger.info(`[手动匹配][官方API优化] 格式化搜索: 标题='${manualSearchTitle}', 集数=${manualSearchEpisode}`);
                 }
             }
 
@@ -5428,14 +5500,14 @@
                 const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix);
                 if (animaInfo && animaInfo.animes.length > 0) {
                     // 标记来源
-                    animaInfo.animes.forEach(anime => { 
-                        anime.apiPrefix = config.prefix; 
-                        anime.apiName = config.name; 
+                    animaInfo.animes.forEach(anime => {
+                        anime.apiPrefix = config.prefix;
+                        anime.apiName = config.name;
                     });
                     return animaInfo.animes;
                 }
             } catch (e) {
-                console.warn(`[手动匹配] 源 ${config.name} 搜索失败`, e);
+                logger.warn(`[手动匹配] 源 ${config.name} 搜索失败`, e);
             }
             return [];
         };
@@ -5453,7 +5525,7 @@
             }
         }
 
-        console.log(`[手动匹配] 搜索完成，共找到 ${allAnimes.length} 个结果`);
+        logger.info(`[手动匹配] 搜索完成，共找到 ${allAnimes.length} 个结果`);
 
         spinnerEle && spinnerEle.classList.add('hide');
         if (allAnimes.length < 1) {
@@ -5526,7 +5598,7 @@
 
         // [新增] 如果该动画还没有分集信息，先获取
         if (!anime.episodes && anime.bangumiId) {
-            console.log(`[手动匹配] 动画 ${anime.animeTitle} 缺少分集信息，正在获取...`);
+            logger.debug(`[手动匹配] 动画 ${anime.animeTitle} 缺少分集信息，正在获取...`);
             numDiv.innerHTML = '<span style="color: #52b54b;">正在加载分集信息...</span>';
 
             const apiPrefix = anime.apiPrefix || window.ede.searchDanmakuOpts.apiPrefix;
@@ -5538,14 +5610,14 @@
                     // 更新动画对象，添加分集信息
                     anime.episodes = bangumiResult.bangumi.episodes;
                     anime.seasons = bangumiResult.bangumi.seasons;
-                    console.log(`[手动匹配] 获取分集信息成功: ${anime.animeTitle}, 共 ${anime.episodes.length} 集`);
+                    logger.info(`[手动匹配] 获取分集信息成功: ${anime.animeTitle}, 共 ${anime.episodes.length} 集`);
                 } else {
-                    console.error(`[手动匹配] 获取分集信息失败: 返回数据格式错误`);
+                    logger.error(`[手动匹配] 获取分集信息失败: 返回数据格式错误`);
                     numDiv.innerHTML = '<span style="color: #e23636;">获取分集信息失败</span>';
                     return;
                 }
             } catch (error) {
-                console.error(`[手动匹配] 获取分集信息失败: ${error.message}`);
+                logger.error(`[手动匹配] 获取分集信息失败: ${error.message}`);
                 numDiv.innerHTML = '<span style="color: #e23636;">获取分集信息失败</span>';
                 return;
             }
@@ -5605,14 +5677,14 @@
         const unique_episode_key = `_api_${enabledApis.join('_')}_` + _episode_key;
         localStorage.setItem(unique_episode_key, JSON.stringify(episodeInfo));
 
-        console.log(`手动匹配成功，已加载新弹幕信息:`, episodeInfo);
+        logger.info(`手动匹配成功，已加载新弹幕信息:`, episodeInfo);
         loadDanmaku(LOAD_TYPE.RELOAD);
         closeEmbyDialog();
     }
 
     function writeLsSeasonInfo(_season_key, newSeasonInfo) {
         if (!_season_key) {
-            return console.log(`_season_key is undefined, skip`);
+            return logger.debug(`_season_key is undefined, skip`);
         }
         let seasonInfoListStr = localStorage.getItem(_season_key);
         let seasonInfoList = seasonInfoListStr ? JSON.parse(seasonInfoListStr) : [];
@@ -5630,7 +5702,7 @@
     function doDanmakuEngineSelect(value) {
         let selectedValue = value.id;
         if (lsCheckSet(lsKeys.engine.id, selectedValue)) {
-            console.log(`已更改弹幕引擎为: ${selectedValue}`);
+            logger.debug(`已更改弹幕引擎为: ${selectedValue}`);
             loadDanmaku(LOAD_TYPE.RELOAD);
         }
     }
@@ -5639,7 +5711,7 @@
         window.ede.chConvert = value.id;
         lsSetItem(lsKeys.chConvert.id, window.ede.chConvert);
         loadDanmaku(LOAD_TYPE.REFRESH);
-        console.log(`简繁转换已切换为: ${value.name}`);
+        logger.debug(`简繁转换已切换为: ${value.name}`);
     }
 
     function doDanmuListOptsChange(value, index) {
@@ -5730,7 +5802,7 @@
         lsSetItem(lsKeys.typeFilter.id, checkList);
         loadDanmaku(LOAD_TYPE.RELOAD);
         const idNameMap = new Map(Object.values(danmakuTypeFilterOpts).map(opt => [opt.id, opt.name]));
-        console.log(`当前弹幕类型过滤为: ${JSON.stringify(checkList.map(s => idNameMap.get(s)))}`);
+        logger.debug(`当前弹幕类型过滤为: ${JSON.stringify(checkList.map(s => idNameMap.get(s)))}`);
     }
 
     function doDanmakuSourceFilterSelect() {
@@ -5738,7 +5810,7 @@
             .filter(item => item.checked).map(item => item.value);
         lsSetItem(lsKeys.sourceFilter.id, checkList);
         loadDanmaku(LOAD_TYPE.RELOAD);
-        console.log(`当前弹幕来源平台过滤为: ${JSON.stringify(checkList)}`);
+        logger.debug(`当前弹幕来源平台过滤为: ${JSON.stringify(checkList)}`);
     }
 
     function doDanmakuShowSourceSelect() {
@@ -5747,7 +5819,7 @@
         lsSetItem(lsKeys.showSource.id, checkList);
         loadDanmaku(LOAD_TYPE.RELOAD);
         const idNameMap = new Map(Object.values(showSource).map(opt => [opt.id, opt.name]));
-        console.log(`当前弹幕显示来源为: ${JSON.stringify(checkList.map(s => idNameMap.get(s)))}`);
+        logger.debug(`当前弹幕显示来源为: ${JSON.stringify(checkList.map(s => idNameMap.get(s)))}`);
     }
 
     function onSliderChange(val, opts) {
@@ -5757,7 +5829,7 @@
             if (opts.isManual) {
                 needReload = false;
             }
-            console.log(`${opts.key} changed to ${val}, needReload: ${needReload}`);
+            logger.debug(`${opts.key} changed to ${val}, needReload: ${needReload}`);
             if (needReload) {
                 changeFontStylePreview();
                 loadDanmaku(LOAD_TYPE.RELOAD);
@@ -5823,6 +5895,12 @@
             window.ede.appLogAspect.destroy();
             window.ede.appLogAspect = null;
         }
+    }
+
+    function doLogLevelChange(value) {
+        logLevel = parseInt(value.id);
+        lsSetItem(lsKeys.logLevel.id, value.id);
+        logger.info(`日志级别已切换为: ${value.name}`);
     }
 
     function getById(childId, parentNode = document) {
@@ -5924,7 +6002,7 @@
             aEle.addEventListener('click', (event) => {
                 event.preventDefault();
                 navigator.clipboard.writeText(href).then(() => {
-                    console.log('Link copied to clipboard:', href);
+                    logger.debug('Link copied to clipboard:', href);
                     const label = document.createElement('label');
                     label.textContent = '已复制';
                     label.style.color = 'green';
@@ -5934,7 +6012,7 @@
                         aEle.removeChild(label);
                     }, 3000);
                 }, (err) => {
-                    console.error('Failed to copy link:', err);
+                    logger.error('Failed to copy link:', err);
                 });
             });
         }
@@ -6116,7 +6194,7 @@
                 e.isManual = true;
                 slider.dispatchEvent(e);
             }).catch(error => {
-                console.warn('waitForElement error:', error);
+                logger.warn('waitForElement error:', error);
             });
         }
         require(['browser'], (browser) => {
@@ -6143,7 +6221,7 @@
         const defaultOpts = { text: '', title: '', timeout: 0, html: '', buttons: [] };
         opts = { ...defaultOpts, ...opts };
         return require(['dialog']).then(items => items[0](opts))
-            .catch(error => { console.log('点击弹出框外部取消: ' + error) });
+            .catch(error => { logger.debug('点击弹出框外部取消: ' + error) });
     }
 
     function closeEmbyDialog() {
@@ -6153,7 +6231,12 @@
     function embyImg(src, style, id, draggable = false) {
         const img = document.createElement('img');
         img.id = id;
-        img.src = src;
+        // 处理混合内容问题：如果当前页面是 HTTPS，将 HTTP 图片 URL 转换为 HTTPS
+        let imgSrc = src;
+        if (src && window.location.protocol === 'https:' && src.startsWith('http:')) {
+            imgSrc = src.replace('http:', 'https:');
+        }
+        img.src = imgSrc;
         img.style = style;
         img.loading = 'lazy';
         img.decoding = 'async';
@@ -6181,7 +6264,7 @@
         const defaultOpts = { text: '', title: '', timeout: 0, html: ''};
         opts = { ...defaultOpts, ...opts };
         return require(['alert']).then(items => items[0](opts))
-            .catch(error => { console.log('点击弹出框外部取消: ' + error) });
+            .catch(error => { logger.debug('点击弹出框外部取消: ' + error) });
     }
 
     // see: ../web/modules/toast/toast.js, 严禁滥用,因遮挡画面影响体验,不建议使用 icon,会导致小秘版弹窗居中且图标过大
@@ -6365,7 +6448,7 @@
     function lsBatchRemove(prefixes) {
         return Object.keys(localStorage)
         .filter(key => prefixes.some(prefix => key.startsWith(prefix)))
-            .map(key => { console.log('Removing cache key:', key); localStorage.removeItem(key); })
+            .map(key => { logger.debug('Removing cache key:', key); localStorage.removeItem(key); })
             .length > 0;
     }
 
@@ -6391,7 +6474,7 @@
     
         const promise = new Promise((resolve, reject) => {
             function checkElement() {
-                console.log(`waitForElement: checking element[${elementMark}]`);
+                logger.debug(`waitForElement: checking element[${elementMark}]`);
                 let element = null;
                 if (isSelector) {
                     element = document.querySelector(target);
@@ -6413,14 +6496,14 @@
                     resolve(element);
                 }
             }
-    
+
             intervalId = setInterval(checkElement, interval);
             window.ede.destroyIntervalIds.push(intervalId);
-    
+
             if (timeout > 0) {
                 timeoutId = setTimeout(() => {
                     clearInterval(intervalId);
-                    console.warn(`[waitForElement] 查找元素 [${elementMark}] 超时 (${timeout}ms)`);
+                    logger.warn(`[waitForElement] 查找元素 [${elementMark}] 超时 (${timeout}ms)`);
                     reject(new Error(`Element [${elementMark}] not found within ${timeout}ms`));
                 }, timeout);
             }
@@ -6435,7 +6518,7 @@
         let longPressTimeout;
         function startLongPress() {
             longPressTimeout = setTimeout(() => {
-                console.log('恭喜你发现了隐藏功能, 长按了 2 秒!');
+                logger.debug('恭喜你发现了隐藏功能, 长按了 2 秒!');
                 quickDebug();
             }, 2000);
         }
@@ -6554,7 +6637,7 @@
             }
             return;
         }
-        console.log('播放页不存在 video 标签,适配器处理开始');
+        logger.info('播放页不存在 video 标签,适配器处理开始');
         _media = document.createElement('video');
         // !!! Apple 设备上此属性必须存在,否则 currentTime = 0 无法更新; 而其他设备反而不能有
         if (OS.isApple()) { _media.src = ''; }
@@ -6596,7 +6679,7 @@
                     if (isFirstTimeUpdate) {
                         isFirstTimeUpdate = false;
                         if (lsGetItem(lsKeys.debugH5VideoAdapterEnable.id)) {
-                             console.log(`[虚拟播放器] 初始化时间: ${realCurrentTime}, 跳过seeking检测`);
+                             logger.debug(`[虚拟播放器] 初始化时间: ${realCurrentTime}, 跳过seeking检测`);
                         }
                         return;
                     }
@@ -6614,19 +6697,19 @@
         
         playbackEventsRefresh({
             'pause': (e) => {
-                console.warn('[虚拟播放器] 监听到暂停事件 (pause)');
+                logger.debug('[虚拟播放器] 监听到暂停事件 (pause)');
                 _media.dispatchEvent(new Event('pause'));
                 videoTimeUpdateInterval(_media, false);
             },
             'unpause': (e) => {
-                console.warn('[虚拟播放器] 监听到取消暂停/播放事件 (unpause)');
+                logger.debug('[虚拟播放器] 监听到取消暂停/播放事件 (unpause)');
                 // [修复] 播放开始时重置seeking检测标志
                 isFirstTimeUpdate = true;
                 _media.dispatchEvent(new Event('play'));
                 videoTimeUpdateInterval(_media, true);
             },
         });
-       console.log('已创建虚拟 video 标签,适配器处理正确结束');
+       logger.info('已创建虚拟 video 标签,适配器处理正确结束');
     }
 
    // 平滑补充<video> timeupdate 中秒级间隔缺失的 100ms 间隙
@@ -6679,14 +6762,14 @@
                     controller.abort();
                 }
                 window.ede.abortControllers.clear();
-                console.log('[GC] 已终止所有挂起的网络请求');
+                logger.debug('[GC] 已终止所有挂起的网络请求');
             }
 
             // [新增] 修复 ResizeObserver 内存泄漏：必须显式断开连接
             if (window.ede.ob) {
                 window.ede.ob.disconnect();
                 window.ede.ob = null;
-                console.log('[GC] ResizeObserver 已断开');
+                logger.debug('[GC] ResizeObserver 已断开');
             }
         }
 
@@ -6712,12 +6795,12 @@
         
         // 退出播放页面重置轴偏秒
         lsSetItem(lsKeys.timelineOffset.id, lsKeys.timelineOffset.defaultValue);
-        
-        console.log('[生命周期] 播放页环境已销毁 (beforeDestroy)');
+
+        logger.debug('[生命周期] 播放页环境已销毁 (beforeDestroy)');
     }
 
     function onViewShow(e) {
-        console.log(`监听到视图切换事件 (viewshow), 类型: ${e.detail.type}`);
+        logger.debug(`监听到视图切换事件 (viewshow), 类型: ${e.detail.type}`);
         customeUrl.init();
         lsGetItem(lsKeys.quickDebugOn.id) && !getById(eleIds.danmakuSettingBtnDebug) && quickDebug();
         addEasterEggListener();
@@ -6744,7 +6827,7 @@
     // [新增] 挑战-响应认证相关函数
     async function getChallengeResponse(proxyPrefix) {
         if (!window.ede.publicKeyPem) {
-            console.warn('Public key not configured for asymmetric auth');
+            logger.warn('Public key not configured for asymmetric auth');
             return null;
         }
 
@@ -6777,7 +6860,7 @@
             // 返回验证成功的标识
             return `${challenge}:${signature}`;
         } catch (error) {
-            console.error('Failed to get challenge response:', error);
+            logger.error('Failed to get challenge response:', error);
             return null;
         }
     }
@@ -6816,7 +6899,7 @@
                 dataBuffer
             );
         } catch (error) {
-            console.error('Signature verification failed:', error);
+            logger.error('Signature verification failed:', error);
             return false;
         }
     }
@@ -6838,12 +6921,15 @@
     }
 
     // emby/jellyfin CustomEvent. see: https://github.com/MediaBrowser/emby-web-defaultskin/blob/822273018b82a4c63c2df7618020fb837656868d/nowplaying/videoosd.js#L698
+    // 初始化日志级别（从 localStorage 读取）
+    logLevel = parseInt(lsGetItem(lsKeys.logLevel.id)) || 3;
+
     refreshEventListener({ 'viewshow': onViewShow });
     refreshEventListener({ 'viewbeforehide': beforeDestroy });
 
     // [修复] CustomCssJS 兼容：如果脚本在页面已加载后注入，viewshow 事件可能已经错过
     // 需要立即检查当前是否已在播放页面，如果是则手动触发初始化
-    console.log('[dd-danmaku] 插件已加载，正在检查当前页面状态...');
+    logger.info('[dd-danmaku] 插件已加载，正在检查当前页面状态...');
 
     // 延迟执行，确保 Emby 的路由系统已经就绪
     setTimeout(() => {
@@ -6855,10 +6941,10 @@
         // 检查是否已经有视频元素（说明已经在播放页面）
         const hasVideoElement = document.querySelector('video');
 
-        console.log(`[dd-danmaku] 当前路径: ${currentPath}, 是否播放页: ${isVideoOsdPage}, 是否有视频元素: ${!!hasVideoElement}`);
+        logger.debug(`[dd-danmaku] 当前路径: ${currentPath}, 是否播放页: ${isVideoOsdPage}, 是否有视频元素: ${!!hasVideoElement}`);
 
         if (isVideoOsdPage || hasVideoElement) {
-            console.log('[dd-danmaku] 检测到已在播放页面，手动触发初始化...');
+            logger.info('[dd-danmaku] 检测到已在播放页面，手动触发初始化...');
 
             // 模拟 viewshow 事件的参数
             const mockEvent = {
