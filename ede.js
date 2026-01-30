@@ -2995,7 +2995,7 @@
         }
 
         // 滚动弹幕碰撞检测
-        const buffer = 0.2;
+        const buffer = 0.5;
 
         for (let i = 0; i < trackList.length; i++) {
             const last = trackList[i];
