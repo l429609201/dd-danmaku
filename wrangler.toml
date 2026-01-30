@@ -2,6 +2,9 @@ name = "danmu-api"
 main = "cf_worker.js"
 compatibility_date = "2024-09-21"
 
+# 静态资源配置 - 工具文件通过 /tools/ 路径访问
+[assets]
+directory = "./tools"
 
 # 基础环境变量（公开配置）
 [vars]

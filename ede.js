@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.1.6
+// @version      1.1.7
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -25,7 +25,7 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.1.6', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.1.7', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -1646,7 +1646,8 @@
     }
 
     /**
-     * 获取当前播放项目所属的媒体库信息（简化版，使用 Views API 匹配）
+     * 获取当前播放项目所属的媒体库信息
+     * 使用多种方法尝试获取，确保稳定性（兼容网盘/302反代用户）
      * @param {Object} item - Emby item 对象
      * @returns {Promise<{libraryId: string, libraryName: string, collectionType: string}|null>}
      */
@@ -1662,63 +1663,31 @@
                 return null;
             }
 
-            // 如果 item 信息不完整，重新获取完整信息
-            let fullItem = item;
-            if (!item.ParentId && !item.SeriesId) {
-                console.log('[dd-danmaku] Item 信息不完整，重新获取...');
-                fullItem = await fatchEmbyItemInfo(item.Id) || item;
-            }
+            // 通过 API 获取完整的 item 信息（包含 ParentId 等字段）
+            const userId = ApiClient.getCurrentUserId();
+            const itemUrl = ApiClient.getUrl(`Users/${userId}/Items/${item.Id}`, {
+                Fields: 'ParentId,Path,SeriesId,SeasonId,ProviderIds,LocationType'
+            });
+            const fullItem = await ApiClient.getJSON(itemUrl).catch(() => null) || item;
 
-            // 打印 item 的关键信息用于调试
-            console.log('[dd-danmaku] Item 信息:', {
+            console.log('[dd-danmaku] Item 完整信息:', {
                 Id: fullItem.Id,
                 Name: fullItem.Name,
                 Type: fullItem.Type,
                 ParentId: fullItem.ParentId,
                 SeriesId: fullItem.SeriesId,
                 SeasonId: fullItem.SeasonId,
-                Path: fullItem.Path
+                Path: fullItem.Path,
+                LocationType: fullItem.LocationType
             });
 
-            // 方法1: 通过 Ancestors API 获取
-            const userId = ApiClient.getCurrentUserId();
-            const ancestorsUrl = ApiClient.getUrl(`Users/${userId}/Items/${fullItem.Id}/Ancestors`);
-            const ancestorsResult = await ApiClient.getJSON(ancestorsUrl).catch((e) => {
-                console.log('[dd-danmaku] Ancestors API 失败:', e);
-                return null;
-            });
-            // 检查返回值是否为有效数组
-            const ancestors = Array.isArray(ancestorsResult) ? ancestorsResult : null;
-            console.log('[dd-danmaku] Ancestors:', ancestors ? ancestors.map(a => ({ Id: a.Id, Name: a.Name, Type: a.Type })) : 'null');
-
-            if (ancestors && ancestors.length > 0) {
-                // 在祖先中查找匹配的媒体库
-                for (const ancestor of ancestors) {
-                    const matchedLib = libraries.find(lib => lib.id === ancestor.Id || lib.name === ancestor.Name);
-                    if (matchedLib) {
-                        console.log(`[dd-danmaku] 通过 Ancestors 匹配到媒体库: ${matchedLib.name}`);
-                        return {
-                            libraryId: matchedLib.id,
-                            libraryName: matchedLib.name,
-                            collectionType: matchedLib.collectionType || ''
-                        };
-                    }
-                }
-
-                // 如果没有精确匹配，尝试返回最顶层的祖先作为媒体库
-                const topAncestor = ancestors[ancestors.length - 1];
-                console.log(`[dd-danmaku] 使用最顶层祖先作为媒体库: ${topAncestor.Name}`);
-                return {
-                    libraryId: topAncestor.Id,
-                    libraryName: topAncestor.Name,
-                    collectionType: topAncestor.CollectionType || ''
-                };
-            }
-
-            // 方法2: 通过 SeriesId 或 ParentId 递归查找
+            // 方法1: 通过 ParentId 递归查找媒体库
             let currentId = fullItem.SeriesId || fullItem.SeasonId || fullItem.ParentId;
             console.log('[dd-danmaku] 开始 ParentId 递归查找, 起始ID:', currentId);
+
             let maxDepth = 10;
+            let lastFolderBeforeRoot = null; // 记录 root 之前的最后一个文件夹
+
             while (currentId && maxDepth > 0) {
                 // 检查当前 ID 是否是媒体库
                 const matchedLib = libraries.find(lib => lib.id === currentId);
@@ -1732,8 +1701,12 @@
                 }
 
                 // 获取父级信息继续查找
-                const parentItem = await fatchEmbyItemInfo(currentId);
-                console.log('[dd-danmaku] 递归查找父级:', parentItem ? { Id: parentItem.Id, Name: parentItem.Name, ParentId: parentItem.ParentId } : 'null');
+                const parentUrl = ApiClient.getUrl(`Users/${userId}/Items/${currentId}`, {
+                    Fields: 'ParentId,Name,Type,CollectionType'
+                });
+                const parentItem = await ApiClient.getJSON(parentUrl).catch(() => null);
+                console.log('[dd-danmaku] 递归查找父级:', parentItem ? { Id: parentItem.Id, Name: parentItem.Name, ParentId: parentItem.ParentId, Type: parentItem.Type } : 'null');
+
                 if (!parentItem) break;
 
                 // 检查父级名称是否匹配媒体库名称
@@ -1747,8 +1720,105 @@
                     };
                 }
 
+                // 检查父级类型是否为 CollectionFolder（媒体库根目录）
+                if (parentItem.Type === 'CollectionFolder' || parentItem.Type === 'UserView') {
+                    console.log(`[dd-danmaku] 找到媒体库根目录: ${parentItem.Name}`);
+                    return {
+                        libraryId: parentItem.Id,
+                        libraryName: parentItem.Name,
+                        collectionType: parentItem.CollectionType || ''
+                    };
+                }
+
+                // 如果遇到 AggregateFolder (root)，使用之前记录的文件夹通过 VirtualFolders 匹配
+                if (parentItem.Type === 'AggregateFolder') {
+                    console.log('[dd-danmaku] 到达 AggregateFolder (root)，尝试通过 VirtualFolders 匹配');
+                    if (lastFolderBeforeRoot) {
+                        const vfResult = await matchLibraryByFolderName(lastFolderBeforeRoot.Name, libraries);
+                        if (vfResult) return vfResult;
+                    }
+                    break;
+                }
+
+                // 记录当前文件夹（作为 root 之前的最后一个文件夹）
+                if (parentItem.Type === 'Folder') {
+                    lastFolderBeforeRoot = parentItem;
+                }
+
                 currentId = parentItem.ParentId;
                 maxDepth--;
+            }
+
+            // 方法2: 通过 Path 路径匹配媒体库（适用于网盘/302反代用户）
+            if (fullItem.Path) {
+                console.log('[dd-danmaku] 尝试通过 Path 匹配媒体库, Path:', fullItem.Path);
+
+                // 标准化 item 路径（统一使用正斜杠，转小写用于比较）
+                const normalizedItemPath = fullItem.Path.replace(/\\/g, '/').toLowerCase();
+
+                // 获取媒体库的路径信息（需要管理员权限，可能失败）
+                try {
+                    const virtualFoldersUrl = ApiClient.getUrl('Library/VirtualFolders');
+                    const virtualFolders = await ApiClient.getJSON(virtualFoldersUrl).catch(() => null);
+
+                    if (virtualFolders && virtualFolders.length > 0) {
+                        console.log('[dd-danmaku] VirtualFolders:', virtualFolders.map(f => ({ Name: f.Name, Locations: f.Locations })));
+
+                        for (const folder of virtualFolders) {
+                            if (folder.Locations && folder.Locations.length > 0) {
+                                for (const location of folder.Locations) {
+                                    // 标准化媒体库路径
+                                    const normalizedLocation = location.replace(/\\/g, '/').toLowerCase();
+
+                                    // 检查 item 的 Path 是否以媒体库路径开头或包含媒体库路径
+                                    if (normalizedItemPath.startsWith(normalizedLocation) ||
+                                        normalizedItemPath.includes(normalizedLocation + '/') ||
+                                        normalizedItemPath.includes('/' + normalizedLocation.split('/').pop() + '/')) {
+                                        const matchedLib = libraries.find(lib => lib.name === folder.Name);
+                                        if (matchedLib) {
+                                            console.log(`[dd-danmaku] 通过 Path 匹配到媒体库: ${matchedLib.name}`);
+                                            return {
+                                                libraryId: matchedLib.id,
+                                                libraryName: matchedLib.name,
+                                                collectionType: matchedLib.collectionType || ''
+                                            };
+                                        }
+                                        // 即使在 libraries 中找不到，也返回 folder 信息
+                                        console.log(`[dd-danmaku] 通过 Path 匹配到媒体库 (VirtualFolder): ${folder.Name}`);
+                                        return {
+                                            libraryId: folder.ItemId || folder.Name,
+                                            libraryName: folder.Name,
+                                            collectionType: folder.CollectionType || ''
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.log('[dd-danmaku] VirtualFolders API 失败 (可能需要管理员权限):', e);
+                }
+
+                // 方法3: 从 Path 中提取可能的媒体库名称（最后的回退方案）
+                // 路径格式可能是: /媒体库名/子文件夹/文件名 或 D:\媒体库名\子文件夹\文件名
+                const pathParts = fullItem.Path.replace(/\\/g, '/').split('/').filter(p => p);
+                console.log('[dd-danmaku] Path 分段:', pathParts);
+
+                // 尝试匹配路径中的每个部分与媒体库名称
+                for (const part of pathParts) {
+                    const matchedLib = libraries.find(lib =>
+                        lib.name === part ||
+                        lib.name.toLowerCase() === part.toLowerCase()
+                    );
+                    if (matchedLib) {
+                        console.log(`[dd-danmaku] 通过 Path 分段匹配到媒体库: ${matchedLib.name}`);
+                        return {
+                            libraryId: matchedLib.id,
+                            libraryName: matchedLib.name,
+                            collectionType: matchedLib.collectionType || ''
+                        };
+                    }
+                }
             }
 
             console.warn('[dd-danmaku] 无法匹配到媒体库');
@@ -1756,6 +1826,58 @@
             console.warn('[dd-danmaku] 获取媒体库信息失败:', error);
         }
 
+        return null;
+    }
+
+    /**
+     * 通过文件夹名称匹配媒体库（使用 VirtualFolders API）
+     * 适用于媒体库名称与实际文件夹名称不同的情况
+     * @param {string} folderName - 文件夹名称
+     * @param {Array} libraries - 媒体库列表
+     * @returns {Promise<Object|null>}
+     */
+    async function matchLibraryByFolderName(folderName, libraries) {
+        try {
+            const virtualFoldersUrl = ApiClient.getUrl('Library/VirtualFolders');
+            const virtualFolders = await ApiClient.getJSON(virtualFoldersUrl).catch(() => null);
+
+            if (virtualFolders && virtualFolders.length > 0) {
+                console.log('[dd-danmaku] VirtualFolders:', virtualFolders.map(f => ({ Name: f.Name, Locations: f.Locations, ItemId: f.ItemId })));
+
+                for (const folder of virtualFolders) {
+                    if (folder.Locations && folder.Locations.length > 0) {
+                        for (const location of folder.Locations) {
+                            // 标准化路径并检查是否包含文件夹名称
+                            const normalizedLocation = location.replace(/\\/g, '/');
+                            const locationParts = normalizedLocation.split('/').filter(p => p);
+                            const lastPart = locationParts[locationParts.length - 1];
+
+                            // 检查路径最后一部分是否匹配文件夹名称
+                            if (lastPart === folderName || lastPart.toLowerCase() === folderName.toLowerCase()) {
+                                const matchedLib = libraries.find(lib => lib.name === folder.Name);
+                                if (matchedLib) {
+                                    console.log(`[dd-danmaku] 通过 VirtualFolders 匹配到媒体库: ${matchedLib.name} (文件夹: ${folderName})`);
+                                    return {
+                                        libraryId: matchedLib.id,
+                                        libraryName: matchedLib.name,
+                                        collectionType: matchedLib.collectionType || ''
+                                    };
+                                }
+                                // 即使在 libraries 中找不到，也返回 folder 信息
+                                console.log(`[dd-danmaku] 通过 VirtualFolders 匹配到媒体库: ${folder.Name} (文件夹: ${folderName})`);
+                                return {
+                                    libraryId: folder.ItemId || folder.Name,
+                                    libraryName: folder.Name,
+                                    collectionType: folder.CollectionType || ''
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.log('[dd-danmaku] VirtualFolders API 失败:', e);
+        }
         return null;
     }
 
