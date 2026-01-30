@@ -2923,7 +2923,7 @@
     
     // 滚动弹幕高度
     const verticalPadding = 2;
-    const scrollDanmakuHeight = (fontSize * 1.25) + verticalPadding;
+    const scrollDanmakuHeight = (fontSize * 1.3) + verticalPadding;
     
     // 固定弹幕高度（顶部/底部需要更大的间距）
     const fixedLineHeight = 1.4;  // 固定弹幕的行高系数
@@ -2953,7 +2953,7 @@
         for (let i = 0; i < text.length; i++) {
             width += (text.charCodeAt(i) > 127 ? 1 : 0.6);
         }
-        return (width * fontSize) + 30;
+        return (width * fontSize) + 35;
     };
 
     const tracks = {
