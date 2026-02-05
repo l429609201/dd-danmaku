@@ -1,4 +1,4 @@
-﻿// ==UserScript==
+// ==UserScript==
 // @name         Emby danmaku extension - Emby style
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
@@ -304,6 +304,8 @@
         customApiList: { id: 'danmakuCustomApiList', defaultValue: [], name: '自定义弹幕源列表' },
         apiPriority: { id: 'danmakuApiPriority', defaultValue: ['official', 'custom'], name: 'API 优先级' },
         excludedLibraries: { id: 'danmakuExcludedLibraries', defaultValue: [], name: '排除的媒体库' },
+        convertTopTo: { id: 'danmakuConvertTopTo', defaultValue: 'default', name: '顶部弹幕转换为' },
+        convertBottomTo: { id: 'danmakuConvertBottomTo', defaultValue: 'default', name: '底部弹幕转换为' },
     };
     const lsLocalKeys = {
         animePrefix: '_anime_id_rel_',
@@ -3484,15 +3486,42 @@
         const timelineOffset = lsGetItem(lsKeys.timelineOffset.id);
         const sourceUidReg = /\[(.*)\](.*)/;
         const showSourceIds = lsGetItem(lsKeys.showSource.id);
-        // const removeEmojiEnable = lsGetItem(lsKeys.removeEmojiEnable.id);
-        //const $xml = new DOMParser().parseFromString(string, 'text/xml')
-        return $obj
+        
+        // 读取转换设置 & 初始化统计
+        const convertTopTo = lsGetItem(lsKeys.convertTopTo.id);
+        const convertBottomTo = lsGetItem(lsKeys.convertBottomTo.id);
+        let stat = { t2b: 0, t2r: 0, b2t: 0, b2r: 0 };
+        // -------------------------------------
+       // const removeEmojiEnable = lsGetItem(lsKeys.removeEmojiEnable.id);
+       //const $xml = new DOMParser().parseFromString(string, 'text/xml')
+        const parsedComments = $obj
             .map(($comment) => {
                 const p = $comment.p;
                 //if (p === null || $comment.childNodes[0] === undefined) return null;
                 const values = p.split(',');
-                const mode = { 6: 'ltr', 1: 'rtl', 5: 'top', 4: 'bottom' }[values[1]];
+                let mode = { 6: 'ltr', 1: 'rtl', 5: 'top', 4: 'bottom' }[values[1]];
                 if (!mode) return null;
+
+                // 位置转换逻辑
+                if (mode === 'top') {
+                    if (convertTopTo === 'bottom') {
+                        mode = 'bottom';
+                        stat.t2b++;
+                    } else if (convertTopTo === 'rolling') {
+                        mode = 'rtl'; 
+                        stat.t2r++;
+                    }
+                } else if (mode === 'bottom') {
+                    if (convertBottomTo === 'top') {
+                        mode = 'top';
+                        stat.b2t++;
+                    } else if (convertBottomTo === 'rolling') {
+                        mode = 'rtl';
+                        stat.b2r++;
+                    }
+                }
+                // -------------------------
+
                 // 弹幕颜色+透明度
                 const baseColor = Number(values[2]).toString(16).padStart(6, '0');
                 const color = `${baseColor}${fontOpacity}`; // 生成8位十六进制颜色
@@ -3514,14 +3543,26 @@
                     cmt.originalText = cmt.text;
                     cmt.text += showSourceIds.map(id => id === showSource.source.id ? `,[${cmt[id]}]` : ',' + cmt[id]).join('');
                 }
-                cmt.cuid = cmt[showSource.cid.id] + ',' + cmt[showSource.originalUserId.id];
-                // if (removeEmojiEnable) {
+                 // if (removeEmojiEnable) {
                 //     cmt.text = cmt.text.replace(emojiRegex, '');
                 // }
+                cmt.cuid = cmt[showSource.cid.id] + ',' + cmt[showSource.originalUserId.id];
+                
                 return cmt;
             })
             .filter((x) => x)
             .sort((a, b) => a.time - b.time);
+
+        // 日志输出
+        if (stat.t2b + stat.t2r + stat.b2t + stat.b2r > 0) {
+            let msg = [];
+            if (stat.t2b) msg.push(`顶部转换为底部 ${stat.t2b}条`);
+            if (stat.t2r) msg.push(`顶部转换为滚动 ${stat.t2r}条`);
+            if (stat.b2t) msg.push(`底部转换为顶部 ${stat.b2t}条`);
+            if (stat.b2r) msg.push(`底部转换为滚动 ${stat.b2r}条`);
+            logger.info(`[转换成功]: ${msg.join(' ')}`);
+        }
+        return parsedComments;
     }
 
     function getCommentStyle(color, shadowColor, fontStyle, fontWeight, fontSize, fontFamily) {
@@ -4643,6 +4684,20 @@
                         </div>
                     </div>
                 </div>
+                <div is="emby-collapse" title="弹幕位置转换">
+                    <div class="${classes.collapseContentNav}">
+                        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1em; padding: 0.5em 0;">
+                    <div style="flex: 1; display: flex; align-items: center; min-width: 250px;">
+                    <label class="${classes.embyLabel}" style="width: auto; margin-right: 1em; white-space: nowrap;">顶部转:</label>
+                    <div id="danmakuConvertTopToDiv" style="flex: 1;"></div>
+                </div>
+                <div style="flex: 1; display: flex; align-items: center; min-width: 250px;">
+                    <label class="${classes.embyLabel}" style="width: auto; margin-right: 1em; white-space: nowrap;">底部转:</label>
+                    <div id="danmakuConvertBottomToDiv" style="flex: 1;"></div>
+                </div>
+                </div>
+                </div>
+                </div>
                 <div is="emby-collapse" title="额外设置">
                     <div class="${classes.collapseContentNav}" style="padding-top: 0.5em !important;">
                         <div id="${eleIds.extCheckboxDiv}" class="${classes.embyCheckboxList}" style="${styles.embyCheckboxList}"></div>
@@ -4719,6 +4774,28 @@
             </div>
         `;
         container.innerHTML = template.trim();
+        const topOpts = [
+        { id: 'default', name: '默认' },
+        { id: 'bottom', name: '底部' },
+        { id: 'rolling', name: '滚动' }
+    ];
+    getById('danmakuConvertTopToDiv', container).append(
+        embyTabs(topOpts, lsGetItem(lsKeys.convertTopTo.id), 'id', 'name', (val) => {
+            lsSetItem(lsKeys.convertTopTo.id, val.id); 
+            loadDanmaku(LOAD_TYPE.RELOAD);
+        })
+    );
+    const bottomOpts = [
+        { id: 'default', name: '默认' },
+        { id: 'top', name: '顶部' },
+        { id: 'rolling', name: '滚动' }
+    ];
+    getById('danmakuConvertBottomToDiv', container).append(
+        embyTabs(bottomOpts, lsGetItem(lsKeys.convertBottomTo.id), 'id', 'name', (val) => {
+            lsSetItem(lsKeys.convertBottomTo.id, val.id); 
+            loadDanmaku(LOAD_TYPE.RELOAD);
+        })
+    );
         buildDanmakuFilterSetting(container);
         buildExtSetting(container);
         buildOsdSetting();
