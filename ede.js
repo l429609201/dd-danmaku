@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.1.8
+// @version      1.1.9
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -30,7 +30,7 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.1.8', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.1.9', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -278,6 +278,9 @@
         bangumiEnable: { id: 'danmakuBangumiEnable', defaultValue: false, name: '启用并填写个人令牌' },
         bangumiToken: { id: 'danmakuBangumiToken', defaultValue: '', name: '个人令牌' },
         bangumiPostPercent: { id: 'danmakuBangumiPostPercent', defaultValue: 95, name: '时长比', min: 1, max: 99, step: 1 },
+        tmdbApiKey: { id: 'danmakuTmdbApiKey', defaultValue: '', name: 'TMDB API Key' },
+        tmdbApiBaseUrl: { id: 'danmakuTmdbApiBaseUrl', defaultValue: 'https://api.themoviedb.org', name: 'TMDB API 域名' },
+        tmdbEpisodeMappingEnable: { id: 'danmakuTmdbEpisodeMappingEnable', defaultValue: false, name: '启用集数映射' },
         consoleLogEnable: { id: 'danmakuConsoleLogEnable', defaultValue: false, name: '控制台日志' },
         logLevel: { id: 'danmakuLogLevel', defaultValue: '3', name: '日志级别' },
         useFetchPluginXml: { id: 'danmakuUseFetchPluginXml', defaultValue: false, name: '加载媒体服务端xml弹幕' },
@@ -307,6 +310,7 @@
         excludedLibraries: { id: 'danmakuExcludedLibraries', defaultValue: [], name: '排除的媒体库' },
         animeTitleBlacklist: { id: 'danmakuAnimeTitleBlacklist', defaultValue: '', name: '标题黑名单正则' },
         episodeTitleBlacklist: { id: 'danmakuEpisodeTitleBlacklist', defaultValue: '^(.*?)(特番|特典|特辑|花絮|预告|PV|CM|NCED|NCOP|Opening|Ending|OP|ED|Menu|刊行.*記念|作曲家|音楽|BGM|OST|主题曲|片尾曲|插曲|C\\d+|S\\d+|OVA|OAD|SP|Special|番外|外传|衍生|制作花絮|幕后|访谈|采访|发布会|宣传|推广)(.*?)$', name: '分集名称黑名单正则' },
+        blacklistApplyToCustomApi: { id: 'danmakuBlacklistApplyToCustomApi', defaultValue: false, name: '黑名单应用于自定义接口' },
         convertTopTo: { id: 'danmakuConvertTopTo', defaultValue: 'default', name: '顶部弹幕转换为' },
         convertBottomTo: { id: 'danmakuConvertBottomTo', defaultValue: 'default', name: '底部弹幕转换为' },
     };
@@ -395,6 +399,15 @@
         bangumiTokenLabel: 'bangumiTokenInputLabel',
         bangumiTokenLinkDiv: 'bangumiTokenLinkDiv',
         bangumiPostPercentDiv: 'bangumiPostPercentDiv',
+        tmdbEnableLabel: 'tmdbEnableLabel',
+        tmdbSettingsDiv: 'tmdbSettingsDiv',
+        tmdbApiKeyInput: 'tmdbApiKeyInput',
+        tmdbApiKeyInputDiv: 'tmdbApiKeyInputDiv',
+        tmdbApiKeyLabel: 'tmdbApiKeyLabel',
+        tmdbApiKeyLinkDiv: 'tmdbApiKeyLinkDiv',
+        tmdbApiBaseUrlInput: 'tmdbApiBaseUrlInput',
+        tmdbApiBaseUrlInputDiv: 'tmdbApiBaseUrlInputDiv',
+        tmdbApiBaseUrlLabel: 'tmdbApiBaseUrlLabel',
         customeUrlsDiv: 'customeUrlsDiv',
         customeCorsProxyDiv: 'customeCorsProxyDiv',
         customeDanmakuDiv: 'customeDanmakuDiv',
@@ -434,6 +447,7 @@
         searchBlacklistDiv: 'searchBlacklistDiv',
         animeTitleBlacklistInput: 'animeTitleBlacklistInput',
         episodeTitleBlacklistInput: 'episodeTitleBlacklistInput',
+        blacklistApplyToCustomApiCheckbox: 'blacklistApplyToCustomApiCheckbox',
     };
     // 播放界面下方按钮
     const mediaBtnOpts = [
@@ -1048,6 +1062,13 @@
             }
 
             if (episodes && episodes.length > 0) {
+                // 按 episodeId 排序，确保集数顺序正确
+                episodes.sort((a, b) => {
+                    const idA = parseInt(a.episodeId) || 0;
+                    const idB = parseInt(b.episodeId) || 0;
+                    return idA - idB;
+                });
+
                 // 为第一个动画添加分集信息
                 // 同时更新 imageUrl（bangumi 接口返回的可能更准确）
                 let imageUrl = firstAnime.imageUrl;
@@ -1092,10 +1113,20 @@
      * 应用搜索内容黑名单过滤
      * @param {Array} animes - 番剧列表
      * @param {boolean} filterEpisodes - 是否同时过滤分集
+     * @param {string} apiKey - API 类型标识 ('official' 或 'custom')
      * @returns {Array} 过滤后的番剧列表
      */
-    function applySearchBlacklist(animes, filterEpisodes = true) {
+    function applySearchBlacklist(animes, filterEpisodes = true, apiKey = 'official') {
         if (!animes || animes.length === 0) return animes;
+
+        // 检查是否应该应用黑名单
+        const blacklistApplyToCustomApi = lsGetItem(lsKeys.blacklistApplyToCustomApi.id) ?? lsKeys.blacklistApplyToCustomApi.defaultValue;
+
+        // 如果是自定义接口且未开启自定义接口黑名单，直接返回
+        if (apiKey !== 'official' && !blacklistApplyToCustomApi) {
+            logger.debug('[黑名单] 自定义接口未启用黑名单过滤');
+            return animes;
+        }
 
         const animeTitleBlacklist = lsGetItem(lsKeys.animeTitleBlacklist.id) || '';
         const episodeTitleBlacklist = lsGetItem(lsKeys.episodeTitleBlacklist.id) || '';
@@ -1480,13 +1511,6 @@
                 logger.debug(`[API请求] match 跳过 X-User-Agent (自定义API)`);
             }
 
-            // [新增] 如果启用了非对称验证，添加挑战响应头
-            if (window.ede && window.ede.asymmetricAuthEnabled) {
-                const challengeResponse = await getChallengeResponse(prefix);
-                if (challengeResponse) {
-                    requestHeaders['X-Challenge-Response'] = challengeResponse;
-                }
-            }
             const requestBody = JSON.stringify(payload);
 
             logger.debug(`[API请求] match 请求头:`, requestHeaders);
@@ -2366,8 +2390,31 @@
     async function searchEpisodes(itemInfoMap) {
         const { animeName, episode, seriesOrMovieId, streamUrl, size, duration } = itemInfoMap;
         logger.debug(`[Debug] searchEpisodes调用 - streamUrl: ${streamUrl ? '已获取' : '未获取'}, size: ${size}, duration: ${duration}`);
-        const startTime = performance.now(); 
-        
+        const startTime = performance.now();
+
+        // [新增] TMDB Episode Mapper 集成 - 双向匹配策略（季集格式）
+        let seasonEpisodeCandidates = [{ season: null, episode: episode }]; // 候选列表，默认包含原始集数
+        const itemId = window.ede?.itemId;
+        if (itemId && episode) {
+            try {
+                const mappingResult = await getEpisodeMappingForCurrentItem(itemId);
+                if (mappingResult && mappingResult.mapping) {
+                    const currentSeason = mappingResult.currentSeason || 1;
+                    const mappedSeasonEpisode = convertSeasonEpisode(currentSeason, episode, mappingResult.mapping);
+                    if (mappedSeasonEpisode && (mappedSeasonEpisode.season !== currentSeason || mappedSeasonEpisode.episode !== episode)) {
+                        // 优先使用映射后的季集作为第一候选
+                        seasonEpisodeCandidates = [
+                            { season: mappedSeasonEpisode.season, episode: mappedSeasonEpisode.episode }, // 第一候选：映射后
+                            { season: currentSeason, episode: episode } // 第二候选：原始（备用）
+                        ];
+                        logger.info(`[集数映射] 双向匹配: S${String(currentSeason).padStart(2, '0')}E${String(episode).padStart(2, '0')} <-> S${String(mappedSeasonEpisode.season).padStart(2, '0')}E${String(mappedSeasonEpisode.episode).padStart(2, '0')}`);
+                    }
+                }
+            } catch (error) {
+                logger.error('[集数映射] 映射过程出错，使用原始集数:', error);
+            }
+        }
+
         // 读取用户定义的API优先级
         const apiPriority = lsGetItem(lsKeys.apiPriority.id);
         // 构建API配置，支持多个自定义源（新数据结构）
@@ -2448,35 +2495,74 @@
                 // B. 尝试 /search/episodes 接口 (如果 match 没有结果)
                 if (!result) {
                     let searchTitle = animeName;
-                    let searchEpisode = episode;
 
                     // 官方源特殊优化
                     if (apiKey === 'official') {
                         const parsed = parseAnimeName(animeName);
                         if (parsed.season !== null) {
                             searchTitle = parsed.season === 1 ? parsed.title : `${parsed.title} 第${parsed.season}季`;
-                            searchEpisode = parsed.episode;
                         }
                     }
 
-                    // 带集数搜索
-                    let animaInfo = await fetchSearchEpisodes(searchTitle, searchEpisode, config.prefix);
+                    // 双向匹配：尝试所有候选季集，选择最佳结果
+                    let bestAnimaInfo = null;
+                    let bestCandidate = null;
 
-                    // [黑名单] 对官方 API 的搜索结果应用黑名单过滤
-                    if (apiKey === 'official' && animaInfo?.animes?.length > 0) {
-                        animaInfo.animes = applySearchBlacklist(animaInfo.animes, true);
+                    // 解析基础标题（去掉季度后缀），用于根据候选季度动态构建搜索标题
+                    const parsedBase = parseAnimeName(animeName);
+                    const baseName = parsedBase.title || animeName;
+
+                    for (const candidate of seasonEpisodeCandidates) {
+                        const candidateEpisode = candidate.episode;
+                        const candidateSeason = candidate.season;
+
+                        let logMsg = `[双向匹配] 尝试集数: ${candidateEpisode}`;
+                        if (candidateSeason) {
+                            logMsg = `[双向匹配] 尝试: S${String(candidateSeason).padStart(2, '0')}E${String(candidateEpisode).padStart(2, '0')}`;
+                        }
+                        logger.debug(logMsg);
+
+                        // 根据候选的季度动态调整搜索标题
+                        let candidateSearchTitle = searchTitle;
+                        if (candidateSeason && candidateSeason > 1) {
+                            candidateSearchTitle = `${baseName} 第${candidateSeason}季`;
+                            logger.debug(`[双向匹配] 根据候选季度调整搜索标题: "${candidateSearchTitle}"`);
+                        } else if (candidateSeason === 1) {
+                            // 第1季使用纯标题（不带季度后缀）
+                            candidateSearchTitle = baseName;
+                        }
+
+                        const animaInfo = await fetchSearchEpisodes(candidateSearchTitle, candidateEpisode, config.prefix);
+
+                        // [黑名单] 对搜索结果应用黑名单过滤
+                        if (animaInfo?.animes?.length > 0) {
+                            animaInfo.animes = applySearchBlacklist(animaInfo.animes, true, apiKey);
+                        }
+
+                        if (animaInfo?.animes?.length > 0) {
+                            // 候选列表按优先级排序（映射后优先），第一个有效结果即为最优
+                            bestAnimaInfo = animaInfo;
+                            bestCandidate = candidate;
+                            logger.debug(`[双向匹配] 候选 S${String(candidateSeason).padStart(2, '0')}E${String(candidateEpisode).padStart(2, '0')} 匹配成功，停止搜索`);
+                            break;
+                        }
                     }
 
-                    if (animaInfo?.animes?.length > 0) {
-                        result = { animaInfo, apiPrefix: config.prefix, apiName: config.name };
+                    if (bestAnimaInfo) {
+                        let logMsg = `[双向匹配] 最佳匹配使用集数: ${bestCandidate.episode}`;
+                        if (bestCandidate.season) {
+                            logMsg = `[双向匹配] 最佳匹配: S${String(bestCandidate.season).padStart(2, '0')}E${String(bestCandidate.episode).padStart(2, '0')}`;
+                        }
+                        logger.info(`${logMsg}, 结果数: ${bestAnimaInfo.animes.length}`);
+                        result = { animaInfo: bestAnimaInfo, apiPrefix: config.prefix, apiName: config.name };
                     }
                     // 降级：不带集数搜索
                     else {
-                        animaInfo = await fetchSearchEpisodes(animeName, null, config.prefix);
+                        const animaInfo = await fetchSearchEpisodes(animeName, null, config.prefix);
 
-                        // [黑名单] 对官方 API 的搜索结果应用黑名单过滤
-                        if (apiKey === 'official' && animaInfo?.animes?.length > 0) {
-                            animaInfo.animes = applySearchBlacklist(animaInfo.animes, true);
+                        // [黑名单] 对搜索结果应用黑名单过滤
+                        if (animaInfo?.animes?.length > 0) {
+                            animaInfo.animes = applySearchBlacklist(animaInfo.animes, true, apiKey);
                         }
 
                         if (animaInfo?.animes?.length > 0) {
@@ -2486,15 +2572,15 @@
                         else {
                             const seriesOrMovieInfo = await fatchEmbyItemInfo(seriesOrMovieId);
                             if (seriesOrMovieInfo?.OriginalTitle) {
-                                animaInfo = await fetchSearchEpisodes(seriesOrMovieInfo.OriginalTitle, episode, config.prefix);
+                                const animaInfoOriginal = await fetchSearchEpisodes(seriesOrMovieInfo.OriginalTitle, seasonEpisodeCandidates[0].episode, config.prefix);
 
-                                // [黑名单] 对官方 API 的搜索结果应用黑名单过滤
-                                if (apiKey === 'official' && animaInfo?.animes?.length > 0) {
-                                    animaInfo.animes = applySearchBlacklist(animaInfo.animes, true);
+                                // [黑名单] 对搜索结果应用黑名单过滤
+                                if (animaInfoOriginal?.animes?.length > 0) {
+                                    animaInfoOriginal.animes = applySearchBlacklist(animaInfoOriginal.animes, true, apiKey);
                                 }
 
-                                if (animaInfo?.animes?.length > 0) {
-                                    result = { animaInfo, animeOriginalTitle: seriesOrMovieInfo.OriginalTitle, apiPrefix: config.prefix, apiName: config.name };
+                                if (animaInfoOriginal?.animes?.length > 0) {
+                                    result = { animaInfo: animaInfoOriginal, animeOriginalTitle: seriesOrMovieInfo.OriginalTitle, apiPrefix: config.prefix, apiName: config.name };
                                 }
                             }
                         }
@@ -4279,7 +4365,8 @@
                     lsLocalKeys.animeSeasonPrefix,
                     lsLocalKeys.animePrefix,
                     lsLocalKeys.bangumiEpInfoPrefix, // [修复] 添加Bangumi集数信息缓存
-                    lsLocalKeys.bangumiMe // [修复] 添加Bangumi用户信息缓存
+                    lsLocalKeys.bangumiMe, // [修复] 添加Bangumi用户信息缓存
+                    '_api_' // [修复] 清除带API前缀的弹幕匹配缓存
                 ];
                 lsBatchRemove(prefixesToClear);
 
@@ -4296,6 +4383,9 @@
                     window.ede.searchDanmakuOpts.animes = [];
                     window.ede.searchDanmakuOpts.episodes = [];
                 }
+
+                // [修复] 清除TMDB映射缓存
+                episodeMappingCache.clear();
 
                 embyToast({ text: '本地匹配缓存已清除，包括animeId、episodeId等所有匹配信息' });
                 loadDanmaku(LOAD_TYPE.REFRESH); // 强制重新匹配和加载弹幕
@@ -4929,6 +5019,29 @@
                         </div>
                     </div>
                 </div>
+                <div is="emby-collapse" title="TMDB 集数映射设置">
+                    <div class="${classes.collapseContentNav}" style="padding-top: 0.5em !important;">
+                        <label id="${eleIds.tmdbEnableLabel}" class="${classes.embyLabel}"></label>
+                        <div id="${eleIds.tmdbSettingsDiv}">
+                            <div id="${eleIds.tmdbApiKeyInputDiv}" style="display: flex;" ></div>
+                            <div id="${eleIds.tmdbApiKeyLabel}" class="${classes.embyFieldDesc}"></div>
+                            <div class="${classes.embyFieldDesc}">
+                                你可以在以下链接申请 TMDB API Key
+                            </div>
+                            <div id="${eleIds.tmdbApiKeyLinkDiv}" style="padding-bottom: 0.5em;"></div>
+                            <label class="${classes.embyLabel}">TMDB API 域名: </label>
+                            <div id="${eleIds.tmdbApiBaseUrlInputDiv}" style="display: flex; margin-bottom: 0.5em;" ></div>
+                            <div id="${eleIds.tmdbApiBaseUrlLabel}" class="${classes.embyFieldDesc}"></div>
+                            <div class="${classes.embyFieldDesc}">
+                                通过 TMDB Episode Group 自动处理集数偏移问题（如 S02E01→S01E25）
+                            </div>
+                            <div class="${classes.embyFieldDesc}">
+                                启用后，将自动从 Emby 获取 TMDB Episode Group ID，并建立季集映射关系。
+                                适用于解决 DanDanPlay 和 TMDB 集数不一致的问题。
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 <div is="emby-collapse" title="媒体库排除设置">
                     <div id="${eleIds.excludedLibrariesDiv}" class="${classes.collapseContentNav}"></div>
                 </div>
@@ -4968,6 +5081,7 @@
         buildOsdSetting();
         buildPlaySetting(container);
         buildBangumiSetting(container);
+        buildTmdbSetting(container);
         buildExcludedLibrariesSetting(container);
         buildSearchBlacklistSetting(container);
         buildCustomUrlSetting(container);
@@ -5160,6 +5274,318 @@
         }
     }
 
+    function buildTmdbSetting(container) {
+        const tmdbSettingsDiv = getById(eleIds.tmdbSettingsDiv, container);
+        const tmdbEnable = lsGetItem(lsKeys.tmdbEpisodeMappingEnable.id);
+        tmdbSettingsDiv.hidden = !tmdbEnable;
+        const tmdbEnableLabel = getById(eleIds.tmdbEnableLabel, container);
+        tmdbEnableLabel.append(embyCheckbox(
+            { label: lsKeys.tmdbEpisodeMappingEnable.name }, tmdbEnable, (checked) => {
+                lsSetItem(lsKeys.tmdbEpisodeMappingEnable.id, checked);
+                tmdbSettingsDiv.hidden = !checked;
+            }
+        ));
+        const tmdbApiKeyInputDiv = getById(eleIds.tmdbApiKeyInputDiv, container);
+        tmdbApiKeyInputDiv.append(embyInput(
+            { id: eleIds.tmdbApiKeyInput, type: 'password', value: lsGetItem(lsKeys.tmdbApiKey.id) }, onEnterTmdbApiKey
+        ));
+        tmdbApiKeyInputDiv.append(embyButton({ label: '校验', iconKey: iconKeys.check}, onEnterTmdbApiKey));
+        const tmdbApiKeyLinkDiv = getById(eleIds.tmdbApiKeyLinkDiv, container);
+        tmdbApiKeyLinkDiv.append(embyALink('https://www.themoviedb.org/settings/api', 'https://www.themoviedb.org/settings/api'));
+
+        // TMDB API 域名输入框
+        const tmdbApiBaseUrlInputDiv = getById(eleIds.tmdbApiBaseUrlInputDiv, container);
+        tmdbApiBaseUrlInputDiv.append(embyInput(
+            { id: eleIds.tmdbApiBaseUrlInput, type: 'text', value: lsGetItem(lsKeys.tmdbApiBaseUrl.id) }, onEnterTmdbApiBaseUrl
+        ));
+        const tmdbApiBaseUrlLabel = getById(eleIds.tmdbApiBaseUrlLabel, container);
+        tmdbApiBaseUrlLabel.innerText = '默认: https://api.themoviedb.org (如需使用代理或镜像站，可修改此域名)';
+    }
+
+    function onEnterTmdbApiBaseUrl(e) {
+        const tmdbApiBaseUrl = getById(eleIds.tmdbApiBaseUrlInput).value.trim();
+        lsSetItem(lsKeys.tmdbApiBaseUrl.id, tmdbApiBaseUrl);
+        const label = getById(eleIds.tmdbApiBaseUrlLabel);
+        label.innerText = `已保存: ${tmdbApiBaseUrl}`;
+        label.style.color = 'green';
+    }
+
+    function onEnterTmdbApiKey(e) {
+        const tmdbApiKey = getById(eleIds.tmdbApiKeyInput).value.trim();
+        lsSetItem(lsKeys.tmdbApiKey.id, tmdbApiKey);
+        const label = getById(eleIds.tmdbApiKeyLabel);
+        verifyTmdbApiKey(tmdbApiKey).then(res => {
+            label.innerText = 'TMDB API Key 验证成功';
+            label.style.color = 'green';
+        }).catch(error => {
+            label.innerText = 'TMDB API Key 验证失败';
+            label.style.color = 'red';
+            throw error;
+        });
+    }
+
+    async function verifyTmdbApiKey(apiKey) {
+        try {
+            const tmdbBaseUrl = lsGetItem(lsKeys.tmdbApiBaseUrl.id) || 'https://api.themoviedb.org';
+            const url = `${tmdbBaseUrl}/3/configuration?api_key=${apiKey}`;
+            const res = await fetch(url);
+            if (!res.ok) {
+                throw new Error(`TMDB API 请求失败: ${res.status}`);
+            }
+            const data = await res.json();
+            logger.debug('TMDB API Key 验证成功', data);
+            return data;
+        } catch (error) {
+            logger.error('TMDB API Key 验证失败', error);
+            throw error;
+        }
+    }
+
+    /**
+     * TMDB Episode Mapper - 集数映射功能
+     * 通过 TMDB Episode Group 自动处理集数偏移问题
+     */
+    const episodeMappingCache = new Map();
+
+    async function getEmbyItemProviderIds(itemId) {
+        try {
+            const userId = ApiClient.getCurrentUserId();
+            const url = `${ApiClient.serverAddress()}/emby/Users/${userId}/Items/${itemId}?api_key=${ApiClient.accessToken()}`;
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`Emby API 请求失败: ${response.status}`);
+            }
+            const data = await response.json();
+
+            // 获取 Episode 的基本信息
+            const episodeInfo = {
+                providerIds: data.ProviderIds || {},
+                season: data.ParentIndexNumber,
+                episode: data.IndexNumber,
+                seriesId: data.SeriesId,
+                seriesName: data.SeriesName
+            };
+
+            // 如果有 SeriesId，从 Series 获取 TMDB Episode Group ID
+            if (data.SeriesId) {
+                try {
+                    const seriesUrl = `${ApiClient.serverAddress()}/emby/Users/${userId}/Items/${data.SeriesId}?api_key=${ApiClient.accessToken()}`;
+                    const seriesResponse = await fetch(seriesUrl);
+                    if (seriesResponse.ok) {
+                        const seriesData = await seriesResponse.json();
+                        // 合并 Series 的 ProviderIds（TMDB Episode Group ID 通常在这里）
+                        episodeInfo.providerIds = {
+                            ...episodeInfo.providerIds,
+                            ...(seriesData.ProviderIds || {})
+                        };
+                        logger.debug(`[集数映射] 已从 Series (${data.SeriesId}) 获取 ProviderIds:`, seriesData.ProviderIds);
+                    }
+                } catch (seriesError) {
+                    logger.warn('[集数映射] 获取 Series ProviderIds 失败:', seriesError);
+                }
+            }
+
+            return episodeInfo;
+        } catch (error) {
+            logger.error('获取 Emby ProviderIds 失败:', error);
+            return null;
+        }
+    }
+
+    async function getTmdbEpisodeGroups(tmdbId, tmdbApiKey) {
+        try {
+            const tmdbBaseUrl = lsGetItem(lsKeys.tmdbApiBaseUrl.id) || 'https://api.themoviedb.org';
+            const url = `${tmdbBaseUrl}/3/tv/${tmdbId}/episode_groups?api_key=${tmdbApiKey}`;
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`TMDB API 请求失败: ${response.status}`);
+            }
+            const data = await response.json();
+            return data.results || [];
+        } catch (error) {
+            logger.error('[集数映射] 获取 TMDB Episode Groups 失败:', error);
+            return null;
+        }
+    }
+
+    async function getTmdbEpisodeGroup(episodeGroupId, tmdbApiKey) {
+        if (episodeMappingCache.has(episodeGroupId)) {
+            logger.debug('[集数映射] 使用缓存的 TMDB Episode Group 数据');
+            return episodeMappingCache.get(episodeGroupId);
+        }
+
+        try {
+            const tmdbBaseUrl = lsGetItem(lsKeys.tmdbApiBaseUrl.id) || 'https://api.themoviedb.org';
+            const url = `${tmdbBaseUrl}/3/tv/episode_group/${episodeGroupId}?api_key=${tmdbApiKey}`;
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`TMDB API 请求失败: ${response.status}`);
+            }
+            const data = await response.json();
+            episodeMappingCache.set(episodeGroupId, data);
+            return data;
+        } catch (error) {
+            logger.error('[集数映射] 获取 TMDB Episode Group 失败:', error);
+            return null;
+        }
+    }
+
+    function buildEpisodeMapping(episodeGroup) {
+        if (!episodeGroup || !episodeGroup.groups) {
+            return null;
+        }
+
+        const mapping = {
+            absoluteToSeason: {},
+            seasonToAbsolute: {},
+            totalEpisodes: 0,
+            tmdbToCustom: {},  // 反向映射: TMDB季集 → Custom季集
+            customToTmdb: {}   // 正向映射: Custom季集 → TMDB季集
+        };
+
+        let absoluteEpisode = 1;
+
+        episodeGroup.groups.forEach((group, groupIndex) => {
+            if (group.episodes && Array.isArray(group.episodes)) {
+                group.episodes.forEach((episode, episodeIndex) => {
+                    // 参考 misaka_danmu_server 的映射逻辑
+                    // customSeasonNumber = group.order（TMDB 返回的分组顺序号）
+                    // customEpisodeNumber = episodeIndex + 1（从1开始）
+                    // tmdbSeasonNumber/tmdbEpisodeNumber = TMDB 原始季集号
+                    const customSeason = group.order !== undefined ? group.order : (groupIndex + 1);
+                    const customEpisode = episodeIndex + 1;
+                    const tmdbSeason = episode.season_number;
+                    const tmdbEpisode = episode.episode_number;
+
+                    const seasonEpisodeKey = `S${String(customSeason).padStart(2, '0')}E${String(customEpisode).padStart(2, '0')}`;
+
+                    mapping.absoluteToSeason[absoluteEpisode] = {
+                        season: customSeason,
+                        episode: customEpisode,
+                        tmdbSeason: tmdbSeason,
+                        tmdbEpisode: tmdbEpisode
+                    };
+
+                    mapping.seasonToAbsolute[seasonEpisodeKey] = absoluteEpisode;
+
+                    // 双向映射表
+                    const tmdbKey = `S${String(tmdbSeason).padStart(2, '0')}E${String(tmdbEpisode).padStart(2, '0')}`;
+                    mapping.customToTmdb[seasonEpisodeKey] = { season: tmdbSeason, episode: tmdbEpisode };
+                    mapping.tmdbToCustom[tmdbKey] = { season: customSeason, episode: customEpisode };
+
+                    logger.debug(`[集数映射] 映射: Custom S${String(customSeason).padStart(2, '0')}E${String(customEpisode).padStart(2, '0')} <-> TMDB S${String(tmdbSeason).padStart(2, '0')}E${String(tmdbEpisode).padStart(2, '0')}`);
+
+                    absoluteEpisode++;
+                });
+            }
+        });
+
+        mapping.totalEpisodes = absoluteEpisode - 1;
+        return mapping;
+    }
+
+    function convertSeasonEpisode(season, episode, mapping) {
+        if (!mapping) {
+            return null;
+        }
+
+        const key = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+
+        // 方向1: 作为 Custom 季集查 → 返回 TMDB 季集
+        if (mapping.customToTmdb[key]) {
+            const mapped = mapping.customToTmdb[key];
+            logger.info(`[集数映射] Custom ${key} -> TMDB S${String(mapped.season).padStart(2, '0')}E${String(mapped.episode).padStart(2, '0')} (custom_to_tmdb)`);
+            return { season: mapped.season, episode: mapped.episode, direction: 'custom_to_tmdb' };
+        }
+
+        // 方向2: 作为 TMDB 季集查 → 返回 Custom 季集
+        if (mapping.tmdbToCustom[key]) {
+            const mapped = mapping.tmdbToCustom[key];
+            logger.info(`[集数映射] TMDB ${key} -> Custom S${String(mapped.season).padStart(2, '0')}E${String(mapped.episode).padStart(2, '0')} (tmdb_to_custom)`);
+            return { season: mapped.season, episode: mapped.episode, direction: 'tmdb_to_custom' };
+        }
+
+        logger.debug(`[集数映射] ${key} 未找到任何映射`);
+        return null;
+    }
+
+    async function getEpisodeMappingForCurrentItem(itemId) {
+        try {
+            const tmdbApiKey = lsGetItem(lsKeys.tmdbApiKey.id);
+            const mappingEnabled = lsGetItem(lsKeys.tmdbEpisodeMappingEnable.id);
+
+            if (!mappingEnabled || !tmdbApiKey) {
+                logger.debug('[集数映射] 未启用或未配置 TMDB API Key');
+                return null;
+            }
+
+            const itemInfo = await getEmbyItemProviderIds(itemId);
+            if (!itemInfo || !itemInfo.providerIds) {
+                logger.debug('[集数映射] 无法获取 ProviderIds');
+                return null;
+            }
+
+            // 只对电视节目类型（Episode）进行映射，电影不触发
+            const itemDetail = await fatchEmbyItemInfo(itemId);
+            if (!itemDetail || itemDetail.Type !== 'Episode') {
+                logger.debug(`[集数映射] 当前类型为 ${itemDetail?.Type}，跳过映射（仅支持 Episode 类型）`);
+                return null;
+            }
+
+            let tmdbEgId = itemInfo.providerIds.TmdbEg;
+
+            // 冗余处理：如果没有 TmdbEg，尝试通过 Tmdb ID 获取 Episode Groups
+            if (!tmdbEgId && itemInfo.providerIds.Tmdb) {
+                logger.info(`[集数映射] 未找到 TmdbEg，尝试通过 Tmdb ID (${itemInfo.providerIds.Tmdb}) 获取 Episode Groups`);
+                const episodeGroups = await getTmdbEpisodeGroups(itemInfo.providerIds.Tmdb, tmdbApiKey);
+
+                if (episodeGroups && episodeGroups.length > 0) {
+                    // 优先选择 type 为 "Original air date" 的分组
+                    const originalAirDateGroup = episodeGroups.find(g => g.type === 7); // type 7 = Original air date
+                    const selectedGroup = originalAirDateGroup || episodeGroups[0];
+
+                    tmdbEgId = selectedGroup.id;
+                    logger.info(`[集数映射] 自动选择 Episode Group: ${selectedGroup.name} (ID: ${tmdbEgId}, Type: ${selectedGroup.type})`);
+                } else {
+                    logger.debug('[集数映射] 该剧集没有可用的 Episode Groups');
+                    return null;
+                }
+            }
+
+            if (!tmdbEgId) {
+                logger.debug('[集数映射] 该剧集没有 TMDB Episode Group ID');
+                return null;
+            }
+
+            logger.info(`[集数映射] 发现 TMDB Episode Group ID: ${tmdbEgId}`);
+
+            const episodeGroup = await getTmdbEpisodeGroup(tmdbEgId, tmdbApiKey);
+            if (!episodeGroup) {
+                logger.debug('[集数映射] 无法获取 Episode Group 数据');
+                return null;
+            }
+
+            const mapping = buildEpisodeMapping(episodeGroup);
+            if (!mapping) {
+                logger.debug('[集数映射] 无法构建映射表');
+                return null;
+            }
+
+            logger.info(`[集数映射] 成功构建映射表，共 ${mapping.totalEpisodes} 集`);
+
+            return {
+                mapping,
+                currentSeason: itemInfo.season,
+                currentEpisode: itemInfo.episode,
+                seriesName: itemInfo.seriesName,
+                tmdbEgId
+            };
+        } catch (error) {
+            logger.error('[集数映射] 获取集数映射失败:', error);
+            return null;
+        }
+    }
+
     /**
      * 构建媒体库排除设置界面
      */
@@ -5258,13 +5684,25 @@
         // 获取当前保存的值
         const animeTitleBlacklist = lsGetItem(lsKeys.animeTitleBlacklist.id) || '';
         const episodeTitleBlacklist = lsGetItem(lsKeys.episodeTitleBlacklist.id) || lsKeys.episodeTitleBlacklist.defaultValue;
+        const blacklistApplyToCustomApi = lsGetItem(lsKeys.blacklistApplyToCustomApi.id) ?? lsKeys.blacklistApplyToCustomApi.defaultValue;
 
         blacklistDiv.innerHTML = `
             <div class="${classes.embyFieldDesc}" style="margin-bottom: 0.8em;">
                 用于过滤官方搜索接口返回的内容，支持正则表达式。匹配到的内容将被排除。
             </div>
 
-            <div style="margin-bottom: 1.2em;">
+            <div style="margin-bottom: 1.5em;">
+                <label class="${classes.embyCheckboxLabel}">
+                    <input type="checkbox" is="emby-checkbox" id="${eleIds.blacklistApplyToCustomApiCheckbox}"
+                        ${blacklistApplyToCustomApi ? 'checked' : ''} />
+                    <span>应用黑名单到自定义接口</span>
+                </label>
+                <div class="${classes.embyFieldDesc}" style="margin-top: 0.3em;">
+                    默认仅对官方接口生效，开启后自定义接口也会应用黑名单过滤
+                </div>
+            </div>
+
+            <div style="margin-bottom: 1.2em; margin-top: 1.5em;">
                 <label class="${classes.embyLabel}" style="font-size: 1em;">番剧标题黑名单（过滤整个番剧）:</label>
                 <div class="${classes.embyFieldDesc}" style="margin-bottom: 0.5em;">
                     示例: <code>剧场版|OVA|特别篇</code> 将过滤标题包含这些关键词的番剧
@@ -5304,9 +5742,11 @@
         blacklistDiv.querySelector('#saveBlacklistBtn').addEventListener('click', () => {
             const animeInput = getById(eleIds.animeTitleBlacklistInput);
             const episodeInput = getById(eleIds.episodeTitleBlacklistInput);
+            const applyToCustomCheckbox = getById(eleIds.blacklistApplyToCustomApiCheckbox);
 
             const animeValue = animeInput.value.trim();
             const episodeValue = episodeInput.value.trim();
+            const applyToCustomValue = applyToCustomCheckbox.checked;
 
             // 验证正则表达式是否有效
             try {
@@ -5319,20 +5759,24 @@
 
             lsSetItem(lsKeys.animeTitleBlacklist.id, animeValue);
             lsSetItem(lsKeys.episodeTitleBlacklist.id, episodeValue);
+            lsSetItem(lsKeys.blacklistApplyToCustomApi.id, applyToCustomValue);
             embyToast({ text: '搜索内容黑名单设置已保存' });
-            logger.info('[设置] 搜索内容黑名单已更新:', { animeValue, episodeValue });
+            logger.info('[设置] 搜索内容黑名单已更新:', { animeValue, episodeValue, applyToCustomValue });
         });
 
         // 恢复默认按钮事件
         blacklistDiv.querySelector('#resetBlacklistBtn').addEventListener('click', () => {
             const animeInput = getById(eleIds.animeTitleBlacklistInput);
             const episodeInput = getById(eleIds.episodeTitleBlacklistInput);
+            const applyToCustomCheckbox = getById(eleIds.blacklistApplyToCustomApiCheckbox);
 
             animeInput.value = '';
             episodeInput.value = lsKeys.episodeTitleBlacklist.defaultValue;
+            applyToCustomCheckbox.checked = lsKeys.blacklistApplyToCustomApi.defaultValue;
 
             lsSetItem(lsKeys.animeTitleBlacklist.id, '');
             lsSetItem(lsKeys.episodeTitleBlacklist.id, lsKeys.episodeTitleBlacklist.defaultValue);
+            lsSetItem(lsKeys.blacklistApplyToCustomApi.id, lsKeys.blacklistApplyToCustomApi.defaultValue);
             embyToast({ text: '已恢复默认设置' });
         });
 
@@ -5901,10 +6345,8 @@
             try {
                 const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix);
                 if (animaInfo && animaInfo.animes.length > 0) {
-                    // [黑名单] 对官方 API 的搜索结果应用黑名单过滤
-                    if (apiKey === 'official') {
-                        animaInfo.animes = applySearchBlacklist(animaInfo.animes, true);
-                    }
+                    // [黑名单] 对搜索结果应用黑名单过滤
+                    animaInfo.animes = applySearchBlacklist(animaInfo.animes, true, apiKey);
 
                     // 标记来源
                     animaInfo.animes.forEach(anime => {
@@ -7256,102 +7698,6 @@
             initListener();
             initCss();
         }
-    }
-
-    // [新增] 挑战-响应认证相关函数
-    async function getChallengeResponse(proxyPrefix) {
-        if (!window.ede.publicKeyPem) {
-            logger.warn('Public key not configured for asymmetric auth');
-            return null;
-        }
-
-        try {
-            // 生成随机挑战
-            const challenge = generateChallenge();
-
-            // 向Worker请求签名
-            const response = await fetch(proxyPrefix + '/auth/challenge', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ challenge })
-            });
-
-            if (!response.ok) {
-                throw new Error(`Challenge request failed: ${response.status}`);
-            }
-
-            const { signature } = await response.json();
-
-            // 使用公钥验证Worker的签名
-            const isValid = await verifySignatureWithPublicKey(challenge, signature, window.ede.publicKeyPem);
-
-            if (!isValid) {
-                throw new Error('Invalid signature from server');
-            }
-
-            // 返回验证成功的标识
-            return `${challenge}:${signature}`;
-        } catch (error) {
-            logger.error('Failed to get challenge response:', error);
-            return null;
-        }
-    }
-
-    function generateChallenge() {
-        const array = new Uint8Array(32);
-        crypto.getRandomValues(array);
-        return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
-    }
-
-    async function verifySignatureWithPublicKey(data, signature, publicKeyPem) {
-        try {
-            // 导入公钥
-            const publicKey = await crypto.subtle.importKey(
-                'spki',
-                pemToArrayBuffer(publicKeyPem),
-                {
-                    name: 'RSA-PSS',
-                    hash: 'SHA-256',
-                },
-                false,
-                ['verify']
-            );
-
-            // 验证签名
-            const signatureBuffer = base64ToArrayBuffer(signature);
-            const dataBuffer = new TextEncoder().encode(data);
-
-            return await crypto.subtle.verify(
-                {
-                    name: 'RSA-PSS',
-                    saltLength: 32,
-                },
-                publicKey,
-                signatureBuffer,
-                dataBuffer
-            );
-        } catch (error) {
-            logger.error('Signature verification failed:', error);
-            return false;
-        }
-    }
-
-    function pemToArrayBuffer(pem) {
-        const b64 = pem.replace(/-----BEGIN (PRIVATE|PUBLIC) KEY-----/, '')
-                       .replace(/-----END (PRIVATE|PUBLIC) KEY-----/, '')
-                       .replace(/\s/g, '');
-        return base64ToArrayBuffer(b64);
-    }
-
-    function base64ToArrayBuffer(base64) {
-        const binaryString = atob(base64);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-        }
-        return bytes.buffer;
     }
 
     // emby/jellyfin CustomEvent. see: https://github.com/MediaBrowser/emby-web-defaultskin/blob/822273018b82a4c63c2df7618020fb837656868d/nowplaying/videoosd.js#L698
