@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.1.9
+// @version      1.2.0
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -30,7 +30,7 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.1.9', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.2.0', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -207,19 +207,19 @@
             // [优化] 使用 Set 优化差集计算性能，防止卡死
             const loadedComments = getDanmakuComments(ede);
             if (!loadedComments || loadedComments.length === 0) return ede.commentsParsed;
-            
+
             // 将已加载弹幕的 cuid 存入 Set，查找速度极快
             const loadedCuids = new Set(loadedComments.map(c => c.cuid));
-            
+
             // 只需要遍历一次即可
             return ede.commentsParsed.filter(p => !loadedCuids.has(p.cuid));
         } },
         { id: '5', name: '已相似合并', onChange: (ede) => {
         if (ede.danmaku && ede.danmaku.comments) {
-            return ede.danmaku.comments.filter(p => p.xCount); 
+            return ede.danmaku.comments.filter(p => p.xCount);
         }
         return [];
-        } 
+        }
     },
         { id: '100', name: '通知', onChange: (ede) => ede.danmaku ? ede.danmaku.comments.filter(c => hasToastPrefixes(c, toastPrefixes)) : [] },
     ];
@@ -313,6 +313,9 @@
         blacklistApplyToCustomApi: { id: 'danmakuBlacklistApplyToCustomApi', defaultValue: false, name: '黑名单应用于自定义接口' },
         convertTopTo: { id: 'danmakuConvertTopTo', defaultValue: 'default', name: '顶部弹幕转换为' },
         convertBottomTo: { id: 'danmakuConvertBottomTo', defaultValue: 'default', name: '底部弹幕转换为' },
+        configPersistenceEnable: { id: 'danmakuConfigPersistenceEnable', defaultValue: false, name: '启用配置持久化' },
+        configPersistenceAutoSync: { id: 'danmakuConfigPersistenceAutoSync', defaultValue: false, name: '实时同步' },
+        configPersistenceNamespace: { id: 'danmakuConfigPersistenceNamespace', defaultValue: 'dd-danmaku', name: '同步标识符' },
     };
     const lsLocalKeys = {
         animePrefix: '_anime_id_rel_',
@@ -408,6 +411,12 @@
         tmdbApiBaseUrlInput: 'tmdbApiBaseUrlInput',
         tmdbApiBaseUrlInputDiv: 'tmdbApiBaseUrlInputDiv',
         tmdbApiBaseUrlLabel: 'tmdbApiBaseUrlLabel',
+        persistenceEnableLabel: 'persistenceEnableLabel',
+        persistenceAutoSyncLabel: 'persistenceAutoSyncLabel',
+        persistenceNamespaceInput: 'persistenceNamespaceInput',
+        persistenceNamespaceLabel: 'persistenceNamespaceLabel',
+        persistenceSettingsDiv: 'persistenceSettingsDiv',
+        persistenceStatusLabel: 'persistenceStatusLabel',
         customeUrlsDiv: 'customeUrlsDiv',
         customeCorsProxyDiv: 'customeCorsProxyDiv',
         customeDanmakuDiv: 'customeDanmakuDiv',
@@ -675,10 +684,10 @@
         self.onmessage = function(e) {
             // 接收的数据结构变化了：lightComments 只有 {t: text, m: time, i: index}
             const { lightComments, threshold, timeWindow, enable } = e.data;
-            
+
             if (!enable || !lightComments || lightComments.length === 0) {
                 // 如果没开启，返回 null，主线程会直接使用原数据
-                self.postMessage(null); 
+                self.postMessage(null);
                 return;
             }
 
@@ -693,11 +702,11 @@
                     const score = similarityPercentage(a, b, maxAllowedDiff, newBuffer);
                     return { score: score, buffer: newBuffer };
                 }
-                const v = buffer; 
+                const v = buffer;
                 for (let i = 0; i <= n; i++) v[i] = i;
                 for (let j = 1; j <= m; j++) {
                     let pre = v[0]; v[0] = j; let rowMin = j;
-                    const charB = b.charCodeAt(j - 1); 
+                    const charB = b.charCodeAt(j - 1);
                     for (let i = 1; i <= n; i++) {
                         const tmp = v[i];
                         const cost = (a.charCodeAt(i - 1) === charB) ? 0 : 1;
@@ -706,7 +715,7 @@
                         const sub = pre + cost; if (sub < val) val = sub;
                         v[i] = val; pre = tmp; if (val < rowMin) rowMin = val;
                     }
-                    if (rowMin > maxAllowedDiff) return 0; 
+                    if (rowMin > maxAllowedDiff) return 0;
                 }
                 const maxLen = m; const distance = v[n];
                 return ((maxLen - distance) / maxLen) * 100;
@@ -742,8 +751,8 @@
 
                     const compareLen = compare.t.length;
                     const maxLen = rootLen > compareLen ? rootLen : compareLen;
-                    const maxDiff = maxLen * errorRate; 
-                    
+                    const maxDiff = maxLen * errorRate;
+
                     if (Math.abs(rootLen - compareLen) > maxDiff) continue;
                     if ((root._mask & compare._mask) === 0 && rootLen > 2) continue;
 
@@ -755,16 +764,16 @@
                         mergedIndices.add(j);
                     }
                 }
-                
+
                 // 我们不返回整个对象，只返回：原始索引(i) 和 最终文本(t)
                 // 这样回传的数据量非常小
                 const finalStr = count > 1 ? (rootText + " [x" + count + "]") : null;
-                resultIndices.push({ 
+                resultIndices.push({
                     i: root.i, // 原始数组的下标
                     t: finalStr // 如果没合并，传null省流量；合并了传新文本
                 });
             }
-            
+
             // 传回轻量级结果
             self.postMessage(resultIndices);
         };
@@ -1552,14 +1561,14 @@
          // [修正] 优先使用当前匹配信息中记录的 API 地址
         const prefix = window.ede.episode_info?.apiPrefix || dandanplayApi.prefix;
         const url = `${prefix}/comment/${episodeId}?withRelated=true&chConvert=${window.ede.chConvert}`;
-        
+
         const startTime = performance.now(); // [Log] 开始计时
 
         return fetchJson(url)   // 直接使用 fetchJson
             .then((data) => {
                 const endTime = performance.now();
                 const duration = (endTime - startTime).toFixed(0);
-                
+
                  // 兼容不同 API 的返回格式：
                 // - 标准格式: { comments: [...] }
                 // - 嵌套格式: { data: { comments: [...] } }
@@ -2350,8 +2359,8 @@
                     const headBuffer = await headRes.arrayBuffer();
                     worker.postMessage({ type: 'APPEND', chunk: headBuffer, isLast: false }, [headBuffer]);
 
-                    const tailRes = await fetch(streamUrl, { 
-                        headers: { ...authHeaders, 'Range': `bytes=${fileSize - CHUNK_SIZE}-${fileSize - 1}` } 
+                    const tailRes = await fetch(streamUrl, {
+                        headers: { ...authHeaders, 'Range': `bytes=${fileSize - CHUNK_SIZE}-${fileSize - 1}` }
                     });
                     const tailBuffer = await tailRes.arrayBuffer();
                     worker.postMessage({ type: 'APPEND', chunk: tailBuffer, isLast: true }, [tailBuffer]);
@@ -2430,14 +2439,14 @@
                 }
             });
         }
-        
+
         // 构建优先级队列
         const actualPriority = [];
         for (const key of apiPriority) {
             if (key === 'official') actualPriority.push('official');
             else if (key === 'custom') customApiList.forEach((item, i) => item.enabled && actualPriority.push(`custom_${i}`));
         }
-        
+
         // 准备 /match 接口的请求体
         const matchPayload = {
             fileName: animeName,
@@ -2446,7 +2455,7 @@
             videoDuration: Math.floor(duration || 0), // [修复] 转换为整数
             matchMode: "hashAndFileName"// [修正] 始终使用 hashAndFileName 模式
         };
-        
+
         // 计算哈希 (Worker) - 使用真正的 SparkMD5 库计算文件 MD5
         // 如果计算失败，使用 fallback 值（仅用于 API 兼容，不会匹配到正确的弹幕）
         const FALLBACK_HASH = 'a1b2c3d4e5f67890abcd1234ef567890';
@@ -2991,7 +3000,7 @@
             if (maxY <= 0) return; // 防止除以0
 
             const scale = chartHeightNum / maxY; // 用于拉长 y 轴间距
-            
+
             // 1. 预计算坐标点，方便后续计算控制点
             const points = data.map((val, i) => ({
                 x: (i / (data.length - 1)) * progressBarWidth,
@@ -3005,7 +3014,7 @@
 
             // 3. 使用贝塞尔曲线连接数据点 (张力系数 tension)
             const tension = 0.4; // 0.3~0.5 比较圆滑，0 为折线
-            
+
             for (let i = 0; i < points.length - 1; i++) {
                 const p0 = points[Math.max(0, i - 1)];
                 const p1 = points[i];
@@ -3025,7 +3034,7 @@
             ctx.lineTo(progressBarWidth, chartHeightNum);
             ctx.closePath();
 
-            // 5. 填充颜色 
+            // 5. 填充颜色
             ctx.fillStyle = 'rgba(255, 255, 255, 0.2)'; // 内部填充淡淡的白色
             ctx.fill();
 
@@ -3033,7 +3042,7 @@
             ctx.lineWidth = 1.5;
             ctx.stroke();
         }
-        
+
         drawLineChart(timeCounts);
         logger.info('已重绘进度条弹幕数量折线图');
     }
@@ -3044,12 +3053,12 @@
     // 1. 隐藏并清空现有弹幕
     if (window.ede.danmaku) {
         window.ede.danmaku.hide();
-        window.ede.danmaku.clear(); 
+        window.ede.danmaku.clear();
     }
 
     // 2. [关键修改] 立即重置剧集元数据信息，防止旧标题残留
     if (window.ede) {
-        window.ede.episode_info = null; 
+        window.ede.episode_info = null;
     }
 
     // 3. 重置右下角 OSD 信息
@@ -3063,7 +3072,7 @@
     if (chartEle) {
         chartEle.remove();
     }
-    
+
     // 5. 清空当前的弹幕数据缓存
     window.ede.commentsParsed = [];
 }
@@ -3077,7 +3086,7 @@
         // [新增] 先获取媒体库信息并检查排除
         logger.info('[dd-danmaku] 开始检查媒体库排除...');
         const item = await getEmbyItemInfo();
-        
+
         logger.debug('[dd-danmaku] getEmbyItemInfo 返回:', item ? item.Name : 'null');
         if (item) {
             const libraryInfo = await getItemLibraryInfo(item);
@@ -3089,15 +3098,15 @@
                 const excludedList = lsGetItem(lsKeys.excludedLibraries.id) || [];
                 if (excludedList.includes(libraryInfo.libraryName)) {
                     logger.info(`[dd-danmaku] 媒体库 "${libraryInfo.libraryName}" 在排除列表中，跳过弹幕搜索和加载`);
-                    
+
                     // 更新 UI 显示“已禁用”
                     appendvideoOsdDanmakuInfo(0);
-                    
+
                     // 即使跳过，也要初始化 ID 并清空可能存在的旧弹幕
                     const skipSessionId = Date.now().toString();
                     window.ede.lastLoadId = skipSessionId;
                     createDanmaku([], skipSessionId);
-                    
+
                     return; // 停止后续加载
                 }
             }
@@ -3105,7 +3114,7 @@
 
         // [关键修复] 2. 在加载的最开始就生成新的任务 ID (Session ID)
         // 这样 B 剧集一开始加载，A 的 ID (上一个时间戳) 就已经失效了
-        const currentSessionId = Date.now().toString(); 
+        const currentSessionId = Date.now().toString();
         if (window.ede) {
             window.ede.lastLoadId = currentSessionId;
 
@@ -3350,11 +3359,11 @@
     const fontSize = getDanmakuFontSize();
 
     // 为滚动弹幕和固定弹幕使用不同的高度计算
-    
+
     // 滚动弹幕高度
     const verticalPadding = 2;
     const scrollDanmakuHeight = (fontSize * 1.3) + verticalPadding;
-    
+
     // 固定弹幕高度（顶部/底部需要更大的间距）
     const fixedLineHeight = 1.4;  // 固定弹幕的行高系数
     const fixedVerticalGap = Math.max(10, fontSize * 0.4);  // 固定弹幕的额外间距
@@ -3362,11 +3371,11 @@
 
     // 计算实际可用高度和轨道数
     const availableHeight = containerHeight * (heightPercent / 100);
-    
+
     // 为滚动弹幕和固定弹幕分别计算轨道数
     const scrollMaxTracks = Math.max(1, Math.floor(availableHeight / scrollDanmakuHeight));
     const fixedMaxTracks = Math.max(1, Math.floor(availableHeight / fixedDanmakuHeight));
-    
+
     // 顶部和底部弹幕轨道各占一部分
     const topMaxTracks = Math.max(1, Math.floor(fixedMaxTracks / 3));
     const bottomMaxTracks = Math.max(1, Math.floor(fixedMaxTracks / 4));
@@ -3399,7 +3408,7 @@
     const filteredComments = sortedComments.filter(curr => {
         const mode = curr.mode || 'rtl';
         const trackType = (mode === 'ltr') ? 'rtl' : mode;
-        const trackList = tracks[trackType] || tracks['rtl']; 
+        const trackList = tracks[trackType] || tracks['rtl'];
 
         if (!trackList || trackList.length === 0) return true;
 
@@ -3411,16 +3420,16 @@
             // 固定弹幕的显示时长
             const displayDuration = 5;
             const occupyTime = displayDuration;
-            
+
             for (let i = 0; i < trackList.length; i++) {
                 const last = trackList[i];
-                
+
                 if (!last || currTime >= last.time + occupyTime) {
                     trackList[i] = { time: currTime, width: 0 };
                     return true;
                 }
             }
-            
+
             return false;
         }
 
@@ -3429,7 +3438,7 @@
 
         for (let i = 0; i < trackList.length; i++) {
             const last = trackList[i];
-            
+
             if (!last) {
                 trackList[i] = { time: currTime, width: currWidth };
                 return true;
@@ -3619,7 +3628,7 @@
             const onMessage = (e) => {
                 const results = e.data; // 这是一个轻量数组 [{i:0, t:null}, {i:3, t:"xxx [x2]"}...]
                 const endTime = performance.now();
-                
+
                 worker.removeEventListener('message', onMessage);
 
                 if (!results) { // Worker 说没开启或出错
@@ -3657,22 +3666,22 @@
 
     /**
      * Levenshtein 距离算法 (高性能魔改版)
-     * 特性: 
+     * 特性:
      * 1. Buffer Reuse: 复用传入的 Int32Array，零内存分配
      * 2. Early Exit: 差异超过 maxAllowedDiff 立即停止
      * 3. CharCode: 使用 charCodeAt 代替字符串访问，微幅提升速度
      */
     function similarityPercentage(a, b, maxAllowedDiff, buffer) {
         if (a === b) return 100;
-        
+
         const n = a.length;
         const m = b.length;
-        
+
         if (n === 0 || m === 0) return 0;
 
         // 确保 a 是短的，减少内层循环次数
         if (n > m) return similarityPercentage(b, a, maxAllowedDiff, buffer);
-        
+
         // 检查 buffer 是否够用，不够则扩容并返回新 buffer (这种情况极少)
         if (buffer.length <= n + 1) {
             const newBuffer = new Int32Array(n + 128);
@@ -3688,33 +3697,33 @@
         for (let j = 1; j <= m; j++) {
             let pre = v[0];
             v[0] = j;
-            
+
             // 记录当前行的最小值，用于提前退出判断
             let rowMin = j;
-            
+
             // [微调] 使用 charCodeAt 提升比较速度
-            const charB = b.charCodeAt(j - 1); 
-            
+            const charB = b.charCodeAt(j - 1);
+
             for (let i = 1; i <= n; i++) {
                 const tmp = v[i];
                 const cost = (a.charCodeAt(i - 1) === charB) ? 0 : 1;
-                
+
                 // 手写 Math.min 逻辑，JS中比调用 Math.min 快
                 let val = v[i] + 1;       // 删除
                 const ins = v[i-1] + 1;   // 插入
                 if (ins < val) val = ins;
                 const sub = pre + cost;   // 替换
                 if (sub < val) val = sub;
-                
+
                 v[i] = val;
                 pre = tmp;
-                
+
                 if (val < rowMin) rowMin = val;
             }
 
             // [核心优化] 提前退出：如果当前行所有位置的差异都已超过允许值，后续只会更大，直接放弃
             if (rowMin > maxAllowedDiff) {
-                return 0; 
+                return 0;
             }
         }
 
@@ -3722,7 +3731,7 @@
         const distance = v[n];
         return ((maxLen - distance) / maxLen) * 100;
     }
- 
+
     function danmakuParser($obj) {
         const fontSize = getDanmakuFontSize();
         const fontWeight = lsGetItem(lsKeys.fontWeight.id);
@@ -3736,7 +3745,7 @@
         const timelineOffset = lsGetItem(lsKeys.timelineOffset.id);
         const sourceUidReg = /\[(.*)\](.*)/;
         const showSourceIds = lsGetItem(lsKeys.showSource.id);
-        
+
         // 读取转换设置 & 初始化统计
         const convertTopTo = lsGetItem(lsKeys.convertTopTo.id);
         const convertBottomTo = lsGetItem(lsKeys.convertBottomTo.id);
@@ -3758,7 +3767,7 @@
                         mode = 'bottom';
                         stat.t2b++;
                     } else if (convertTopTo === 'rolling') {
-                        mode = 'rtl'; 
+                        mode = 'rtl';
                         stat.t2r++;
                     }
                 } else if (mode === 'bottom') {
@@ -3797,7 +3806,7 @@
                 //     cmt.text = cmt.text.replace(emojiRegex, '');
                 // }
                 cmt.cuid = cmt[showSource.cid.id] + ',' + cmt[showSource.originalUserId.id];
-                
+
                 return cmt;
             })
             .filter((x) => x)
@@ -3985,7 +3994,7 @@
                                     <label style="${styles.embySliderLabel}"></label>
                                 </label>
                             </div>
-                            
+
                             <div id="${eleIds.fontFamilyCtrl}" style="margin: 0.6em 0;"></div>
                             <div style="${styles.embySlider}">
                                 <label class="${classes.embyLabel}" style="width: 5em;">${lsKeys.fontFamily.name}: </label>
@@ -4119,16 +4128,16 @@
             embySlider({ lsKey: lsKeys.fontStyle }
             , (val, opts) => {
                 onSliderChange(val, opts); // 保存
-                onSliderChangeLabel(styles.fontStyles[val].name, opts); 
+                onSliderChangeLabel(styles.fontStyles[val].name, opts);
             }
             , (val, opts) => {
-                onSliderChangeLabel(styles.fontStyles[val].name, opts); 
+                onSliderChangeLabel(styles.fontStyles[val].name, opts);
             })
         );
         // 使用 || 0 确保如果是空值或0，也能正确识别为第0项
         var savedStyleIdx = parseInt(lsGetItem(lsKeys.fontStyle.id)) || 0;
         var styleName = (styles.fontStyles[savedStyleIdx] || styles.fontStyles[0]).name;
-        
+
         if (styleDiv.nextElementSibling) {
              var label = styleDiv.nextElementSibling.querySelector('label');
              if (label) label.innerText = styleName;
@@ -4255,7 +4264,7 @@
     if (!fontStylePreview) return; // 增加判空
     const fontWeight = lsGetItem(lsKeys.fontWeight.id);
     const fontStyleIdx = lsGetItem(lsKeys.fontStyle.id);
-    const fontStyleObj = styles.fontStyles[fontStyleIdx] || styles.fontStyles[0]; 
+    const fontStyleObj = styles.fontStyles[fontStyleIdx] || styles.fontStyles[0];
     const fontStyle = fontStyleObj.id;
 
         const fontFamily = lsGetItem(lsKeys.fontFamily.id);
@@ -5042,6 +5051,34 @@
                         </div>
                     </div>
                 </div>
+                <div is="emby-collapse" title="配置持久化">
+                    <div class="${classes.collapseContentNav}" style="padding-top: 0.5em !important;">
+                        <div style="display: flex; gap: 20px; align-items: center;">
+                            <label id="${eleIds.persistenceEnableLabel}" class="${classes.embyLabel}"></label>
+                            <label id="${eleIds.persistenceAutoSyncLabel}" class="${classes.embyLabel}"></label>
+                        </div>
+                        <div id="${eleIds.persistenceSettingsDiv}">
+                            <div style="margin-top: 1em;">
+                                <label id="${eleIds.persistenceNamespaceLabel}" class="${classes.embyLabel}" for="${eleIds.persistenceNamespaceInput}">
+                                    ${lsKeys.configPersistenceNamespace.name}
+                                </label>
+                                <input id="${eleIds.persistenceNamespaceInput}" is="emby-input" type="text" class="${classes.embyInput}" />
+                            </div>
+                            <div style="display: flex; gap: 10px; margin-top: 1em;">
+                                <button id="btnPersistenceUpload" is="emby-button" type="button" class="raised" style="flex: 1;">
+                                    <span>同步到服务器</span>
+                                </button>
+                                <button id="btnPersistenceLoad" is="emby-button" type="button" class="raised" style="flex: 1;">
+                                    <span>从服务器恢复</span>
+                                </button>
+                            </div>
+                            <div id="${eleIds.persistenceStatusLabel}" class="${classes.embyFieldDesc}" style="margin-top: 1em;"></div>
+                            <div class="${classes.embyFieldDesc}">
+                                需要安装 Parameter_persistence 插件。开启后可手动同步配置到服务器，启用实时同步后配置变更会自动同步。
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 <div is="emby-collapse" title="媒体库排除设置">
                     <div id="${eleIds.excludedLibrariesDiv}" class="${classes.collapseContentNav}"></div>
                 </div>
@@ -5061,7 +5098,7 @@
     ];
     getById('danmakuConvertTopToDiv', container).append(
         embyTabs(topOpts, lsGetItem(lsKeys.convertTopTo.id), 'id', 'name', (val) => {
-            lsSetItem(lsKeys.convertTopTo.id, val.id); 
+            lsSetItem(lsKeys.convertTopTo.id, val.id);
             loadDanmaku(LOAD_TYPE.RELOAD);
         })
     );
@@ -5072,7 +5109,7 @@
     ];
     getById('danmakuConvertBottomToDiv', container).append(
         embyTabs(bottomOpts, lsGetItem(lsKeys.convertBottomTo.id), 'id', 'name', (val) => {
-            lsSetItem(lsKeys.convertBottomTo.id, val.id); 
+            lsSetItem(lsKeys.convertBottomTo.id, val.id);
             loadDanmaku(LOAD_TYPE.RELOAD);
         })
     );
@@ -5082,6 +5119,7 @@
         buildPlaySetting(container);
         buildBangumiSetting(container);
         buildTmdbSetting(container);
+        buildPersistenceSetting(container);
         buildExcludedLibrariesSetting(container);
         buildSearchBlacklistSetting(container);
         buildCustomUrlSetting(container);
@@ -5339,6 +5377,265 @@
             logger.error('TMDB API Key 验证失败', error);
             throw error;
         }
+    }
+
+
+    function buildPersistenceSetting(container) {
+        const persistenceSettingsDiv = getById(eleIds.persistenceSettingsDiv, container);
+        const persistenceEnable = lsGetItem(lsKeys.configPersistenceEnable.id);
+        persistenceSettingsDiv.hidden = !persistenceEnable;
+
+        const persistenceEnableLabel = getById(eleIds.persistenceEnableLabel, container);
+        persistenceEnableLabel.append(embyCheckbox(
+            { label: lsKeys.configPersistenceEnable.name }, persistenceEnable, (checked) => {
+                lsSetItem(lsKeys.configPersistenceEnable.id, checked, true); // 持久化开关自身不同步
+                persistenceSettingsDiv.hidden = !checked;
+            }
+        ));
+
+        // 实时同步开关（在同一行）
+        const persistenceAutoSyncLabel = getById(eleIds.persistenceAutoSyncLabel, container);
+        const autoSyncEnable = lsGetItem(lsKeys.configPersistenceAutoSync.id);
+        persistenceAutoSyncLabel.append(embyCheckbox(
+            { label: lsKeys.configPersistenceAutoSync.name }, autoSyncEnable, (checked) => {
+                lsSetItem(lsKeys.configPersistenceAutoSync.id, checked, true); // 实时同步开关自身不同步
+            }
+        ));
+
+        // Namespace 输入框
+        const namespaceInput = getById(eleIds.persistenceNamespaceInput, container);
+        namespaceInput.value = lsGetItem(lsKeys.configPersistenceNamespace.id) || 'dd-danmaku';
+        namespaceInput.addEventListener('change', () => {
+            const newValue = namespaceInput.value.trim();
+            if (newValue) {
+                lsSetItem(lsKeys.configPersistenceNamespace.id, newValue, true); // Namespace 自身不同步
+            }
+        });
+
+        // 同步到服务器按钮
+        const btnUpload = getById('btnPersistenceUpload', container);
+        if (btnUpload) {
+            btnUpload.addEventListener('click', async () => {
+                const statusLabel = getById(eleIds.persistenceStatusLabel);
+                statusLabel.innerText = '正在同步配置到服务器...';
+                statusLabel.style.color = '';
+                try {
+                    const result = await persistenceUploadAll();
+                    statusLabel.innerText = `✅ 同步完成: 新建 ${result.created} 个, 更新 ${result.updated} 个`;
+                    statusLabel.style.color = 'green';
+                    embyToast({ text: `配置已同步到服务器` });
+                } catch (error) {
+                    statusLabel.innerText = `❌ 同步失败: ${error.message}`;
+                    statusLabel.style.color = 'red';
+                    embyToast({ text: `同步失败: ${error.message}` });
+                }
+            });
+        }
+
+        // 从服务器恢复按钮
+        const btnLoad = getById('btnPersistenceLoad', container);
+        if (btnLoad) {
+            btnLoad.addEventListener('click', async () => {
+                const statusLabel = getById(eleIds.persistenceStatusLabel);
+                statusLabel.innerText = '正在从服务器恢复配置...';
+                statusLabel.style.color = '';
+                try {
+                    const count = await persistenceLoadAll();
+                    if (count > 0) {
+                        statusLabel.innerText = `✅ 恢复完成: 已加载 ${count} 个配置，刷新页面生效`;
+                        statusLabel.style.color = 'green';
+                        embyToast({ text: `已从服务器恢复 ${count} 个配置，刷新页面生效` });
+                    } else if (count === 0) {
+                        statusLabel.innerText = '⚠️ 服务器无配置数据，请先同步';
+                        statusLabel.style.color = 'orange';
+                    } else {
+                        statusLabel.innerText = '❌ 恢复失败: 无法连接持久化服务';
+                        statusLabel.style.color = 'red';
+                    }
+                } catch (error) {
+                    statusLabel.innerText = `❌ 恢复失败: ${error.message}`;
+                    statusLabel.style.color = 'red';
+                    embyToast({ text: `恢复失败: ${error.message}` });
+                }
+            });
+        }
+    }
+
+
+    // =============================================
+    // 配置持久化服务 - 通过 Parameter_persistence 插件
+    // =============================================
+
+    function getPersistenceNamespace() {
+        return lsGetItem(lsKeys.configPersistenceNamespace.id) || 'dd-danmaku';
+    }
+
+    function getPersistenceBaseUrl() {
+        return `${ApiClient.serverAddress()}/emby/ParameterPersistence`;
+    }
+
+    function getPersistenceHeaders() {
+        return {
+            'Content-Type': 'application/json',
+            'X-Emby-Token': ApiClient.accessToken()
+        };
+    }
+
+    // 查询服务器上所有持久化配置
+    async function persistenceQueryAll() {
+        try {
+            // 使用 GET + query string 方式查询（Emby ServiceStack 对 POST body 解析有兼容问题）
+            const url = `${getPersistenceBaseUrl()}/Query?Namespace=${encodeURIComponent(getPersistenceNamespace())}&api_key=${ApiClient.accessToken()}`;
+            const response = await fetch(url, { method: 'GET' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const result = await response.json();
+            // API 返回字段是 PascalCase
+            if (result.Success) {
+                return result.DataList || [];
+            }
+            logger.warn('[持久化] 查询失败:', result.Message);
+            return [];
+        } catch (error) {
+            logger.error('[持久化] 查询服务器配置失败:', error);
+            return null;
+        }
+    }
+
+    // 批量保存配置到服务器（自动区分 Create / Update）
+    async function persistenceSaveBatch(paramsMap) {
+        try {
+            const existingList = await persistenceQueryAll();
+            if (existingList === null) throw new Error('无法连接持久化服务');
+            const existingKeys = new Set(existingList.map(p => p.Key));
+
+            const toCreate = [];
+            const toUpdate = [];
+            for (const [key, value] of Object.entries(paramsMap)) {
+                const param = {
+                    Namespace: getPersistenceNamespace(),
+                    Key: key,
+                    Value: typeof value === 'object' ? JSON.stringify(value) : String(value),
+                    Type: typeof value === 'object' ? 'json' : typeof value,
+                    Description: lsGetKeyById(key) ? lsKeys[lsGetKeyById(key)].name : key
+                };
+                if (existingKeys.has(key)) {
+                    toUpdate.push(param);
+                } else {
+                    toCreate.push(param);
+                }
+            }
+
+            let created = 0, updated = 0;
+            if (toCreate.length > 0) {
+                const resp = await fetch(`${getPersistenceBaseUrl()}/Create`, {
+                    method: 'POST',
+                    headers: getPersistenceHeaders(),
+                    body: JSON.stringify({ Parameters: toCreate })
+                });
+                const r = await resp.json();
+                if (r.Success) created = toCreate.length;
+            }
+            if (toUpdate.length > 0) {
+                const resp = await fetch(`${getPersistenceBaseUrl()}/Update`, {
+                    method: 'POST',
+                    headers: getPersistenceHeaders(),
+                    body: JSON.stringify({ Parameters: toUpdate })
+                });
+                const r = await resp.json();
+                if (r.Success) updated = toUpdate.length;
+            }
+
+            logger.info(`[持久化] 批量保存完成: 新建 ${created} 个, 更新 ${updated} 个`);
+            return { created, updated };
+        } catch (error) {
+            logger.error('[持久化] 批量保存失败:', error);
+            throw error;
+        }
+    }
+
+    // 保存单个配置到服务器（防抖）
+    const _persistenceSaveTimers = {};
+    function persistenceSaveOneDebounced(key, value) {
+        if (_persistenceSaveTimers[key]) clearTimeout(_persistenceSaveTimers[key]);
+        _persistenceSaveTimers[key] = setTimeout(async () => {
+            try {
+                // 先尝试 Update，如果不存在则 Create
+                let resp = await fetch(`${getPersistenceBaseUrl()}/Update`, {
+                    method: 'POST',
+                    headers: getPersistenceHeaders(),
+                    body: JSON.stringify({
+                        Namespace: getPersistenceNamespace(),
+                        Key: key,
+                        Value: typeof value === 'object' ? JSON.stringify(value) : String(value),
+                        Type: typeof value === 'object' ? 'json' : typeof value
+                    })
+                });
+                let result = await resp.json();
+                if (!result.Success) {
+                    // 不存在则创建
+                    resp = await fetch(`${getPersistenceBaseUrl()}/Create`, {
+                        method: 'POST',
+                        headers: getPersistenceHeaders(),
+                        body: JSON.stringify({
+                            Namespace: getPersistenceNamespace(),
+                            Key: key,
+                            Value: typeof value === 'object' ? JSON.stringify(value) : String(value),
+                            Type: typeof value === 'object' ? 'json' : typeof value,
+                            Description: lsGetKeyById(key) ? lsKeys[lsGetKeyById(key)].name : key
+                        })
+                    });
+                }
+            } catch (error) {
+                logger.debug(`[持久化] 同步 ${key} 失败:`, error.message);
+            }
+        }, 1000); // 1秒防抖
+    }
+
+    // 从服务器加载所有配置到 localStorage
+    async function persistenceLoadAll() {
+        try {
+            const list = await persistenceQueryAll();
+            if (!list || list.length === 0) {
+                logger.info('[持久化] 服务器无配置数据');
+                return 0;
+            }
+            let count = 0;
+            for (const param of list) {
+                const keyName = lsGetKeyById(param.Key);
+                if (!keyName) continue;
+                const defaultValue = lsKeys[keyName].defaultValue;
+                let parsedValue;
+                if (param.Type === 'json' || Array.isArray(defaultValue) || typeof defaultValue === 'object') {
+                    try { parsedValue = JSON.parse(param.Value); } catch { parsedValue = param.Value; }
+                } else if (typeof defaultValue === 'boolean') {
+                    parsedValue = param.Value === 'true';
+                } else if (typeof defaultValue === 'number') {
+                    parsedValue = parseFloat(param.Value);
+                } else {
+                    parsedValue = param.Value;
+                }
+                lsSetItem(param.Key, parsedValue, true); // skipSync=true 避免循环
+                count++;
+            }
+            logger.info(`[持久化] 从服务器加载了 ${count} 个配置`);
+            return count;
+        } catch (error) {
+            logger.error('[持久化] 从服务器加载配置失败:', error);
+            return -1;
+        }
+    }
+
+    // 将当前 localStorage 所有 lsKeys 配置上传到服务器
+    async function persistenceUploadAll() {
+        const paramsMap = {};
+        for (const [, keyConfig] of Object.entries(lsKeys)) {
+            if (keyConfig.id === lsKeys.configPersistenceEnable.id) continue;
+            const value = lsGetItem(keyConfig.id);
+            if (value !== null && value !== undefined) {
+                paramsMap[keyConfig.id] = value;
+            }
+        }
+        return await persistenceSaveBatch(paramsMap);
     }
 
     /**
@@ -6185,13 +6482,13 @@
         if (!lsGetItem(lsKeys.osdTitleEnable.id)) {
             return;
         }
-        
+
         const episode_info = window.ede.episode_info || {};
         const { episodeId, animeTitle, episodeTitle } = episode_info;
-        
+
         const videoOsdContainer = document.querySelector(`${mediaContainerQueryStr} .videoOsdSecondaryText`);
         let videoOsdDanmakuTitle = getById(eleIds.videoOsdDanmakuTitle, videoOsdContainer);
-        
+
         if (!videoOsdDanmakuTitle) {
             videoOsdDanmakuTitle = document.createElement('h3');
             videoOsdDanmakuTitle.id = eleIds.videoOsdDanmakuTitle;
@@ -6199,7 +6496,7 @@
             videoOsdDanmakuTitle.style = 'margin-left: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; position: absolute; right: 0px; bottom: 0px;';
         }
 
-        //  检查排除状态 
+        //  检查排除状态
         const currentLibName = window.ede && window.ede.currentLibraryInfo ? window.ede.currentLibraryInfo.libraryName : null;
         // 获取当前排除列表
         const excludedList = lsGetItem(lsKeys.excludedLibraries.id) || [];
@@ -6219,7 +6516,7 @@
             }
         }
         videoOsdDanmakuTitle.innerText = text;
-        
+
         if (videoOsdContainer) {
             videoOsdContainer.append(videoOsdDanmakuTitle);
         }
@@ -6619,7 +6916,7 @@
     const ITEM_HEIGHT = 28; // 单行高度(px)，根据字号微调
     const TOTAL_COUNT = list.length;
     const CONTAINER_HEIGHT = container.clientHeight || 350;
-    
+
     // 设置幽灵高度，撑开滚动条
     phantom.style.height = `${TOTAL_COUNT * ITEM_HEIGHT}px`;
 
@@ -6633,9 +6930,9 @@
     // 核心渲染函数
     const render = () => {
         const scrollTop = container.scrollTop;
-        
+
         // 计算渲染范围 (缓冲区加大一点，防止快速滚动白屏)
-        const BUFFER = 10; 
+        const BUFFER = 10;
         let startIndex = Math.floor(scrollTop / ITEM_HEIGHT) - BUFFER;
         let endIndex = Math.ceil((scrollTop + CONTAINER_HEIGHT) / ITEM_HEIGHT) + BUFFER;
 
@@ -6647,14 +6944,14 @@
 
         for (let i = startIndex; i < endIndex; i++) {
             const c = list[i];
-            const textContent = 
+            const textContent =
                 `[${i + 1}][${formatTime(c.time)}] : `
                 + (hasShowSourceIds ? c.originalText : c.text)
                 + (c.source ? ` [${c.source}]` : '')
                 + (c.originalUserId ? `[${c.originalUserId}]` : '')
                 + (c.cid ? `[${c.cid}]` : '')
                 + `[${c.mode}]`;
-            
+
             // 使用 div 包裹纯文本，单行显示
             html += `<div style="height:${ITEM_HEIGHT}px; line-height:${ITEM_HEIGHT}px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${textContent.replace(/</g, '&lt;')}</div>`;
         }
@@ -6666,7 +6963,7 @@
 
     // 首次渲染
     render();
-    
+
     // 绑定滚动事件 (使用 rAF 保证丝滑)
     container._scrollHandler = () => window.requestAnimationFrame(render);
     container.addEventListener('scroll', container._scrollHandler);
@@ -6803,7 +7100,7 @@
     function embyInput(props, onEnter, onChange) {
         const input = document.createElement('input', { is: 'emby-input' });
         objectEntries(props).forEach(([key, value]) => {
-            if (typeof value !== 'function') { 
+            if (typeof value !== 'function') {
                 input.setAttribute(key, value);
                 // [修复] 对于 value 属性，需要同时设置 DOM 属性才能正确显示
                 if (key === 'value') {
@@ -7306,7 +7603,7 @@
             objectEntries(keyValues).forEach(([key, value]) => lsSetItem(key, value));
         }
     }
-    function lsSetItem(id, value) {
+    function lsSetItem(id, value, skipSync) {
         if (!lsGetKeyById(id)) { return; }
         let stringValue;
         if (Array.isArray(value)) {
@@ -7317,6 +7614,14 @@
             stringValue = value;
         }
         localStorage.setItem(id, stringValue);
+        // 持久化同步：开启持久化且开启实时同步时，配置变更自动同步到服务器
+        if (!skipSync
+            && lsGetItem(lsKeys.configPersistenceEnable.id)
+            && lsGetItem(lsKeys.configPersistenceAutoSync.id)
+            && id !== lsKeys.configPersistenceEnable.id
+            && id !== lsKeys.configPersistenceAutoSync.id) {
+            persistenceSaveOneDebounced(id, value);
+        }
     }
     function lsGetKeyById(id) {
         return Object.keys(lsKeys).find(key => lsKeys[key].id === id);
@@ -7347,7 +7652,7 @@
         let timeoutId = null;
         const isSelector = typeof target === 'string';
         const elementMark = isSelector ? target : target.element.tagName;
-    
+
         const promise = new Promise((resolve, reject) => {
             function checkElement() {
                 logger.debug(`waitForElement: checking element[${elementMark}]`);
@@ -7384,7 +7689,7 @@
                 }, timeout);
             }
         });
-    
+
         return promise;
     }
 
@@ -7460,7 +7765,7 @@
         if (headerClockEle) {
             headerClockEle.remove();
         }
-    
+
         const clockElement = document.createElement('div');
         clockElement.id = 'headerClock';
         warpper.append(clockElement);
@@ -7476,7 +7781,7 @@
         }
         updateClock();
         const intervalId = setInterval(updateClock, 1000);
-    
+
         window.ede.destroyIntervalIds.push(intervalId);
         return intervalId;
     }
@@ -7544,7 +7849,7 @@
                     const timeDiff = Math.abs(mediaTime - realCurrentTime);
 
                     _media.currentTime = realCurrentTime;
-                    
+
                     // [关键修复] 安全获取 PlaybackRate
                     const playerState = playbackManager.getPlayerState();
                     // 使用可选链 (?.) 避免 undefined 报错
@@ -7570,7 +7875,7 @@
                 },
             });
         });
-        
+
         playbackEventsRefresh({
             'pause': (e) => {
                 logger.debug('[虚拟播放器] 监听到暂停事件 (pause)');
@@ -7631,7 +7936,7 @@
         if (window.ede) {
             window.ede.episode_info = null; // 防止数据串台
             window.ede.lastLoadId = 'DESTROYED_' + Date.now();
-            
+
             // [新增] 终止所有挂起的网络请求 (Fetch/Worker)
             if (window.ede.abortControllers) {
                 for (const controller of window.ede.abortControllers) {
@@ -7650,13 +7955,13 @@
         }
 
         // 清理弹幕实例
-        if (window.ede.danmaku) { 
+        if (window.ede.danmaku) {
             window.ede.danmaku.clear();
         }
 
         // 销毁弹幕按钮容器简单,双 mediaContainerQueryStr 下免去 DOM 位移操作
         const danmakuCtr = getById(eleIds.danmakuCtr);
-        if (danmakuCtr) { 
+        if (danmakuCtr) {
             danmakuCtr.remove();
         }
        // const h5VideoAdapterEle = getById(eleIds.h5VideoAdapter);
@@ -7665,10 +7970,10 @@
        // }
        // 销毁平滑补充 timeupdate 定时器
         videoTimeUpdateInterval(null, false);
-        
+
          // 销毁可能残留的定时器
         destroyAllInterval();
-        
+
         // 退出播放页面重置轴偏秒
         lsSetItem(lsKeys.timelineOffset.id, lsKeys.timelineOffset.defaultValue);
 
@@ -7685,7 +7990,7 @@
         if (e.detail.type === 'video-osd') {
             // 1. 确保对象已初始化
             if (!window.ede) { window.ede = new EDE(); }
-            
+
             // [修复] 2. 移到这里：确保 window.ede 存在后再赋值
             window.ede.itemId = e.detail.params.id ? e.detail.params.id : '';
 
@@ -7703,6 +8008,20 @@
     // emby/jellyfin CustomEvent. see: https://github.com/MediaBrowser/emby-web-defaultskin/blob/822273018b82a4c63c2df7618020fb837656868d/nowplaying/videoosd.js#L698
     // 初始化日志级别（从 localStorage 读取）
     logLevel = parseInt(lsGetItem(lsKeys.logLevel.id)) || 3;
+
+    // 配置持久化：启动时自动从服务器加载配置
+    if (lsGetItem(lsKeys.configPersistenceEnable.id)) {
+        logger.info('[持久化] 检测到持久化已开启，正在从服务器加载配置...');
+        persistenceLoadAll().then(count => {
+            if (count > 0) {
+                logger.info(`[持久化] 启动加载完成，已恢复 ${count} 个配置`);
+                // 重新读取日志级别（可能被持久化覆盖）
+                logLevel = parseInt(lsGetItem(lsKeys.logLevel.id)) || 3;
+            }
+        }).catch(error => {
+            logger.warn('[持久化] 启动加载失败，使用本地配置:', error.message);
+        });
+    }
 
     refreshEventListener({ 'viewshow': onViewShow });
     refreshEventListener({ 'viewbeforehide': beforeDestroy });
