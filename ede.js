@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.2.2
+// @version      1.2.3
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -37,7 +37,7 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.2.2', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.2.3', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -1460,63 +1460,91 @@
         return best;
     }
 
-    // [改造2] 多维度评分（接收预标准化的 searchTitle）
+    // [综合优化] 多维度评分 - 融合两版优势：条件加分机制 + bigram 精确相似度 + 用户偏好
     function calculateMatchScore(normalizedSearch, candidate, parsedSearch) {
-        let total = 0;
         const candidateYear = candidate.animeTitle?.match(/\((\d{4})\)/)?.[1] | 0;
-        const pureCandTitle = normalizeTitle(candidate.animeTitle.replace(/\(\d{4}\)/, ''));
-        const candidateTitle = normalizeTitle(candidate.animeTitle);
+        const pureCandTitle = cleanTitleForComparison(candidate.animeTitle.replace(/\(\d{4}\)/, ''));
+        const candidateTitle = cleanTitleForComparison(candidate.animeTitle);
 
-        // 1. 精确匹配 (0~0.35)
-        const exactMatch = (normalizedSearch === pureCandTitle || normalizedSearch === candidateTitle) ? 0.35
-            : pureCandTitle.startsWith(normalizedSearch) ? 0.30
-            : (candidateTitle.includes(normalizedSearch) || normalizedSearch.includes(candidateTitle)) ? 0.20
-            : 0;
-
-        // 2. 标题相似度 (0~0.25)
-        const titleSim = calculateStringSimilarity(normalizedSearch, candidateTitle) * 0.25;
-
-        // 3. 季度匹配 (半硬约束, -0.30~0.20)
-        // [增强] 对候选标题做独立解析，不依赖搜索标题的包含关系
-        let seasonMatch = 0;
-        const parsedCand = parseCandidateTitle(candidate.animeTitle);
-        const candSeason = parsedCand.season || detectSeasonFromTitle(candidate.animeTitle, normalizedSearch);
-        if (parsedSearch?.season) {
-            seasonMatch = candSeason === parsedSearch.season ? 0.20
-                : candSeason ? -0.30
-                : parsedSearch.season === 1 ? 0.10 : -0.05;
+        // 1. 名字得分 (0~0.40) - 基于 bigram 相似度
+        let nameScore = 0;
+        const exactMatch = normalizedSearch === pureCandTitle || normalizedSearch === candidateTitle;
+        if (exactMatch) {
+            nameScore = 0.40;
+        } else if (pureCandTitle.includes(normalizedSearch) || normalizedSearch.includes(pureCandTitle)) {
+            nameScore = 0.35;
+        } else if (candidateTitle.includes(normalizedSearch) || normalizedSearch.includes(candidateTitle)) {
+            nameScore = 0.30;
+        } else {
+            nameScore = calculateStringSimilarity(normalizedSearch, candidateTitle) * 0.40;
         }
 
-        // 4. 年份匹配 (-0.10~0.10)
-        let yearMatch = 0;
+        // 2. 年份匹配 (-0.20~0.20)
+        let yearScore = 0;
         if (parsedSearch?.year && candidateYear) {
             const diff = Math.abs(candidateYear - parsedSearch.year);
-            yearMatch = diff === 0 ? 0.10 : diff <= 1 ? 0.05 : -0.10;
+            yearScore = diff === 0 ? 0.20 : diff === 1 ? 0.10 : -0.20;
         }
 
-        // 5. 类型 (-0.05~0.05)
+        // 3. 季度匹配 (-0.20~0.20) - [条件加分] 只在名字得分 >= 0.20 时生效，避免误匹配
+        let seasonScore = 0;
+        const parsedCand = parseCandidateTitle(candidate.animeTitle);
+        const candSeason = parsedCand.season || detectSeasonFromTitle(candidate.animeTitle, normalizedSearch);
+        if (parsedSearch?.season && nameScore >= 0.20) {
+            if (candSeason === parsedSearch.season) {
+                seasonScore = 0.20;
+            } else if (candSeason) {
+                const sDiff = Math.abs(candSeason - parsedSearch.season);
+                seasonScore = sDiff === 1 ? -0.05 : -0.20;
+            } else {
+                seasonScore = parsedSearch.season === 1 ? 0.10 : -0.05;
+            }
+        }
+
+        // 4. 集数匹配 (-0.20~0.20) - [条件加分] 只在名字得分 >= 0.20 时生效
+        let episodeScore = 0;
+        const targetEp = parsedSearch?.episode;
+        if (targetEp && nameScore >= 0.20 && candidate.episodes?.length > 0) {
+            const matchedEp = candidate.episodes.find(ep => parseInt(ep.episodeNumber) === targetEp);
+            if (matchedEp) {
+                episodeScore = 0.20;
+                candidate._matchedEpisodeId = matchedEp.episodeId;
+            } else {
+                const epNums = candidate.episodes.map(ep => parseInt(ep.episodeNumber)).filter(n => n > 0);
+                if (epNums.length > 0) {
+                    const minEp = Math.min(...epNums), maxEp = Math.max(...epNums);
+                    if (targetEp < minEp) episodeScore = -0.10;
+                    else if (targetEp > maxEp) episodeScore = -0.10;
+                    else episodeScore = -0.05;
+                }
+            }
+        }
+
+        // 5. 关键词辅助 (0~0.05)
+        let keywordScore = 0;
+        if (nameScore < 0.30) {
+            const sKw = extractKeywords(normalizedSearch);
+            const cKw = extractKeywords(candidate.animeTitle);
+            const hits = sKw.filter(k => cKw.some(c => c.includes(k) || k.includes(c))).length;
+            keywordScore = (hits / Math.max(sKw.length, 1)) * 0.05;
+        }
+
+        // 6. 类型加成 (-0.05~0.05)
         const hasSE = parsedSearch?.season || parsedSearch?.episode;
         const typeMap = hasSE
             ? { tvseries: 0.05, tvspecial: 0.03, web: 0.02, movie: -0.05 }
             : { movie: 0.05, tvseries: 0.02 };
         const typeBonus = typeMap[candidate.type] || 0;
 
-        // 6. 集数完整度 (-0.05~0.05)
-        const ep = parsedSearch?.episode;
-        const epComplete = ep && candidate.episodes?.length ? (candidate.episodes.length >= ep ? 0.05 : -0.05)
-            : ep && candidate.episodeCount ? (candidate.episodeCount >= ep ? 0.03 : 0) : 0;
-
-        // 7. 关键词匹配 (0~0.10) — 只在精确匹配分低时补充
-        let kwMatch = 0;
-        if (exactMatch < 0.30) {
-            const sKw = extractKeywords(normalizedSearch);
-            const cKw = extractKeywords(candidate.animeTitle);
-            const hits = sKw.filter(k => cKw.some(c => c.includes(k) || k.includes(c))).length;
-            kwMatch = (hits / Math.max(sKw.length, 1)) * 0.10;
-        }
-
-        total = exactMatch + titleSim + seasonMatch + yearMatch + typeBonus + epComplete + kwMatch;
-        return { exactMatch, titleSimilarity: titleSim, seasonMatch, yearMatch, typeBonus, episodeCompleteness: epComplete, keywordMatch: kwMatch, total };
+        const total = nameScore + yearScore + seasonScore + episodeScore + keywordScore + typeBonus;
+        return {
+            nameScore, yearScore, seasonScore, episodeScore,
+            keywordScore, typeBonus,
+            exactMatch: exactMatch ? 1 : 0,
+            titleSimilarity: nameScore, seasonMatch: seasonScore, yearMatch: yearScore,
+            episodeCompleteness: episodeScore, keywordMatch: keywordScore,
+            total
+        };
     }
 
     // 标题标准化函数
@@ -1525,7 +1553,48 @@
             .replace(/[^\w\s\u4e00-\u9fff]/g, '').trim();
     }
 
-    // 解析搜索关键词，提取标题/季/集/年份
+    // [综合优化] 从标题任意位置提取季度
+    function extractSeasonNumber(title) {
+        if (!title) return null;
+        const t = title.toLowerCase();
+
+        // 阿拉伯数字/中文季号
+        const numMatch = t.match(/(?:第\s*([一二三四五六七八九十零\d]+)\s*[季部期]|season\s*(\d+)|s(\d+)(?![e\d\w]))/);
+        if (numMatch) {
+            const chineseNums = { '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,'零':0 };
+            const m = numMatch[1];
+            if (m && isNaN(parseInt(m))) {
+                if (m.length === 1 && chineseNums[m] !== undefined) return chineseNums[m];
+                else if (m.length === 2 && m[0] === '十') return 10 + (chineseNums[m[1]] || 0);
+                else if (m.includes('十')) { const parts = m.split('十'); return (chineseNums[parts[0]] || 1) * 10 + (chineseNums[parts[1]] || 0); }
+                else return chineseNums[m];
+            }
+            return parseInt(numMatch[1] || numMatch[2] || numMatch[3]);
+        }
+
+        // 英文序数词季号
+        const spelledOrdinals = {
+            'second': 2, 'third': 3, 'fourth': 4, 'fifth': 5, 'sixth': 6,
+            'seventh': 7, 'eighth': 8, 'ninth': 9, 'tenth': 10
+        };
+        for (const [word, num] of Object.entries(spelledOrdinals)) {
+            if (t.includes(word + ' season') || t.includes(word + ' series')) return num;
+        }
+
+        // 罗马数字季号
+        const romanMatch = t.match(/\b([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ]|ii|iii|iv|vi|vii|viii|ix|xi|xii)\b(?:\s*[季期部])?/);
+        if (romanMatch) {
+            const romanToNum = {
+                'Ⅰ':1,'Ⅱ':2,'Ⅲ':3,'Ⅳ':4,'Ⅴ':5,'Ⅵ':6,'Ⅶ':7,'Ⅷ':8,'Ⅸ':9,'Ⅹ':10,'Ⅺ':11,'Ⅻ':12,
+                'ii':2,'iii':3,'iv':4,'vi':6,'vii':7,'viii':8,'ix':9,'xi':11,'xii':12
+            };
+            return romanToNum[romanMatch[1]] || null;
+        }
+
+        return null;
+    }
+
+    // [综合优化] 解析搜索关键词，提取标题/季/集/年份
     function parseSearchKeyword(keyword) {
         keyword = cleanFileNameNoise(keyword.trim());
 
@@ -1538,43 +1607,145 @@
             if (ym2 && ym2[1] >= 1990 && ym2[1] <= 2030) { year = parseInt(ym2[1]); keyword = keyword.replace(ym2[1], ' ').replace(/\s{2,}/g, ' ').trim(); }
         }
 
-        // SXXEXX
+        // 提取集数
+        let episode = null;
         const se = /^(.+?)[\s._-]*S(\d{1,2})[\s._-]*E(\d{1,4})$/i.exec(keyword);
-        if (se) return { title: cleanTitleTail(se[1]), season: parseInt(se[2]), episode: parseInt(se[3]), year };
-
-        // 季度
-        const patterns = [
-            { p: /^(.*?)[\s._-]*(?:S|Season)[\s._-]*(\d{1,2})$/i, h: m => parseInt(m[2]) },
-            { p: /^(.*?)\s*第\s*([一二三四五六七八九十\d]+)\s*[季部]$/i, h: m => _CN_NUM[m[2]] || parseInt(m[2]) },
-            { p: /^(.*?)\s*([Ⅰ-Ⅻ])$/, h: m => _ROMAN[m[2]] },
-            { p: /^(.*?)\s+(\d{1,2})$/, h: m => parseInt(m[2]) }
-        ];
-        for (const { p, h } of patterns) {
-            const m = p.exec(keyword);
-            if (m) { try { const t = cleanTitleTail(m[1]), s = h(m); if (s && !(t.length > 4 && /\d{4}$/.test(t))) return { title: t, season: s, episode: null, year }; } catch(e) {} }
+        if (se) {
+            return { title: cleanTitleTail(se[1]), season: parseInt(se[2]), episode: parseInt(se[3]), year };
         }
-        return { title: cleanTitleTail(keyword), season: null, episode: null, year };
-    }
 
-    // 编辑距离相似度
-    function calculateStringSimilarity(str1, str2) {
-        const s1 = str1.toLowerCase().replace(/[：:]/g, '');
-        const s2 = str2.toLowerCase().replace(/[：:]/g, '');
-        if (s1 === s2) return 1.0;
-        if (s1.includes(s2) || s2.includes(s1)) return 0.8;
-        const n = s1.length, m = s2.length;
-        // 优化：长度差距太大直接返回低相似度
-        if (Math.abs(n - m) > Math.max(n, m) * 0.6) return 0.2;
-        const dp = Array.from({length: n + 1}, (_, i) => i);
-        for (let j = 1; j <= m; j++) {
-            let prev = dp[0]; dp[0] = j;
-            for (let i = 1; i <= n; i++) {
-                const tmp = dp[i];
-                dp[i] = s1[i-1] === s2[j-1] ? prev : Math.min(prev, dp[i], dp[i-1]) + 1;
-                prev = tmp;
+        const epPatterns = [
+            /[Ee](\d+)/,
+            /(?:^|[^\d])第\s*(\d+)\s*(?:集|话|话(?:\s*\/\s*)?第?\s*\d+\s*(?:集|话)?|卷)$/,
+            /(?<![SpPeE])\b(\d{2,4})\s*话?(?=\s*(?:END|完|OVA|OAD|SP|BD|剧场版|\s*$))/i,
+            /^(\d{1,3})(?=\s*(?:END|完|OVA|OAD|剧场版))/i,
+        ];
+        for (const pat of epPatterns) {
+            const m = keyword.match(pat);
+            if (m) { episode = parseInt(m[1]); break; }
+        }
+        if (episode !== null) keyword = keyword.replace(/([Ee]?\d+|\[?\d{1,2}\]?\s*(?:集|话|OVA|OAD|END|完))/g, '');
+
+        // 提取季度 (使用新增的 extractSeasonNumber)
+        let season = extractSeasonNumber(keyword);
+
+        if (season !== null) {
+            // 清理季度信息以防干扰标题匹配
+            keyword = keyword.replace(/第\s*[一二三四五六七八九十零\d]+\s*[季部期]/i, '')
+                           .replace(/\b(?:second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+season\b/gi, '')
+                           .replace(/\bS\d{1,2}\b/gi, '');
+        } else {
+            // 旧的回退逻辑
+            const patterns = [
+                { p: /^(.*?)[\s._-]*(?:S|Season)[\s._-]*(\d{1,2})$/i, h: m => parseInt(m[2]) },
+                { p: /^(.*?)\s*([Ⅰ-Ⅻ])$/, h: m => _ROMAN[m[2]] },
+                { p: /^(.*?)\s+(\d{1,2})$/, h: m => parseInt(m[2]) }
+            ];
+            for (const { p, h } of patterns) {
+                const m = p.exec(keyword);
+                if (m) {
+                    try {
+                        const t = cleanTitleTail(m[1]);
+                        const s = h(m);
+                        if (s && !(t.length > 4 && /\d{4}$/.test(t))) {
+                            season = s;
+                            keyword = t;
+                            break;
+                        }
+                    } catch(e) {}
+                }
             }
         }
-        return Math.max(n, m) === 0 ? 1 : (Math.max(n, m) - dp[n]) / Math.max(n, m);
+
+        // 清理残余标记
+        keyword = keyword.replace(/\s*-\s*(?:S\d+|SP|OVA|OAD|BD|剧场版)\s*$/i, '').replace(/\s+/g, ' ').trim();
+        return { title: cleanTitleTail(keyword), season, episode, year };
+    }
+
+    // [优化] 清理标题中的附加信息，用于更精确的比较
+    function cleanTitleForComparison(title) {
+        return title
+            .replace(/\s*[\(（].*?[\)）]/g, '')        // 移除括号内容: (2025), （来源：xxx）
+            .replace(/\s*【.*?】/g, '')                 // 移除【电视剧】等
+            .replace(/\s*from\s+\w+/gi, '')             // 移除 from renren 等
+            .replace(/\s*（并行\s*来源.*$/g, '')         // 移除 （并行 来源：xxx 年份：xxx）
+            .replace(/\s*（来源.*$/g, '')                // 移除 （来源：xxx）
+            // 季集编号归一化: S01E01/s1e1/S1/s01 统一为不带前导零的格式
+            .replace(/[Ss](\d+)[Ee](\d+)/g, (_, s, e) => `S${parseInt(s)}E${parseInt(e)}`)
+            .replace(/[Ss](\d+)(?![Ee\d])/g, (_, s) => `S${parseInt(s)}`)
+            .trim();
+    }
+
+    // [综合优化] 字符串相似度计算 - 融合 bigram Dice 系数 + 编辑距离 + CJK 优化
+    function calculateStringSimilarity(str1, str2) {
+        if (!str1 || !str2) return 0;
+
+        // 先清理附加信息再比较
+        const s1 = cleanTitleForComparison(str1).toLowerCase().replace(/[：:]/g, '');
+        const s2 = cleanTitleForComparison(str2).toLowerCase().replace(/[：:]/g, '');
+
+        if (s1 === s2) return 1.0;
+        if (s1.length === 0 || s2.length === 0) return 0;
+
+        // 包含关系处理 - 加入 CJK 字符优化
+        if (s1.includes(s2) || s2.includes(s1)) {
+            const shorter = Math.min(s1.length, s2.length);
+            const longer = Math.max(s1.length, s2.length);
+            const baseSim = 0.9 * (shorter / longer);
+
+            // [CJK 优化] 解决中文标题加英文副标题的问题（如"一人之下 THE OUTCAST"）
+            // 若短串全部 CJK 字符都命中了长串的 CJK 字符，则按 CJK 字符数比例重新计算
+            const cjkReg = /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\u31f0-\u31ff]/g;
+            const s1Cjk = (s1.match(cjkReg) || []).length;
+            const s2Cjk = (s2.match(cjkReg) || []).length;
+            if (s1Cjk > 0 && s2Cjk > 0 && s1Cjk <= s2Cjk) {
+                const cjkSim = 0.85 * (s1Cjk / s2Cjk);
+                return Math.max(baseSim, cjkSim);
+            }
+            return baseSim;
+        }
+
+        const n = s1.length, m = s2.length;
+
+        // 优化：长度差距太大直接返回低相似度
+        if (Math.abs(n - m) > Math.max(n, m) * 0.6) return 0.2;
+
+        // 单字符无法生成 bigram，退化为字符比较
+        if (n === 1 || m === 1) {
+            return s1.charAt(0) === s2.charAt(0) ? 0.3 : 0;
+        }
+
+        // [优化] 使用 bigram Dice 系数 - 要求连续两字匹配，避免单字碰巧相同的误判
+        const bigrams1 = new Set();
+        for (let i = 0; i < n - 1; i++) bigrams1.add(s1.substring(i, i + 2));
+        const bigrams2 = new Set();
+        for (let i = 0; i < m - 1; i++) bigrams2.add(s2.substring(i, i + 2));
+
+        let intersection = 0;
+        for (const bigram of bigrams1) {
+            if (bigrams2.has(bigram)) intersection++;
+        }
+
+        const diceSim = (2 * intersection) / (bigrams1.size + bigrams2.size);
+
+        // [混合策略] 对于较短的字符串，编辑距离更可靠；对于较长的字符串，bigram 更精确
+        if (Math.max(n, m) < 6) {
+            // 短字符串：使用编辑距离
+            const dp = Array.from({length: n + 1}, (_, i) => i);
+            for (let j = 1; j <= m; j++) {
+                let prev = dp[0]; dp[0] = j;
+                for (let i = 1; i <= n; i++) {
+                    const tmp = dp[i];
+                    dp[i] = s1[i-1] === s2[j-1] ? prev : Math.min(prev, dp[i], dp[i-1]) + 1;
+                    prev = tmp;
+                }
+            }
+            const editSim = (Math.max(n, m) - dp[n]) / Math.max(n, m);
+            return Math.max(diceSim, editSim); // 取两者较大值
+        }
+
+        // 长字符串：使用 bigram
+        return diceSim;
     }
 
     // 提取关键词
@@ -1607,31 +1778,31 @@
         // 清除年份括号
         let clean = title.replace(/\(\d{4}\)/, '').trim();
 
-        // 模式列表：从最具体到最模糊
+        // [综合优化] 支持任意位置的季度提取
         const patterns = [
-            // "第X季" / "第X部"
-            { p: /^(.*?)\s*第\s*([一二三四五六七八九十\d]+)\s*[季部期]$/i, h: m => _CN_NUM[m[2]] || parseInt(m[2]) },
-            // "Season X" / "S3"
-            { p: /^(.*?)\s*(?:Season|S)\s*(\d{1,2})$/i, h: m => parseInt(m[2]) },
-            // "2nd Season" / "3rd Season"
-            { p: /^(.*?)\s*(\d{1,2})(?:st|nd|rd|th)\s*Season$/i, h: m => parseInt(m[2]) },
-            // 罗马数字 "XXX Ⅲ"
-            { p: /^(.*?)\s*([Ⅰ-Ⅻ])$/, h: m => _ROMAN[m[2]] },
-            // "XXX II" / "XXX III" (英文罗马) — 仅匹配末尾的 II/III/IV 等
-            { p: /^(.*?)\s+(II|III|IV|V|VI|VII|VIII|IX|X)$/i, h: m => ({ 'II': 2, 'III': 3, 'IV': 4, 'V': 5, 'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10 })[m[2].toUpperCase()] },
+            // "第X季" / "第X部" (任意位置)
+            { p: /(.*?)\s*第\s*([一二三四五六七八九十零\d]+)\s*[季部期](.*)/i, h: m => _CN_NUM[m[2]] || parseInt(m[2]), f: m => m[1] + ' ' + m[3] },
+            // "Season X" / "S3" (任意位置)
+            { p: /(.*?)\s*(?:Season|S)\s*(\d{1,2})\b(.*)/i, h: m => parseInt(m[2]), f: m => m[1] + ' ' + m[3] },
+            // "2nd Season" / "3rd Season" (任意位置)
+            { p: /(.*?)\s*(\d{1,2})(?:st|nd|rd|th)\s*Season(.*)/i, h: m => parseInt(m[2]), f: m => m[1] + ' ' + m[3] },
+            // 罗马数字 "XXX Ⅲ" (任意位置)
+            { p: /(.*?)\s*([Ⅰ-Ⅻ])(?:\s*[季期部])?(.*)/, h: m => _ROMAN[m[2]], f: m => m[1] + ' ' + m[3] },
+            // "XXX II" / "XXX III" (英文罗马) (任意位置)
+            { p: /(.*?)\s+\b(II|III|IV|V|VI|VII|VIII|IX|X)\b(?:\s*[季期部])?(.*)/i, h: m => ({ 'II': 2, 'III': 3, 'IV': 4, 'V': 5, 'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10 })[m[2].toUpperCase()], f: m => m[1] + ' ' + m[3] },
         ];
 
-        for (const { p, h } of patterns) {
+        for (const { p, h, f } of patterns) {
             const m = p.exec(clean);
             if (m) {
                 try {
                     const season = h(m);
-                    if (season) return { title: m[1].trim(), season };
+                    if (season) return { title: cleanTitleForComparison(f(m)).trim(), season };
                 } catch(e) {}
             }
         }
 
-        return { title: clean, season: null };
+        return { title: cleanTitleForComparison(clean).trim(), season: null };
     }
 
     // 从候选标题中推断季度（兼容旧逻辑：优先独立解析，回退到相对检测）
