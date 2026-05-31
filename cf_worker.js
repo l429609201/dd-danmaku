@@ -1423,7 +1423,7 @@ async function handleOAuthRequest(request, env, urlObj) {
         return Response.redirect(`${config.authorizeUrl}?${params}`, 302);
     }
 
-    // GET /oauth/callback?code=xxx&state=provider:uuid[:base64_redirect] — Provider 回调
+    // GET /oauth/callback?code=xxx&state=provider:uuid[:base64_redirect] — Provider 回调 
     if (path === '/oauth/callback') {
         const code = urlObj.searchParams.get('code');
         const state = urlObj.searchParams.get('state') || '';
@@ -1432,12 +1432,12 @@ async function handleOAuthRequest(request, env, urlObj) {
         if (!code || !config) return oauthJson({ error: 'OAuth 回调参数错误' }, 400);
         try {
             // 1. code → access_token
-            // 支持两种格式：Trakt 等要求 JSON body，GitHub 等用 form-urlencoded
             const tokenBody = {
                 client_id: config.clientId, client_secret: config.clientSecret,
                 code, redirect_uri: `${origin}/oauth/callback`, grant_type: 'authorization_code',
             };
             const useJson = config.tokenContentType === 'json';
+            console.log(`🔐 [OAuth] token请求: useJson=${useJson}, url=${config.tokenUrl}, tokenContentType=${config.tokenContentType}`);
             const tokenRes = await fetch(config.tokenUrl, {
                 method: 'POST',
                 headers: {
@@ -1446,7 +1446,15 @@ async function handleOAuthRequest(request, env, urlObj) {
                 },
                 body: useJson ? JSON.stringify(tokenBody) : new URLSearchParams(tokenBody),
             });
-            const tokenData = await tokenRes.json();
+            // 容错：先读文本，非 JSON 时返回详细错误
+            const tokenText = await tokenRes.text();
+            console.log(`🔐 [OAuth] token响应: status=${tokenRes.status}, body=${tokenText.slice(0, 500)}`);
+            let tokenData;
+            try {
+                tokenData = JSON.parse(tokenText);
+            } catch {
+                return oauthJson({ error: 'Token 接口返回非 JSON', status: tokenRes.status, body: tokenText.slice(0, 300) }, 502);
+            }
             const accessToken = tokenData.access_token;
             if (!accessToken) return oauthJson({ error: '获取 Token 失败', detail: tokenData }, 400);
 
