@@ -1572,17 +1572,16 @@ async function handleRequest(request, env, ctx) {
     }
 
     // ========================================
-    // 🔐 OAuth Token 验证（保护 /cors/ API 请求）
+    // 🔐 OAuth Token 验证（仅保护 /cors/ 代理请求）
     // ========================================
-    if (isOAuthEnabled(env)) {
+    if (isOAuthEnabled(env) && urlObj.pathname.startsWith('/cors/')) {
         const oauthPayload = await extractAndVerifyToken(request, env);
         if (!oauthPayload) {
-            const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
-            console.log(`🔐 [${clientIP}] OAuth 验证失败: 缺少或无效的 Bearer Token`);
+            console.log(`🔐 [${clientIP}] OAuth 验证失败: 缺少或无效的 Bearer Token, 路径: ${urlObj.pathname}`);
             return oauthJson({
                 status: 401,
                 type: 'OAuth',
-                message: '需要有效的 OAuth Token，请先访问 /oauth/login?provider=github 登录',
+                message: '需要有效的 OAuth Token',
                 loginUrl: `${urlObj.origin}/oauth/providers`,
             }, 401);
         }
