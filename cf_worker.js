@@ -1401,22 +1401,27 @@ async function handleOAuthRequest(request, env, urlObj) {
         return oauthJson({ providers: getAvailableProviders(env) });
     }
 
-    // GET /oauth/login?provider=xxx — 重定向到授权页
+    // GET /oauth/login?provider=xxx&redirect_uri=xxx — 重定向到授权页
     if (path === '/oauth/login') {
         const provider = urlObj.searchParams.get('provider');
+        const appRedirectUri = urlObj.searchParams.get('redirect_uri') || '';
         const config = getProviderConfig(provider, env);
         if (!config) return oauthJson({ error: `Provider "${provider}" 不可用或未配置` }, 400);
+        // 在 state 中编码 redirect_uri（base64），回调时取出用于跳转
+        const stateData = appRedirectUri
+            ? `${provider}:${crypto.randomUUID()}:${btoa(appRedirectUri)}`
+            : `${provider}:${crypto.randomUUID()}`;
         const params = new URLSearchParams({
             client_id: config.clientId,
             redirect_uri: `${origin}/oauth/callback`,
             scope: config.scopes || '',
-            state: `${provider}:${crypto.randomUUID()}`,
+            state: stateData,
             response_type: 'code',
         });
         return Response.redirect(`${config.authorizeUrl}?${params}`, 302);
     }
 
-    // GET /oauth/callback?code=xxx&state=provider:uuid — Provider 回调
+    // GET /oauth/callback?code=xxx&state=provider:uuid[:base64_redirect] — Provider 回调
     if (path === '/oauth/callback') {
         const code = urlObj.searchParams.get('code');
         const state = urlObj.searchParams.get('state') || '';
@@ -1463,7 +1468,25 @@ async function handleOAuthRequest(request, env, urlObj) {
             }, getOAuthJwtSecret(env));
             addMemoryLog('INFO', 'OAuth 登录成功', { provider, userId: user.id });
 
-            // 5. 返回 JWT
+            // 5. 检查是否需要 redirect 回应用
+            const stateParts = state.split(':');
+            const encodedRedirectUri = stateParts.length >= 3 ? stateParts.slice(2).join(':') : '';
+            if (encodedRedirectUri) {
+                try {
+                    const appRedirectUri = atob(encodedRedirectUri);
+                    const redirectParams = new URLSearchParams({
+                        token: jwt,
+                        user: user.id,
+                        name: user.name,
+                        provider,
+                        access_token: accessToken,
+                    });
+                    return Response.redirect(`${appRedirectUri}?${redirectParams}`, 302);
+                } catch (e) {
+                    addMemoryLog('WARN', 'redirect_uri decode failed', { error: e.message });
+                }
+            }
+            // 没有 redirect_uri 或解码失败，返回 JSON
             return oauthJson({ token: jwt, user: user.id, name: user.name, provider });
         } catch (err) {
             addMemoryLog('ERROR', 'OAuth 回调异常', { error: err.message });
