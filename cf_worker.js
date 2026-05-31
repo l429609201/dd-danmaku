@@ -1480,6 +1480,7 @@ async function handleOAuthRequest(request, env, urlObj) {
                         name: user.name,
                         provider,
                         access_token: accessToken,
+                        client_id: config.clientId,
                     });
                     return Response.redirect(`${appRedirectUri}?${redirectParams}`, 302);
                 } catch (e) {
@@ -1487,7 +1488,7 @@ async function handleOAuthRequest(request, env, urlObj) {
                 }
             }
             // 没有 redirect_uri 或解码失败，返回 JSON
-            return oauthJson({ token: jwt, user: user.id, name: user.name, provider });
+            return oauthJson({ token: jwt, user: user.id, name: user.name, provider, client_id: config.clientId });
         } catch (err) {
             addMemoryLog('ERROR', 'OAuth 回调异常', { error: err.message });
             return oauthJson({ error: `OAuth 处理异常: ${err.message}` }, 500);
@@ -1592,22 +1593,6 @@ async function handleRequest(request, env, ctx) {
     // 数据中心API端点处理（只处理Worker API路径）
     if (urlObj.pathname.startsWith('/worker-api/')) {
         return await handleDataCenterAPI(request, urlObj);
-    }
-
-    // ========================================
-    // 🔐 OAuth Token 验证（仅保护 /cors/ 代理请求）
-    // ========================================
-    if (isOAuthEnabled(env) && urlObj.pathname.startsWith('/cors/')) {
-        const oauthPayload = await extractAndVerifyToken(request, env);
-        if (!oauthPayload) {
-            console.log(`🔐 [${clientIP}] OAuth 验证失败: 缺少或无效的 Bearer Token, 路径: ${urlObj.pathname}`);
-            return oauthJson({
-                status: 401,
-                type: 'OAuth',
-                message: '需要有效的 OAuth Token',
-                loginUrl: `${urlObj.origin}/oauth/providers`,
-            }, 401);
-        }
     }
 
     // IP黑名单和临时封禁检查
