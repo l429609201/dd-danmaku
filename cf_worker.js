@@ -1480,6 +1480,7 @@ async function handleOAuthRequest(request, env, urlObj) {
                         name: user.name,
                         provider,
                         access_token: accessToken,
+                        client_id: config.clientId,
                     });
                     return Response.redirect(`${appRedirectUri}?${redirectParams}`, 302);
                 } catch (e) {
@@ -1487,7 +1488,7 @@ async function handleOAuthRequest(request, env, urlObj) {
                 }
             }
             // 没有 redirect_uri 或解码失败，返回 JSON
-            return oauthJson({ token: jwt, user: user.id, name: user.name, provider });
+            return oauthJson({ token: jwt, user: user.id, name: user.name, provider, client_id: config.clientId });
         } catch (err) {
             addMemoryLog('ERROR', 'OAuth 回调异常', { error: err.message });
             return oauthJson({ error: `OAuth 处理异常: ${err.message}` }, 500);
