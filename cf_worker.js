@@ -39,6 +39,7 @@ const MEMORY_LIMITS = {
 //       "clientSecret": "",
 //       "authorizeUrl": "https://trakt.tv/oauth/authorize",
 //       "tokenUrl": "https://api.trakt.tv/oauth/token",
+//       "tokenContentType": "json",
 //       "userInfoUrl": "https://api.trakt.tv/users/me",
 //       "scopes": "",
 //       "extraHeaders": { "trakt-api-key": "$clientId", "trakt-api-version": "2" },
@@ -48,6 +49,7 @@ const MEMORY_LIMITS = {
 //   }
 // }
 //
+// tokenContentType: "json" 时用 JSON body 请求 token（Trakt 需要），不设或其他值用 form-urlencoded（GitHub/Google）
 // userMapping:  JSON 路径，从用户信息响应提取字段（"user.ids.slug" → response.user.ids.slug）
 // userFallback: userMapping 路径取不到值时的回退字段
 // extraHeaders: 获取用户信息时附加的 header，$clientId 会替换为实际值
@@ -1430,13 +1432,19 @@ async function handleOAuthRequest(request, env, urlObj) {
         if (!code || !config) return oauthJson({ error: 'OAuth 回调参数错误' }, 400);
         try {
             // 1. code → access_token
+            // 支持两种格式：Trakt 等要求 JSON body，GitHub 等用 form-urlencoded
+            const tokenBody = {
+                client_id: config.clientId, client_secret: config.clientSecret,
+                code, redirect_uri: `${origin}/oauth/callback`, grant_type: 'authorization_code',
+            };
+            const useJson = config.tokenContentType === 'json';
             const tokenRes = await fetch(config.tokenUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-                body: new URLSearchParams({
-                    client_id: config.clientId, client_secret: config.clientSecret,
-                    code, redirect_uri: `${origin}/oauth/callback`, grant_type: 'authorization_code',
-                }),
+                headers: {
+                    'Content-Type': useJson ? 'application/json' : 'application/x-www-form-urlencoded',
+                    'Accept': 'application/json',
+                },
+                body: useJson ? JSON.stringify(tokenBody) : new URLSearchParams(tokenBody),
             });
             const tokenData = await tokenRes.json();
             const accessToken = tokenData.access_token;
