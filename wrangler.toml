@@ -17,6 +17,7 @@ DATA_CENTER_URL = '''{{DATA_CENTER_URL}}'''
 DATA_CENTER_API_KEY = '''{{DATA_CENTER_API_KEY}}'''
 WORKER_ID = "{{WORKER_ID}}"
 PRIVATE_KEY_HEX = "{{PRIVATE_KEY_HEX}}"
+OAUTH_CONFIG = '''{{OAUTH_CONFIG}}'''
 
 #密钥配置 （一般有两个，两个都填会轮换使用，配置成密钥的类型）
 # APP_ID
