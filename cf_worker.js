@@ -1443,6 +1443,7 @@ async function handleOAuthRequest(request, env, urlObj) {
                 headers: {
                     'Content-Type': useJson ? 'application/json' : 'application/x-www-form-urlencoded',
                     'Accept': 'application/json',
+                    'User-Agent': 'CF-Worker-OAuth/1.0',
                 },
                 body: useJson ? JSON.stringify(tokenBody) : new URLSearchParams(tokenBody),
             });
