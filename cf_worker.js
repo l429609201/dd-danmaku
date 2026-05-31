@@ -26,27 +26,28 @@ const MEMORY_LIMITS = {
 // ========================================
 // 🔐 OAuth 通用认证配置
 // ========================================
-// 纯环境变量驱动，不需要改代码。设了哪个 Provider 的 CLIENT_ID/SECRET 就自动启用哪个。
-//   OAUTH_ENABLED              = "true"                          // 总开关（默认关闭）
-//   OAUTH_JWT_SECRET           = "随机长字符串"                     // JWT 签名密钥（必填）
-//   OAUTH_JWT_EXPIRE_HOURS     = "720"                           // Token 有效期（默认30天）
-//   OAUTH_ALLOWED_USERS        = '{"github":["user1"]}'          // 白名单（空=不限制）
-//   OAUTH_GITHUB_CLIENT_ID     / OAUTH_GITHUB_CLIENT_SECRET      // 设了就启用 GitHub
-//   OAUTH_GOOGLE_CLIENT_ID     / OAUTH_GOOGLE_CLIENT_SECRET      // 设了就启用 Google
-//   OAUTH_GITEE_CLIENT_ID      / OAUTH_GITEE_CLIENT_SECRET       // 设了就启用 Gitee
-//   ...以此类推，只要在下面注册表里有定义的都支持
+// 所有配置通过 CF Dashboard 环境变量 OAUTH_CONFIG（类型：文本）设置，格式：
+// {
+//   "enabled": true,
+//   "jwtSecret": "随机长字符串",
+//   "jwtExpireHours": 720,
+//   "allowedUsers": { "trakt": ["your_username"] },
+//   "providers": {
+//     "trakt": { "clientId": "你的ID", "clientSecret": "你的Secret" }
+//   }
+// }
 
 const OAUTH_TOKEN_CACHE_MAX = 5000;
 
-// Provider 元数据注册表 — 运行时按环境变量自动启用
-// 需要哪个 Provider 就取消注释，然后去 CF Dashboard 配 OAUTH_{PREFIX}_CLIENT_ID / SECRET
-const OAUTH_PROVIDERS = {
+// Provider 模板（URL + 解析函数必须在代码里，因为 JSON 环境变量放不了函数）
+// 秘钥通过环境变量 OAUTH_CONFIG.providers 注入，这里不含任何秘钥
+// 要启用哪个 Provider：1. 在这里加模板  2. 在环境变量里加 clientId/clientSecret
+const OAUTH_PROVIDER_TEMPLATES = {
     // github: {
-    //     envPrefix: 'GITHUB',                                          // 对应环境变量前缀 OAUTH_GITHUB_*
-    //     authorizeUrl: 'https://github.com/login/oauth/authorize',     // 授权页
-    //     tokenUrl: 'https://github.com/login/oauth/access_token',      // code 换 token
-    //     userInfoUrl: 'https://api.github.com/user',                   // 获取用户信息
-    //     scopes: 'read:user',                                          // 申请的权限
+    //     authorizeUrl: 'https://github.com/login/oauth/authorize',
+    //     tokenUrl: 'https://github.com/login/oauth/access_token',
+    //     userInfoUrl: 'https://api.github.com/user',
+    //     scopes: 'read:user',
     //     extractUser: (u) => ({ id: String(u.login), name: u.name || u.login, avatar: u.avatar_url }),
     // },
 };
@@ -1340,17 +1341,27 @@ async function quickHash(str) {
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
 }
 
-// --- OAuth 配置读取 ---
-function isOAuthEnabled(env) { return env.OAUTH_ENABLED === 'true'; }
-function getOAuthJwtSecret(env) { return env.OAUTH_JWT_SECRET || ''; }
-function getOAuthExpireMs(env) { return (parseInt(env.OAUTH_JWT_EXPIRE_HOURS) || 720) * 3600 * 1000; }
-function getOAuthAllowedUsers(env) { try { return JSON.parse(env.OAUTH_ALLOWED_USERS || '{}'); } catch { return {}; } }
+// --- OAuth 配置读取（从环境变量 OAUTH_CONFIG 解析） ---
+let _oauthConfigCache = null;
+function getOAuthConfig(env) {
+    if (_oauthConfigCache) return _oauthConfigCache;
+    try {
+        _oauthConfigCache = JSON.parse(env.OAUTH_CONFIG || '{}');
+    } catch {
+        _oauthConfigCache = {};
+    }
+    return _oauthConfigCache;
+}
+function isOAuthEnabled(env) { return !!getOAuthConfig(env).enabled; }
+function getOAuthJwtSecret(env) { return getOAuthConfig(env).jwtSecret || ''; }
+function getOAuthExpireMs(env) { return (getOAuthConfig(env).jwtExpireHours || 720) * 3600 * 1000; }
+function getOAuthAllowedUsers(env) { return getOAuthConfig(env).allowedUsers || {}; }
 function getProviderConfig(provider, env) {
-    const def = OAUTH_PROVIDERS[provider];
-    if (!def) return null;
-    const clientId = env[`OAUTH_${def.envPrefix}_CLIENT_ID`];
-    const clientSecret = env[`OAUTH_${def.envPrefix}_CLIENT_SECRET`];
-    return (clientId && clientSecret) ? { ...def, clientId, clientSecret } : null;
+    const template = OAUTH_PROVIDER_TEMPLATES[provider];
+    if (!template) return null;
+    const providerCfg = (getOAuthConfig(env).providers || {})[provider];
+    if (!providerCfg?.clientId || !providerCfg?.clientSecret) return null;
+    return { ...template, clientId: providerCfg.clientId, clientSecret: providerCfg.clientSecret };
 }
 
 // --- OAuth 路由处理 ---
@@ -1360,7 +1371,7 @@ async function handleOAuthRequest(request, env, urlObj) {
 
     // GET /oauth/providers — 列出可用 Provider
     if (path === '/oauth/providers') {
-        const available = Object.keys(OAUTH_PROVIDERS).filter(p => getProviderConfig(p, env));
+        const available = Object.keys(OAUTH_PROVIDER_TEMPLATES).filter(p => getProviderConfig(p, env));
         return oauthJson({ providers: available });
     }
 
@@ -1401,9 +1412,13 @@ async function handleOAuthRequest(request, env, urlObj) {
             if (!accessToken) return oauthJson({ error: '获取 Token 失败', detail: tokenData }, 400);
 
             // 2. access_token → 用户信息
-            const userRes = await fetch(config.userInfoUrl, {
-                headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json', 'User-Agent': 'CF-Worker-OAuth' },
-            });
+            const userInfoHeaders = {
+                'Authorization': `Bearer ${accessToken}`,
+                'Accept': 'application/json',
+                'User-Agent': 'CF-Worker-OAuth',
+                ...(config.userInfoHeaders ? config.userInfoHeaders(config) : {}),
+            };
+            const userRes = await fetch(config.userInfoUrl, { headers: userInfoHeaders });
             const user = config.extractUser(await userRes.json());
 
             // 3. 白名单校验
@@ -1444,14 +1459,12 @@ async function extractAndVerifyToken(request, env) {
     const auth = request.headers.get('Authorization') || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
     if (!token) return null;
-    // 缓存查找
     const hash = await quickHash(token);
     const cached = memoryCache.oauthTokenCache.get(hash);
     if (cached) {
         if (cached.expireAt > Date.now()) return cached.payload;
         memoryCache.oauthTokenCache.delete(hash);
     }
-    // 验证
     const payload = await verifyJwt(token, getOAuthJwtSecret(env));
     if (!payload) return null;
     // 写缓存（LRU）
@@ -1521,7 +1534,7 @@ async function handleRequest(request, env, ctx) {
     // ========================================
     if (urlObj.pathname.startsWith('/oauth/')) {
         if (!isOAuthEnabled(env)) {
-            return oauthJson({ error: 'OAuth 未启用，请在环境变量中设置 OAUTH_ENABLED=true' }, 503);
+            return oauthJson({ error: 'OAuth 未启用，请在环境变量 OAUTH_CONFIG 中设置 enabled: true' }, 503);
         }
         return handleOAuthRequest(request, env, urlObj);
     }
