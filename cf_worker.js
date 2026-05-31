@@ -26,31 +26,33 @@ const MEMORY_LIMITS = {
 // ========================================
 // 🔐 OAuth 通用认证配置
 // ========================================
-// 所有配置通过 CF Dashboard 环境变量 OAUTH_CONFIG（类型：文本）设置，格式：
+// 全部通过 CF Dashboard 环境变量 OAUTH_CONFIG（类型：文本）配置，代码无需修改。
+// 格式示例（Trakt）：
 // {
 //   "enabled": true,
 //   "jwtSecret": "随机长字符串",
 //   "jwtExpireHours": 720,
-//   "allowedUsers": { "trakt": ["your_username"] },
+//   "allowedUsers": {},
 //   "providers": {
-//     "trakt": { "clientId": "你的ID", "clientSecret": "你的Secret" }
+//     "trakt": {
+//       "clientId": "",
+//       "clientSecret": "",
+//       "authorizeUrl": "https://trakt.tv/oauth/authorize",
+//       "tokenUrl": "https://api.trakt.tv/oauth/token",
+//       "userInfoUrl": "https://api.trakt.tv/users/me",
+//       "scopes": "",
+//       "extraHeaders": { "trakt-api-key": "$clientId", "trakt-api-version": "2" },
+//       "userMapping": { "id": "user.ids.slug", "name": "user.name", "avatar": "user.images.avatar.full" },
+//       "userFallback": { "id": "username", "name": "username" }
+//     }
 //   }
 // }
+//
+// userMapping:  JSON 路径，从用户信息响应提取字段（"user.ids.slug" → response.user.ids.slug）
+// userFallback: userMapping 路径取不到值时的回退字段
+// extraHeaders: 获取用户信息时附加的 header，$clientId 会替换为实际值
 
 const OAUTH_TOKEN_CACHE_MAX = 5000;
-
-// Provider 模板（URL + 解析函数必须在代码里，因为 JSON 环境变量放不了函数）
-// 秘钥通过环境变量 OAUTH_CONFIG.providers 注入，这里不含任何秘钥
-// 要启用哪个 Provider：1. 在这里加模板  2. 在环境变量里加 clientId/clientSecret
-const OAUTH_PROVIDER_TEMPLATES = {
-    // github: {
-    //     authorizeUrl: 'https://github.com/login/oauth/authorize',
-    //     tokenUrl: 'https://github.com/login/oauth/access_token',
-    //     userInfoUrl: 'https://api.github.com/user',
-    //     scopes: 'read:user',
-    //     extractUser: (u) => ({ id: String(u.login), name: u.name || u.login, avatar: u.avatar_url }),
-    // },
-};
 
 // 全局内存缓存
 let memoryCache = {
@@ -1357,11 +1359,36 @@ function getOAuthJwtSecret(env) { return getOAuthConfig(env).jwtSecret || ''; }
 function getOAuthExpireMs(env) { return (getOAuthConfig(env).jwtExpireHours || 720) * 3600 * 1000; }
 function getOAuthAllowedUsers(env) { return getOAuthConfig(env).allowedUsers || {}; }
 function getProviderConfig(provider, env) {
-    const template = OAUTH_PROVIDER_TEMPLATES[provider];
-    if (!template) return null;
-    const providerCfg = (getOAuthConfig(env).providers || {})[provider];
-    if (!providerCfg?.clientId || !providerCfg?.clientSecret) return null;
-    return { ...template, clientId: providerCfg.clientId, clientSecret: providerCfg.clientSecret };
+    const cfg = (getOAuthConfig(env).providers || {})[provider];
+    if (!cfg?.clientId || !cfg?.clientSecret || !cfg?.authorizeUrl || !cfg?.tokenUrl || !cfg?.userInfoUrl) return null;
+    return cfg;
+}
+// 通过 JSON 路径从对象中取值（如 "user.ids.slug" → obj.user.ids.slug）
+function resolvePath(obj, path) {
+    if (!path) return undefined;
+    return path.split('.').reduce((o, k) => o?.[k], obj);
+}
+// 从 Provider 的 userMapping/userFallback 配置提取用户信息
+function extractUserFromConfig(userData, config) {
+    const mapping = config.userMapping || {};
+    const fallback = config.userFallback || {};
+    return {
+        id: String(resolvePath(userData, mapping.id) || resolvePath(userData, fallback.id) || 'unknown'),
+        name: String(resolvePath(userData, mapping.name) || resolvePath(userData, fallback.name) || 'unknown'),
+        avatar: String(resolvePath(userData, mapping.avatar) || resolvePath(userData, fallback.avatar) || ''),
+    };
+}
+// 构建获取用户信息时的额外 header（$clientId 会被替换为实际值）
+function buildExtraHeaders(config) {
+    if (!config.extraHeaders) return {};
+    const headers = {};
+    for (const [key, val] of Object.entries(config.extraHeaders)) {
+        headers[key] = String(val).replace('$clientId', config.clientId);
+    }
+    return headers;
+}
+function getAvailableProviders(env) {
+    return Object.keys(getOAuthConfig(env).providers || {}).filter(p => getProviderConfig(p, env));
 }
 
 // --- OAuth 路由处理 ---
@@ -1371,11 +1398,10 @@ async function handleOAuthRequest(request, env, urlObj) {
 
     // GET /oauth/providers — 列出可用 Provider
     if (path === '/oauth/providers') {
-        const available = Object.keys(OAUTH_PROVIDER_TEMPLATES).filter(p => getProviderConfig(p, env));
-        return oauthJson({ providers: available });
+        return oauthJson({ providers: getAvailableProviders(env) });
     }
 
-    // GET /oauth/login?provider=github — 重定向到授权页
+    // GET /oauth/login?provider=xxx — 重定向到授权页
     if (path === '/oauth/login') {
         const provider = urlObj.searchParams.get('provider');
         const config = getProviderConfig(provider, env);
@@ -1383,7 +1409,7 @@ async function handleOAuthRequest(request, env, urlObj) {
         const params = new URLSearchParams({
             client_id: config.clientId,
             redirect_uri: `${origin}/oauth/callback`,
-            scope: config.scopes,
+            scope: config.scopes || '',
             state: `${provider}:${crypto.randomUUID()}`,
             response_type: 'code',
         });
@@ -1411,15 +1437,16 @@ async function handleOAuthRequest(request, env, urlObj) {
             const accessToken = tokenData.access_token;
             if (!accessToken) return oauthJson({ error: '获取 Token 失败', detail: tokenData }, 400);
 
-            // 2. access_token → 用户信息
+            // 2. access_token → 用户信息（通过 JSON 路径映射提取，不依赖代码函数）
             const userInfoHeaders = {
                 'Authorization': `Bearer ${accessToken}`,
                 'Accept': 'application/json',
                 'User-Agent': 'CF-Worker-OAuth',
-                ...(config.userInfoHeaders ? config.userInfoHeaders(config) : {}),
+                ...buildExtraHeaders(config),
             };
             const userRes = await fetch(config.userInfoUrl, { headers: userInfoHeaders });
-            const user = config.extractUser(await userRes.json());
+            const userData = await userRes.json();
+            const user = extractUserFromConfig(userData, config);
 
             // 3. 白名单校验
             const providerAllowed = (getOAuthAllowedUsers(env)[provider]) || [];
