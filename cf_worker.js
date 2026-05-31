@@ -23,6 +23,37 @@ const MEMORY_LIMITS = {
     MAX_API_CACHE_SIZE: 3000    // 最多缓存3000个API响应
 };
 
+// ========================================
+// 🔐 OAuth 通用认证配置
+// ========================================
+// 全部通过 CF Dashboard 环境变量 OAUTH_CONFIG（类型：文本）配置，代码无需修改。
+// 格式示例（Trakt）：
+// {
+//   "enabled": true,
+//   "jwtSecret": "随机长字符串",
+//   "jwtExpireHours": 720,
+//   "allowedUsers": {},
+//   "providers": {
+//     "trakt": {
+//       "clientId": "",
+//       "clientSecret": "",
+//       "authorizeUrl": "https://trakt.tv/oauth/authorize",
+//       "tokenUrl": "https://api.trakt.tv/oauth/token",
+//       "userInfoUrl": "https://api.trakt.tv/users/me",
+//       "scopes": "",
+//       "extraHeaders": { "trakt-api-key": "$clientId", "trakt-api-version": "2" },
+//       "userMapping": { "id": "user.ids.slug", "name": "user.name", "avatar": "user.images.avatar.full" },
+//       "userFallback": { "id": "username", "name": "username" }
+//     }
+//   }
+// }
+//
+// userMapping:  JSON 路径，从用户信息响应提取字段（"user.ids.slug" → response.user.ids.slug）
+// userFallback: userMapping 路径取不到值时的回退字段
+// extraHeaders: 获取用户信息时附加的 header，$clientId 会替换为实际值
+
+const OAUTH_TOKEN_CACHE_MAX = 5000;
+
 // 全局内存缓存
 let memoryCache = {
     rateLimitCounts: new Map(), // 频率限制计数缓存
@@ -48,7 +79,9 @@ let memoryCache = {
     lastLogCleanup: Date.now(),
     lastRateLimitCleanup: Date.now(),
     // API响应缓存（用于搜索和番剧接口）
-    apiCache: new Map() // 格式: { "cache_key": { data: response, timestamp: Date.now() } }
+    apiCache: new Map(), // 格式: { "cache_key": { data: response, timestamp: Date.now() } }
+    // OAuth token 验证缓存（避免每次请求都做 crypto 运算）
+    oauthTokenCache: new Map(), // 格式: { "token_hash": { payload, expireAt } }
 };
 
 // 数据中心集成配置
@@ -1268,6 +1301,215 @@ function handleToolsRequest(request, env, urlObj) {
 }
 
 
+// ========================================
+// 🔐 OAuth 通用认证模块
+// ========================================
+
+// --- JWT 工具函数 (HMAC-SHA256, 纯 Web Crypto API) ---
+
+function base64UrlEncode(data) {
+    const str = typeof data === 'string' ? data : new TextDecoder().decode(data);
+    return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function base64UrlDecode(str) {
+    str = str.replace(/-/g, '+').replace(/_/g, '/');
+    while (str.length % 4) str += '=';
+    return atob(str);
+}
+async function getJwtKey(secret) {
+    return crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+async function signJwt(payload, secret) {
+    const enc = new TextEncoder();
+    const hB64 = base64UrlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+    const pB64 = base64UrlEncode(JSON.stringify(payload));
+    const sig = await crypto.subtle.sign('HMAC', await getJwtKey(secret), enc.encode(`${hB64}.${pB64}`));
+    return `${hB64}.${pB64}.${base64UrlEncode(String.fromCharCode(...new Uint8Array(sig)))}`;
+}
+async function verifyJwt(token, secret) {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const enc = new TextEncoder();
+    const sigBytes = Uint8Array.from(base64UrlDecode(parts[2]), c => c.charCodeAt(0));
+    const valid = await crypto.subtle.verify('HMAC', await getJwtKey(secret), sigBytes, enc.encode(`${parts[0]}.${parts[1]}`));
+    if (!valid) return null;
+    try {
+        const p = JSON.parse(base64UrlDecode(parts[1]));
+        return (p.exp && p.exp < Math.floor(Date.now() / 1000)) ? null : p;
+    } catch { return null; }
+}
+async function quickHash(str) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+}
+
+// --- OAuth 配置读取（从环境变量 OAUTH_CONFIG 解析） ---
+let _oauthConfigCache = null;
+function getOAuthConfig(env) {
+    if (_oauthConfigCache) return _oauthConfigCache;
+    try {
+        _oauthConfigCache = JSON.parse(env.OAUTH_CONFIG || '{}');
+    } catch {
+        _oauthConfigCache = {};
+    }
+    return _oauthConfigCache;
+}
+function isOAuthEnabled(env) { return !!getOAuthConfig(env).enabled; }
+function getOAuthJwtSecret(env) { return getOAuthConfig(env).jwtSecret || ''; }
+function getOAuthExpireMs(env) { return (getOAuthConfig(env).jwtExpireHours || 720) * 3600 * 1000; }
+function getOAuthAllowedUsers(env) { return getOAuthConfig(env).allowedUsers || {}; }
+function getProviderConfig(provider, env) {
+    const cfg = (getOAuthConfig(env).providers || {})[provider];
+    if (!cfg?.clientId || !cfg?.clientSecret || !cfg?.authorizeUrl || !cfg?.tokenUrl || !cfg?.userInfoUrl) return null;
+    return cfg;
+}
+// 通过 JSON 路径从对象中取值（如 "user.ids.slug" → obj.user.ids.slug）
+function resolvePath(obj, path) {
+    if (!path) return undefined;
+    return path.split('.').reduce((o, k) => o?.[k], obj);
+}
+// 从 Provider 的 userMapping/userFallback 配置提取用户信息
+function extractUserFromConfig(userData, config) {
+    const mapping = config.userMapping || {};
+    const fallback = config.userFallback || {};
+    return {
+        id: String(resolvePath(userData, mapping.id) || resolvePath(userData, fallback.id) || 'unknown'),
+        name: String(resolvePath(userData, mapping.name) || resolvePath(userData, fallback.name) || 'unknown'),
+        avatar: String(resolvePath(userData, mapping.avatar) || resolvePath(userData, fallback.avatar) || ''),
+    };
+}
+// 构建获取用户信息时的额外 header（$clientId 会被替换为实际值）
+function buildExtraHeaders(config) {
+    if (!config.extraHeaders) return {};
+    const headers = {};
+    for (const [key, val] of Object.entries(config.extraHeaders)) {
+        headers[key] = String(val).replace('$clientId', config.clientId);
+    }
+    return headers;
+}
+function getAvailableProviders(env) {
+    return Object.keys(getOAuthConfig(env).providers || {}).filter(p => getProviderConfig(p, env));
+}
+
+// --- OAuth 路由处理 ---
+async function handleOAuthRequest(request, env, urlObj) {
+    const path = urlObj.pathname;
+    const origin = urlObj.origin;
+
+    // GET /oauth/providers — 列出可用 Provider
+    if (path === '/oauth/providers') {
+        return oauthJson({ providers: getAvailableProviders(env) });
+    }
+
+    // GET /oauth/login?provider=xxx — 重定向到授权页
+    if (path === '/oauth/login') {
+        const provider = urlObj.searchParams.get('provider');
+        const config = getProviderConfig(provider, env);
+        if (!config) return oauthJson({ error: `Provider "${provider}" 不可用或未配置` }, 400);
+        const params = new URLSearchParams({
+            client_id: config.clientId,
+            redirect_uri: `${origin}/oauth/callback`,
+            scope: config.scopes || '',
+            state: `${provider}:${crypto.randomUUID()}`,
+            response_type: 'code',
+        });
+        return Response.redirect(`${config.authorizeUrl}?${params}`, 302);
+    }
+
+    // GET /oauth/callback?code=xxx&state=provider:uuid — Provider 回调
+    if (path === '/oauth/callback') {
+        const code = urlObj.searchParams.get('code');
+        const state = urlObj.searchParams.get('state') || '';
+        const provider = state.split(':')[0];
+        const config = getProviderConfig(provider, env);
+        if (!code || !config) return oauthJson({ error: 'OAuth 回调参数错误' }, 400);
+        try {
+            // 1. code → access_token
+            const tokenRes = await fetch(config.tokenUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+                body: new URLSearchParams({
+                    client_id: config.clientId, client_secret: config.clientSecret,
+                    code, redirect_uri: `${origin}/oauth/callback`, grant_type: 'authorization_code',
+                }),
+            });
+            const tokenData = await tokenRes.json();
+            const accessToken = tokenData.access_token;
+            if (!accessToken) return oauthJson({ error: '获取 Token 失败', detail: tokenData }, 400);
+
+            // 2. access_token → 用户信息（通过 JSON 路径映射提取，不依赖代码函数）
+            const userInfoHeaders = {
+                'Authorization': `Bearer ${accessToken}`,
+                'Accept': 'application/json',
+                'User-Agent': 'CF-Worker-OAuth',
+                ...buildExtraHeaders(config),
+            };
+            const userRes = await fetch(config.userInfoUrl, { headers: userInfoHeaders });
+            const userData = await userRes.json();
+            const user = extractUserFromConfig(userData, config);
+
+            // 3. 白名单校验
+            const providerAllowed = (getOAuthAllowedUsers(env)[provider]) || [];
+            if (providerAllowed.length > 0 && !providerAllowed.includes(user.id)) {
+                addMemoryLog('WARN', 'OAuth 用户不在白名单', { provider, userId: user.id });
+                return oauthJson({ error: `用户 "${user.id}" 不在白名单中` }, 403);
+            }
+
+            // 4. 签发 JWT
+            const now = Math.floor(Date.now() / 1000);
+            const jwt = await signJwt({
+                sub: user.id, name: user.name, avatar: user.avatar, provider,
+                iat: now, exp: now + Math.floor(getOAuthExpireMs(env) / 1000),
+            }, getOAuthJwtSecret(env));
+            addMemoryLog('INFO', 'OAuth 登录成功', { provider, userId: user.id });
+
+            // 5. 返回 JWT
+            return oauthJson({ token: jwt, user: user.id, name: user.name, provider });
+        } catch (err) {
+            addMemoryLog('ERROR', 'OAuth 回调异常', { error: err.message });
+            return oauthJson({ error: `OAuth 处理异常: ${err.message}` }, 500);
+        }
+    }
+
+    // GET /oauth/verify — 验证 token 有效性
+    if (path === '/oauth/verify') {
+        const payload = await extractAndVerifyToken(request, env);
+        if (!payload) return oauthJson({ valid: false }, 401);
+        return oauthJson({ valid: true, user: payload.sub, provider: payload.provider, exp: payload.exp });
+    }
+
+    return oauthJson({ error: 'OAuth 路由不存在' }, 404);
+}
+
+// --- Token 验证中间件 ---
+async function extractAndVerifyToken(request, env) {
+    const auth = request.headers.get('Authorization') || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    if (!token) return null;
+    const hash = await quickHash(token);
+    const cached = memoryCache.oauthTokenCache.get(hash);
+    if (cached) {
+        if (cached.expireAt > Date.now()) return cached.payload;
+        memoryCache.oauthTokenCache.delete(hash);
+    }
+    const payload = await verifyJwt(token, getOAuthJwtSecret(env));
+    if (!payload) return null;
+    // 写缓存（LRU）
+    if (memoryCache.oauthTokenCache.size >= OAUTH_TOKEN_CACHE_MAX) {
+        const keys = [...memoryCache.oauthTokenCache.keys()];
+        keys.slice(0, Math.floor(keys.length / 2)).forEach(k => memoryCache.oauthTokenCache.delete(k));
+    }
+    memoryCache.oauthTokenCache.set(hash, { payload, expireAt: payload.exp * 1000 });
+    return payload;
+}
+
+// --- OAuth 辅助函数 ---
+function oauthJson(data, status = 200) {
+    return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
+}
+
+
+
 export default {
   async fetch(request, env, ctx) {
     // 初始化数据中心配置
@@ -1314,9 +1556,36 @@ async function handleRequest(request, env, ctx) {
         return handleToolsRequest(request, env, urlObj);
     }
 
+    // ========================================
+    // 🔐 OAuth 路由处理 (/oauth/*)
+    // ========================================
+    if (urlObj.pathname.startsWith('/oauth/')) {
+        if (!isOAuthEnabled(env)) {
+            return oauthJson({ error: 'OAuth 未启用，请在环境变量 OAUTH_CONFIG 中设置 enabled: true' }, 503);
+        }
+        return handleOAuthRequest(request, env, urlObj);
+    }
+
     // 数据中心API端点处理（只处理Worker API路径）
     if (urlObj.pathname.startsWith('/worker-api/')) {
         return await handleDataCenterAPI(request, urlObj);
+    }
+
+    // ========================================
+    // 🔐 OAuth Token 验证（保护 /cors/ API 请求）
+    // ========================================
+    if (isOAuthEnabled(env)) {
+        const oauthPayload = await extractAndVerifyToken(request, env);
+        if (!oauthPayload) {
+            const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
+            console.log(`🔐 [${clientIP}] OAuth 验证失败: 缺少或无效的 Bearer Token`);
+            return oauthJson({
+                status: 401,
+                type: 'OAuth',
+                message: '需要有效的 OAuth Token，请先访问 /oauth/login?provider=github 登录',
+                loginUrl: `${urlObj.origin}/oauth/providers`,
+            }, 401);
+        }
     }
 
     // IP黑名单和临时封禁检查
@@ -1456,7 +1725,7 @@ async function handleRequest(request, env, ctx) {
     if (ACCESS_CONFIG.logging.enabled) {
         console.log(`🔐 [${clientIP}] API路径: ${apiPath}`);
     }
-    
+
     // 构建转发请求的头部，排除自定义头
     const forwardHeaders = {};
     for (const [key, value] of request.headers.entries()) {
