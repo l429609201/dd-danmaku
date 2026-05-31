@@ -1423,7 +1423,7 @@ async function handleOAuthRequest(request, env, urlObj) {
         return Response.redirect(`${config.authorizeUrl}?${params}`, 302);
     }
 
-    // GET /oauth/callback?code=xxx&state=provider:uuid[:base64_redirect] — Provider 回调
+    // GET /oauth/callback?code=xxx&state=provider:uuid[:base64_redirect] — Provider 回调 
     if (path === '/oauth/callback') {
         const code = urlObj.searchParams.get('code');
         const state = urlObj.searchParams.get('state') || '';
