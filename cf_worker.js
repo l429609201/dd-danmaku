@@ -1594,22 +1594,6 @@ async function handleRequest(request, env, ctx) {
         return await handleDataCenterAPI(request, urlObj);
     }
 
-    // ========================================
-    // 🔐 OAuth Token 验证（仅保护 /cors/ 代理请求）
-    // ========================================
-    if (isOAuthEnabled(env) && urlObj.pathname.startsWith('/cors/')) {
-        const oauthPayload = await extractAndVerifyToken(request, env);
-        if (!oauthPayload) {
-            console.log(`🔐 [${clientIP}] OAuth 验证失败: 缺少或无效的 Bearer Token, 路径: ${urlObj.pathname}`);
-            return oauthJson({
-                status: 401,
-                type: 'OAuth',
-                message: '需要有效的 OAuth Token',
-                loginUrl: `${urlObj.origin}/oauth/providers`,
-            }, 401);
-        }
-    }
-
     // IP黑名单和临时封禁检查
     // clientIP已在函数开头声明
 
