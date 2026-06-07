@@ -2092,17 +2092,18 @@
     let { method = 'GET' } = opts;
     if (method === 'GET' && body) method = 'POST';
 
-    // 判断是否为弹弹play 或 Bangumi 官方 API，用于决定是否发送 X-User-Agent
+    // 判断是否为弹弹play API，用于决定是否发送 X-User-Agent
     const isDandanplayApi = url.includes('api.dandanplay.net') || url.includes('dandanplay');
-    const isBangumiApi = url.includes('api.bgm.tv') || url.includes('bgm.tv');
-    const shouldSendUserAgent = isDandanplayApi || isBangumiApi;
+    const shouldSendUserAgent = isDandanplayApi;
 
     const requestHeaders = {
         'Accept-Encoding': 'gzip',
         'Accept': 'application/json',
-        'Content-Type': 'application/json',
     };
-    // 只有弹弹play和Bangumi官方API才发送 X-User-Agent
+    if (body) {
+        requestHeaders['Content-Type'] = 'application/json';
+    }
+    // Bangumi 官方 API 的 CORS 预检不允许 X-User-Agent，浏览器会发送原生 User-Agent。
     if (shouldSendUserAgent) {
         requestHeaders['X-User-Agent'] = userAgent;
     }
@@ -6035,7 +6036,7 @@
         }).catch(error => {
             label.innerText = 'Bangumi Token 验证失败';
             label.style.color = 'red';
-            throw error;
+            logger.error('Bangumi Token 校验按钮处理失败', error);
         });
     }
 
