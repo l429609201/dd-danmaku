@@ -909,7 +909,7 @@
             this.tempLsValues = {};   // 临时存储的由程序更改后的 ls 值
             this.asymmetricAuthEnabled = false;
             this.publicKeyPem = null;   // 客户端公钥（用于验证Worker签名）
-            this.abortControllers = new Set();  // 全局请求控制器集合 (用于组件销毁时取消所有网络请求)
+            this.abortControllers = new Set();  // 页面级请求控制器集合 (用于组件销毁时取消 UI 相关网络请求)
         }
     }
 
@@ -1985,13 +1985,16 @@
         logger.debug(`结束播放百分比: ${pct}%`);
         const bangumiPostPercent = lsGetItem(lsKeys.bangumiPostPercent.id);
         const bangumiToken = lsGetItem(lsKeys.bangumiToken.id);
+        const currentEpisodeInfo = window.ede.episode_info;
         if (lsGetItem(lsKeys.bangumiEnable.id) && bangumiToken
-            && pct >= bangumiPostPercent && window.ede.episode_info.episodeId
+            && pct >= bangumiPostPercent && currentEpisodeInfo?.episodeId
         ) {
             logger.debug(`大于需提交的设定百分比: ${bangumiPostPercent}%`);
-            const { animeTitle, episodeTitle } = window.ede.episode_info;
+            const { animeTitle, episodeTitle } = currentEpisodeInfo;
             const targetName = `${animeTitle} - ${episodeTitle}`;
-            putBangumiEpStatus(bangumiToken).then(res => {
+            const episodeInfo = { ...currentEpisodeInfo };
+            const backgroundFetchOpts = { abortOnDestroy: false };
+            putBangumiEpStatus(bangumiToken, { episodeInfo, fetchOpts: backgroundFetchOpts }).then(res => {
                 embyToast({ text: `Bangumi收藏更新成功, 目标: ${targetName}, 结束播放百分比: ${pct}%, 大于需提交的设定百分比: ${bangumiPostPercent}%`});
                 logger.info(`Bangumi收藏更新成功, 目标: ${targetName}`);
             }).catch(error => {
@@ -2001,8 +2004,8 @@
         }
     }
 
-    async function getEpisodeBangumiRel() {
-        const episode_info = window.ede.episode_info;
+    async function getEpisodeBangumiRel(episode_info = window.ede.episode_info, fetchOpts = {}) {
+        if (!episode_info) { throw new Error('未获取到 episode_info'); }
         const _bangumi_key = lsLocalKeys.bangumiEpInfoPrefix + episode_info.episodeId;
         let bangumiInfoLs = localStorage.getItem(_bangumi_key);
         if (bangumiInfoLs) {
@@ -2014,7 +2017,7 @@
         const animeId = episode_info.animeId;
         if (!subjectId) {
             if (!animeId) { throw new Error('未获取到 animeId'); }
-            const danDanPlayBangumiRes = await fetchJson(dandanplayApi.getBangumi(animeId));
+            const danDanPlayBangumiRes = await fetchJson(dandanplayApi.getBangumi(animeId), fetchOpts);
             episode_info.bgmEpisodeIndex = offsetBgmEpisodeIndex(episode_info.bgmEpisodeIndex, danDanPlayBangumiRes.bangumi);
             bangumiUrl = danDanPlayBangumiRes.bangumi.bangumiUrl;
             if (!bangumiUrl) { throw new Error('未请求到 bangumiUrl'); }
@@ -2041,8 +2044,9 @@
         }
     }
 
-    async function putBangumiEpStatus(token) {
-        const bangumiInfo = await getEpisodeBangumiRel();
+    async function putBangumiEpStatus(token, opts = {}) {
+        const fetchOpts = opts.fetchOpts || {};
+        const bangumiInfo = await getEpisodeBangumiRel(opts.episodeInfo, fetchOpts);
         const { subjectId, bgmEpisodeIndex, } = bangumiInfo;
         const episodeIndex = bgmEpisodeIndex ? bgmEpisodeIndex : bangumiInfo.episodeIndex;
         logger.debug('准备校验 Bangumi 条目收藏状态是否为看过');
@@ -2050,10 +2054,10 @@
         if (bangumiMe) {
             bangumiMe = JSON.parse(bangumiMe);
         } else {
-            bangumiMe = await fetchBangumiApiGetMe(token);
+            bangumiMe = await fetchBangumiApiGetMe(token, fetchOpts);
         }
         let msg = '';
-        const bangumiUserColl = await fetchJson(bangumiApi.getUserCollection(bangumiMe.username, subjectId), { token });
+        const bangumiUserColl = await fetchJson(bangumiApi.getUserCollection(bangumiMe.username, subjectId), { ...fetchOpts, token });
         if (bangumiUserColl.type === 2) { // 看过状态
             msg = 'Bangumi 条目已为看过状态,跳过更新';
             logger.debug(msg, bangumiUserColl);
@@ -2061,10 +2065,10 @@
         }
         logger.debug('准备修改 Bangumi 条目收藏状态为在看, 如果不存在则创建, 如果存在则修改');
         let body = { type: 3 }; // 在看状态
-        await fetchJson(bangumiApi.postUserCollection(subjectId), { token, body });
+        await fetchJson(bangumiApi.postUserCollection(subjectId), { ...fetchOpts, token, body });
         if (!bangumiInfo.bangumiEpsRes) {
             const fetchUrl = bangumiApi.getUserSubjectEpisodeCollection(subjectId);
-            const bangumiEpsRes = await fetchJson(fetchUrl, { token });
+            const bangumiEpsRes = await fetchJson(fetchUrl, { ...fetchOpts, token });
             bangumiInfo.bangumiEpsRes = bangumiEpsRes;
             const bangumiEpColl = bangumiEpsRes.data[episodeIndex];
             if (!bangumiEpColl) { throw new Error('未匹配到 bangumiEpColl'); }
@@ -2079,7 +2083,7 @@
         }
         logger.debug('准备更新 Bangumi 章节收藏状态, 详情: ', bangumiEp);
         body.type = 2; // 看过状态
-        await fetchJson(bangumiApi.putUserEpisodeCollection(bangumiEp.id), { token, body, method: 'PUT' });
+        await fetchJson(bangumiApi.putUserEpisodeCollection(bangumiEp.id), { ...fetchOpts, token, body, method: 'PUT' });
         bangumiEp.type = body.type;
         logger.info(`成功更新 Bangumi 章节收藏状态, 在看 => 看过, 详情: `, bangumiEp);
         window.ede.bangumiInfo = bangumiInfo;
@@ -2089,20 +2093,22 @@
 
     async function fetchJson(url, opts = {}) {
     const { token, headers, body } = opts;
+    const abortOnDestroy = opts.abortOnDestroy !== false;
     let { method = 'GET' } = opts;
     if (method === 'GET' && body) method = 'POST';
 
-    // 判断是否为弹弹play 或 Bangumi 官方 API，用于决定是否发送 X-User-Agent
+    // 判断是否为弹弹play API，用于决定是否发送 X-User-Agent
     const isDandanplayApi = url.includes('api.dandanplay.net') || url.includes('dandanplay');
-    const isBangumiApi = url.includes('api.bgm.tv') || url.includes('bgm.tv');
-    const shouldSendUserAgent = isDandanplayApi || isBangumiApi;
+    const shouldSendUserAgent = isDandanplayApi;
 
     const requestHeaders = {
         'Accept-Encoding': 'gzip',
         'Accept': 'application/json',
-        'Content-Type': 'application/json',
     };
-    // 只有弹弹play和Bangumi官方API才发送 X-User-Agent
+    if (body) {
+        requestHeaders['Content-Type'] = 'application/json';
+    }
+    // Bangumi 官方 API 的 CORS 预检不允许 X-User-Agent，浏览器会发送原生 User-Agent。
     if (shouldSendUserAgent) {
         requestHeaders['X-User-Agent'] = userAgent;
     }
@@ -2115,17 +2121,28 @@
     // 统一生命周期管理：可中止的请求
     const controller = new AbortController();
     const timeoutMs = 30000;
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs); // 30s 超时
+    let timeoutFired = false;
+    const timeoutId = setTimeout(() => {
+        timeoutFired = true;
+        controller.abort();
+    }, timeoutMs); // 30s 超时
+
+    if (opts.signal) {
+        if (opts.signal.aborted) {
+            controller.abort();
+        } else {
+            opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+        }
+    }
 
     // 将控制器注册到全局集合，便于销毁时统一取消
-    if (window.ede?.abortControllers) {
+    if (abortOnDestroy && window.ede?.abortControllers) {
         window.ede.abortControllers.add(controller);
     }
 
     const startTime = performance.now(); // 网络请求开始时间（用于测量耗时）
     try {
-        // 优先使用传入的 signal，否则使用内部创建的
-        const signal = opts.signal || controller.signal;
+        const signal = controller.signal;
 
         // 发起请求（fetch resolves when response headers are received）
         const response = await fetch(url, {
@@ -2220,10 +2237,12 @@
 
         if (error.name === 'AbortError') {
             // 区分是被组件销毁取消的(人为)，还是超时取消的
-            if (window.ede?.lastLoadId?.toString().startsWith('DESTROYED')) {
+            if (timeoutFired) {
+                logger.warn(`[Network] ${errPath} 请求超时或被中断 | duration=${duration}ms`);
+            } else if (abortOnDestroy && window.ede?.lastLoadId?.toString().startsWith('DESTROYED')) {
                 logger.debug(`[Network] ${errPath} 请求已因组件销毁而取消 | duration=${duration}ms`);
             } else {
-                logger.warn(`[Network] ${errPath} 请求超时或被中断 | duration=${duration}ms`);
+                logger.warn(`[Network] ${errPath} 请求被中断 | duration=${duration}ms`);
             }
             throw error;
         }
@@ -2232,7 +2251,7 @@
         throw error;
     } finally {
         // 请求结束（无论成功失败），从集合中移除控制器
-        if (window.ede?.abortControllers) {
+        if (abortOnDestroy && window.ede?.abortControllers) {
             window.ede.abortControllers.delete(controller);
         }
     }
@@ -6035,13 +6054,13 @@
         }).catch(error => {
             label.innerText = 'Bangumi Token 验证失败';
             label.style.color = 'red';
-            throw error;
+            logger.error('Bangumi Token 校验按钮处理失败', error);
         });
     }
 
-    async function fetchBangumiApiGetMe(bangumiToken) {
+    async function fetchBangumiApiGetMe(bangumiToken, fetchOpts = {}) {
         try {
-            const res = await fetchJson(bangumiApi.getMe(), { token: bangumiToken });
+            const res = await fetchJson(bangumiApi.getMe(), { ...fetchOpts, token: bangumiToken });
             logger.debug('Bangumi Token 验证成功', res);
             localStorage.setItem(lsLocalKeys.bangumiMe, JSON.stringify(res));
             return res;
