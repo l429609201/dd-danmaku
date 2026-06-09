@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.2.3
+// @version      1.2.4
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -37,7 +37,7 @@
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.2.3', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.2.4', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -74,7 +74,15 @@
         getMatchUrl: () => `${dandanplayApiCustom.prefix}/match`,
     }
     const bangumiApi = {
-        prefix: 'https://api.bgm.tv/v0',
+        get prefix() {
+            const custom = lsGetItem(lsKeys.bangumiApiPrefix.id);
+            const base = (custom && custom.length > 0) ? custom : 'https://api.bgm.tv';
+            return base + '/v0';
+        },
+        get imageDomain() {
+            const custom = lsGetItem(lsKeys.bangumiImageDomain.id);
+            return (custom && custom.length > 0) ? custom : 'https://lain.bgm.tv';
+        },
         accessTokenUrl: 'https://next.bgm.tv/demo/access-token',
         getCharacters: (subjectId) => `${bangumiApi.prefix}/subjects/${subjectId}/characters`,
         // need auth
@@ -347,6 +355,8 @@
         bangumiEnable: { id: 'danmakuBangumiEnable', defaultValue: false, name: '启用并填写个人令牌' },
         bangumiToken: { id: 'danmakuBangumiToken', defaultValue: '', name: '个人令牌' },
         bangumiPostPercent: { id: 'danmakuBangumiPostPercent', defaultValue: 95, name: '时长比', min: 1, max: 99, step: 1 },
+        bangumiApiPrefix: { id: 'danmakuBangumiApiPrefix', defaultValue: 'https://api.bgm.tv', name: 'Bangumi API 地址' },
+        bangumiImageDomain: { id: 'danmakuBangumiImageDomain', defaultValue: 'https://lain.bgm.tv', name: 'Bangumi 图片域名' },
         tmdbApiKey: { id: 'danmakuTmdbApiKey', defaultValue: '', name: 'TMDB API Key' },
         tmdbApiBaseUrl: { id: 'danmakuTmdbApiBaseUrl', defaultValue: 'https://api.themoviedb.org', name: 'TMDB API 域名' },
         tmdbEpisodeMappingEnable: { id: 'danmakuTmdbEpisodeMappingEnable', defaultValue: false, name: '启用集数映射' },
@@ -477,6 +487,8 @@
         bangumiTokenLabel: 'bangumiTokenInputLabel',
         bangumiTokenLinkDiv: 'bangumiTokenLinkDiv',
         bangumiPostPercentDiv: 'bangumiPostPercentDiv',
+        bangumiApiPrefixInputDiv: 'bangumiApiPrefixInputDiv',
+        bangumiImageDomainInputDiv: 'bangumiImageDomainInputDiv',
         tmdbEnableLabel: 'tmdbEnableLabel',
         tmdbSettingsDiv: 'tmdbSettingsDiv',
         tmdbApiKeyInput: 'tmdbApiKeyInput',
@@ -909,7 +921,7 @@
             this.tempLsValues = {};   // 临时存储的由程序更改后的 ls 值
             this.asymmetricAuthEnabled = false;
             this.publicKeyPem = null;   // 客户端公钥（用于验证Worker签名）
-            this.abortControllers = new Set();  // 全局请求控制器集合 (用于组件销毁时取消所有网络请求)
+            this.abortControllers = new Set();  // 页面级请求控制器集合 (用于组件销毁时取消 UI 相关网络请求)
         }
     }
 
@@ -1985,13 +1997,16 @@
         logger.debug(`结束播放百分比: ${pct}%`);
         const bangumiPostPercent = lsGetItem(lsKeys.bangumiPostPercent.id);
         const bangumiToken = lsGetItem(lsKeys.bangumiToken.id);
+        const currentEpisodeInfo = window.ede.episode_info;
         if (lsGetItem(lsKeys.bangumiEnable.id) && bangumiToken
-            && pct >= bangumiPostPercent && window.ede.episode_info.episodeId
+            && pct >= bangumiPostPercent && currentEpisodeInfo?.episodeId
         ) {
             logger.debug(`大于需提交的设定百分比: ${bangumiPostPercent}%`);
-            const { animeTitle, episodeTitle } = window.ede.episode_info;
+            const { animeTitle, episodeTitle } = currentEpisodeInfo;
             const targetName = `${animeTitle} - ${episodeTitle}`;
-            putBangumiEpStatus(bangumiToken).then(res => {
+            const episodeInfo = { ...currentEpisodeInfo };
+            const backgroundFetchOpts = { abortOnDestroy: false };
+            putBangumiEpStatus(bangumiToken, { episodeInfo, fetchOpts: backgroundFetchOpts }).then(res => {
                 embyToast({ text: `Bangumi收藏更新成功, 目标: ${targetName}, 结束播放百分比: ${pct}%, 大于需提交的设定百分比: ${bangumiPostPercent}%`});
                 logger.info(`Bangumi收藏更新成功, 目标: ${targetName}`);
             }).catch(error => {
@@ -2001,8 +2016,8 @@
         }
     }
 
-    async function getEpisodeBangumiRel() {
-        const episode_info = window.ede.episode_info;
+    async function getEpisodeBangumiRel(episode_info = window.ede.episode_info, fetchOpts = {}) {
+        if (!episode_info) { throw new Error('未获取到 episode_info'); }
         const _bangumi_key = lsLocalKeys.bangumiEpInfoPrefix + episode_info.episodeId;
         let bangumiInfoLs = localStorage.getItem(_bangumi_key);
         if (bangumiInfoLs) {
@@ -2014,7 +2029,7 @@
         const animeId = episode_info.animeId;
         if (!subjectId) {
             if (!animeId) { throw new Error('未获取到 animeId'); }
-            const danDanPlayBangumiRes = await fetchJson(dandanplayApi.getBangumi(animeId));
+            const danDanPlayBangumiRes = await fetchJson(dandanplayApi.getBangumi(animeId), fetchOpts);
             episode_info.bgmEpisodeIndex = offsetBgmEpisodeIndex(episode_info.bgmEpisodeIndex, danDanPlayBangumiRes.bangumi);
             bangumiUrl = danDanPlayBangumiRes.bangumi.bangumiUrl;
             if (!bangumiUrl) { throw new Error('未请求到 bangumiUrl'); }
@@ -2041,8 +2056,9 @@
         }
     }
 
-    async function putBangumiEpStatus(token) {
-        const bangumiInfo = await getEpisodeBangumiRel();
+    async function putBangumiEpStatus(token, opts = {}) {
+        const fetchOpts = opts.fetchOpts || {};
+        const bangumiInfo = await getEpisodeBangumiRel(opts.episodeInfo, fetchOpts);
         const { subjectId, bgmEpisodeIndex, } = bangumiInfo;
         const episodeIndex = bgmEpisodeIndex ? bgmEpisodeIndex : bangumiInfo.episodeIndex;
         logger.debug('准备校验 Bangumi 条目收藏状态是否为看过');
@@ -2050,10 +2066,10 @@
         if (bangumiMe) {
             bangumiMe = JSON.parse(bangumiMe);
         } else {
-            bangumiMe = await fetchBangumiApiGetMe(token);
+            bangumiMe = await fetchBangumiApiGetMe(token, fetchOpts);
         }
         let msg = '';
-        const bangumiUserColl = await fetchJson(bangumiApi.getUserCollection(bangumiMe.username, subjectId), { token });
+        const bangumiUserColl = await fetchJson(bangumiApi.getUserCollection(bangumiMe.username, subjectId), { ...fetchOpts, token });
         if (bangumiUserColl.type === 2) { // 看过状态
             msg = 'Bangumi 条目已为看过状态,跳过更新';
             logger.debug(msg, bangumiUserColl);
@@ -2061,10 +2077,10 @@
         }
         logger.debug('准备修改 Bangumi 条目收藏状态为在看, 如果不存在则创建, 如果存在则修改');
         let body = { type: 3 }; // 在看状态
-        await fetchJson(bangumiApi.postUserCollection(subjectId), { token, body });
+        await fetchJson(bangumiApi.postUserCollection(subjectId), { ...fetchOpts, token, body });
         if (!bangumiInfo.bangumiEpsRes) {
             const fetchUrl = bangumiApi.getUserSubjectEpisodeCollection(subjectId);
-            const bangumiEpsRes = await fetchJson(fetchUrl, { token });
+            const bangumiEpsRes = await fetchJson(fetchUrl, { ...fetchOpts, token });
             bangumiInfo.bangumiEpsRes = bangumiEpsRes;
             const bangumiEpColl = bangumiEpsRes.data[episodeIndex];
             if (!bangumiEpColl) { throw new Error('未匹配到 bangumiEpColl'); }
@@ -2079,7 +2095,7 @@
         }
         logger.debug('准备更新 Bangumi 章节收藏状态, 详情: ', bangumiEp);
         body.type = 2; // 看过状态
-        await fetchJson(bangumiApi.putUserEpisodeCollection(bangumiEp.id), { token, body, method: 'PUT' });
+        await fetchJson(bangumiApi.putUserEpisodeCollection(bangumiEp.id), { ...fetchOpts, token, body, method: 'PUT' });
         bangumiEp.type = body.type;
         logger.info(`成功更新 Bangumi 章节收藏状态, 在看 => 看过, 详情: `, bangumiEp);
         window.ede.bangumiInfo = bangumiInfo;
@@ -2089,20 +2105,22 @@
 
     async function fetchJson(url, opts = {}) {
     const { token, headers, body } = opts;
+    const abortOnDestroy = opts.abortOnDestroy !== false;
     let { method = 'GET' } = opts;
     if (method === 'GET' && body) method = 'POST';
 
-    // 判断是否为弹弹play 或 Bangumi 官方 API，用于决定是否发送 X-User-Agent
+    // 判断是否为弹弹play API，用于决定是否发送 X-User-Agent
     const isDandanplayApi = url.includes('api.dandanplay.net') || url.includes('dandanplay');
-    const isBangumiApi = url.includes('api.bgm.tv') || url.includes('bgm.tv');
-    const shouldSendUserAgent = isDandanplayApi || isBangumiApi;
+    const shouldSendUserAgent = isDandanplayApi;
 
     const requestHeaders = {
         'Accept-Encoding': 'gzip',
         'Accept': 'application/json',
-        'Content-Type': 'application/json',
     };
-    // 只有弹弹play和Bangumi官方API才发送 X-User-Agent
+    if (body) {
+        requestHeaders['Content-Type'] = 'application/json';
+    }
+    // Bangumi 官方 API 的 CORS 预检不允许 X-User-Agent，浏览器会发送原生 User-Agent。
     if (shouldSendUserAgent) {
         requestHeaders['X-User-Agent'] = userAgent;
     }
@@ -2115,17 +2133,28 @@
     // 统一生命周期管理：可中止的请求
     const controller = new AbortController();
     const timeoutMs = 30000;
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs); // 30s 超时
+    let timeoutFired = false;
+    const timeoutId = setTimeout(() => {
+        timeoutFired = true;
+        controller.abort();
+    }, timeoutMs); // 30s 超时
+
+    if (opts.signal) {
+        if (opts.signal.aborted) {
+            controller.abort();
+        } else {
+            opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+        }
+    }
 
     // 将控制器注册到全局集合，便于销毁时统一取消
-    if (window.ede?.abortControllers) {
+    if (abortOnDestroy && window.ede?.abortControllers) {
         window.ede.abortControllers.add(controller);
     }
 
     const startTime = performance.now(); // 网络请求开始时间（用于测量耗时）
     try {
-        // 优先使用传入的 signal，否则使用内部创建的
-        const signal = opts.signal || controller.signal;
+        const signal = controller.signal;
 
         // 发起请求（fetch resolves when response headers are received）
         const response = await fetch(url, {
@@ -2220,10 +2249,12 @@
 
         if (error.name === 'AbortError') {
             // 区分是被组件销毁取消的(人为)，还是超时取消的
-            if (window.ede?.lastLoadId?.toString().startsWith('DESTROYED')) {
+            if (timeoutFired) {
+                logger.warn(`[Network] ${errPath} 请求超时或被中断 | duration=${duration}ms`);
+            } else if (abortOnDestroy && window.ede?.lastLoadId?.toString().startsWith('DESTROYED')) {
                 logger.debug(`[Network] ${errPath} 请求已因组件销毁而取消 | duration=${duration}ms`);
             } else {
-                logger.warn(`[Network] ${errPath} 请求超时或被中断 | duration=${duration}ms`);
+                logger.warn(`[Network] ${errPath} 请求被中断 | duration=${duration}ms`);
             }
             throw error;
         }
@@ -2232,7 +2263,7 @@
         throw error;
     } finally {
         // 请求结束（无论成功失败），从集合中移除控制器
-        if (window.ede?.abortControllers) {
+        if (abortOnDestroy && window.ede?.abortControllers) {
             window.ede.abortControllers.delete(controller);
         }
     }
@@ -5451,10 +5482,19 @@
                     renderBangumiCharacters(charactersDiv, characters);
                 });
                 function renderBangumiCharacters(container, characters) {
+                    // 图片域名替换：将默认 lain.bgm.tv 替换为用户自定义域名
+                    const replaceBgmImageDomain = (url) => {
+                        if (!url) return url;
+                        const customDomain = bangumiApi.imageDomain;
+                        if (customDomain && customDomain !== 'https://lain.bgm.tv') {
+                            return url.replace('https://lain.bgm.tv', customDomain);
+                        }
+                        return url;
+                    };
                     characters.map(c => {
                         const characterDiv = document.createElement('div');
                         characterDiv.style = 'width: 31%; display: flex; margin: .5em;';
-                        let embyImgButtonInner = embyImg(c.images.large, 'object-position: top;');
+                        let embyImgButtonInner = embyImg(replaceBgmImageDomain(c.images.large), 'object-position: top;');
                         if (!c.images.large) {
                             embyImgButtonInner = embyI(iconKeys.person, classes.cardImageIcon);
                         }
@@ -5467,7 +5507,7 @@
                         const characterCvDiv = document.createElement('div');
                         characterCvDiv.textContent = 'CV: ' + c.actors.map(a => a.name).join();
                         if (c.actors[0]) {
-                            characterCvDiv.append(embyImgButton(embyImg(c.actors[0].images.large)));
+                            characterCvDiv.append(embyImgButton(embyImg(replaceBgmImageDomain(c.actors[0].images.large))));
                         }
                         characterRightDiv.append(characterCvDiv);
                         characterDiv.append(characterRightDiv);
@@ -5619,6 +5659,13 @@
                                 触发时机为正常停止播放,且播放进度超过设定百分比时;
                                 同步的媒体信息为自动匹配而来,可在"弹幕信息"中查看;
                                 自动匹配有误可"手动匹配",仍无法匹配可点击按钮X"取消匹配/清除弹幕",则此单章节不会同步;
+                            </div>
+                            <label class="${classes.embyLabel}">Bangumi API 地址: </label>
+                            <div id="${eleIds.bangumiApiPrefixInputDiv}" style="display: flex; margin-bottom: 0.5em;"></div>
+                            <label class="${classes.embyLabel}">Bangumi 图片域名: </label>
+                            <div id="${eleIds.bangumiImageDomainInputDiv}" style="display: flex; margin-bottom: 0.5em;"></div>
+                            <div class="${classes.embyFieldDesc}">
+                                自定义 Bangumi API 和图片域名，用于镜像/代理场景，留空则使用默认值
                             </div>
                         </div>
                     </div>
@@ -6023,6 +6070,22 @@
         ));
         const bangumiTokenLinkDiv = getById(eleIds.bangumiTokenLinkDiv, container);
         bangumiTokenLinkDiv.append(embyALink(bangumiApi.accessTokenUrl, bangumiApi.accessTokenUrl));
+        // Bangumi API 地址输入框
+        const bangumiApiPrefixInputDiv = getById(eleIds.bangumiApiPrefixInputDiv, container);
+        if (bangumiApiPrefixInputDiv) {
+            bangumiApiPrefixInputDiv.append(embyInput(
+                { id: 'bangumiApiPrefixInput', value: lsGetItem(lsKeys.bangumiApiPrefix.id) },
+                (e) => { lsSetItem(lsKeys.bangumiApiPrefix.id, getById('bangumiApiPrefixInput').value.trim()); }
+            ));
+        }
+        // Bangumi 图片域名输入框
+        const bangumiImageDomainInputDiv = getById(eleIds.bangumiImageDomainInputDiv, container);
+        if (bangumiImageDomainInputDiv) {
+            bangumiImageDomainInputDiv.append(embyInput(
+                { id: 'bangumiImageDomainInput', value: lsGetItem(lsKeys.bangumiImageDomain.id) },
+                (e) => { lsSetItem(lsKeys.bangumiImageDomain.id, getById('bangumiImageDomainInput').value.trim()); }
+            ));
+        }
     }
 
     function onEnterBangumiToken(e) {
@@ -6035,13 +6098,13 @@
         }).catch(error => {
             label.innerText = 'Bangumi Token 验证失败';
             label.style.color = 'red';
-            throw error;
+            logger.error('Bangumi Token 校验按钮处理失败', error);
         });
     }
 
-    async function fetchBangumiApiGetMe(bangumiToken) {
+    async function fetchBangumiApiGetMe(bangumiToken, fetchOpts = {}) {
         try {
-            const res = await fetchJson(bangumiApi.getMe(), { token: bangumiToken });
+            const res = await fetchJson(bangumiApi.getMe(), { ...fetchOpts, token: bangumiToken });
             logger.debug('Bangumi Token 验证成功', res);
             localStorage.setItem(lsLocalKeys.bangumiMe, JSON.stringify(res));
             return res;
@@ -7465,21 +7528,13 @@
         const animeSelect = embySelect({ id: eleIds.danmakuAnimeSelect, label: '剧集: ', style: 'width: auto;max-width: 100%;' }
             , selectAnimeIdx, allAnimes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription} 来源：${opt.apiName}`, doDanmakuAnimeSelect);
         danmakuAnimeDiv.append(animeSelect);
-        // [修改] 只有当选中的动画有 episodes 时才显示集数选择器
-        const selectedAnime = allAnimes[selectAnimeIdx];
-        if (selectedAnime.episodes && selectedAnime.episodes.length > 0) {
-            const episodeNumSelect = embySelect({ id: eleIds.danmakuEpisodeNumSelect, label: '集数: ', style: 'width: auto;max-width: 100%;' }
-                , window.ede.searchDanmakuOpts.episode, selectedAnime.episodes, 'episodeId', (opt, i) => `${i + 1} - ${opt.episodeTitle}`);
-            danmakuEpisodeNumDiv.append(episodeNumSelect);
-        } else {
-            danmakuEpisodeNumDiv.innerHTML = '<span style="color: #52b54b;">请选择动画以加载分集信息</span>';
-        }
 
         getById(eleIds.danmakuEpisodeFlag).hidden = false;
         getById(eleIds.danmakuSwitchEpisode).disabled = false;
-        getById(eleIds.searchImg).src = selectedAnime.imageUrl || dandanplayApi.posterImg(selectedAnime.animeId);
-        const apiSourceDiv = getById(eleIds.searchApiSource);
-        if (apiSourceDiv) apiSourceDiv.innerText = `来源: ${selectedAnime.apiName}`;
+
+        // [修复] 初始渲染后直接调用 doDanmakuAnimeSelect 走统一的分集加载逻辑，
+        // 避免静态检查 episodes 导致分集列表为空（初始选中项不触发 onChange）
+        doDanmakuAnimeSelect(null, selectAnimeIdx, allAnimes[selectAnimeIdx]);
     }
 
     function doSearchTitleSwtich(e) {
@@ -7519,9 +7574,12 @@
         const numDiv = getById(eleIds.danmakuEpisodeNumDiv);
         numDiv.innerHTML = '';
         const anime = window.ede.searchDanmakuOpts.animes[index];
+        if (!anime) return;
 
-        // [新增] 如果该动画还没有分集信息，先获取
-        if (!anime.episodes && anime.bangumiId) {
+        // [修复] 条件修正：episodes 不存在或为空数组时都需要拉取分集
+        // 原条件 `!anime.episodes` 会导致空数组 [] 跳过获取
+        const needFetch = (!anime.episodes || anime.episodes.length === 0) && anime.bangumiId;
+        if (needFetch) {
             logger.debug(`[手动匹配] 动画 ${anime.animeTitle} 缺少分集信息，正在获取...`);
             numDiv.innerHTML = '<span style="color: #52b54b;">正在加载分集信息...</span>';
 
@@ -7530,14 +7588,16 @@
 
             try {
                 const bangumiResult = await fetchJson(bangumiUrl);
-                if (bangumiResult && bangumiResult.bangumi && bangumiResult.bangumi.episodes) {
-                    // 更新动画对象，添加分集信息
-                    anime.episodes = bangumiResult.bangumi.episodes;
-                    anime.seasons = bangumiResult.bangumi.seasons;
+                // [修复] 兼容多种返回格式：{ bangumi: { episodes } } 或 { episodes }
+                const eps = bangumiResult?.bangumi?.episodes || bangumiResult?.episodes;
+                const seas = bangumiResult?.bangumi?.seasons || bangumiResult?.seasons;
+                if (eps && eps.length > 0) {
+                    anime.episodes = eps;
+                    anime.seasons = seas;
                     logger.info(`[手动匹配] 获取分集信息成功: ${anime.animeTitle}, 共 ${anime.episodes.length} 集`);
                 } else {
-                    logger.error(`[手动匹配] 获取分集信息失败: 返回数据格式错误`);
-                    numDiv.innerHTML = '<span style="color: #e23636;">获取分集信息失败</span>';
+                    logger.error(`[手动匹配] 获取分集信息失败: 返回数据为空或格式错误`);
+                    numDiv.innerHTML = '<span style="color: #e23636;">获取分集信息失败（返回为空）</span>';
                     return;
                 }
             } catch (error) {
@@ -7573,13 +7633,18 @@
             }
         }
 
-        // 切换剧集时，默认选中第一个分集
-        const episodeNumSelect = embySelect({ id: eleIds.danmakuEpisodeNumSelect, label: '集数: ' }, 0, displayEpisodes, 'episodeId', (opt, i) => `${i + 1} - ${opt.episodeTitle}`);
-        episodeNumSelect.style.maxWidth = '100%';
-        numDiv.append(episodeNumSelect);
-
-        // [黑名单] 存储过滤后的分集列表，供 doDanmakuSwitchEpisode 使用
-        anime.filteredEpisodes = displayEpisodes;
+        // [修复] 分集列表为空时给出明确提示，而不是渲染空下拉框
+        if (displayEpisodes.length === 0) {
+            numDiv.innerHTML = '<span style="color: #aaa;">该条目暂无分集信息</span>';
+            anime.filteredEpisodes = [];
+        } else {
+            // 切换剧集时，默认选中第一个分集
+            const episodeNumSelect = embySelect({ id: eleIds.danmakuEpisodeNumSelect, label: '集数: ' }, 0, displayEpisodes, 'episodeId', (opt, i) => `${i + 1} - ${opt.episodeTitle}`);
+            episodeNumSelect.style.maxWidth = '100%';
+            numDiv.append(episodeNumSelect);
+            // [黑名单] 存储过滤后的分集列表，供 doDanmakuSwitchEpisode 使用
+            anime.filteredEpisodes = displayEpisodes;
+        }
 
         // [修正] 始终使用匹配到的海报
         getById(eleIds.searchImg).src = anime.imageUrl || dandanplayApi.posterImg(anime.animeId);
