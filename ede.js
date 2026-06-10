@@ -1073,7 +1073,7 @@
         // Emby 点"下一集/上一集"时不会离开 video-osd 页面，beforeDestroy 不会触发，
         // 必须在 playbackstop 时保存，否则推理匹配永远拿不到上一集的信息
         if (window.ede && window.ede.episode_info) {
-            window.ede.previous_episode_info = window.ede.episode_info;
+            window.ede.previous_episode_info = { ...window.ede.episode_info };
             logger.debug(`[推理匹配] 已保存当前集信息: episodeId=${window.ede.episode_info.episodeId}, episodeIndex=${window.ede.episode_info.episodeIndex}`);
         }
         onPlaybackStopPct(e, state);
@@ -2004,6 +2004,24 @@
         }
     }
 
+    function isValidEpisodeIndex(value) {
+        if (value === null || value === undefined || value === '') {
+            return false;
+        }
+        const num = Number(value);
+        return Number.isInteger(num) && num >= 0;
+    }
+
+    function deriveBgmEpisodeIndex(previousInfo, fallbackEpisodeIndex, delta) {
+        if (previousInfo && isValidEpisodeIndex(previousInfo.bgmEpisodeIndex)) {
+            const derived = Number(previousInfo.bgmEpisodeIndex) + delta;
+            if (isValidEpisodeIndex(derived)) {
+                return derived;
+            }
+        }
+        return isValidEpisodeIndex(fallbackEpisodeIndex) ? Number(fallbackEpisodeIndex) : null;
+    }
+
     async function getEpisodeBangumiRel(episode_info = window.ede.episode_info, fetchOpts = {}) {
         if (!episode_info) { throw new Error('未获取到 episode_info'); }
         const _bangumi_key = lsLocalKeys.bangumiEpInfoPrefix + episode_info.episodeId;
@@ -2015,32 +2033,56 @@
         let subjectId = bangumiInfoLs ? bangumiInfoLs.subjectId : null;
         let bangumiUrl = bangumiInfoLs ? bangumiInfoLs.bangumiUrl : null;
         const animeId = episode_info.animeId;
+        const bangumiId = episode_info.bangumiId || animeId;
         if (!subjectId) {
-            if (!animeId) { throw new Error('未获取到 animeId'); }
-            const danDanPlayBangumiRes = await fetchJson(dandanplayApi.getBangumi(animeId), fetchOpts);
-            episode_info.bgmEpisodeIndex = offsetBgmEpisodeIndex(episode_info.bgmEpisodeIndex, danDanPlayBangumiRes.bangumi);
-            bangumiUrl = danDanPlayBangumiRes.bangumi.bangumiUrl;
+            if (!bangumiId) { throw new Error('未获取到 bangumiId/animeId'); }
+            const officialPrefix = `${corsProxy}https://api.dandanplay.net/api/v2`;
+            const normalizePrefix = prefix => (prefix || '').replace(/\/+$/, '');
+            const primaryPrefix = normalizePrefix(episode_info.apiPrefix || dandanplayApi.prefix || officialPrefix);
+            const fallbackPrefix = normalizePrefix(officialPrefix);
+            const fetchBangumiByPrefix = prefix => fetchJson(`${prefix}/bangumi/${bangumiId}`, fetchOpts);
+
+            let danDanPlayBangumiRes = null;
+            try {
+                danDanPlayBangumiRes = await fetchBangumiByPrefix(primaryPrefix);
+            } catch (error) {
+                if (primaryPrefix && primaryPrefix !== fallbackPrefix) {
+                    logger.warn(`[Bangumi] 源 ${primaryPrefix} 查询 /bangumi/${bangumiId} 失败，回退官方源: ${error.message || error}`);
+                    danDanPlayBangumiRes = await fetchBangumiByPrefix(fallbackPrefix);
+                } else {
+                    throw error;
+                }
+            }
+
+            const danDanPlayBangumi = danDanPlayBangumiRes?.bangumi || danDanPlayBangumiRes;
+            episode_info.bgmEpisodeIndex = offsetBgmEpisodeIndex(episode_info.bgmEpisodeIndex, danDanPlayBangumi);
+            bangumiUrl = danDanPlayBangumi?.bangumiUrl;
             if (!bangumiUrl) { throw new Error('未请求到 bangumiUrl'); }
             subjectId = parseInt(bangumiUrl.match(/\/(\d+)$/)[1]);
         }
         const episodeIndex = episode_info ? episode_info.episodeIndex : null;
         const bgmEpisodeIndex = episode_info ? episode_info.bgmEpisodeIndex : null;
-        const bangumiInfo = { animeId, bangumiUrl, subjectId, episodeIndex, bgmEpisodeIndex, bangumiEpsRes, _bangumi_key };
+        const bangumiInfo = { animeId, bangumiId, bangumiUrl, subjectId, episodeIndex, bgmEpisodeIndex, bangumiEpsRes, _bangumi_key };
         window.ede.bangumiInfo = bangumiInfo;
         localStorage.setItem(bangumiInfo._bangumi_key, JSON.stringify(bangumiInfo));
         return bangumiInfo;
     }
 
     function offsetBgmEpisodeIndex(currentBgmEpisodeIndex, danDanPlayBangumi) {
-        if (!danDanPlayBangumi) {
+        if (!danDanPlayBangumi || !Array.isArray(danDanPlayBangumi.episodes)) {
             return currentBgmEpisodeIndex;
         }
-        let bangumiEp = danDanPlayBangumi.episodes[currentBgmEpisodeIndex];
+        if (!isValidEpisodeIndex(currentBgmEpisodeIndex)) {
+            return currentBgmEpisodeIndex;
+        }
+        const normalizedIndex = Number(currentBgmEpisodeIndex);
+        let bangumiEp = danDanPlayBangumi.episodes[normalizedIndex];
         if (!bangumiEp) {
             logger.debug(`未匹配到 danDanPlayBangumi 番剧集数,剧集不为第一季,尝试切换接口数据匹配返回修正后的 bgmEpisodeIndex`);
-            return danDanPlayBangumi.episodes.findIndex(ep => ep.episodeNumber == currentBgmEpisodeIndex + 1);
+            const fallbackIndex = danDanPlayBangumi.episodes.findIndex(ep => ep.episodeNumber == normalizedIndex + 1);
+            return fallbackIndex >= 0 ? fallbackIndex : currentBgmEpisodeIndex;
         } else {
-            return currentBgmEpisodeIndex;
+            return normalizedIndex;
         }
     }
 
@@ -2048,7 +2090,10 @@
         const fetchOpts = opts.fetchOpts || {};
         const bangumiInfo = await getEpisodeBangumiRel(opts.episodeInfo, fetchOpts);
         const { subjectId, bgmEpisodeIndex, } = bangumiInfo;
-        const episodeIndex = bgmEpisodeIndex ? bgmEpisodeIndex : bangumiInfo.episodeIndex;
+        const episodeIndex = isValidEpisodeIndex(bgmEpisodeIndex) ? Number(bgmEpisodeIndex) : Number(bangumiInfo.episodeIndex);
+        if (!isValidEpisodeIndex(episodeIndex)) {
+            throw new Error('未获取到有效 Bangumi 章节索引');
+        }
         logger.debug('准备校验 Bangumi 条目收藏状态是否为看过');
         let bangumiMe = localStorage.getItem(lsLocalKeys.bangumiMe);
         if (bangumiMe) {
@@ -3114,16 +3159,19 @@
 
             let predictedEpisodeId = null;
             let direction = '';
+            let bgmIndexDelta = 0;
 
             // 播放下一集 (e.g., from ep1(index 0) to ep2(number 2))
             if (currentEpisodeNumber === previousEpisodeIndex + 2) {
                 predictedEpisodeId = previousEpisodeId + 1;
                 direction = '下一集';
+                bgmIndexDelta = 1;
             }
             // 播放上一集 (e.g., from ep2(index 1) to ep1(number 1))
             else if (currentEpisodeNumber === previousEpisodeIndex) {
                 predictedEpisodeId = previousEpisodeId - 1;
                 direction = '上一集';
+                bgmIndexDelta = -1;
             }
 
             if (predictedEpisodeId) {
@@ -3135,15 +3183,20 @@
                 const comments = await fetchComment(predictedEpisodeId, prevApiPrefix);
                 if (comments && comments.length > 0) {
                     logger.info(`[推理匹配] 成功！episodeId: ${predictedEpisodeId}，弹幕数: ${comments.length}，源: ${prevApiName || '默认'}`);
+                    const predictedEpisodeIndex = isNaN(currentEpisodeNumber) ? 0 : currentEpisodeNumber - 1;
+                    const predictedBgmEpisodeIndex = deriveBgmEpisodeIndex(previous_info, predictedEpisodeIndex, bgmIndexDelta);
                     const predictedEpisodeInfo = {
                         ...itemInfoMap,
                         episodeId: predictedEpisodeId,
                         episodeTitle: `第 ${currentEpisodeNumber} 集 (推断)`,
                         animeId: previous_info.animeId,
+                        bangumiId: previous_info.bangumiId || previous_info.animeId,
                         animeTitle: previous_info.animeTitle,
+                        animeOriginalTitle: previous_info.animeOriginalTitle || '',
                         imageUrl: previous_info.imageUrl,
                         seriesOrMovieId: seriesOrMovieId,
-                        episodeIndex: currentEpisodeNumber - 1,
+                        episodeIndex: predictedEpisodeIndex,
+                        bgmEpisodeIndex: predictedBgmEpisodeIndex,
                         // [修复] 携带源信息，确保后续 fetchComment 和下次推理都使用同一个源
                         apiPrefix: prevApiPrefix,
                         apiName: prevApiName,
@@ -3188,20 +3241,29 @@
         }
         // 处理来自 /match 的直接匹配结果
         if (res.directMatch) {
+            const episodeIndex = isNaN(episode) ? 0 : episode - 1;
+            const bgmEpisodeIndex = isValidEpisodeIndex(res.episodeInfo.bgmEpisodeIndex)
+                ? Number(res.episodeInfo.bgmEpisodeIndex)
+                : (
+                    isValidEpisodeIndex(res.episodeInfo.matchedEpisodeIndex)
+                        ? Number(res.episodeInfo.matchedEpisodeIndex)
+                        : episodeIndex
+                );
             const episodeInfo = {
                 episodeId: res.episodeInfo.episodeId,
                 episodeTitle: res.episodeInfo.episodeTitle,
                 // [修复] episodeIndex 必须用实际集数，否则推理匹配(上/下一集 episodeId±1)只在 EP1→EP2 时生效
-                episodeIndex: isNaN(episode) ? 0 : episode - 1,
+                episodeIndex,
+                bgmEpisodeIndex,
                 animeId: res.episodeInfo.animeId,
+                bangumiId: res.episodeInfo.bangumiId || res.episodeInfo.animeId,
                 animeTitle: res.episodeInfo.animeTitle,
                 animeOriginalTitle: '',
                 imageUrl: res.episodeInfo.imageUrl,
                 apiName: res.apiName,
                 apiPrefix: res.apiPrefix,
+                seriesOrMovieId: seriesOrMovieId,
             };
-        // 将系列ID也存入，用于下一集/上一集的判断
-        episodeInfo.seriesOrMovieId = seriesOrMovieId;
             // [增强日志] 完整输出 directMatch 最终结果，方便排查
             logger.info(`[匹配结果] directMatch: "${episodeInfo.animeTitle}" - "${episodeInfo.episodeTitle}" (episodeId: ${episodeInfo.episodeId}, animeId: ${episodeInfo.animeId})`);
             localStorage.setItem(unique_episode_key, JSON.stringify(episodeInfo));
@@ -3226,7 +3288,8 @@
             return null;
         }
         // [修复] 根据 episodeIndex 定位到正确的分集，而非永远取 episodes[0]
-        const selectedAnimeEpisodes = animaInfo.animes[selectAnime_id].episodes;
+        const selectedAnime = animaInfo.animes[selectAnime_id];
+        const selectedAnimeEpisodes = selectedAnime.episodes;
         let targetEpisode = selectedAnimeEpisodes[0]; // 默认回退到第一集
 
         if (episodeIndex >= 0 && episodeIndex < selectedAnimeEpisodes.length) {
@@ -3256,11 +3319,12 @@
             episodeId: targetEpisode.episodeId,
             episodeTitle: targetEpisode.episodeTitle,
             episodeIndex,
-            bgmEpisodeIndex: res.bgmEpisodeIndex ? res.bgmEpisodeIndex : episodeIndex,
-            animeId: animaInfo.animes[selectAnime_id].animeId,
-            animeTitle: animaInfo.animes[selectAnime_id].animeTitle,
+            bgmEpisodeIndex: isValidEpisodeIndex(res.bgmEpisodeIndex) ? Number(res.bgmEpisodeIndex) : episodeIndex,
+            animeId: selectedAnime.animeId,
+            bangumiId: selectedAnime.bangumiId || selectedAnime.animeId,
+            animeTitle: selectedAnime.animeTitle,
             animeOriginalTitle,
-            imageUrl: animaInfo.animes[selectAnime_id].imageUrl,
+            imageUrl: selectedAnime.imageUrl,
             seriesOrMovieId: seriesOrMovieId,
             apiPrefix: apiPrefix, // [修正] 保存API前缀
             apiName: apiName, // [新增] 保存API名称
@@ -7621,6 +7685,7 @@
             episodeIndex: episodeNumSelect.selectedIndex,
             bgmEpisodeIndex: episodeNumSelect.selectedIndex, 
             animeId: anime.animeId,
+            bangumiId: anime.bangumiId || anime.animeId,
             animeTitle: anime.animeTitle,
             animeOriginalTitle: '', 
             imageUrl: anime.imageUrl,
@@ -8753,7 +8818,7 @@
 
         // [备份逻辑] 智能推断需要这个，必须放在清空前
         if (window.ede && window.ede.episode_info) {
-            window.ede.previous_episode_info = window.ede.episode_info;
+            window.ede.previous_episode_info = { ...window.ede.episode_info };
         }
 
         // =========== [UI 瞬间清空区] ===========
