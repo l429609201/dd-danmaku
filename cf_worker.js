@@ -1812,7 +1812,9 @@ async function handleRequest(request, env, ctx) {
 
     // --- R2 弹幕缓存命中检查 ---
     if (isCommentApi) {
-        const r2Key = R2_CACHE_CONFIG.KEY_PREFIX + apiPath.replace('/api/v2/comment/', '') + '?' + (tUrlObj.search || '').replace('?', '');
+        // Key 只用 episodeId，如 /api/v2/comment/12345 → comment/12345
+        const episodeId = apiPath.replace('/api/v2/comment/', '').split('?')[0];
+        const r2Key = R2_CACHE_CONFIG.KEY_PREFIX + episodeId;
         const cachedData = await r2GetComment(env, r2Key);
         if (cachedData) {
             console.log(`📦 [${clientIP}] R2弹幕缓存命中: ${apiPath}`);
@@ -1940,13 +1942,25 @@ async function handleRequest(request, env, ctx) {
             });
             console.log(`📦 [${clientIP}] 内存缓存已存入: ${apiPath} (TTL: 2h)`);
         } else if (isCommentApi) {
-            // R2 缓存：弹幕接口
-            const r2Key = R2_CACHE_CONFIG.KEY_PREFIX + apiPath.replace('/api/v2/comment/', '') + '?' + (tUrlObj.search || '').replace('?', '');
-            r2PutComment(env, r2Key, responseText).then(() => {
-                console.log(`📦 [${clientIP}] R2弹幕缓存已存入: ${r2Key} (TTL: 12h)`);
-            }).catch(e => {
-                console.log(`⚠️ [${clientIP}] R2弹幕缓存存入失败: ${e.message}`);
-            });
+            // R2 缓存：弹幕接口，只缓存有弹幕的响应
+            try {
+                const parsed = JSON.parse(responseText);
+                if (parsed && Array.isArray(parsed.comments) && parsed.comments.length > 0) {
+                    const episodeId = apiPath.replace('/api/v2/comment/', '').split('?')[0];
+                    const r2Key = R2_CACHE_CONFIG.KEY_PREFIX + episodeId;
+                    // 用 ctx.waitUntil 保活，确保 Worker 返回响应后 R2 写入仍能完成
+                    const r2Promise = r2PutComment(env, r2Key, responseText).then(() => {
+                        console.log(`📦 [${clientIP}] R2弹幕缓存已存入: ${r2Key} (${parsed.comments.length}条弹幕, TTL: 12h)`);
+                    }).catch(e => {
+                        console.log(`⚠️ [${clientIP}] R2弹幕缓存存入失败: ${e.message}`);
+                    });
+                    if (ctx && ctx.waitUntil) ctx.waitUntil(r2Promise);
+                } else {
+                    console.log(`📦 [${clientIP}] 弹幕为空，跳过R2缓存: ${apiPath}`);
+                }
+            } catch (e) {
+                console.log(`⚠️ [${clientIP}] 弹幕响应解析失败，跳过R2缓存: ${e.message}`);
+            }
         }
     }
 
