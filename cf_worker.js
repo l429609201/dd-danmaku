@@ -30,6 +30,7 @@ const R2_CACHE_CONFIG = {
     KEY_PREFIX: 'comment/',                 // R2 key 前缀
     CLEANUP_BATCH_SIZE: 100,                // 每次写入清理：批量删除最旧的数量
     EXPIRE_POLL_INTERVAL: 5 * 60 * 1000,   // 过期轮询间隔：5分钟
+    WRITE_CLEANUP_THROTTLE: 100,           // 写入清理节流：每写入N次才检查一次阈值
 };
 
 // ========================================
@@ -90,6 +91,7 @@ let memoryCache = {
     lastLogCleanup: Date.now(),
     lastRateLimitCleanup: Date.now(),
     lastR2ExpireCleanup: Date.now(), // R2 过期轮询上次执行时间
+    r2WriteCount: 0, // R2 写入计数器（用于节流写入清理）
     // API响应缓存（用于搜索和番剧接口）
     apiCache: new Map(), // 格式: { "cache_key": { data: response, timestamp: Date.now() } }
     // OAuth token 验证缓存（避免每次请求都做 crypto 运算）
@@ -390,8 +392,13 @@ async function r2PutComment(env, cacheKey, data) {
             customMetadata: { timestamp: Date.now().toString() },
             httpMetadata: { contentType: 'application/json' },
         });
-        // 写入清理：每次新存入后，批量删除最旧的对象（按 CLEANUP_BATCH_SIZE）
-        r2WriteCleanup(env).catch(e => console.log(`⚠️ R2 写入清理失败: ${e.message}`));
+        // 写入清理节流：每写入 WRITE_CLEANUP_THROTTLE 次才检查一次阈值，避免频繁 list
+        memoryCache.r2WriteCount++;
+        if (memoryCache.r2WriteCount >= R2_CACHE_CONFIG.WRITE_CLEANUP_THROTTLE) {
+            memoryCache.r2WriteCount = 0;
+            // await 确保清理纳入外层 ctx.waitUntil 保活周期
+            await r2WriteCleanup(env).catch(e => console.log(`⚠️ R2 写入清理失败: ${e.message}`));
+        }
     } catch (e) {
         console.log(`⚠️ R2 写入失败: ${cacheKey}, ${e.message}`);
     }
