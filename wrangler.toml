@@ -34,4 +34,9 @@ enabled = true
 tag = "v6"
 deleted_classes = ["RateLimiter", "AppState"]
 
+# R2 弹幕缓存（/api/v2/comment/ 响应缓存，12小时过期）
+[[r2_buckets]]
+binding = "DANMAKU_CACHE"
+bucket_name = "danmu-api-cache"
+
 

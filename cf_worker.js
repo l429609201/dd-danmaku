@@ -20,7 +20,15 @@ const MEMORY_LIMITS = {
     RATE_LIMIT_CLEANUP_INTERVAL: 300000,  // 每5分钟检查一次频率限制计数器清理
     RATE_LIMIT_COUNTER_EXPIRE: 3600000,   // 频率限制计数器1小时过期（与小时限制对应）
     API_CACHE_TTL: 7200000,     // API缓存2小时
-    MAX_API_CACHE_SIZE: 3000    // 最多缓存3000个API响应
+    MAX_API_CACHE_SIZE: 1000     // 最多缓存500个API响应（内存缓存，不含弹幕）
+};
+
+// R2 弹幕缓存配置
+const R2_CACHE_CONFIG = {
+    TTL: 12 * 60 * 60 * 1000,            // 12小时过期
+    MAX_STORAGE_BYTES: 9 * 1024 * 1024 * 1024, // 9GB 阈值
+    KEY_PREFIX: 'comment/',               // R2 key 前缀
+    CLEANUP_BATCH_SIZE: 100,              // 每次清理最多删除100个对象
 };
 
 // ========================================
@@ -342,6 +350,95 @@ function cleanupApiCache() {
     if (deletedCount > 0) {
         console.log(`🧹 清理了 ${deletedCount} 个过期的API缓存，当前剩余: ${memoryCache.apiCache.size}`);
     }
+}
+
+// ========================================
+// 📦 R2 弹幕缓存工具函数
+// ========================================
+
+/**
+ * 从 R2 读取弹幕缓存
+ * @returns {string|null} 缓存的响应文本，过期或不存在返回 null
+ */
+async function r2GetComment(env, cacheKey) {
+    if (!env.DANMAKU_CACHE) return null;
+    try {
+        const obj = await env.DANMAKU_CACHE.get(cacheKey);
+        if (!obj) return null;
+        const timestamp = parseInt(obj.customMetadata?.timestamp || '0');
+        if (Date.now() - timestamp > R2_CACHE_CONFIG.TTL) {
+            // 已过期，异步删除不阻塞
+            env.DANMAKU_CACHE.delete(cacheKey).catch(() => {});
+            return null;
+        }
+        return await obj.text();
+    } catch (e) {
+        console.log(`⚠️ R2 读取失败: ${cacheKey}, ${e.message}`);
+        return null;
+    }
+}
+
+/**
+ * 写入弹幕缓存到 R2，超阈值时清理最旧的
+ */
+async function r2PutComment(env, cacheKey, data) {
+    if (!env.DANMAKU_CACHE) return;
+    try {
+        await env.DANMAKU_CACHE.put(cacheKey, data, {
+            customMetadata: { timestamp: Date.now().toString() },
+            httpMetadata: { contentType: 'application/json' },
+        });
+        // 异步检查存储用量，超阈值则清理
+        r2CleanupIfNeeded(env).catch(e => console.log(`⚠️ R2 清理检查失败: ${e.message}`));
+    } catch (e) {
+        console.log(`⚠️ R2 写入失败: ${cacheKey}, ${e.message}`);
+    }
+}
+
+/**
+ * R2 存储阈值检查 + LRU 清理
+ * 列出所有 comment/ 前缀的对象，按上传时间排序，删除最旧的直到低于阈值
+ */
+async function r2CleanupIfNeeded(env) {
+    if (!env.DANMAKU_CACHE) return;
+    // 先快速统计总大小
+    let totalSize = 0;
+    let allObjects = [];
+    let cursor = undefined;
+    let listCount = 0;
+
+    // 分页列出所有缓存对象（最多遍历 50 页防止超时）
+    do {
+        const listed = await env.DANMAKU_CACHE.list({
+            prefix: R2_CACHE_CONFIG.KEY_PREFIX,
+            cursor,
+            limit: 1000,
+        });
+        for (const obj of listed.objects) {
+            totalSize += obj.size;
+            allObjects.push({ key: obj.key, size: obj.size, uploaded: obj.uploaded });
+        }
+        cursor = listed.truncated ? listed.cursor : undefined;
+        listCount++;
+    } while (cursor && listCount < 50);
+
+    console.log(`📊 R2 弹幕缓存统计: ${allObjects.length} 个对象, 总大小: ${(totalSize / 1024 / 1024).toFixed(1)} MB`);
+
+    if (totalSize <= R2_CACHE_CONFIG.MAX_STORAGE_BYTES) return;
+
+    // 超阈值，按上传时间排序（最旧的在前），批量删除
+    allObjects.sort((a, b) => a.uploaded.getTime() - b.uploaded.getTime());
+    let deletedCount = 0;
+    let freedSize = 0;
+
+    for (const obj of allObjects) {
+        if (totalSize - freedSize <= R2_CACHE_CONFIG.MAX_STORAGE_BYTES) break;
+        if (deletedCount >= R2_CACHE_CONFIG.CLEANUP_BATCH_SIZE) break;
+        await env.DANMAKU_CACHE.delete(obj.key);
+        freedSize += obj.size;
+        deletedCount++;
+    }
+    console.log(`🧹 R2 清理完成: 删除 ${deletedCount} 个最旧对象, 释放 ${(freedSize / 1024 / 1024).toFixed(1)} MB`);
 }
 
 // 定期清理内存（在每个请求时检查）
@@ -1679,26 +1776,29 @@ async function handleRequest(request, env, ctx) {
     console.log(`   - UA类型: ${accessCheck.uaConfig?.type || 'unknown'}`);
     console.log(`   - 目标路径: ${tUrlObj.pathname}`);
 
-    // 检查是否可以使用API缓存（搜索、番剧、匹配接口）
+    // ========================================
+    // 📦 缓存策略判断
+    // ========================================
     const apiPath = tUrlObj.pathname;
-    const cacheablePatterns = ['/api/v2/search/anime', '/api/v2/bangumi/', '/api/v2/match'];
-    const isCacheable = request.method === 'GET' && cacheablePatterns.some(p => apiPath.startsWith(p));
+    // 内存缓存：搜索、番剧、匹配、搜索分集
+    const memoryCachePatterns = ['/api/v2/search/anime', '/api/v2/search/episodes', '/api/v2/bangumi/', '/api/v2/match'];
+    const isCacheable = request.method === 'GET' && memoryCachePatterns.some(p => apiPath.startsWith(p));
+    // R2 缓存：弹幕接口
+    const isCommentApi = request.method === 'GET' && apiPath.startsWith('/api/v2/comment/');
 
+    // --- 内存缓存命中检查 ---
     if (isCacheable) {
-        // 生成缓存键（包含完整URL以区分不同查询参数）
         const cacheKey = `api_cache_${url}`;
         const cached = memoryCache.apiCache.get(cacheKey);
 
         if (cached && (Date.now() - cached.timestamp < MEMORY_LIMITS.API_CACHE_TTL)) {
-            console.log(`📦 [${clientIP}] API缓存命中: ${apiPath}`);
-            addMemoryLog('INFO', 'API缓存命中', {
+            console.log(`📦 [${clientIP}] 内存缓存命中: ${apiPath}`);
+            addMemoryLog('INFO', '内存缓存命中', {
                 ip: clientIP,
                 path: apiPath,
                 cacheAge: Math.round((Date.now() - cached.timestamp) / 1000) + 's'
             });
-
-            // 返回缓存的响应
-            const cachedResponse = new Response(cached.data, {
+            return new Response(cached.data, {
                 status: 200,
                 headers: {
                     'Content-Type': 'application/json',
@@ -1707,7 +1807,24 @@ async function handleRequest(request, env, ctx) {
                     'X-Cache-Age': Math.round((Date.now() - cached.timestamp) / 1000).toString()
                 }
             });
-            return cachedResponse;
+        }
+    }
+
+    // --- R2 弹幕缓存命中检查 ---
+    if (isCommentApi) {
+        const r2Key = R2_CACHE_CONFIG.KEY_PREFIX + apiPath.replace('/api/v2/comment/', '') + '?' + (tUrlObj.search || '').replace('?', '');
+        const cachedData = await r2GetComment(env, r2Key);
+        if (cachedData) {
+            console.log(`📦 [${clientIP}] R2弹幕缓存命中: ${apiPath}`);
+            addMemoryLog('INFO', 'R2弹幕缓存命中', { ip: clientIP, path: apiPath });
+            return new Response(cachedData, {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                    'X-Cache': 'HIT-R2',
+                }
+            });
         }
     }
 
@@ -1810,20 +1927,33 @@ async function handleRequest(request, env, ctx) {
         console.log(`📄 [${clientIP}] dandanplay API响应内容:`, responseText);
     }
 
-    // 如果是可缓存的接口且响应成功，存入缓存
-    if (isCacheable && response.status === 200) {
-        const cacheKey = `api_cache_${url}`;
-        memoryCache.apiCache.set(cacheKey, {
-            data: responseText,
-            timestamp: Date.now()
-        });
-        console.log(`📦 [${clientIP}] API响应已缓存: ${apiPath} (缓存有效期: 2小时)`);
+    // ========================================
+    // 📦 缓存存入
+    // ========================================
+    if (response.status === 200) {
+        if (isCacheable) {
+            // 内存缓存：搜索/番剧/匹配/分集
+            const cacheKey = `api_cache_${url}`;
+            memoryCache.apiCache.set(cacheKey, {
+                data: responseText,
+                timestamp: Date.now()
+            });
+            console.log(`📦 [${clientIP}] 内存缓存已存入: ${apiPath} (TTL: 2h)`);
+        } else if (isCommentApi) {
+            // R2 缓存：弹幕接口
+            const r2Key = R2_CACHE_CONFIG.KEY_PREFIX + apiPath.replace('/api/v2/comment/', '') + '?' + (tUrlObj.search || '').replace('?', '');
+            r2PutComment(env, r2Key, responseText).then(() => {
+                console.log(`📦 [${clientIP}] R2弹幕缓存已存入: ${r2Key} (TTL: 12h)`);
+            }).catch(e => {
+                console.log(`⚠️ [${clientIP}] R2弹幕缓存存入失败: ${e.message}`);
+            });
+        }
     }
 
     // 重新创建Response对象（因为body已经被读取）
     const responseHeaders = new Headers(response.headers);
     responseHeaders.set('Access-Control-Allow-Origin', '*');
-    if (isCacheable) {
+    if (isCacheable || isCommentApi) {
         responseHeaders.set('X-Cache', 'MISS');
     }
 
