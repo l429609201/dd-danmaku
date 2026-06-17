@@ -39,4 +39,8 @@ deleted_classes = ["RateLimiter", "AppState"]
 binding = "DANMAKU_CACHE"
 bucket_name = "danmu-api-cache"
 
+# Cron 定时触发：每30分钟清理一次 R2 弹幕缓存（过期清理 + 9GB阈值清理）
+[triggers]
+crontab = ["*/30 * * * *"]
+
 

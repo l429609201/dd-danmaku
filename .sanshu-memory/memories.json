@@ -1,0 +1,11 @@
+{
+  "version": "2.0",
+  "project_path": "D:\\桌面\\dd-danmaku\\dd-danmaku",
+  "entries": [],
+  "last_dedup_at": "2026-06-15T13:09:37.402327400Z",
+  "config": {
+    "similarity_threshold": 0.7,
+    "dedup_on_startup": true,
+    "enable_dedup": true
+  }
+}

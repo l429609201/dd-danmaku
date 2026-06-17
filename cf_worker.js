@@ -19,7 +19,7 @@ const MEMORY_LIMITS = {
     IP_STATS_CLEANUP_INTERVAL: 3600000, // 每小时检查一次IP统计清理
     RATE_LIMIT_CLEANUP_INTERVAL: 300000,  // 每5分钟检查一次频率限制计数器清理
     RATE_LIMIT_COUNTER_EXPIRE: 3600000,   // 频率限制计数器1小时过期（与小时限制对应）
-    API_CACHE_TTL: 7200000,     // API缓存2小时
+    API_CACHE_TTL: 21600000,     // API内存缓存6小时
     MAX_API_CACHE_SIZE: 1000     // 最多缓存500个API响应（内存缓存，不含弹幕）
 };
 
@@ -28,9 +28,8 @@ const R2_CACHE_CONFIG = {
     TTL: 12 * 60 * 60 * 1000,              // 12小时过期
     MAX_STORAGE_BYTES: 9 * 1024 * 1024 * 1024, // 9GB 阈值
     KEY_PREFIX: 'comment/',                 // R2 key 前缀
-    CLEANUP_BATCH_SIZE: 100,                // 每次写入清理：批量删除最旧的数量
-    EXPIRE_POLL_INTERVAL: 5 * 60 * 1000,   // 过期轮询间隔：5分钟
-    WRITE_CLEANUP_THROTTLE: 100,           // 写入清理节流：每写入N次才检查一次阈值
+    EXPIRE_POLL_INTERVAL: 5 * 60 * 1000,   // 过期轮询间隔：5分钟（请求路径被动清理）
+    WRITE_CHECK_INTERVAL: 500,             // 每写入 500 次触发一次容量检查
 };
 
 // ========================================
@@ -91,7 +90,8 @@ let memoryCache = {
     lastLogCleanup: Date.now(),
     lastRateLimitCleanup: Date.now(),
     lastR2ExpireCleanup: Date.now(), // R2 过期轮询上次执行时间
-    r2WriteCount: 0, // R2 写入计数器（用于节流写入清理）
+    r2WriteCount: 0,                // R2 写入计数（用于触发写入路径容量检查）
+    r2EstimatedBytes: 0,            // R2 已写入数据量估算（由 r2ScheduledCleanup 校准）
     // API响应缓存（用于搜索和番剧接口）
     apiCache: new Map(), // 格式: { "cache_key": { data: response, timestamp: Date.now() } }
     // OAuth token 验证缓存（避免每次请求都做 crypto 运算）
@@ -388,16 +388,28 @@ async function r2GetComment(env, cacheKey) {
 async function r2PutComment(env, cacheKey, data) {
     if (!env.DANMAKU_CACHE) return;
     try {
+        const dataSize = typeof data === 'string' ? data.length : 0;
+
+        // 写入前检查：内存估算值超阈值时跳过写入，等待 cron/轮询清理腾出空间
+        if (memoryCache.r2EstimatedBytes + dataSize > R2_CACHE_CONFIG.MAX_STORAGE_BYTES) {
+            console.log(`⚠️ R2 写入跳过: 估算容量 ${(memoryCache.r2EstimatedBytes / 1024 / 1024).toFixed(1)}MB 已接近阈值，等待清理`);
+            return;
+        }
+
         await env.DANMAKU_CACHE.put(cacheKey, data, {
             customMetadata: { timestamp: Date.now().toString() },
             httpMetadata: { contentType: 'application/json' },
         });
-        // 写入清理节流：每写入 WRITE_CLEANUP_THROTTLE 次才检查一次阈值，避免频繁 list
+
+        // 写入成功后更新内存计数器
         memoryCache.r2WriteCount++;
-        if (memoryCache.r2WriteCount >= R2_CACHE_CONFIG.WRITE_CLEANUP_THROTTLE) {
-            memoryCache.r2WriteCount = 0;
-            // await 确保清理纳入外层 ctx.waitUntil 保活周期
-            await r2WriteCleanup(env).catch(e => console.log(`⚠️ R2 写入清理失败: ${e.message}`));
+        memoryCache.r2EstimatedBytes += dataSize;
+
+        // 每 N 次写入触发一次异步容量检查（不阻塞写入路径，由 waitUntil 保活）
+        if (memoryCache.r2WriteCount % R2_CACHE_CONFIG.WRITE_CHECK_INTERVAL === 0) {
+            console.log(`📊 R2 写入检查点: 已写入 ${memoryCache.r2WriteCount} 次, 估算大小 ${(memoryCache.r2EstimatedBytes / 1024 / 1024).toFixed(1)}MB`);
+            // 返回 Promise 让调用方可以用 waitUntil 保活
+            return r2ScheduledCleanup(env).catch(e => console.log(`⚠️ R2 写入路径容量检查失败: ${e.message}`));
         }
     } catch (e) {
         console.log(`⚠️ R2 写入失败: ${cacheKey}, ${e.message}`);
@@ -405,61 +417,21 @@ async function r2PutComment(env, cacheKey, data) {
 }
 
 /**
- * 写入清理：每次新存入 R2 后触发
- * 按上传时间从旧到新，批量删除最旧的 CLEANUP_BATCH_SIZE 个对象
- * 仅在总量超过 9GB 阈值时才执行
+ * R2 定时清理：由 scheduled cron 触发（全局单实例，不存在多实例重复 list 问题）
+ * 一次遍历完成两件事：
+ *   1. 过期清理：删除超过 TTL（12小时）的对象
+ *   2. 阈值清理：剩余对象总量超 9GB 时，按时间从旧到新删到阈值以下
  */
-async function r2WriteCleanup(env) {
-    if (!env.DANMAKU_CACHE) return;
-    let totalSize = 0;
-    let allObjects = [];
-    let cursor = undefined;
-    let listCount = 0;
-
-    do {
-        const listed = await env.DANMAKU_CACHE.list({
-            prefix: R2_CACHE_CONFIG.KEY_PREFIX,
-            cursor,
-            limit: 1000,
-        });
-        for (const obj of listed.objects) {
-            totalSize += obj.size;
-            allObjects.push({ key: obj.key, size: obj.size, uploaded: obj.uploaded });
-        }
-        cursor = listed.truncated ? listed.cursor : undefined;
-        listCount++;
-    } while (cursor && listCount < 50);
-
-    console.log(`📊 R2 写入清理检查: ${allObjects.length} 个对象, 总大小: ${(totalSize / 1024 / 1024).toFixed(1)} MB`);
-
-    if (totalSize <= R2_CACHE_CONFIG.MAX_STORAGE_BYTES) return;
-
-    // 超阈值，按上传时间排序（最旧在前），删除 CLEANUP_BATCH_SIZE 个
-    allObjects.sort((a, b) => a.uploaded.getTime() - b.uploaded.getTime());
-    let deletedCount = 0;
-    let freedSize = 0;
-
-    for (const obj of allObjects) {
-        if (deletedCount >= R2_CACHE_CONFIG.CLEANUP_BATCH_SIZE) break;
-        await env.DANMAKU_CACHE.delete(obj.key);
-        freedSize += obj.size;
-        deletedCount++;
-    }
-    console.log(`🧹 R2 写入清理: 删除 ${deletedCount} 个最旧对象, 释放 ${(freedSize / 1024 / 1024).toFixed(1)} MB`);
-}
-
-/**
- * 过期轮询清理：由 periodicCleanup 每 5 分钟触发一次
- * 遍历所有 comment/ 对象，删除超过 TTL（12小时）的过期对象
- */
-async function r2ExpireCleanup(env) {
+async function r2ScheduledCleanup(env) {
     if (!env.DANMAKU_CACHE) return;
     const now = Date.now();
+    let totalSize = 0;
+    let liveObjects = [];
     let expiredKeys = [];
-    let totalCount = 0;
     let cursor = undefined;
     let listCount = 0;
 
+    // 单次遍历所有对象（cron 全局单实例，list 不会被重复触发）
     do {
         const listed = await env.DANMAKU_CACHE.list({
             prefix: R2_CACHE_CONFIG.KEY_PREFIX,
@@ -468,26 +440,52 @@ async function r2ExpireCleanup(env) {
             include: ['customMetadata'],
         });
         for (const obj of listed.objects) {
-            totalCount++;
             const timestamp = parseInt(obj.customMetadata?.timestamp || '0');
             if (timestamp > 0 && (now - timestamp > R2_CACHE_CONFIG.TTL)) {
-                expiredKeys.push(obj.key);
+                expiredKeys.push(obj.key); // 过期，待删
+            } else {
+                totalSize += obj.size;
+                liveObjects.push({ key: obj.key, size: obj.size, uploaded: obj.uploaded });
             }
         }
         cursor = listed.truncated ? listed.cursor : undefined;
         listCount++;
     } while (cursor && listCount < 50);
 
-    if (expiredKeys.length > 0) {
-        for (const key of expiredKeys) {
-            await env.DANMAKU_CACHE.delete(key);
-        }
-        console.log(`🧹 R2 过期轮询: 删除 ${expiredKeys.length}/${totalCount} 个过期对象 (TTL: ${R2_CACHE_CONFIG.TTL / 3600000}h)`);
+    // 1. 删除过期对象（delete 免费，不算 A 类）
+    for (const key of expiredKeys) {
+        await env.DANMAKU_CACHE.delete(key);
     }
+
+    console.log(`📊 R2 定时清理: 过期删除 ${expiredKeys.length} 个, 剩余 ${liveObjects.length} 个有效对象, 总大小 ${(totalSize / 1024 / 1024).toFixed(1)} MB`);
+
+    // 校准内存估算值（每次遍历后都用真实数据覆盖，消除累积误差）
+    memoryCache.r2EstimatedBytes = totalSize;
+    memoryCache.r2WriteCount = 0;
+
+    // 2. 阈值检查：剩余总量仍超 9GB，按时间从旧到新删
+    if (totalSize <= R2_CACHE_CONFIG.MAX_STORAGE_BYTES) {
+        console.log(`🔄 R2 估算值已校准: ${(totalSize / 1024 / 1024).toFixed(1)} MB，容量正常`);
+        return;
+    }
+
+    liveObjects.sort((a, b) => a.uploaded.getTime() - b.uploaded.getTime());
+    let deletedCount = 0;
+    let freedSize = 0;
+    for (const obj of liveObjects) {
+        if (totalSize - freedSize <= R2_CACHE_CONFIG.MAX_STORAGE_BYTES) break;
+        await env.DANMAKU_CACHE.delete(obj.key);
+        freedSize += obj.size;
+        deletedCount++;
+    }
+    console.log(`🧹 R2 阈值清理: 删除 ${deletedCount} 个最旧对象, 释放 ${(freedSize / 1024 / 1024).toFixed(1)} MB`);
+
+    // 阈值清理后再次校准估算值
+    memoryCache.r2EstimatedBytes = totalSize - freedSize;
+    console.log(`🔄 R2 估算值已校准（阈值清理后）: ${((totalSize - freedSize) / 1024 / 1024).toFixed(1)} MB`);
 }
 
 // 定期清理内存（在每个请求时检查）
-// 返回需要异步执行的 R2 清理 Promise（调用方用 ctx.waitUntil 保活）
 function periodicCleanup(env) {
     const now = Date.now();
 
@@ -504,10 +502,10 @@ function periodicCleanup(env) {
     // 清理内存API缓存
     cleanupApiCache();
 
-    // 每5分钟轮询一次 R2 过期清理
+    // 每5分钟轮询一次 R2 过期清理（单实例内节流，多实例下 cron 兜底）
     if (env?.DANMAKU_CACHE && (now - memoryCache.lastR2ExpireCleanup > R2_CACHE_CONFIG.EXPIRE_POLL_INTERVAL)) {
         memoryCache.lastR2ExpireCleanup = now;
-        return r2ExpireCleanup(env).catch(e => console.log(`⚠️ R2 过期轮询失败: ${e.message}`));
+        return r2ScheduledCleanup(env).catch(e => console.log(`⚠️ R2 过期轮询失败: ${e.message}`));
     }
     return null;
 }
@@ -1707,6 +1705,14 @@ export default {
     await initializeDataCenterConfig(env);
 
     return await handleRequest(request, env, ctx);
+  },
+
+  // Cron 定时触发（全局单实例）：R2 弹幕缓存清理
+  async scheduled(event, env, ctx) {
+    console.log(`⏰ [Cron] 触发 R2 定时清理: ${event.cron}`);
+    ctx.waitUntil(
+      r2ScheduledCleanup(env).catch(e => console.log(`⚠️ [Cron] R2 清理失败: ${e.message}`))
+    );
   }
 };
 
@@ -1800,7 +1806,33 @@ async function handleRequest(request, env, ctx) {
     } else if (0 !== url.indexOf('http://') && 0 === url.indexOf('http:')) {
         url = url.replace('http:/', 'http://');
     }
-    const tUrlObj = new URL(url);
+
+    // 防御：如果提取出的 url 不是合法的完整 URL（缺少协议/域名），直接返回 400
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        return new Response(JSON.stringify({
+            status: 400,
+            type: 'CORS代理',
+            message: `无效的代理目标URL: 缺少协议和域名。收到: "${url.substring(0, 100)}"`
+        }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+    }
+
+    let tUrlObj;
+    try {
+        tUrlObj = new URL(url);
+    } catch (e) {
+        // URL 解析失败时返回明确的错误信息，而非让 Worker 抛异常
+        return new Response(JSON.stringify({
+            status: 400,
+            type: 'CORS代理',
+            message: `无法解析代理目标URL: "${url.substring(0, 100)}"`
+        }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+    }
     if (!(tUrlObj.hostname in hostlist)) {
         return Forbidden(tUrlObj);
     }

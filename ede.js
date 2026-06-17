@@ -50,9 +50,12 @@
         get prefix() {
             // [修改] 支持多源：使用第一个自定义源
             const customList = typeof getCustomApiList === 'function' ? getCustomApiList() : [];
-            const custom = customList.length > 0 ? customList[0] : lsGetItem(lsKeys.customApiPrefix.id);
-            if (custom && custom.length > 0 && !lsGetItem(lsKeys.useOfficialApi.id)) {
-                return custom;
+            // [修复] customList[0] 是对象 {name, url, enabled}，需要取 .url；旧配置是字符串
+            const customItem = customList.length > 0 ? customList[0] : null;
+            const customUrl = customItem ? (typeof customItem === 'string' ? customItem : customItem.url) : lsGetItem(lsKeys.customApiPrefix.id);
+            // [修复] 校验 URL 必须以 http:// 或 https:// 开头，防止不完整 URL 导致 Worker 报错
+            if (customUrl && customUrl.length > 0 && (customUrl.startsWith('http://') || customUrl.startsWith('https://')) && !lsGetItem(lsKeys.useOfficialApi.id)) {
+                return customUrl;
             }
             // 官方API强制走代理
             return corsProxy + 'https://api.dandanplay.net/api/v2';
@@ -67,9 +70,11 @@
         get prefix() {
             // [修改] 支持多源：使用第一个自定义源
             const customList = typeof getCustomApiList === 'function' ? getCustomApiList() : [];
-            const custom = customList.length > 0 ? customList[0] : lsGetItem(lsKeys.customApiPrefix.id);
-            // 自定义API可以不走代理
-            return custom && custom.length > 0 ? custom : dandanplayApi.prefix;
+            // [修复] customList[0] 是对象，需要取 .url
+            const customItem = customList.length > 0 ? customList[0] : null;
+            const customUrl = customItem ? (typeof customItem === 'string' ? customItem : customItem.url) : lsGetItem(lsKeys.customApiPrefix.id);
+            // 自定义API可以不走代理，但必须是合法 URL
+            return customUrl && customUrl.length > 0 && (customUrl.startsWith('http://') || customUrl.startsWith('https://')) ? customUrl : dandanplayApi.prefix;
         },
         getMatchUrl: () => `${dandanplayApiCustom.prefix}/match`,
     }
@@ -8411,18 +8416,21 @@
 
         // 兼容旧版字符串数组格式，转换为新格式
         if (list.length > 0 && typeof list[0] === 'string') {
-            list = list.map((url, index) => ({
-                name: `自定义源${index + 1}`,
-                url: url,
-                enabled: true
-            }));
+            list = list
+                .filter(url => url && (url.startsWith('http://') || url.startsWith('https://')))  // [修复] 过滤掉不合法的 URL
+                .map((url, index) => ({
+                    name: `自定义源${index + 1}`,
+                    url: url,
+                    enabled: true
+                }));
             lsSetItem(lsKeys.customApiList.id, list);
         }
 
         // 兼容旧版：如果列表为空但旧配置有值，则迁移
         if (list.length === 0) {
             const oldPrefix = lsGetItem(lsKeys.customApiPrefix.id);
-            if (oldPrefix && oldPrefix.trim()) {
+            // [修复] 旧配置迁移时校验 URL 格式，防止不完整 URL 导致 Worker 报错
+            if (oldPrefix && oldPrefix.trim() && (oldPrefix.trim().startsWith('http://') || oldPrefix.trim().startsWith('https://'))) {
                 list.push({ name: '自定义源1', url: oldPrefix.trim(), enabled: true });
                 lsSetItem(lsKeys.customApiList.id, list);
             }
@@ -8442,6 +8450,11 @@
      * 添加自定义弹幕源
      */
     function addCustomApiSource(name, url) {
+        // [修复] 函数级别校验 URL 格式，防止非法 URL 进入配置
+        if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
+            console.warn('[dd-danmaku] 拒绝添加不合法的自定义源 URL:', url);
+            return;
+        }
         const list = getCustomApiList();
         // 检查URL是否已存在
         if (!list.some(item => item.url === url)) {
