@@ -21,6 +21,17 @@ services:
       # 管理员用户配置
       - ADMIN_USERNAME=admin
 
+      # Redis 热缓存（新架构：响应体走 Redis，元数据走 SQL）
+      - REDIS_ENABLED=true
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_PREFIX=dd_danmaku
+      - CACHE_BODY_STORAGE=redis
+
+      # Worker 长连接控制（本地端主动连 Worker ControlHub）
+      # - CONTROL_WORKER_WS_URL=wss://your-worker-domain/control/ws
+      # - CONTROL_TOKEN=与 Worker CONTROL_TOKEN 保持一致
+      - CONTROL_NODE_ID=local-node-1
+
       # 可选：MySQL配置（如果使用MySQL，取消注释）
       # - DATABASE_TYPE=mysql
       # - MYSQL_HOST=mysql
@@ -41,6 +52,12 @@ services:
       # 配置和数据持久化
       - ./config:/app/config
 
+    depends_on:
+      - redis
+
+    networks:
+      - danmu-network
+
     restart: unless-stopped
 
     # 资源限制
@@ -50,6 +67,23 @@ services:
           memory: 512M
         reservations:
           memory: 256M
+
+  # Redis 热缓存服务（新架构：响应体/热数据走 Redis）
+  redis:
+    image: redis:7-alpine
+    container_name: danmu-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - ./config/redis:/data
+    restart: unless-stopped
+    networks:
+      - danmu-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
 
   # 可选：MySQL数据库服务（如果使用MySQL，取消注释）
   # mysql:

@@ -12,10 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.database import init_db
 from src.utils import naive_now
-from src.api.v1.api import web_api_router, worker_api_router
-from src.tasks.scheduler import TaskScheduler
-from src.telegram.bot import TelegramBot
-from src.middleware.auth_middleware import AuthMiddleware
+from src.api.v2.api import api_v2_router
+from src.services_v2.redis_cache import redis_cache
+from src.services_v2.control_client import control_client
 
 # 配置日志系统
 from src.utils.logger_setup import setup_logging
@@ -24,109 +23,31 @@ from src.utils.logger_setup import setup_logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
-# 测试日志生成已禁用
-
-# 全局变量存储服务实例
-telegram_bot = None
-task_scheduler = None
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
-    global telegram_bot, task_scheduler
-    
+    """应用生命周期管理（新架构：Redis 热缓存 + Worker 长连接客户端）"""
     logger.info("🚀 启动数据交互中心...")
-    
-    # 初始化数据库
+
+    # 初始化数据库（仅创建 models_v2 新表）
     logger.info("📊 初始化数据库...")
     await init_db()
 
-    # 初始化默认配置
-    logger.info("⚙️ 初始化系统配置...")
-    from src.services.config_manager import config_manager
-    from src.config import settings
+    # 连接 Redis 热缓存（失败自动降级，不阻塞启动）
+    logger.info("🧱 连接 Redis 热缓存...")
+    await redis_cache.connect()
 
-    # 如果没有配置数据中心API Key，从环境变量初始化
-    if not config_manager.get_data_center_api_key():
-        if hasattr(settings, 'DATA_CENTER_API_KEY') and settings.DATA_CENTER_API_KEY:
-            config_manager.set_data_center_api_key(settings.DATA_CENTER_API_KEY)
-            logger.info("✅ 从环境变量初始化数据中心API Key")
-        else:
-            logger.info("ℹ️ 未配置数据中心API Key，请通过Web界面配置")
-    
-    # 启动TG机器人（轮询模式）
-    from src.services.web_config_service import WebConfigService
-    web_config_service = WebConfigService()
-    settings_data = await web_config_service.get_system_settings()
-
-    if settings_data and settings_data.tg_bot_token and settings_data.tg_admin_user_ids:
-        logger.info("🤖 启动Telegram机器人（轮询模式）...")
-        try:
-            # 将管理员ID字符串转换为整数列表
-            admin_ids = []
-            if settings_data.tg_admin_user_ids:
-                admin_ids = [int(uid.strip()) for uid in settings_data.tg_admin_user_ids.split(',') if uid.strip()]
-
-            telegram_bot = TelegramBot(
-                token=settings_data.tg_bot_token,
-                admin_user_ids=admin_ids
-            )
-
-            # 在后台任务中启动机器人（参考MoviePilot的做法）
-            # 使用create_task让机器人在后台运行，不阻塞主程序
-            bot_task = asyncio.create_task(telegram_bot.start())
-            logger.info("✅ Telegram机器人启动任务已创建")
-        except Exception as e:
-            logger.error(f"❌ Telegram机器人启动失败: {e}")
-            bot_task = None
-    else:
-        logger.info("ℹ️ TG机器人未配置，请通过Web界面配置后重启服务")
-        bot_task = None
-    
-    # 启动定时任务调度器
-    logger.info("⏰ 启动任务调度器...")
-    task_scheduler = TaskScheduler()
-    await task_scheduler.start()
-    logger.info("✅ 任务调度器启动成功")
-    
-    # JWT功能自测试
-    logger.info("🧪 执行JWT功能自测试...")
-    from src.utils.jwt_utils import test_jwt_functionality
-    if test_jwt_functionality():
-        logger.info("✅ JWT功能自测试通过")
-    else:
-        logger.error("❌ JWT功能自测试失败，请检查配置")
+    # 启动本地端 WebSocket 控制客户端（主动连 Worker ControlHub）
+    logger.info("🔌 启动 Worker 长连接控制客户端...")
+    await control_client.start()
 
     logger.info("🎉 数据交互中心启动完成！")
-    
+
     yield
-    
+
     # 关闭时清理资源
     logger.info("🛑 正在关闭数据交互中心...")
-
-    # 停止Telegram机器人（参考MoviePilot的优雅关闭）
-    if 'bot_task' in locals() and bot_task:
-        logger.info("🤖 停止Telegram机器人...")
-        try:
-            # 先停止机器人
-            if telegram_bot:
-                await telegram_bot.stop()
-
-            # 再取消任务
-            if not bot_task.done():
-                bot_task.cancel()
-                try:
-                    await bot_task
-                except asyncio.CancelledError:
-                    logger.info("✅ Telegram机器人任务已取消")
-        except Exception as e:
-            logger.error(f"❌ 停止Telegram机器人时出错: {e}")
-
-    # 停止任务调度器
-    if task_scheduler:
-        logger.info("⏰ 停止任务调度器...")
-        await task_scheduler.stop()
-
+    await control_client.stop()
+    await redis_cache.close()
     logger.info("✅ 数据交互中心已安全关闭")
 
 def create_application() -> FastAPI:
@@ -139,10 +60,7 @@ def create_application() -> FastAPI:
         lifespan=lifespan
     )
 
-    # 认证中间件
-    app.add_middleware(AuthMiddleware)
-
-    # CORS中间件
+    # CORS中间件（v2 认证改为各接口 Depends(get_current_user)，不再用全局中间件）
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.ALLOWED_HOSTS,
@@ -151,27 +69,8 @@ def create_application() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # 添加请求日志中间件
-    @app.middleware("http")
-    async def log_requests(request, call_next):
-        import logging
-        logger = logging.getLogger(__name__)
-
-        if request.url.path.startswith("/api/auth/me"):
-            logger.debug(f"🔍 /me请求: {request.method}")
-
-        response = await call_next(request)
-
-        if request.url.path.startswith("/api/auth/me"):
-            logger.info(f"🔍 /me响应状态: {response.status_code}")
-
-        return response
-
-    # Web界面API路由 - 需要JWT认证
-    app.include_router(web_api_router, prefix=settings.API_V1_STR)
-
-    # CF Worker API路由 - 需要API Key认证
-    app.include_router(worker_api_router, prefix="/worker-api")
+    # API v2 路由（新架构唯一业务入口）
+    app.include_router(api_v2_router, prefix="/api/v2")
 
     # 健康检查端点
     @app.get("/health")
@@ -181,11 +80,6 @@ def create_application() -> FastAPI:
             "status": "healthy",
             "timestamp": naive_now().isoformat()
         }
-
-    # 处理可能的日志路由请求
-    @app.get("/logs")
-    async def logs_redirect():
-        raise HTTPException(status_code=404, detail="Use /api/logs/system instead")
 
     # 静态文件服务配置
     import os

@@ -47,6 +47,21 @@ class Settings(BaseSettings):
     # 配置文件路径
     CONFIG_PATH: str = "/app/config"
     DATABASE_ECHO: bool = False
+
+    # Redis 热缓存配置（新架构：响应体走 Redis，元数据走 SQL）
+    REDIS_ENABLED: bool = True
+    REDIS_URL: str = "redis://redis:6379/0"
+    REDIS_PREFIX: str = "dd_danmaku"
+    # 响应体存储位置：redis / sql（Redis 不可用时自动降级为 sql）
+    CACHE_BODY_STORAGE: str = "redis"
+
+    # Worker 长连接控制配置（本地端主动连 Worker ControlHub）
+    CONTROL_WORKER_WS_URL: Optional[str] = None  # 如 wss://worker-domain/control/ws
+    CONTROL_TOKEN: Optional[str] = None          # X-Control-Token
+    CONTROL_NODE_ID: str = "local-node-1"
+    # 缓存策略默认值
+    CACHE_REFRESH_INTERVAL_SECONDS: int = 6 * 60 * 60      # 6 小时
+    CACHE_STALE_MAX_AGE_SECONDS: int = 30 * 24 * 60 * 60   # 30 天
     
     # Telegram机器人配置
     TG_BOT_TOKEN: Optional[str] = None

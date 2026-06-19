@@ -104,7 +104,7 @@ export default {
       try {
         loading.value = true
 
-        const response = await fetch('/api/auth/login', {
+        const response = await fetch('/api/v2/auth/login', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
@@ -114,10 +114,12 @@ export default {
 
         if (response.ok) {
           const result = await response.json()
-          if (result.access_token) {
+          // v2 统一响应：{ success, message, data: { access_token, token_type, user } }
+          const payload = result.data || result
+          if (payload.access_token) {
             // 保存JWT令牌
-            localStorage.setItem('access_token', result.access_token)
-            localStorage.setItem('token_type', result.token_type || 'bearer')
+            localStorage.setItem('access_token', payload.access_token)
+            localStorage.setItem('token_type', payload.token_type || 'bearer')
             showMessage(result.message || '登录成功', 'success')
             router.push('/')
           } else {

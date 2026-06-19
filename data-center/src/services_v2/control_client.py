@@ -1,0 +1,283 @@
+"""
+本地端 WebSocket 控制客户端
+
+职责：
+- 本地端主动连接 Worker ControlHub（/control/ws），避免本地端公网暴露；
+- 自动重连 + 心跳；
+- 处理 Worker 下发的 RPC：cache.get / cache.upsert；
+- 主动向 Worker 发起 RPC：r2.comment.get / r2.comment.list（pending future 等待结果）；
+- 连接状态写入 control_nodes，消息审计写入 control_messages。
+
+设计意图：长连接本身不能让本地端直接读 R2 binding，
+但可以让本地端通过该长连接发 r2.comment.get，由 Worker 代读 R2 后回传。
+"""
+import asyncio
+import json
+import logging
+import uuid
+from typing import Any, Dict, Optional
+
+from src.config import settings
+from src.database import get_db_sync
+from src.models_v2 import ControlNode, ControlMessage
+from src.models_v2.base import now
+from src.services_v2.cache_service import cache_service
+from src.services_v2.entity_service import entity_index_service, episode_link_service
+from src.services_v2.runtime_event_service import runtime_event_service
+
+logger = logging.getLogger(__name__)
+
+try:
+    from websockets.asyncio.client import connect as ws_connect
+    from websockets.exceptions import ConnectionClosed
+except Exception:  # pragma: no cover - 未安装 websockets 时不阻塞启动
+    ws_connect = None
+    ConnectionClosed = Exception
+
+
+class ControlClient:
+    """本地端长连接控制客户端"""
+
+    def __init__(self):
+        self._ws = None
+        self._task: Optional[asyncio.Task] = None
+        self._running = False
+        self._connected = False
+        # 等待 Worker 回包的本地发起 RPC：message_id -> Future
+        self._pending: Dict[str, asyncio.Future] = {}
+        self._node_id = settings.CONTROL_NODE_ID
+        self._reconnect_count = 0
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    # ---------- 生命周期 ----------
+    async def start(self):
+        """启动后台连接任务（不阻塞主流程）"""
+        if not settings.CONTROL_WORKER_WS_URL:
+            logger.info("ℹ️ 未配置 CONTROL_WORKER_WS_URL，跳过长连接客户端")
+            return
+        if ws_connect is None:
+            logger.warning("⚠️ 未安装 websockets 包，长连接客户端不可用")
+            return
+        self._running = True
+        self._task = asyncio.create_task(self._run_loop())
+        logger.info("✅ 本地端 WebSocket 控制客户端已启动")
+
+    async def stop(self):
+        """停止客户端"""
+        self._running = False
+        if self._ws is not None:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        self._connected = False
+
+    # ---------- 主循环 ----------
+    async def _run_loop(self):
+        """自动重连主循环"""
+        url = settings.CONTROL_WORKER_WS_URL
+        headers = {}
+        if settings.CONTROL_TOKEN:
+            headers["X-Control-Token"] = settings.CONTROL_TOKEN
+        # node_id 通过 query 传给 Worker
+        sep = "&" if "?" in url else "?"
+        full_url = f"{url}{sep}node_id={self._node_id}"
+
+        while self._running:
+            try:
+                async with ws_connect(
+                    full_url, additional_headers=headers,
+                    ping_interval=20, ping_timeout=20, open_timeout=10,
+                ) as ws:
+                    self._ws = ws
+                    self._connected = True
+                    self._update_node(connected=True)
+                    runtime_event_service.log("INFO", "control", "ws_connected",
+                                              f"已连接 Worker ControlHub: {url}")
+                    logger.info(f"✅ 已连接 Worker ControlHub: {url}")
+                    await self._recv_loop(ws)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"⚠️ 长连接断开，准备重连: {e}")
+            finally:
+                self._connected = False
+                self._ws = None
+                self._update_node(connected=False, last_error="connection closed")
+
+            if not self._running:
+                break
+            self._reconnect_count += 1
+            # 退避重连，最多 30 秒
+            delay = min(30, 2 ** min(self._reconnect_count, 5))
+            await asyncio.sleep(delay)
+
+    async def _recv_loop(self, ws):
+        """接收并分发消息"""
+        async for raw in ws:
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                logger.warning("⚠️ 收到非法 JSON 消息，忽略")
+                continue
+            await self._dispatch(msg)
+
+    # ---------- 消息分发 ----------
+    async def _dispatch(self, msg: Dict[str, Any]):
+        msg_type = msg.get("type")
+        msg_id = msg.get("id")
+        payload = msg.get("payload") or {}
+
+        # 本地发起 RPC 的回包
+        if msg_type and msg_type.endswith(".result"):
+            fut = self._pending.pop(msg_id, None)
+            if fut and not fut.done():
+                fut.set_result(payload)
+            return
+
+        if msg_type == "cache.get":
+            await self._handle_cache_get(msg_id, payload)
+        elif msg_type == "cache.upsert":
+            await self._handle_cache_upsert(msg_id, payload)
+        elif msg_type == "ping":
+            await self._send({"id": msg_id, "type": "pong", "timestamp": _ts()})
+        else:
+            logger.debug(f"ℹ️ 未处理的消息类型: {msg_type}")
+
+    async def _handle_cache_get(self, msg_id, payload):
+        """Worker 429 兜底：查询本地缓存"""
+        cache_key = payload.get("cache_key", "")
+        worker_request_id = payload.get("worker_request_id")
+        result = await cache_service.get(cache_key, worker_request_id=worker_request_id)
+        hit = bool(result and result.get("hit"))
+        await self._send({
+            "id": msg_id, "type": "cache.get.result",
+            "timestamp": _ts(),
+            "payload": result if hit else {"hit": False},
+        })
+        self._audit("worker_to_local", "cache.get",
+                    "success" if hit else "success",
+                    request_cache_key=cache_key)
+
+    async def _handle_cache_upsert(self, msg_id, payload):
+        """Worker 200 响应：写入本地缓存 + 解析实体/集数链接"""
+        ok = await cache_service.upsert(payload)
+        # 解析实体与集数链接（失败不影响 upsert 结果）
+        try:
+            api_path = payload.get("api_path", "")
+            cache_key = payload.get("cache_key", "")
+            body = payload.get("body") or ""
+            entity_index_service.index_from_response(api_path, cache_key, body)
+            episode_link_service.link_from_response(api_path, cache_key, body)
+        except Exception as e:
+            logger.warning(f"⚠️ 实体/集数解析失败: {e}")
+        await self._send({
+            "id": msg_id, "type": "cache.upsert.result",
+            "timestamp": _ts(),
+            "payload": {"success": ok},
+        })
+        self._audit("worker_to_local", "cache.upsert",
+                    "success" if ok else "failed",
+                    request_cache_key=payload.get("cache_key"))
+
+    # ---------- 本地发起 RPC ----------
+    async def request(self, msg_type: str, payload: Dict[str, Any],
+                      timeout: float = 3.0) -> Optional[Dict[str, Any]]:
+        """本地端主动发起 RPC，等待 Worker 回包"""
+        if not self._connected or self._ws is None:
+            return None
+        msg_id = str(uuid.uuid4())
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending[msg_id] = fut
+        await self._send({
+            "id": msg_id, "type": msg_type,
+            "timestamp": _ts(), "payload": payload,
+        })
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending.pop(msg_id, None)
+            logger.warning(f"⚠️ RPC 超时: {msg_type}")
+            return None
+
+    async def r2_comment_get(self, episode_id: str) -> Optional[Dict[str, Any]]:
+        """通过 Worker 代读 R2 comment 缓存"""
+        return await self.request("r2.comment.get", {
+            "episode_id": str(episode_id),
+            "r2_key": f"comment/{episode_id}",
+        })
+
+    # ---------- 工具 ----------
+    async def _send(self, msg: Dict[str, Any]):
+        if self._ws is None:
+            return
+        try:
+            await self._ws.send(json.dumps(msg, ensure_ascii=False))
+        except Exception as e:
+            logger.warning(f"⚠️ 发送消息失败: {e}")
+
+    def _update_node(self, connected: bool, last_error: Optional[str] = None):
+        """更新 control_nodes 连接状态"""
+        try:
+            db = get_db_sync()
+            try:
+                node = db.query(ControlNode).filter(
+                    ControlNode.node_id == self._node_id
+                ).first()
+                if not node:
+                    node = ControlNode(
+                        node_id=self._node_id,
+                        worker_id="worker-1",
+                        worker_url=settings.CONTROL_WORKER_WS_URL or "",
+                    )
+                    db.add(node)
+                node.connected = connected
+                node.reconnect_count = self._reconnect_count
+                node.last_seen_at = now()
+                if connected:
+                    node.last_connected_at = now()
+                if last_error:
+                    node.last_error = last_error
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.debug(f"ℹ️ 更新节点状态失败: {e}")
+
+    def _audit(self, direction: str, message_type: str, status: str,
+               request_cache_key: Optional[str] = None):
+        """写消息审计，失败不影响主流程"""
+        try:
+            db = get_db_sync()
+            try:
+                db.add(ControlMessage(
+                    message_id=str(uuid.uuid4()),
+                    node_id=self._node_id,
+                    direction=direction,
+                    message_type=message_type,
+                    status=status,
+                    request_cache_key=request_cache_key,
+                ))
+                db.commit()
+            finally:
+                db.close()
+        except Exception:
+            pass
+
+
+def _ts() -> int:
+    """毫秒时间戳"""
+    import time
+    return int(time.time() * 1000)
+
+
+control_client = ControlClient()

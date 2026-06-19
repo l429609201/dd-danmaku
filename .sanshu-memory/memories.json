@@ -1,7 +1,48 @@
 {
   "version": "2.0",
   "project_path": "D:\\桌面\\dd-danmaku\\dd-danmaku",
-  "entries": [],
+  "entries": [
+    {
+      "id": "7cbd7ed7-3bd4-41a9-83e8-1dc302292f9c",
+      "content": "所有关键提问、方案确认和完成确认都必须通过 zhi 展示。",
+      "content_normalized": "所有关键提问方案确认和完成确认都必须通过 zhi 展示",
+      "category": "Rule",
+      "created_at": "2026-06-19T11:45:09.435235200Z",
+      "updated_at": "2026-06-19T11:45:09.435235200Z"
+    },
+    {
+      "id": "b4ede533-0749-4b20-b5ee-e52c14689fd9",
+      "content": "分析代码前必须优先使用 sou 进行语义搜索，再根据结果读取指定文件上下文确认实现。",
+      "content_normalized": "分析代码前必须优先使用 sou 进行语义搜索再根据结果读取指定文件上下文确认实现",
+      "category": "Rule",
+      "created_at": "2026-06-19T11:45:09.530917900Z",
+      "updated_at": "2026-06-19T11:45:09.530917900Z"
+    },
+    {
+      "id": "069d34d3-70f8-4634-875f-a4a6b456c6ff",
+      "content": "需要框架/库最新官方文档或 API 用法时，优先使用 context7 查询，避免过时信息。",
+      "content_normalized": "需要框架/库最新官方文档或 api 用法时优先使用 context7 查询避免过时信息",
+      "category": "Rule",
+      "created_at": "2026-06-19T11:45:09.858263700Z",
+      "updated_at": "2026-06-19T11:45:09.858263700Z"
+    },
+    {
+      "id": "48f7d300-4d98-4a25-825c-e775fa637f8b",
+      "content": "涉及页面美化、UI 描述、设计系统或 UI 审查时，优先使用单一 uiux 工具，并参考返回的 prompt、uiux_hits 与 project_context。",
+      "content_normalized": "涉及页面美化ui 描述设计系统或 ui 审查时优先使用单一 uiux 工具并参考返回的 promptuiux_hits 与 project_context",
+      "category": "Rule",
+      "created_at": "2026-06-19T11:45:09.977561400Z",
+      "updated_at": "2026-06-19T11:45:09.977561400Z"
+    },
+    {
+      "id": "bacbd4b3-72a0-4f23-8c92-5c5a6cdc16f1",
+      "content": "需要实时搜索信息时使用 tavily 工具进行 AI 搜索，获取最新准确数据。",
+      "content_normalized": "需要实时搜索信息时使用 tavily 工具进行 ai 搜索获取最新准确数据",
+      "category": "Rule",
+      "created_at": "2026-06-19T11:45:10.103726100Z",
+      "updated_at": "2026-06-19T11:45:10.103726100Z"
+    }
+  ],
   "last_dedup_at": "2026-06-15T13:09:37.402327400Z",
   "config": {
     "similarity_threshold": 0.7,

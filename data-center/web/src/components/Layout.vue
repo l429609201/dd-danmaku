@@ -26,24 +26,48 @@
       <!-- 左侧导航栏 -->
       <nav class="sidebar">
         <ul class="nav-menu">
+          <li class="nav-group">概览</li>
           <li>
             <router-link to="/" class="nav-link" :class="{ active: $route.path === '/' }" @click="handleNavClick">
-              📊 仪表板
+              📊 仪表盘
+            </router-link>
+          </li>
+          <li class="nav-group">Worker</li>
+          <li>
+            <router-link to="/control" class="nav-link" :class="{ active: $route.path === '/control' }" @click="handleNavClick">
+              🔌 连接与控制
+            </router-link>
+          </li>
+          <li class="nav-group">缓存</li>
+          <li>
+            <router-link to="/cache" class="nav-link" :class="{ active: $route.path === '/cache' }" @click="handleNavClick">
+              📦 响应缓存
             </router-link>
           </li>
           <li>
-            <router-link to="/config" class="nav-link" :class="{ active: $route.path === '/config' }" @click="handleNavClick">
-              ⚙️ 配置管理
+            <router-link to="/episodes" class="nav-link" :class="{ active: $route.path === '/episodes' }" @click="handleNavClick">
+              🎬 集数链接
             </router-link>
           </li>
           <li>
-            <router-link to="/logs" class="nav-link" :class="{ active: $route.path === '/logs' }" @click="handleNavClick">
-              📋 日志管理
+            <router-link to="/entities" class="nav-link" :class="{ active: $route.path === '/entities' }" @click="handleNavClick">
+              🗂️ 实体索引
+            </router-link>
+          </li>
+          <li class="nav-group">系统</li>
+          <li>
+            <router-link to="/users" class="nav-link" :class="{ active: $route.path === '/users' }" @click="handleNavClick">
+              👥 用户与 Token
             </router-link>
           </li>
           <li>
-            <router-link to="/workers" class="nav-link" :class="{ active: $route.path === '/workers' }" @click="handleNavClick">
-              🔧 Worker管理
+            <router-link to="/settings" class="nav-link" :class="{ active: $route.path === '/settings' }" @click="handleNavClick">
+              ⚙️ 系统设置
+            </router-link>
+          </li>
+          <li>
+            <router-link to="/runtime-events" class="nav-link" :class="{ active: $route.path === '/runtime-events' }" @click="handleNavClick">
+              📋 运行日志
             </router-link>
           </li>
         </ul>
@@ -147,11 +171,11 @@ export default {
       }
 
       try {
-        // 验证token是否有效
-        const response = await authFetch('/auth/me')
+        // 验证token是否有效（v2: /api/v2/auth/me）
+        const response = await authFetch('/api/v2/auth/me')
         if (response.ok) {
-          const userInfo = await response.json()
-          username.value = userInfo.username || ''
+          const result = await response.json()
+          username.value = (result.data && result.data.username) || ''
         } else {
           console.warn('令牌验证失败，跳转到登录页')
           localStorage.removeItem('access_token')
@@ -327,6 +351,15 @@ export default {
 
 .nav-menu li {
   margin: 0 12px 4px 12px;
+}
+
+/* 分组标题 */
+.nav-menu li.nav-group {
+  padding: 14px 8px 6px 8px;
+  margin: 8px 12px 2px 12px;
+  font-size: 12px;
+  color: #9aa4b2;
+  letter-spacing: 1px;
 }
 
 .nav-link {

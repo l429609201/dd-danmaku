@@ -13,11 +13,11 @@ ENABLE_ASYMMETRIC_AUTH_ENV = "{{ENABLE_ASYMMETRIC_AUTH_ENV}}"
 ENABLE_DETAILED_LOGGING = "{{ENABLE_DETAILED_LOGGING}}"
 USER_AGENT_LIMITS_CONFIG = '''{{USER_AGENT_LIMITS_CONFIG}}'''
 IP_BLACKLIST_CONFIG = '''{{IP_BLACKLIST_CONFIG}}'''
-DATA_CENTER_URL = '''{{DATA_CENTER_URL}}'''
-DATA_CENTER_API_KEY = '''{{DATA_CENTER_API_KEY}}'''
 WORKER_ID = "{{WORKER_ID}}"
 PRIVATE_KEY_HEX = "{{PRIVATE_KEY_HEX}}"
 OAUTH_CONFIG = '''{{OAUTH_CONFIG}}'''
+# 本地端长连接控制 token（本地端连 /control/ws 时校验 X-Control-Token）
+CONTROL_TOKEN = "{{CONTROL_TOKEN}}"
 
 #密钥配置 （一般有两个，两个都填会轮换使用，配置成密钥的类型）
 # APP_ID
@@ -33,6 +33,18 @@ enabled = true
 [[migrations]]
 tag = "v6"
 deleted_classes = ["RateLimiter", "AppState"]
+
+# 迁移：新增 ControlHub 长连接控制中心（本地端 WebSocket 汇聚点）
+# 免费计划仅支持 SQLite 后端的 Durable Object，故用 new_sqlite_classes；
+# ControlHub 仅用 WebSocket + 内存状态，不使用 storage，SQLite 后端零成本。
+[[migrations]]
+tag = "v7-control-hub"
+new_sqlite_classes = ["ControlHub"]
+
+# Durable Object 绑定：ControlHub
+[[durable_objects.bindings]]
+name = "CONTROL_HUB"
+class_name = "ControlHub"
 
 # R2 弹幕缓存（/api/v2/comment/ 响应缓存，12小时过期）
 [[r2_buckets]]

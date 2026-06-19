@@ -5,19 +5,19 @@ sqlalchemy==2.0.23
 pydantic==2.5.0
 pydantic-settings==2.1.0
 
-# Telegram机器人
-python-telegram-bot==20.7
-
-# 任务调度
-apscheduler==3.10.4
-
 # HTTP客户端
 httpx==0.25.2
+
+# WebSocket 客户端（本地端主动连 Worker ControlHub 长连接）
+websockets==13.1
 
 # 数据库驱动
 # sqlite3  # Python内置，无需安装
 psycopg2-binary==2.9.9  # PostgreSQL支持
 pymysql==1.1.0  # MySQL支持
+
+# Redis 热缓存（新架构：响应体/热数据走 Redis）
+redis==5.0.8  # 使用 redis.asyncio
 
 # 工具库
 python-multipart==0.0.6  # 文件上传支持

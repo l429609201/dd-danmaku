@@ -31,7 +31,7 @@ export function getAuthHeaders() {
  * 发送认证请求
  */
 export async function authFetch(url, options = {}) {
-  // 自动添加API前缀（但不为worker-api路由添加）
+  // 自动添加API前缀（但不为已带 /api/ 或 /worker-api/ 的路由重复添加）
   let finalUrl = url
   if (url.startsWith('/') && !url.startsWith('/api/') && !url.startsWith('/worker-api/')) {
     finalUrl = `/api${url}`
@@ -77,6 +77,26 @@ export async function authFetch(url, options = {}) {
   }
 
   return response
+}
+
+/**
+ * v2 API 封装：统一走 /api/v2 前缀，返回解析后的 JSON
+ * @param {string} path 形如 /dashboard/summary、/cache/responses
+ * @param {object} options fetch 选项（method/body 等）
+ */
+export async function apiV2(path, options = {}) {
+  const body = options.body && typeof options.body !== 'string'
+    ? JSON.stringify(options.body)
+    : options.body
+  const resp = await authFetch(`/api/v2${path}`, { ...options, body })
+  const text = await resp.text()
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = text }
+  if (!resp.ok) {
+    const msg = (data && (data.detail || data.message)) || `请求失败 (${resp.status})`
+    throw new Error(msg)
+  }
+  return data
 }
 
 /**
