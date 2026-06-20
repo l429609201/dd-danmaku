@@ -26,6 +26,7 @@ from src.services_v2.entity_service import entity_index_service, episode_link_se
 from src.services_v2.ip_stats_service import ip_stats_service
 from src.services_v2.worker_log_service import worker_log_service
 from src.services_v2.runtime_event_service import runtime_event_service
+from src.services_v2.abuse_service import abuse_service
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,8 @@ class ControlClient:
             await self._handle_stats_report(msg_id, payload)
         elif msg_type == "log.report":
             await self._handle_log_report(msg_id, payload)
+        elif msg_type == "abuse.report":
+            await self._handle_abuse_report(msg_id, payload)
         elif msg_type == "ping":
             await self._send({"id": msg_id, "type": "pong", "timestamp": _ts()})
         else:
@@ -220,6 +223,25 @@ class ControlClient:
             "timestamp": _ts(), "payload": {"success": True, "saved": saved},
         })
         self._audit("worker_to_local", "log.report", "success")
+
+    async def _handle_abuse_report(self, msg_id, payload):
+        """Worker 上报"封禁中"IP：去重合并落库临时黑名单，再回灌全量配置"""
+        banned = payload.get("banned") or []
+        worker_id = payload.get("worker_id", "worker-1")
+        changed = abuse_service.ingest_report(worker_id, banned)
+        # 有变更则把合并后的黑名单经长连接回灌各实例（跨实例收敛）
+        if changed > 0:
+            try:
+                # 延迟导入避免循环依赖（runtime_config_service 依赖 control_client）
+                from src.services_v2.runtime_config_service import runtime_config_service
+                await runtime_config_service.push_to_worker()
+            except Exception as e:
+                logger.warning(f"⚠️ 滥用封禁回灌下发失败: {e}")
+        await self._send({
+            "id": msg_id, "type": "abuse.report.result",
+            "timestamp": _ts(), "payload": {"success": True, "changed": changed},
+        })
+        self._audit("worker_to_local", "abuse.report", "success")
 
     # ---------- 本地发起 RPC ----------
     async def request(self, msg_type: str, payload: Dict[str, Any],

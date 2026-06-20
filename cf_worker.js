@@ -23,6 +23,14 @@ const MEMORY_LIMITS = {
     MAX_API_CACHE_SIZE: 1000     // 最多缓存500个API响应（内存缓存，不含弹幕）
 };
 
+// 非法路由滥用检测：缺少目标域名的 /cors/ 请求，累计超阈值临时封禁该 IP
+const ABUSE_CONFIG = {
+    MAX_INVALID_REQUESTS: 10,        // 1 小时内允许的非法路由次数
+    WINDOW_MS: 60 * 60 * 1000,       // 统计窗口：1 小时
+    BAN_DURATION_MS: 60 * 60 * 1000, // 封禁时长：1 小时
+    MAX_TRACKED_IPS: 50000,          // 最多跟踪的 IP 数（防内存泄漏）
+};
+
 // R2 弹幕缓存配置
 const R2_CACHE_CONFIG = {
     TTL: 12 * 60 * 60 * 1000,              // 12小时过期
@@ -100,6 +108,9 @@ let memoryCache = {
     lastControlConfigPull: 0,
     lastStatsReport: 0,
     lastLogReport: 0,
+    // 非法路由滥用追踪：记录每个 IP 的非法请求计数与临时封禁到期时间
+    abuseTracker: new Map(), // 格式: { ip: { count, windowStart, bannedUntil } }
+    lastAbuseReport: 0,
 };
 
 // 数据中心集成配置（新架构：仅保留 Worker 标识与初始化标志，旧 HTTP 同步字段已废弃）
@@ -659,6 +670,16 @@ function periodicCleanup(env) {
         }
     }
 
+    // 每60秒上报"封禁中"IP 给中心端去重合并，并清理过期追踪项
+    if (env?.CONTROL_HUB && now - memoryCache.lastAbuseReport > 60000) {
+        memoryCache.lastAbuseReport = now;
+        cleanupAbuseTracker(now);
+        const payload = buildAbuseReportPayload();
+        if (payload.banned.length > 0) {
+            tasks.push(controlHubRpc(env, 'abuse.report', payload, 3000));
+        }
+    }
+
     // 每5分钟轮询一次 R2 过期清理（单实例内节流，多实例下 cron 兜底）
     if (env?.DANMAKU_CACHE && (now - memoryCache.lastR2ExpireCleanup > R2_CACHE_CONFIG.EXPIRE_POLL_INTERVAL)) {
         memoryCache.lastR2ExpireCleanup = now;
@@ -792,6 +813,84 @@ function isIpInList(clientIp, list) {
         }
     }
     return false;
+}
+
+// ========================================
+// 🛡️ 非法路由滥用追踪与临时封禁
+// ========================================
+// 设计意图：每实例独立内存计数 + 即时封禁；每分钟把"封禁中"IP 上报中心端去重合并，
+// 再经 pullControlConfig 把合并后的黑名单拉回各实例。校验优先查本实例内存（零延迟）。
+
+// 校验：本实例是否已临时封禁该 IP（命中且未过期返回 true）
+function isAbuseBanned(clientIp) {
+    const rec = memoryCache.abuseTracker.get(clientIp);
+    if (!rec) return false;
+    if (rec.bannedUntil && rec.bannedUntil > Date.now()) return true;
+    // 已过期：惰性清理封禁标记（保留计数窗口逻辑由 recordInvalidRoute 处理）
+    if (rec.bannedUntil && rec.bannedUntil <= Date.now()) {
+        memoryCache.abuseTracker.delete(clientIp);
+    }
+    return false;
+}
+
+// 记录一次非法路由命中；返回 true 表示本次命中触发了封禁（调用方据此返回 403）
+function recordInvalidRoute(clientIp) {
+    if (!clientIp || clientIp === 'unknown') return false;
+    // 白名单 IP 不计数、不封禁
+    if (isIpWhitelisted(clientIp)) return false;
+
+    const now = Date.now();
+    let rec = memoryCache.abuseTracker.get(clientIp);
+
+    // 已在封禁期内：直接判定为封禁
+    if (rec && rec.bannedUntil && rec.bannedUntil > now) return true;
+
+    // 容量保护：达到上限时先清理过期项，仍满则丢弃最旧项
+    if (!rec && memoryCache.abuseTracker.size >= ABUSE_CONFIG.MAX_TRACKED_IPS) {
+        cleanupAbuseTracker(now);
+        if (memoryCache.abuseTracker.size >= ABUSE_CONFIG.MAX_TRACKED_IPS) {
+            const oldestKey = memoryCache.abuseTracker.keys().next().value;
+            if (oldestKey !== undefined) memoryCache.abuseTracker.delete(oldestKey);
+        }
+    }
+
+    // 窗口过期或首次：重置计数窗口
+    if (!rec || (now - rec.windowStart) > ABUSE_CONFIG.WINDOW_MS) {
+        rec = { count: 0, windowStart: now, bannedUntil: 0 };
+    }
+    rec.count += 1;
+
+    // 超阈值 → 触发封禁
+    if (rec.count > ABUSE_CONFIG.MAX_INVALID_REQUESTS) {
+        rec.bannedUntil = now + ABUSE_CONFIG.BAN_DURATION_MS;
+        memoryCache.abuseTracker.set(clientIp, rec);
+        return true;
+    }
+    memoryCache.abuseTracker.set(clientIp, rec);
+    return false;
+}
+
+// 清理 abuseTracker 中已过期的封禁与计数窗口（防内存泄漏）
+function cleanupAbuseTracker(now) {
+    now = now || Date.now();
+    for (const [ip, rec] of memoryCache.abuseTracker) {
+        const bannedExpired = !rec.bannedUntil || rec.bannedUntil <= now;
+        const windowExpired = (now - rec.windowStart) > ABUSE_CONFIG.WINDOW_MS;
+        // 未在封禁中且计数窗口已过期 → 可清理
+        if (bannedExpired && windowExpired) memoryCache.abuseTracker.delete(ip);
+    }
+}
+
+// 组装"封禁中"IP 列表，用于上报中心端去重合并
+function buildAbuseReportPayload() {
+    const now = Date.now();
+    const banned = [];
+    for (const [ip, rec] of memoryCache.abuseTracker) {
+        if (rec.bannedUntil && rec.bannedUntil > now) {
+            banned.push({ ip, banned_until: rec.bannedUntil });
+        }
+    }
+    return { worker_id: DATA_CENTER_CONFIG.workerId, timestamp: now, banned };
 }
 
 // 检查IP是否在CIDR范围内
@@ -1383,6 +1482,19 @@ async function handleRequest(request, env, ctx) {
     // clientIP已在函数开头声明
     const ipWhitelisted = isIpWhitelisted(clientIP);
 
+    // 临时封禁检查（非法路由滥用）：白名单跳过，本实例内存命中立即 403（零延迟）
+    if (!ipWhitelisted && isAbuseBanned(clientIP)) {
+        addMemoryLog('warn', 'IP临时封禁拦截', { ip: clientIP });
+        return new Response(JSON.stringify({
+            status: 403,
+            type: 'IP临时封禁',
+            message: `IP ${clientIP} 因频繁请求非法路由已被临时封禁`
+        }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+    }
+
     // 检查永久黑名单（白名单命中则跳过）
     const ipBlacklist = getIpBlacklist();
     if (!ipWhitelisted && isIpBlacklisted(clientIP, ipBlacklist)) {
@@ -1418,6 +1530,19 @@ async function handleRequest(request, env, ctx) {
 
     // 防御：如果提取出的 url 不是合法的完整 URL（缺少协议/域名），直接返回 400
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        // 记录非法路由命中：同一 IP 1 小时内累计超阈值 → 临时封禁该 IP 1 小时
+        const justBanned = recordInvalidRoute(clientIP);
+        if (justBanned) {
+            addMemoryLog('warn', '非法路由滥用封禁', { ip: clientIP, url: url.substring(0, 100) });
+            return new Response(JSON.stringify({
+                status: 403,
+                type: 'IP临时封禁',
+                message: `IP ${clientIP} 因频繁请求非法路由已被临时封禁 1 小时`
+            }), {
+                status: 403,
+                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+            });
+        }
         return new Response(JSON.stringify({
             status: 400,
             type: 'CORS代理',
