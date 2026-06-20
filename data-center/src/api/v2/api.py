@@ -8,6 +8,7 @@ from fastapi import APIRouter
 from src.api.v2.endpoints import (
     auth, users, cache, episodes, entities, control,
     settings as settings_ep, runtime_events, dashboard,
+    ip_rules, ip_stats, worker_logs, ua_rules,
 )
 
 api_v2_router = APIRouter()
@@ -20,3 +21,7 @@ api_v2_router.include_router(entities.router, prefix="/entities", tags=["实体�
 api_v2_router.include_router(users.router, prefix="/users", tags=["用户管理"])
 api_v2_router.include_router(settings_ep.router, prefix="/settings", tags=["系统设置"])
 api_v2_router.include_router(runtime_events.router, prefix="/runtime-events", tags=["运行日志"])
+api_v2_router.include_router(ip_rules.router, prefix="/ip-rules", tags=["IP黑白名单"])
+api_v2_router.include_router(ua_rules.router, prefix="/ua-rules", tags=["UA限流"])
+api_v2_router.include_router(ip_stats.router, prefix="/ip-stats", tags=["IP请求统计"])
+api_v2_router.include_router(worker_logs.router, prefix="/worker-logs", tags=["Worker日志"])

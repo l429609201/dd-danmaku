@@ -79,6 +79,7 @@ let memoryCache = {
     configCache: {
         uaConfigs: {},
         ipBlacklist: [],
+        ipWhitelist: [],
         lastUpdate: 0
     },
     // 环境变量缓存（启动时复制，APP_ID/APP_SECRET除外）
@@ -96,6 +97,9 @@ let memoryCache = {
     apiCache: new Map(), // 格式: { "cache_key": { data: response, timestamp: Date.now() } }
     // OAuth token 验证缓存（避免每次请求都做 crypto 运算）
     oauthTokenCache: new Map(), // 格式: { "token_hash": { payload, expireAt } }
+    lastControlConfigPull: 0,
+    lastStatsReport: 0,
+    lastLogReport: 0,
 };
 
 // 数据中心集成配置（新架构：仅保留 Worker 标识与初始化标志，旧 HTTP 同步字段已废弃）
@@ -394,6 +398,53 @@ async function controlHubRpc(env, type, payload, timeoutMs) {
     }
 }
 
+// 从 ControlHub DO 拉取运行配置并应用到当前 Worker 实例内存
+async function pullControlConfig(env) {
+    if (!env.CONTROL_HUB) return null;
+    try {
+        const id = env.CONTROL_HUB.idFromName('control-hub');
+        const stub = env.CONTROL_HUB.get(id);
+        const resp = await stub.fetch('https://control-hub/control/config');
+        if (!resp.ok) return null;
+        const cfg = await resp.json();
+        applyRuntimeConfig(cfg);
+        return cfg;
+    } catch (e) {
+        console.log(`⚠️ 拉取 ControlHub 配置失败: ${e.message}`);
+        return null;
+    }
+}
+
+function applyRuntimeConfig(cfg) {
+    if (!cfg || typeof cfg !== 'object') return;
+    if (cfg.ua_configs) memoryCache.configCache.uaConfigs = cfg.ua_configs;
+    if (cfg.ip_blacklist) memoryCache.configCache.ipBlacklist = cfg.ip_blacklist;
+    if (cfg.ip_whitelist) memoryCache.configCache.ipWhitelist = cfg.ip_whitelist;
+    memoryCache.configCache.lastUpdate = Date.now();
+}
+
+function buildStatsReportPayload() {
+    const topIps = Object.entries(memoryCache.ipRequestStats)
+        .sort((a, b) => (b[1].total_count || 0) - (a[1].total_count || 0))
+        .slice(0, 200)
+        .map(([ip, s]) => ({ ip, total_count: s.total_count || 0, violations: s.violations || 0, paths: s.paths || {}, lastAccess: s.lastAccess || 0 }));
+    return {
+        worker_id: DATA_CENTER_CONFIG.workerId,
+        timestamp: Date.now(),
+        total_requests: memoryCache.totalRequests,
+        rate_limit_counters: memoryCache.rateLimitCounts.size,
+        ip_stats: topIps,
+    };
+}
+
+function buildLogReportPayload(now) {
+    const logs = memoryCache.logs
+        .filter(l => l.timestamp > memoryCache.lastLogReport)
+        .slice(-100);
+    memoryCache.lastLogReport = now;
+    return { worker_id: DATA_CENTER_CONFIG.workerId, timestamp: now, logs };
+}
+
 // ========================================
 // �📦 R2 弹幕缓存工具函数
 // ========================================
@@ -573,6 +624,7 @@ async function handleR2Rpc(env, type, payload) {
 // 定期清理内存（在每个请求时检查）
 function periodicCleanup(env) {
     const now = Date.now();
+    const tasks = [];
 
     // 每分钟清理一次频率限制计数器
     if (now - memoryCache.lastRateLimitCleanup > MEMORY_LIMITS.RATE_LIMIT_CLEANUP_INTERVAL) {
@@ -587,12 +639,33 @@ function periodicCleanup(env) {
     // 清理内存API缓存
     cleanupApiCache();
 
+    // 每60秒从 ControlHub 拉取运行配置，解决 Worker 多实例内存不一致问题
+    if (env?.CONTROL_HUB && now - memoryCache.lastControlConfigPull > 60000) {
+        memoryCache.lastControlConfigPull = now;
+        tasks.push(pullControlConfig(env));
+    }
+
+    // 每60秒上报一次 IP/限流统计
+    if (env?.CONTROL_HUB && now - memoryCache.lastStatsReport > 60000) {
+        memoryCache.lastStatsReport = now;
+        tasks.push(controlHubRpc(env, 'stats.report', buildStatsReportPayload(), 3000));
+    }
+
+    // 每60秒批量上报新增 Worker 日志
+    if (env?.CONTROL_HUB && now - memoryCache.lastLogReport > 60000) {
+        const payload = buildLogReportPayload(now);
+        if (payload.logs.length > 0) {
+            tasks.push(controlHubRpc(env, 'log.report', payload, 3000));
+        }
+    }
+
     // 每5分钟轮询一次 R2 过期清理（单实例内节流，多实例下 cron 兜底）
     if (env?.DANMAKU_CACHE && (now - memoryCache.lastR2ExpireCleanup > R2_CACHE_CONFIG.EXPIRE_POLL_INTERVAL)) {
         memoryCache.lastR2ExpireCleanup = now;
-        return r2ScheduledCleanup(env).catch(e => console.log(`⚠️ R2 过期轮询失败: ${e.message}`));
+        tasks.push(r2ScheduledCleanup(env).catch(e => console.log(`⚠️ R2 过期轮询失败: ${e.message}`)));
     }
-    return null;
+
+    return tasks.length ? Promise.allSettled(tasks) : null;
 }
 
 // ========================================
@@ -617,6 +690,9 @@ async function initializeConfigCache(env) {
             memoryCache.configCache.ipBlacklist = JSON.parse(env.IP_BLACKLIST_CONFIG);
             console.log('✅ 从环境变量加载IP黑名单（兜底）');
         }
+
+        // 从 ControlHub 拉取最新运行配置，覆盖环境变量兜底配置
+        await pullControlConfig(env);
 
         memoryCache.configCache.lastUpdate = Date.now();
 
@@ -686,21 +762,33 @@ function getIpBlacklist() {
 
 // 检查IP是否在黑名单中
 function isIpBlacklisted(clientIp, blacklist) {
-    if (!blacklist || blacklist.length === 0) {
-        return false;
-    }
+    return isIpInList(clientIp, blacklist);
+}
 
-    for (const rule of blacklist) {
+// 获取IP白名单配置（兼容数组和对象格式）
+function getIpWhitelist() {
+    const ipWhitelist = memoryCache.configCache.ipWhitelist;
+    if (Array.isArray(ipWhitelist) && ipWhitelist.length > 0) return ipWhitelist;
+    if (ipWhitelist && typeof ipWhitelist === 'object' && Object.keys(ipWhitelist).length > 0) {
+        return Object.keys(ipWhitelist);
+    }
+    return [];
+}
+
+// 检查IP是否命中白名单（命中则跳过黑名单与限流）
+function isIpWhitelisted(clientIp) {
+    return isIpInList(clientIp, getIpWhitelist());
+}
+
+// 通用：判断 IP 是否命中规则列表（支持单 IP 与 CIDR）
+function isIpInList(clientIp, list) {
+    if (!list || list.length === 0) return false;
+    for (const rule of list) {
+        if (typeof rule !== 'string') continue;
         if (rule.includes('/')) {
-            // CIDR格式
-            if (isIpInCidr(clientIp, rule)) {
-                return true;
-            }
-        } else {
-            // 单个IP
-            if (clientIp === rule) {
-                return true;
-            }
+            if (isIpInCidr(clientIp, rule)) return true;
+        } else if (clientIp === rule) {
+            return true;
         }
     }
     return false;
@@ -950,7 +1038,7 @@ async function handleOAuthRequest(request, env, urlObj) {
         return Response.redirect(`${config.authorizeUrl}?${params}`, 302);
     }
 
-    // GET /oauth/callback?code=xxx&state=provider:uuid[:base64_redirect] — Provider 回调 
+    // GET /oauth/callback?code=xxx&state=provider:uuid[:base64_redirect] — Provider 回调
     if (path === '/oauth/callback') {
         const code = urlObj.searchParams.get('code');
         const state = urlObj.searchParams.get('state') || '';
@@ -1099,12 +1187,21 @@ export class ControlHub {
     const url = new URL(request.url);
     if (url.pathname === '/control/ws') return this.acceptLocalWs(request);
     if (url.pathname === '/control/rpc') return this.handleWorkerRpc(request);
+    if (url.pathname === '/control/config') return this.handleConfigGet();
     if (url.pathname === '/control/status') {
       return new Response(JSON.stringify({ connections: this.ctx.getWebSockets().length }), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
     return new Response('Not Found', { status: 404 });
+  }
+
+
+  async handleConfigGet() {
+    const cfg = await this.ctx.storage.get('runtime_config') || {};
+    return new Response(JSON.stringify(cfg), {
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
   // 接收本地端 WebSocket 连接（带 X-Control-Token 鉴权）
@@ -1171,7 +1268,22 @@ export class ControlHub {
       return;
     }
 
-    // 2. 本地端主动发起 R2 代读（长连接不能直读 R2，由 Worker 代读后回传）
+    // 2. 本地端下发运行配置：合并写入 DO storage，Worker 实例按周期拉取应用
+    if (msg.type === 'config.apply') {
+      const incoming = msg.payload || {};
+      const existing = await this.ctx.storage.get('runtime_config') || {};
+      const merged = { ...existing, ...incoming };
+      await this.ctx.storage.put('runtime_config', merged);
+      try {
+        ws.send(JSON.stringify({
+          id: msg.id, type: 'config.apply.result', timestamp: Date.now(),
+          payload: { success: true, applied_at: Date.now(), keys: Object.keys(incoming) },
+        }));
+      } catch (e) { /* 忽略发送失败 */ }
+      return;
+    }
+
+    // 3. 本地端主动发起 R2 代读（长连接不能直读 R2，由 Worker 代读后回传）
     if (msg.type === 'r2.comment.get' || msg.type === 'r2.comment.list') {
       const result = await handleR2Rpc(this.env, msg.type, msg.payload || {});
       try {
@@ -1267,14 +1379,13 @@ async function handleRequest(request, env, ctx) {
         return handleOAuthRequest(request, env, urlObj);
     }
 
-    // IP黑名单和临时封禁检查
+    // IP 访问控制：白名单优先，命中则跳过黑名单与限流
     // clientIP已在函数开头声明
+    const ipWhitelisted = isIpWhitelisted(clientIP);
 
-    // 临时封禁功能已移除
-
-    // 检查永久黑名单
+    // 检查永久黑名单（白名单命中则跳过）
     const ipBlacklist = getIpBlacklist();
-    if (isIpBlacklisted(clientIP, ipBlacklist)) {
+    if (!ipWhitelisted && isIpBlacklisted(clientIP, ipBlacklist)) {
         console.log(`🚫 [${clientIP}] IP在黑名单中，拒绝访问`);
 
         // 记录到内存日志
@@ -1338,7 +1449,9 @@ async function handleRequest(request, env, ctx) {
     // 访问控制检查，传递正确的API路径
     console.log(`🔍 [${clientIP}] 开始访问控制检查，目标路径: ${tUrlObj.pathname}`);
 
-    const accessCheck = await checkAccess(request, tUrlObj.pathname);
+    const accessCheck = ipWhitelisted
+        ? { allowed: true, reason: 'ip_whitelisted' }
+        : await checkAccess(request, tUrlObj.pathname);
     if (!accessCheck.allowed) {
         const userAgent = request.headers.get('X-User-Agent') || '';
         const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
@@ -1529,6 +1642,7 @@ async function handleRequest(request, env, ctx) {
                     source: 'dandanplay',
                     method: request.method,
                     api_path: apiPath,
+                    client_ip: clientIP,
                     query: Object.fromEntries(tUrlObj.searchParams.entries()),
                     status: 200,
                     headers: { 'content-type': 'application/json' },
@@ -1571,6 +1685,7 @@ async function handleRequest(request, env, ctx) {
             cache_key: localCacheKey,
             api_path: apiPath,
             method: request.method,
+            client_ip: clientIP,
             worker_request_id: request.headers.get('cf-ray') || '',
         }, 800);
         if (cached && cached.hit && cached.body) {

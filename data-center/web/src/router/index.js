@@ -44,6 +44,30 @@ const routes = [
         meta: { title: '实体索引' }
       },
       {
+        path: 'ip-rules',
+        name: 'IpRules',
+        component: () => import('../views/IpRules.vue'),
+        meta: { title: 'IP 黑白名单' }
+      },
+      {
+        path: 'ip-stats',
+        name: 'IpStats',
+        component: () => import('../views/IpStats.vue'),
+        meta: { title: 'IP 请求统计' }
+      },
+      {
+        path: 'ua-rules',
+        name: 'UaRules',
+        component: () => import('../views/UaRules.vue'),
+        meta: { title: 'UA 限流' }
+      },
+      {
+        path: 'worker-logs',
+        name: 'WorkerLogs',
+        component: () => import('../views/WorkerLogs.vue'),
+        meta: { title: 'Worker 日志' }
+      },
+      {
         path: 'users',
         name: 'Users',
         component: () => import('../views/Users.vue'),

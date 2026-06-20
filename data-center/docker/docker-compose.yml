@@ -17,9 +17,20 @@ services:
       # 服务配置
       - HOST=0.0.0.0
       - PORT=7759
+      - TZ=Asia/Shanghai
 
-      # 管理员用户配置
+      # 文件权限（挂载卷的属主，按宿主机用户调整）
+      - PUID=1000
+      - PGID=1000
+      - UMASK=0022
+
+      # 管理员用户配置（首次启动建库时生效）
+      # ADMIN_PASSWORD 不填则自动生成 12 位随机密码并打印在启动日志里
       - ADMIN_USERNAME=admin
+      - ADMIN_PASSWORD=change-me-admin-password
+
+      # 安全密钥（JWT 签名，生产务必改成随机长字符串）
+      - SECRET_KEY=change-me-to-a-long-random-secret
 
       # Redis 热缓存（新架构：响应体走 Redis，元数据走 SQL）
       - REDIS_ENABLED=true
@@ -27,9 +38,14 @@ services:
       - REDIS_PREFIX=dd_danmaku
       - CACHE_BODY_STORAGE=redis
 
+      # 缓存策略（可选，默认刷新间隔 6h / 兜底保留 30 天）
+      - CACHE_REFRESH_INTERVAL_SECONDS=21600
+      - CACHE_STALE_MAX_AGE_SECONDS=2592000
+
       # Worker 长连接控制（本地端主动连 Worker ControlHub）
-      # - CONTROL_WORKER_WS_URL=wss://your-worker-domain/control/ws
-      # - CONTROL_TOKEN=与 Worker CONTROL_TOKEN 保持一致
+      # ⚠️ 下面两项替换成你的实际值；CONTROL_TOKEN 必须与 wrangler CONTROL_TOKEN 完全一致，否则 Worker 返回 401
+      - CONTROL_WORKER_WS_URL=wss://your-worker-domain/control/ws
+      - CONTROL_TOKEN=与-Worker-CONTROL_TOKEN-保持一致
       - CONTROL_NODE_ID=local-node-1
 
       # 可选：MySQL配置（如果使用MySQL，取消注释）

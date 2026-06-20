@@ -1,67 +1,70 @@
 <template>
-  <div class="page">
-    <h1 class="page-title">响应缓存</h1>
-    <div class="toolbar">
-      <input v-model="keyword" class="input" placeholder="搜索 cache_key" @keyup.enter="load" />
-      <input v-model="apiPath" class="input" placeholder="api_path 过滤" @keyup.enter="load" />
-      <button class="btn btn-primary" @click="load">查询</button>
+  <div class="app-page">
+    <h1 class="app-page__title">响应缓存</h1>
+
+    <div class="app-toolbar">
+      <el-input v-model="keyword" placeholder="搜索 cache_key" clearable style="width: 200px" @keyup.enter="reload" />
+      <el-input v-model="apiPath" placeholder="api_path 过滤" clearable style="width: 200px" @keyup.enter="reload" />
+      <el-input v-model="clientIpHash" placeholder="IP 哈希过滤" clearable style="width: 200px" @keyup.enter="reload" />
+      <el-button type="primary" :icon="Search" @click="reload">查询</el-button>
     </div>
 
-    <div v-if="msg" class="tip">{{ msg }}</div>
-
-    <div class="panel">
-      <table class="data-table">
-        <thead><tr>
-          <th>api_path</th><th>状态</th><th>大小</th><th>存储</th>
-          <th>命中</th><th>兜底</th><th>待刷新</th><th>获取时间</th><th>操作</th>
-        </tr></thead>
-        <tbody>
-          <tr v-for="r in items" :key="r.id">
-            <td class="key">{{ r.api_path }}</td>
-            <td>{{ r.status_code }}</td>
-            <td>{{ fmtSize(r.body_size) }}</td>
-            <td>{{ r.storage_mode }}</td>
-            <td>{{ r.hit_count }}</td>
-            <td>{{ r.stale_hit_count }}</td>
-            <td>{{ r.refresh_pending ? '是' : '—' }}</td>
-            <td>{{ fmt(r.fetched_at) }}</td>
-            <td class="actions">
-              <button class="link" @click="viewDetail(r.id)">详情</button>
-              <button class="link" @click="markRefresh(r.id)">标记刷新</button>
-              <button class="link danger" @click="del(r.id)">删除</button>
-            </td>
-          </tr>
-          <tr v-if="!items.length"><td colspan="9" class="empty">暂无缓存</td></tr>
-        </tbody>
-      </table>
-      <div class="pager">
-        <button class="btn" :disabled="page<=1" @click="prev">上一页</button>
-        <span>第 {{ page }} 页 / 共 {{ total }} 条</span>
-        <button class="btn" :disabled="page*pageSize>=total" @click="next">下一页</button>
+    <el-card shadow="never">
+      <el-table :data="items" size="small" v-loading="loading" empty-text="暂无缓存">
+        <el-table-column prop="api_path" label="api_path" show-overflow-tooltip />
+        <el-table-column prop="status_code" label="状态" width="80" />
+        <el-table-column label="IP哈希" width="120">
+          <template #default="{ row }">
+            <span class="app-mono">{{ row.client_ip_hash ? row.client_ip_hash.slice(0, 8) + '...' : '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="大小" width="90">
+          <template #default="{ row }">{{ fmtSize(row.body_size) }}</template>
+        </el-table-column>
+        <el-table-column prop="storage_mode" label="存储" width="80" />
+        <el-table-column prop="hit_count" label="命中" width="70" />
+        <el-table-column prop="stale_hit_count" label="兜底" width="70" />
+        <el-table-column label="待刷新" width="80">
+          <template #default="{ row }">
+            <el-tag v-if="row.refresh_pending" type="warning" size="small">是</el-tag>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="获取时间" width="170">
+          <template #default="{ row }">{{ fmt(row.fetched_at) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="160" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="viewDetail(row.id)">详情</el-button>
+            <el-button link type="primary" size="small" @click="markRefresh(row.id)">标记刷新</el-button>
+            <el-button link type="danger" size="small" @click="del(row.id)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div class="app-pager">
+        <el-pagination layout="prev, pager, next, total" :total="total"
+                       :page-size="pageSize" :current-page="page" @current-change="onPage" />
       </div>
-    </div>
+    </el-card>
 
-    <!-- 详情抽屉 -->
-    <div v-if="detail" class="drawer-mask" @click.self="detail=null">
-      <div class="drawer">
-        <div class="drawer-head">
-          <h2>缓存详情</h2>
-          <button class="close" @click="detail=null">×</button>
-        </div>
-        <div class="drawer-body">
-          <p class="kv"><b>cache_key:</b> <code>{{ detail.cache_key }}</code></p>
-          <p class="kv"><b>api_path:</b> {{ detail.api_path }}</p>
-          <p class="kv"><b>状态:</b> {{ detail.status_code }} / 存储 {{ detail.storage_mode }}</p>
-          <p class="kv"><b>响应体:</b></p>
-          <pre class="json">{{ prettyBody }}</pre>
-        </div>
-      </div>
-    </div>
+    <el-drawer v-model="drawerVisible" title="缓存详情" size="50%">
+      <template v-if="detail">
+        <el-descriptions :column="1" border size="small">
+          <el-descriptions-item label="cache_key"><span class="app-mono">{{ detail.cache_key }}</span></el-descriptions-item>
+          <el-descriptions-item label="api_path">{{ detail.api_path }}</el-descriptions-item>
+          <el-descriptions-item label="IP哈希"><span class="app-mono">{{ detail.client_ip_hash || '—' }}</span></el-descriptions-item>
+          <el-descriptions-item label="状态">{{ detail.status_code }} / 存储 {{ detail.storage_mode }}</el-descriptions-item>
+        </el-descriptions>
+        <pre class="json-body">{{ prettyBody }}</pre>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
 <script>
 import { ref, computed, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Search } from '@element-plus/icons-vue'
 import { apiV2 } from '../utils/api.js'
 
 export default {
@@ -73,43 +76,47 @@ export default {
     const pageSize = ref(20)
     const keyword = ref('')
     const apiPath = ref('')
-    const msg = ref('')
+    const clientIpHash = ref('')
+    const loading = ref(false)
+    const drawerVisible = ref(false)
     const detail = ref(null)
 
     const load = async () => {
-      msg.value = ''
+      loading.value = true
       try {
         const q = new URLSearchParams({ page: page.value, page_size: pageSize.value })
         if (keyword.value) q.set('keyword', keyword.value)
         if (apiPath.value) q.set('api_path', apiPath.value)
+        if (clientIpHash.value) q.set('client_ip_hash', clientIpHash.value)
         const res = await apiV2(`/cache/responses?${q.toString()}`)
         items.value = res.items || []
         total.value = res.total || 0
-      } catch (e) { msg.value = e.message }
+      } catch (e) { ElMessage.error(e.message) } finally { loading.value = false }
     }
+    const reload = () => { page.value = 1; load() }
+    const onPage = (p) => { page.value = p; load() }
 
     const viewDetail = async (id) => {
       try {
         const res = await apiV2(`/cache/responses/${id}`)
         detail.value = res.data
-      } catch (e) { msg.value = e.message }
+        drawerVisible.value = true
+      } catch (e) { ElMessage.error(e.message) }
     }
-
     const markRefresh = async (id) => {
-      try { await apiV2(`/cache/responses/${id}/mark-refresh`, { method: 'POST' }); load() }
-      catch (e) { msg.value = e.message }
+      try { await apiV2(`/cache/responses/${id}/mark-refresh`, { method: 'POST' }); ElMessage.success('已标记刷新'); load() }
+      catch (e) { ElMessage.error(e.message) }
     }
-
     const del = async (id) => {
-      if (!confirm('确认删除该缓存？')) return
-      try { await apiV2(`/cache/responses/${id}`, { method: 'DELETE' }); load() }
-      catch (e) { msg.value = e.message }
+      try {
+        await ElMessageBox.confirm('确认删除该缓存？', '提示', { type: 'warning' })
+        await apiV2(`/cache/responses/${id}`, { method: 'DELETE' })
+        ElMessage.success('已删除'); load()
+      } catch (e) { if (e !== 'cancel') ElMessage.error(e.message || '操作失败') }
     }
 
-    const prev = () => { if (page.value > 1) { page.value--; load() } }
-    const next = () => { if (page.value * pageSize.value < total.value) { page.value++; load() } }
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
-    const fmtSize = (n) => (n > 1024 ? (n / 1024).toFixed(1) + 'KB' : n + 'B')
+    const fmtSize = (n) => (n > 1024 ? (n / 1024).toFixed(1) + 'KB' : (n || 0) + 'B')
     const prettyBody = computed(() => {
       if (!detail.value || !detail.value.body) return '（无）'
       try { return JSON.stringify(JSON.parse(detail.value.body), null, 2) }
@@ -117,35 +124,14 @@ export default {
     })
 
     onMounted(load)
-    return { items, total, page, pageSize, keyword, apiPath, msg, detail,
-      load, viewDetail, markRefresh, del, prev, next, fmt, fmtSize, prettyBody }
+    return { items, total, page, pageSize, keyword, apiPath, clientIpHash, loading,
+      drawerVisible, detail, Search, reload, onPage, viewDetail, markRefresh, del,
+      fmt, fmtSize, prettyBody }
   }
 }
 </script>
 
 <style scoped>
-.page { padding: 24px; }
-.page-title { font-size: 22px; margin-bottom: 20px; color: #333; }
-.toolbar { display: flex; gap: 12px; margin-bottom: 16px; }
-.input { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; min-width: 200px; }
-.btn { padding: 8px 16px; border: 1px solid #d9d9d9; background: #fff; border-radius: 6px; cursor: pointer; }
-.btn-primary { background: #1677ff; color: #fff; border-color: #1677ff; }
-.tip { background: #fff1f0; border: 1px solid #ffccc7; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: #cf1322; }
-.panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-.data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
-.data-table th { color: #888; font-weight: 500; }
-.key { font-family: monospace; font-size: 12px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
-.actions { display: flex; gap: 8px; }
-.link { background: none; border: none; color: #1677ff; cursor: pointer; font-size: 13px; }
-.link.danger { color: #cf1322; }
-.empty { text-align: center; color: #999; padding: 20px; }
-.pager { display: flex; align-items: center; gap: 12px; justify-content: center; margin-top: 16px; color: #888; font-size: 13px; }
-.drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; justify-content: flex-end; z-index: 100; }
-.drawer { width: 560px; max-width: 90vw; background: #fff; height: 100%; display: flex; flex-direction: column; }
-.drawer-head { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid #f0f0f0; }
-.close { background: none; border: none; font-size: 24px; cursor: pointer; color: #999; }
-.drawer-body { padding: 20px; overflow: auto; }
-.kv { margin-bottom: 10px; font-size: 13px; color: #555; }
-.json { background: #f6f8fa; padding: 14px; border-radius: 6px; font-size: 12px; overflow: auto; max-height: 60vh; white-space: pre-wrap; word-break: break-all; }
+.json-body { margin-top: 16px; background: #1e1e1e; color: #d4d4d4; padding: 14px;
+  border-radius: 8px; font-size: 12px; max-height: 50vh; overflow: auto; white-space: pre-wrap; }
 </style>

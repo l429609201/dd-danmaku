@@ -16,6 +16,10 @@ from src.models_v2.cache import (
     ApiResponseCache, ApiCacheAccessLog, ApiCacheRefreshTask,
     ApiResponseEntity, EpisodeLink,
 )
+from src.models_v2.monitoring import (
+    IpRule, IpRequestStatCurrent, IpRequestStatSnapshot,
+    UaLimitRule, WorkerRequestLog,
+)
 
 __all__ = [
     "Base",
@@ -36,4 +40,10 @@ __all__ = [
     "ApiCacheRefreshTask",
     "ApiResponseEntity",
     "EpisodeLink",
+    # 监控 / 访问控制
+    "IpRule",
+    "IpRequestStatCurrent",
+    "IpRequestStatSnapshot",
+    "UaLimitRule",
+    "WorkerRequestLog",
 ]

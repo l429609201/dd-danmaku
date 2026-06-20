@@ -2,7 +2,7 @@
 数据库连接和配置
 """
 import logging
-from sqlalchemy import create_engine, MetaData, text
+from sqlalchemy import create_engine, inspect, MetaData, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
@@ -63,6 +63,7 @@ async def init_db():
 
         # 创建所有 v2 表
         Base.metadata.create_all(bind=engine)
+        await ensure_compatible_schema()
         logger.info("✅ 数据库表结构初始化完成")
 
         # 初始化系统默认设置
@@ -73,6 +74,24 @@ async def init_db():
 
     except Exception as e:
         logger.error(f"❌ 数据库初始化失败: {e}")
+        raise
+
+
+async def ensure_compatible_schema():
+    """对既有数据库做轻量兼容补丁；create_all 不会修改已有表字段"""
+    try:
+        inspector = inspect(engine)
+        if "api_response_cache" in inspector.get_table_names():
+            columns = {c["name"] for c in inspector.get_columns("api_response_cache")}
+            if "client_ip_hash" not in columns:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE api_response_cache "
+                        "ADD COLUMN client_ip_hash VARCHAR(100)"
+                    ))
+                logger.info("✅ 已为 api_response_cache 增加 client_ip_hash 字段")
+    except Exception as e:
+        logger.error(f"❌ 数据库兼容补丁执行失败: {e}")
         raise
 
 
@@ -89,6 +108,14 @@ async def init_app_settings():
             "cache_refresh_interval_seconds": (str(settings.CACHE_REFRESH_INTERVAL_SECONDS), "int", "缓存刷新间隔（秒）", False),
             "cache_stale_max_age_seconds": (str(settings.CACHE_STALE_MAX_AGE_SECONDS), "int", "缓存最大兜底时长（秒）", False),
             "cache_get_timeout_ms": ("800", "int", "Worker cache.get 超时（毫秒）", False),
+            # 本地端 SQL 数据保留策略（第一版 asyncio 后台任务读取这些配置）
+            "cleanup_enabled": ("true", "bool", "是否启用本地端 SQL 数据保留清理", False),
+            "cleanup_interval_seconds": ("3600", "int", "数据保留清理任务执行间隔（秒）", False),
+            "cleanup_access_log_retention_days": ("30", "int", "缓存访问日志保留天数", False),
+            "cleanup_control_message_retention_days": ("30", "int", "长连接消息审计保留天数", False),
+            "cleanup_runtime_event_retention_days": ("30", "int", "运行事件保留天数", False),
+            "cleanup_expired_cache_enabled": ("false", "bool", "是否删除过期响应缓存空壳", False),
+            "cleanup_expired_cache_retention_days": ("90", "int", "过期响应缓存空壳额外保留天数", False),
         }
 
         db = SessionLocal()

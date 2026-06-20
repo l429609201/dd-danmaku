@@ -40,6 +40,7 @@ async def list_nodes(_: LocalUser = Depends(get_current_user)):
 @router.get("/messages")
 async def list_messages(
     node_id: Optional[str] = None,
+    direction: Optional[str] = None,
     message_type: Optional[str] = None,
     status: Optional[str] = None,
     page: int = 1, page_size: int = Query(50, le=200),
@@ -51,6 +52,8 @@ async def list_messages(
         q = db.query(ControlMessage)
         if node_id:
             q = q.filter(ControlMessage.node_id == node_id)
+        if direction:
+            q = q.filter(ControlMessage.direction == direction)
         if message_type:
             q = q.filter(ControlMessage.message_type == message_type)
         if status:

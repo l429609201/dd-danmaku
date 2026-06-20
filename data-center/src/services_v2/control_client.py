@@ -23,6 +23,8 @@ from src.models_v2 import ControlNode, ControlMessage
 from src.models_v2.base import now
 from src.services_v2.cache_service import cache_service
 from src.services_v2.entity_service import entity_index_service, episode_link_service
+from src.services_v2.ip_stats_service import ip_stats_service
+from src.services_v2.worker_log_service import worker_log_service
 from src.services_v2.runtime_event_service import runtime_event_service
 
 logger = logging.getLogger(__name__)
@@ -148,6 +150,10 @@ class ControlClient:
             await self._handle_cache_get(msg_id, payload)
         elif msg_type == "cache.upsert":
             await self._handle_cache_upsert(msg_id, payload)
+        elif msg_type == "stats.report":
+            await self._handle_stats_report(msg_id, payload)
+        elif msg_type == "log.report":
+            await self._handle_log_report(msg_id, payload)
         elif msg_type == "ping":
             await self._send({"id": msg_id, "type": "pong", "timestamp": _ts()})
         else:
@@ -157,7 +163,11 @@ class ControlClient:
         """Worker 429 兜底：查询本地缓存"""
         cache_key = payload.get("cache_key", "")
         worker_request_id = payload.get("worker_request_id")
-        result = await cache_service.get(cache_key, worker_request_id=worker_request_id)
+        client_ip = payload.get("client_ip")
+        result = await cache_service.get(
+            cache_key, worker_request_id=worker_request_id,
+            client_ip=client_ip,
+        )
         hit = bool(result and result.get("hit"))
         await self._send({
             "id": msg_id, "type": "cache.get.result",
@@ -188,6 +198,28 @@ class ControlClient:
         self._audit("worker_to_local", "cache.upsert",
                     "success" if ok else "failed",
                     request_cache_key=payload.get("cache_key"))
+
+    async def _handle_stats_report(self, msg_id, payload):
+        """Worker 主动上报 IP/限流统计：落库 current + snapshot"""
+        ip_stats = payload.get("ip_stats") or []
+        worker_id = payload.get("worker_id", "worker-1")
+        saved = ip_stats_service.ingest_report(worker_id, ip_stats)
+        await self._send({
+            "id": msg_id, "type": "stats.report.result",
+            "timestamp": _ts(), "payload": {"success": True, "saved": saved},
+        })
+        self._audit("worker_to_local", "stats.report", "success")
+
+    async def _handle_log_report(self, msg_id, payload):
+        """Worker 主动上报日志：落库 worker_request_logs + SSE 广播"""
+        logs = payload.get("logs") or []
+        worker_id = payload.get("worker_id", "worker-1")
+        saved = worker_log_service.ingest_report(worker_id, logs)
+        await self._send({
+            "id": msg_id, "type": "log.report.result",
+            "timestamp": _ts(), "payload": {"success": True, "saved": saved},
+        })
+        self._audit("worker_to_local", "log.report", "success")
 
     # ---------- 本地发起 RPC ----------
     async def request(self, msg_type: str, payload: Dict[str, Any],

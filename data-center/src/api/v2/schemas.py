@@ -91,4 +91,39 @@ class SettingUpdate(BaseModel):
 class ConfigApplyRequest(BaseModel):
     ua_configs: Optional[dict] = None
     ip_blacklist: Optional[dict] = None
+    ip_whitelist: Optional[dict] = None
     cache_policy: Optional[dict] = None
+
+
+# ---------- IP 黑白名单 ----------
+class IpRuleCreate(BaseModel):
+    ip_or_cidr: str
+    rule_type: str = "black"  # black / white
+    reason: Optional[str] = None
+    enabled: bool = True
+    expires_at: Optional[datetime] = None
+
+
+class IpRuleUpdate(BaseModel):
+    rule_type: Optional[str] = None
+    reason: Optional[str] = None
+    enabled: Optional[bool] = None
+    expires_at: Optional[datetime] = None
+
+
+# ---------- UA 限流规则 ----------
+class UaRuleCreate(BaseModel):
+    ua_key: str
+    user_agent: Optional[str] = None
+    max_requests: int = 0
+    window_ms: int = 60000
+    path_limits: Optional[List[dict]] = None  # [{"path": "...", "maxRequestsPerHour": 50}]
+    enabled: bool = True
+
+
+class UaRuleUpdate(BaseModel):
+    user_agent: Optional[str] = None
+    max_requests: Optional[int] = None
+    window_ms: Optional[int] = None
+    path_limits: Optional[List[dict]] = None
+    enabled: Optional[bool] = None

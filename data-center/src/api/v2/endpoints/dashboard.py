@@ -73,3 +73,42 @@ async def dashboard_summary(_: LocalUser = Depends(get_current_user)):
         return ApiResult(data=data)
     finally:
         db.close()
+
+
+@router.get("/trends")
+async def dashboard_trends(days: int = 7, _: LocalUser = Depends(get_current_user)):
+    """近 N 天缓存命中 / 429 兜底 / 未命中趋势（基于访问日志按天聚合）"""
+    days = max(1, min(days, 30))
+    db = get_db_sync()
+    try:
+        start = now() - timedelta(days=days - 1)
+        rows = db.query(ApiCacheAccessLog).filter(
+            ApiCacheAccessLog.created_at >= start.replace(hour=0, minute=0, second=0, microsecond=0)
+        ).all()
+        # 初始化日期桶
+        buckets = {}
+        for i in range(days):
+            d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+            buckets[d] = {"hit": 0, "stale_hit": 0, "miss": 0}
+        for r in rows:
+            if not r.created_at:
+                continue
+            d = r.created_at.strftime("%Y-%m-%d")
+            if d not in buckets:
+                continue
+            t = r.access_type
+            if t == "hit":
+                buckets[d]["hit"] += 1
+            elif t == "stale_hit":
+                buckets[d]["stale_hit"] += 1
+            elif t in ("miss", "expired"):
+                buckets[d]["miss"] += 1
+        labels = list(buckets.keys())
+        return ApiResult(data={
+            "labels": labels,
+            "hit": [buckets[d]["hit"] for d in labels],
+            "fallback": [buckets[d]["stale_hit"] for d in labels],
+            "miss": [buckets[d]["miss"] for d in labels],
+        })
+    finally:
+        db.close()

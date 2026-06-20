@@ -1,0 +1,84 @@
+/* 全局设计 token 与基线样式（后台工具类·极简专业风） */
+:root {
+  /* 主色沿用 Element Plus 默认蓝，统一品牌色 */
+  --el-color-primary: #1677ff;
+  --app-bg: #f0f2f5;
+  --app-card-bg: #ffffff;
+  --app-radius: 10px;
+  --app-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --app-gap: 16px;
+  --app-text: #1f2329;
+  --app-text-secondary: #8a8f99;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--app-bg);
+  color: var(--app-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* 通用页面容器：各业务页统一留白与标题风格 */
+.app-page {
+  padding: 20px 24px;
+}
+
+.app-page__title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 16px;
+  color: var(--app-text);
+}
+
+.app-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.app-toolbar__spacer {
+  flex: 1;
+}
+
+/* 卡片：统一圆角 + 阴影 */
+.app-card {
+  background: var(--app-card-bg);
+  border-radius: var(--app-radius);
+  box-shadow: var(--app-shadow);
+}
+
+/* 让 el-card 阴影与圆角统一 */
+.el-card {
+  border-radius: var(--app-radius);
+}
+
+/* 表格行内操作按钮间距 */
+.app-actions .el-button + .el-button {
+  margin-left: 8px;
+}
+
+/* 分页右对齐 */
+.app-pager {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+/* 等宽字体用于 key/IP/hash 等 */
+.app-mono {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+}

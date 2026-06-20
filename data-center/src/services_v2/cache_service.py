@@ -23,6 +23,13 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _client_ip_hash(ip: Optional[str]) -> Optional[str]:
+    """客户端 IP 只保存哈希，避免明文 IP 落库"""
+    if not ip:
+        return None
+    return _sha256(str(ip).strip())[:32]
+
+
 class CacheService:
     """上游响应缓存服务"""
 
@@ -62,6 +69,8 @@ class CacheService:
             row.normalized_query = record.get("normalized_query")
             row.query_json = record.get("query")
             row.request_body_hash = record.get("request_body_hash")
+            # 记录写入缓存的客户端 IP 哈希，用于排查来源但避免明文 IP 落库
+            row.client_ip_hash = _client_ip_hash(record.get("client_ip"))
             row.status_code = record.get("status", 200)
             row.response_headers_json = record.get("headers")
             row.redis_key = redis_key
@@ -78,7 +87,8 @@ class CacheService:
             db.commit()
 
             self._log(db, cache_key, row.api_path, "upsert",
-                      upstream_status=row.status_code)
+                      upstream_status=row.status_code,
+                      client_ip_hash=row.client_ip_hash)
             return True
         except Exception as e:
             logger.error(f"❌ cache.upsert 失败: {e}")
@@ -88,8 +98,10 @@ class CacheService:
             db.close()
 
     async def get(self, cache_key: str,
-                  worker_request_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                  worker_request_id: Optional[str] = None,
+                  client_ip: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Worker 429 兜底读取本地缓存"""
+        client_ip_hash = _client_ip_hash(client_ip)
         db = get_db_sync()
         try:
             row = db.query(ApiResponseCache).filter(
@@ -97,14 +109,16 @@ class CacheService:
             ).first()
             if not row:
                 self._log(db, cache_key, "", "miss",
-                          worker_request_id=worker_request_id)
+                          worker_request_id=worker_request_id,
+                          client_ip_hash=client_ip_hash)
                 return None
 
             current = now()
             # 超过 expire_at 不再兜底
             if row.expire_at and current > row.expire_at:
                 self._log(db, cache_key, row.api_path, "expired",
-                          worker_request_id=worker_request_id)
+                          worker_request_id=worker_request_id,
+                          client_ip_hash=client_ip_hash)
                 return None
 
             # 读取 body：优先 Redis
@@ -115,7 +129,8 @@ class CacheService:
                 body = row.response_body
             if body is None:
                 self._log(db, cache_key, row.api_path, "miss",
-                          worker_request_id=worker_request_id)
+                          worker_request_id=worker_request_id,
+                          client_ip_hash=client_ip_hash)
                 return None
 
             # 判断是否 stale，stale 则标记待刷新
@@ -130,7 +145,8 @@ class CacheService:
             self._log(db, cache_key, row.api_path,
                       "stale_hit" if stale else "hit",
                       served_status=row.status_code,
-                      worker_request_id=worker_request_id)
+                      worker_request_id=worker_request_id,
+                      client_ip_hash=client_ip_hash)
             return {
                 "hit": True,
                 "status": row.status_code,
@@ -146,13 +162,15 @@ class CacheService:
             db.close()
 
     def _log(self, db, cache_key, api_path, access_type,
-             upstream_status=None, served_status=None, worker_request_id=None):
+             upstream_status=None, served_status=None, worker_request_id=None,
+             client_ip_hash=None):
         """写访问日志，失败不影响主流程"""
         try:
             db.add(ApiCacheAccessLog(
                 cache_key=cache_key, api_path=api_path or "",
                 access_type=access_type, upstream_status=upstream_status,
                 served_status=served_status, worker_request_id=worker_request_id,
+                client_ip_hash=client_ip_hash,
             ))
             db.commit()
         except Exception:
