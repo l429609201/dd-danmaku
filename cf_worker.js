@@ -83,12 +83,18 @@ let memoryCache = {
     // IP请求统计数据（定期清理，防止内存泄漏）
     ipRequestStats: {}, // 格式: { "192.168.1.1": { total_count: 100, violations: 5, paths: {...}, lastAccess: timestamp } }
     lastIpStatsCleanup: Date.now(),
-    // 配置缓存（优先使用数据中心配置，否则使用环境变量）
+    // 配置缓存（env 基线兜底 + 后端下发增量合并）
     configCache: {
         uaConfigs: {},
         ipBlacklist: [],
         ipWhitelist: [],
         lastUpdate: 0
+    },
+    // env 兜底基线（启动时加载，永不被下发覆盖；下发只在其之上做增量合并）
+    envBaseline: {
+        uaConfigs: {},
+        ipBlacklist: [],
+        ipWhitelist: []
     },
     // 环境变量缓存（启动时复制，APP_ID/APP_SECRET除外）
     envCache: {
@@ -426,11 +432,37 @@ async function pullControlConfig(env) {
     }
 }
 
+// 把 IP 规则（数组或对象 key）归一化为 IP 字符串数组
+function normalizeIpList(src) {
+    if (!src) return [];
+    if (Array.isArray(src)) return src.filter(x => typeof x === 'string');
+    if (typeof src === 'object') return Object.keys(src);
+    return [];
+}
+
+// 应用运行配置：env 基线为底，后端下发做增量合并；下发为空绝不清掉 env 兜底
 function applyRuntimeConfig(cfg) {
     if (!cfg || typeof cfg !== 'object') return;
-    if (cfg.ua_configs) memoryCache.configCache.uaConfigs = cfg.ua_configs;
-    if (cfg.ip_blacklist) memoryCache.configCache.ipBlacklist = cfg.ip_blacklist;
-    if (cfg.ip_whitelist) memoryCache.configCache.ipWhitelist = cfg.ip_whitelist;
+
+    // UA 配置：env 基线 ∪ 下发（同 key 以下发为准，可用 enabled:false 禁用 env 项）
+    const incomingUa = (cfg.ua_configs && typeof cfg.ua_configs === 'object') ? cfg.ua_configs : {};
+    memoryCache.configCache.uaConfigs = {
+        ...memoryCache.envBaseline.uaConfigs,
+        ...incomingUa,
+    };
+
+    // IP 黑名单：env 基线 ∪ 下发，去重成数组
+    memoryCache.configCache.ipBlacklist = Array.from(new Set([
+        ...normalizeIpList(memoryCache.envBaseline.ipBlacklist),
+        ...normalizeIpList(cfg.ip_blacklist),
+    ]));
+
+    // IP 白名单：env 基线 ∪ 下发，去重成数组
+    memoryCache.configCache.ipWhitelist = Array.from(new Set([
+        ...normalizeIpList(memoryCache.envBaseline.ipWhitelist),
+        ...normalizeIpList(cfg.ip_whitelist),
+    ]));
+
     memoryCache.configCache.lastUpdate = Date.now();
 }
 
@@ -700,16 +732,28 @@ async function initializeConfigCache(env) {
         memoryCache.envCache.ENABLE_DETAILED_LOGGING = env.ENABLE_DETAILED_LOGGING === 'true';
         console.log('✅ 环境变量已复制到内存缓存（APP相关变量始终从env读取）');
 
-        // 加载UA配置（兜底方案）
+        // 加载UA配置（env 兜底基线）
         if (env.USER_AGENT_LIMITS_CONFIG) {
-            memoryCache.configCache.uaConfigs = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
-            console.log('✅ 从环境变量加载UA配置（兜底）');
+            const uaCfg = JSON.parse(env.USER_AGENT_LIMITS_CONFIG);
+            memoryCache.configCache.uaConfigs = uaCfg;
+            memoryCache.envBaseline.uaConfigs = uaCfg;
+            console.log('✅ 从环境变量加载UA配置（兜底基线）');
         }
 
-        // 加载IP黑名单（兜底方案）
+        // 加载IP黑名单（env 兜底基线）
         if (env.IP_BLACKLIST_CONFIG) {
-            memoryCache.configCache.ipBlacklist = JSON.parse(env.IP_BLACKLIST_CONFIG);
-            console.log('✅ 从环境变量加载IP黑名单（兜底）');
+            const ipBl = JSON.parse(env.IP_BLACKLIST_CONFIG);
+            memoryCache.configCache.ipBlacklist = ipBl;
+            memoryCache.envBaseline.ipBlacklist = ipBl;
+            console.log('✅ 从环境变量加载IP黑名单（兜底基线）');
+        }
+
+        // 加载IP白名单（env 兜底基线）
+        if (env.IP_WHITELIST_CONFIG) {
+            const ipWl = JSON.parse(env.IP_WHITELIST_CONFIG);
+            memoryCache.configCache.ipWhitelist = ipWl;
+            memoryCache.envBaseline.ipWhitelist = ipWl;
+            console.log('✅ 从环境变量加载IP白名单（兜底基线）');
         }
 
         // 从 ControlHub 拉取最新运行配置，覆盖环境变量兜底配置
