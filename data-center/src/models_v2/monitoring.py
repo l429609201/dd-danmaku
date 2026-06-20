@@ -70,6 +70,10 @@ class UaLimitRule(Base, TimestampMixin):
     user_agent = Column(String(300), nullable=True)
     max_requests = Column(Integer, default=0, nullable=False)
     window_ms = Column(Integer, default=60000, nullable=False)
+    # Worker 对象格式字段：每小时/每天上限（-1 表示无限制），说明文字
+    max_requests_per_hour = Column(Integer, nullable=True)
+    max_requests_per_day = Column(Integer, nullable=True)
+    description = Column(String(300), nullable=True)
     # 路径限流：[{"path": "...", "maxRequestsPerHour": 50}]
     path_limits_json = Column(JSON, nullable=True)
     enabled = Column(Boolean, default=True, index=True, nullable=False)

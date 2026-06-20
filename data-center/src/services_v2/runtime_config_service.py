@@ -35,7 +35,7 @@ class RuntimeConfigService:
 
             ua_configs: Dict[str, Any] = {}
             for u in db.query(UaLimitRule).filter(UaLimitRule.enabled == True).all():  # noqa: E712
-                ua_configs[u.ua_key] = {
+                cfg = {
                     "type": u.ua_key,
                     "userAgent": u.user_agent or "",
                     "maxRequests": u.max_requests,
@@ -43,6 +43,14 @@ class RuntimeConfigService:
                     "pathLimits": u.path_limits_json or [],
                     "enabled": True,
                 }
+                # Worker 对象格式扩展字段（存在才下发，保持与导入格式一致）
+                if u.max_requests_per_hour is not None:
+                    cfg["maxRequestsPerHour"] = u.max_requests_per_hour
+                if u.max_requests_per_day is not None:
+                    cfg["maxRequestsPerDay"] = u.max_requests_per_day
+                if u.description:
+                    cfg["description"] = u.description
+                ua_configs[u.ua_key] = cfg
             return {
                 "ip_blacklist": blacklist,
                 "ip_whitelist": whitelist,

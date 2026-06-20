@@ -127,3 +127,9 @@ class UaRuleUpdate(BaseModel):
     window_ms: Optional[int] = None
     path_limits: Optional[List[dict]] = None
     enabled: Optional[bool] = None
+
+
+class UaRuleImport(BaseModel):
+    """UA 规则 JSON 导入：data 为 Worker 对象格式 { key: {userAgent,...} } 或规则数组"""
+    data: Any
+    replace_all: bool = False

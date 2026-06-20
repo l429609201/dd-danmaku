@@ -100,6 +100,21 @@ async def ensure_compatible_schema():
                         "ADD COLUMN client_ip VARCHAR(64)"
                     ))
                 logger.info("✅ 已为 api_cache_access_logs 增加 client_ip 字段")
+        # UA 限流规则补充 Worker 对象格式字段（每小时/每天上限 + 说明）
+        if "ua_limit_rules" in inspector.get_table_names():
+            ua_cols = {c["name"] for c in inspector.get_columns("ua_limit_rules")}
+            ua_patches = {
+                "max_requests_per_hour": "INTEGER",
+                "max_requests_per_day": "INTEGER",
+                "description": "VARCHAR(300)",
+            }
+            for col, coltype in ua_patches.items():
+                if col not in ua_cols:
+                    with engine.begin() as conn:
+                        conn.execute(text(
+                            f"ALTER TABLE ua_limit_rules ADD COLUMN {col} {coltype}"
+                        ))
+                    logger.info(f"✅ 已为 ua_limit_rules 增加 {col} 字段")
     except Exception as e:
         logger.error(f"❌ 数据库兼容补丁执行失败: {e}")
         raise

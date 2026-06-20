@@ -5,6 +5,8 @@
       <input v-model="keyword" class="input" placeholder="搜索 ua_key" @keyup.enter="load" />
       <button class="btn btn-primary" @click="load">查询</button>
       <button class="btn" @click="openCreate">新增规则</button>
+      <button class="btn" @click="openImport">JSON 导入</button>
+      <button class="btn" @click="exportJson">导出 JSON</button>
       <button class="btn" @click="resync">重新下发</button>
     </div>
 
@@ -62,6 +64,28 @@
         </div>
       </div>
     </div>
+
+    <!-- JSON 导入弹窗 -->
+    <div v-if="showImport" class="modal-mask" @click.self="showImport=false">
+      <div class="modal modal-lg">
+        <div class="modal-header"><h2>JSON 导入 UA 规则</h2><button class="modal-close" @click="showImport=false">×</button></div>
+        <p class="hint">支持 Worker 对象格式 <code>{ "key": { userAgent, maxRequestsPerHour, pathLimits... } }</code> 或规则数组。按 ua_key 增量更新。</p>
+        <textarea v-model="importText" class="json-area" placeholder='{
+  "MisakaDanmaku": {
+    "enabled": true,
+    "userAgent": "misaka10876/v1.0.0",
+    "maxRequestsPerHour": 100,
+    "pathLimits": [{ "path": "/api/v2/comment/", "maxRequestsPerHour": 50 }]
+  }
+}'></textarea>
+        <label class="check"><input type="checkbox" v-model="replaceAll" /> 覆盖全部（先清空现有规则再导入）</label>
+        <div v-if="importError" class="err">{{ importError }}</div>
+        <div class="modal-actions">
+          <button class="btn" @click="showImport=false">取消</button>
+          <button class="btn btn-primary" :disabled="importing" @click="doImport">{{ importing ? '导入中...' : '确认导入' }}</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -82,6 +106,12 @@ export default {
     const creating = ref(false)
     const editId = ref(null)
     const form = reactive({ ua_key: '', user_agent: '', max_requests: 0, window_ms: 60000, path_limits: [] })
+    // JSON 导入相关
+    const showImport = ref(false)
+    const importText = ref('')
+    const replaceAll = ref(false)
+    const importing = ref(false)
+    const importError = ref('')
 
     const load = async () => {
       msg.value = ''
@@ -142,6 +172,42 @@ export default {
       try { await apiV2(`/ua-rules/${r.id}`, { method: 'PUT', body: { enabled: !r.enabled } }); load() }
       catch (e) { msg.value = e.message }
     }
+
+    // 打开导入弹窗
+    const openImport = () => {
+      importText.value = ''; replaceAll.value = false; importError.value = ''
+      showImport.value = true
+    }
+    // 执行导入
+    const doImport = async () => {
+      importError.value = ''
+      let parsed
+      try { parsed = JSON.parse(importText.value) }
+      catch (e) { importError.value = 'JSON 解析失败：' + e.message; return }
+      importing.value = true
+      try {
+        const res = await apiV2('/ua-rules/import', {
+          method: 'POST', body: { data: parsed, replace_all: replaceAll.value },
+        })
+        msg.value = res.message || '导入完成'
+        showImport.value = false
+        load()
+      } catch (e) { importError.value = e.message } finally { importing.value = false }
+    }
+    // 导出为 Worker 对象格式 JSON 并复制
+    const exportJson = async () => {
+      try {
+        const res = await apiV2('/ua-rules/export')
+        const json = JSON.stringify(res.data || {}, null, 2)
+        try {
+          await navigator.clipboard.writeText(json)
+          msg.value = '已导出并复制到剪贴板（共 ' + Object.keys(res.data || {}).length + ' 条）'
+        } catch {
+          // 剪贴板不可用时降级：弹窗展示
+          window.prompt('复制以下 JSON：', json)
+        }
+      } catch (e) { msg.value = e.message }
+    }
     const del = async (id) => {
       if (!confirm('确认删除该规则？')) return
       try { await apiV2(`/ua-rules/${id}`, { method: 'DELETE' }); load() }
@@ -157,7 +223,9 @@ export default {
 
     onMounted(load)
     return { items, total, page, pageSize, keyword, msg, showCreate, creating, editId, form,
-      load, openCreate, openEdit, addPathLimit, removePathLimit, submit, toggle, del, resync, prev, next }
+      showImport, importText, replaceAll, importing, importError,
+      load, openCreate, openEdit, addPathLimit, removePathLimit, submit, toggle, del, resync, prev, next,
+      openImport, doImport, exportJson }
   }
 }
 </script>
@@ -190,5 +258,11 @@ export default {
 .form-item label { display: block; margin-bottom: 6px; color: #555; font-size: 13px; }
 .input.full { width: 100%; }
 .path-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.modal-lg { width: 600px; max-width: 92vw; }
+.json-area { width: 100%; height: 240px; font-family: monospace; font-size: 12px; padding: 10px;
+  border: 1px solid #d9d9d9; border-radius: 6px; resize: vertical; box-sizing: border-box; }
+.check { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 13px; color: #555; }
+.hint code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+.err { color: #cf1322; font-size: 13px; margin-top: 8px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 </style>
