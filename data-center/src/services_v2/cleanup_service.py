@@ -12,7 +12,8 @@ from typing import Optional
 from src.database import get_db_sync
 from src.models_v2 import (
     ApiCacheAccessLog, ApiResponseCache, AppSetting,
-    ControlMessage, RuntimeEvent,
+    ControlMessage, RuntimeEvent, WorkerRequestLog, WorkerMetricsSnapshot,
+    IpRequestStatSnapshot,
 )
 from src.models_v2.base import now
 from src.services_v2.redis_cache import redis_cache
@@ -74,6 +75,18 @@ class CleanupService:
             "runtime_events": self._delete_older_than(
                 RuntimeEvent, "created_at", current,
                 self._get_int("cleanup_runtime_event_retention_days", 30),
+            ),
+            "worker_request_logs": self._delete_older_than(
+                WorkerRequestLog, "created_at", current,
+                self._get_int("cleanup_worker_log_retention_days", 14),
+            ),
+            "worker_metrics_snapshot": self._delete_older_than(
+                WorkerMetricsSnapshot, "snapshot_at", current,
+                self._get_int("cleanup_metrics_retention_days", 30),
+            ),
+            "ip_request_stats_snapshot": self._delete_older_than(
+                IpRequestStatSnapshot, "snapshot_at", current,
+                self._get_int("cleanup_ip_snapshot_retention_days", 14),
             ),
         }
 

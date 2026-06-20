@@ -27,6 +27,7 @@ from src.services_v2.ip_stats_service import ip_stats_service
 from src.services_v2.worker_log_service import worker_log_service
 from src.services_v2.runtime_event_service import runtime_event_service
 from src.services_v2.abuse_service import abuse_service
+from src.services_v2.metrics_service import metrics_service
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +160,8 @@ class ControlClient:
             await self._handle_log_report(msg_id, payload)
         elif msg_type == "abuse.report":
             await self._handle_abuse_report(msg_id, payload)
+        elif msg_type == "metrics.report":
+            await self._handle_metrics_report(msg_id, payload)
         elif msg_type == "ping":
             await self._send({"id": msg_id, "type": "pong", "timestamp": _ts()})
         else:
@@ -256,6 +259,21 @@ class ControlClient:
                 logger.warning(f"⚠️ 滥用封禁回灌下发失败: {e}")
 
         self._resync_task = asyncio.create_task(_run())
+
+    async def _handle_metrics_report(self, msg_id, payload):
+        """Worker 上报运行指标快照：落库 worker_metrics_snapshot"""
+        metrics = payload.get("metrics") or {}
+        worker_id = payload.get("worker_id", "worker-1")
+        ok = metrics_service.ingest_report(
+            worker_id, metrics,
+            total_lifetime=payload.get("total_requests_lifetime", 0),
+            api_cache_size=payload.get("api_cache_size", 0),
+        )
+        await self._send({
+            "id": msg_id, "type": "metrics.report.result",
+            "timestamp": _ts(), "payload": {"success": ok},
+        })
+        self._audit("worker_to_local", "metrics.report", "success" if ok else "failed")
 
     # ---------- 本地发起 RPC ----------
     async def request(self, msg_type: str, payload: Dict[str, Any],

@@ -117,7 +117,30 @@ let memoryCache = {
     // 非法路由滥用追踪：记录每个 IP 的非法请求计数与临时封禁到期时间
     abuseTracker: new Map(), // 格式: { ip: { count, windowStart, bannedUntil } }
     lastAbuseReport: 0,
+    // 运行指标聚合（周期上报本地端，上报后增量清零，累计趋势由本地端落库）
+    metrics: {
+        totalRequests: 0,   // 进入处理的请求数
+        totalResponses: 0,  // 完成响应数
+        bytesIn: 0,         // 入流量（请求体估算字节）
+        bytesOut: 0,        // 出流量（响应体字节）
+        memCacheHits: 0,    // 内存缓存命中
+        r2CacheHits: 0,     // R2 弹幕缓存命中
+        cacheMiss: 0,       // 可缓存请求未命中（回源）
+        blockedIp: 0,       // IP 黑名单拦截
+        blockedUa: 0,       // UA 限制拦截
+        blockedAbuse: 0,    // 非法路由临时封禁拦截
+        invalidRoute: 0,    // 非法路由命中（含未达封禁阈值）
+        upstream429: 0,     // 上游 429 次数
+        status2xx: 0, status4xx: 0, status5xx: 0, // 响应状态码分布
+    },
+    lastMetricsReport: 0,
 };
+
+// 指标累加辅助：字段自增，避免散落的 ++ 写法出错
+function bumpMetric(key, delta = 1) {
+    if (memoryCache.metrics[key] === undefined) return;
+    memoryCache.metrics[key] += delta;
+}
 
 // 数据中心集成配置（新架构：仅保留 Worker 标识与初始化标志，旧 HTTP 同步字段已废弃）
 let DATA_CENTER_CONFIG = {
@@ -488,6 +511,27 @@ function buildLogReportPayload(now) {
     return { worker_id: DATA_CENTER_CONFIG.workerId, timestamp: now, logs };
 }
 
+// 组装运行指标快照；上报后清零累计型字段（窗口内增量），便于本地端按窗口落库
+function buildMetricsReportPayload(now) {
+    const m = memoryCache.metrics;
+    const payload = {
+        worker_id: DATA_CENTER_CONFIG.workerId,
+        timestamp: now,
+        metrics: { ...m },
+        // 附带瞬时态：当前总请求数（不清零）与缓存规模，便于展示
+        total_requests_lifetime: memoryCache.totalRequests,
+        api_cache_size: memoryCache.apiCache.size,
+    };
+    // 清零窗口累计指标
+    memoryCache.metrics = {
+        totalRequests: 0, totalResponses: 0, bytesIn: 0, bytesOut: 0,
+        memCacheHits: 0, r2CacheHits: 0, cacheMiss: 0,
+        blockedIp: 0, blockedUa: 0, blockedAbuse: 0, invalidRoute: 0,
+        upstream429: 0, status2xx: 0, status4xx: 0, status5xx: 0,
+    };
+    return payload;
+}
+
 // ========================================
 // �📦 R2 弹幕缓存工具函数
 // ========================================
@@ -710,6 +754,12 @@ function periodicCleanup(env) {
         if (payload.banned.length > 0) {
             tasks.push(controlHubRpc(env, 'abuse.report', payload, 3000));
         }
+    }
+
+    // 每60秒上报运行指标快照（请求/响应/流量/命中/拦截），上报后窗口清零
+    if (env?.CONTROL_HUB && now - memoryCache.lastMetricsReport > 60000) {
+        memoryCache.lastMetricsReport = now;
+        tasks.push(controlHubRpc(env, 'metrics.report', buildMetricsReportPayload(now), 3000));
     }
 
     // 每5分钟轮询一次 R2 过期清理（单实例内节流，多实例下 cron 兜底）
@@ -1473,6 +1523,11 @@ async function handleRequest(request, env, ctx) {
                      request.headers.get('X-Real-IP') ||
                      'unknown';
 
+    // 指标：请求计数 + 入流量估算（请求头长度近似）
+    bumpMetric('totalRequests');
+    const cl = parseInt(request.headers.get('Content-Length') || '0', 10);
+    if (cl > 0) bumpMetric('bytesIn', cl);
+
     // 只在调试模式下记录请求日志
     if (memoryCache.envCache.ENABLE_DETAILED_LOGGING) {
         console.log(`📥 [${clientIP}] 收到请求:`, request.method, new URL(request.url).pathname);
@@ -1534,6 +1589,7 @@ async function handleRequest(request, env, ctx) {
         const remainMin = Math.ceil(remainMs / 60000);
         const retryAfterSec = Math.ceil(remainMs / 1000);
         console.log(`🚫 [${clientIP}] IP临时封禁中，剩余 ${remainMin} 分钟`);
+        bumpMetric('blockedAbuse'); bumpMetric('status4xx');
         addMemoryLog('warn', 'IP临时封禁拦截', {
             ip: clientIP,
             method: request.method,
@@ -1561,6 +1617,7 @@ async function handleRequest(request, env, ctx) {
     const ipBlacklist = getIpBlacklist();
     if (!ipWhitelisted && isIpBlacklisted(clientIP, ipBlacklist)) {
         console.log(`🚫 [${clientIP}] IP在黑名单中，拒绝访问`);
+        bumpMetric('blockedIp'); bumpMetric('status4xx');
 
         // 记录到内存日志（补全 method/path/status，便于日志页展示）
         addMemoryLog('warn', 'IP黑名单拦截', {
@@ -1597,9 +1654,11 @@ async function handleRequest(request, env, ctx) {
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
         // 记录非法路由命中：同一 IP 1 小时内累计超阈值 → 临时封禁该 IP 1 小时
         const justBanned = recordInvalidRoute(clientIP);
+        bumpMetric('invalidRoute');
         if (justBanned) {
             const banMin = Math.ceil(ABUSE_CONFIG.BAN_DURATION_MS / 60000);
             console.log(`🚫 [${clientIP}] 非法路由超阈值，已临时封禁 ${banMin} 分钟`);
+            bumpMetric('blockedAbuse'); bumpMetric('status4xx');
             addMemoryLog('warn', '非法路由滥用封禁', {
                 ip: clientIP,
                 method: request.method,
@@ -1623,6 +1682,7 @@ async function handleRequest(request, env, ctx) {
             });
         }
         // 未达封禁阈值：记录一次非法路由（INFO 级），便于日志页观察滥用趋势
+        bumpMetric('status4xx');
         addMemoryLog('info', '非法路由请求', {
             ip: clientIP,
             method: request.method,
@@ -1669,6 +1729,16 @@ async function handleRequest(request, env, ctx) {
         const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
 
         console.log(`🚫 [${clientIP}] 访问被拒绝: ${errorMessage}, 路径=${tUrlObj.pathname}`);
+        bumpMetric('blockedUa'); bumpMetric('status4xx');
+        // 记录访问控制拦截日志，便于日志页排查（此前仅 console，未落库）
+        addMemoryLog('warn', '访问控制拦截', {
+            ip: clientIP,
+            method: request.method,
+            path: tUrlObj.pathname,
+            responseStatus: accessCheck.status,
+            userAgent,
+            reason: accessCheck.reason,
+        });
 
         return new Response(JSON.stringify({
             status: accessCheck.status,
@@ -1702,6 +1772,10 @@ async function handleRequest(request, env, ctx) {
 
         if (cached && (Date.now() - cached.timestamp < MEMORY_LIMITS.API_CACHE_TTL)) {
             console.log(`📦 [${clientIP}] 内存缓存命中: ${apiPath}`);
+            // 指标：内存缓存命中 + 出流量 + 响应/2xx
+            bumpMetric('memCacheHits'); bumpMetric('totalResponses');
+            bumpMetric('status2xx');
+            bumpMetric('bytesOut', (cached.data && cached.data.length) ? cached.data.length : 0);
             addMemoryLog('INFO', '内存缓存命中', {
                 ip: clientIP,
                 path: apiPath,
@@ -1727,6 +1801,10 @@ async function handleRequest(request, env, ctx) {
         const cachedData = await r2GetComment(env, r2Key);
         if (cachedData) {
             console.log(`📦 [${clientIP}] R2弹幕缓存命中: ${apiPath}`);
+            // 指标：R2 命中 + 出流量 + 响应/2xx
+            bumpMetric('r2CacheHits'); bumpMetric('totalResponses');
+            bumpMetric('status2xx');
+            bumpMetric('bytesOut', (cachedData && cachedData.length) ? cachedData.length : 0);
             addMemoryLog('INFO', 'R2弹幕缓存命中', { ip: clientIP, path: apiPath });
             return new Response(cachedData, {
                 status: 200,
@@ -1804,6 +1882,14 @@ async function handleRequest(request, env, ctx) {
     // 调试日志：显示dandanplay API响应内容
     console.log(`📥 [${clientIP}] dandanplay API响应状态:`, response.status, response.statusText);
 
+    // 指标：回源响应（可缓存请求走到这里即未命中）+ 状态码分布 + 429
+    bumpMetric('totalResponses');
+    if (isCacheable || isCommentApi) bumpMetric('cacheMiss');
+    if (response.status >= 200 && response.status < 300) bumpMetric('status2xx');
+    else if (response.status === 429) { bumpMetric('upstream429'); bumpMetric('status4xx'); }
+    else if (response.status >= 400 && response.status < 500) bumpMetric('status4xx');
+    else if (response.status >= 500) bumpMetric('status5xx');
+
     // 记录API请求到内存日志
     addMemoryLog('INFO', 'API请求处理', {
         ip: clientIP,
@@ -1816,6 +1902,8 @@ async function handleRequest(request, env, ctx) {
 
     // 读取响应内容用于日志记录
     const responseText = await response.text();
+    // 指标：出流量（回源响应体字节）
+    if (responseText) bumpMetric('bytesOut', responseText.length);
     // 新增：根据API路径选择性地记录响应内容，避免日志超限
     if (apiPath.startsWith('/api/v2/comment/')) {
         try {

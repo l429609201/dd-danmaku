@@ -68,6 +68,12 @@ const routes = [
         meta: { title: 'Worker 日志' }
       },
       {
+        path: 'db-stats',
+        name: 'DbStats',
+        component: () => import('../views/DbStats.vue'),
+        meta: { title: '数据库状态' }
+      },
+      {
         path: 'users',
         name: 'Users',
         component: () => import('../views/Users.vue'),

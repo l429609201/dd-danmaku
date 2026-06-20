@@ -6,12 +6,15 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends
 
+from sqlalchemy import func
+
 from src.api.v2.deps import get_current_user
 from src.api.v2.schemas import ApiResult
 from src.database import get_db_sync
 from src.models_v2 import (
     ApiResponseCache, ApiCacheAccessLog, ApiCacheRefreshTask,
     ControlNode, EpisodeLink, RuntimeEvent, LocalUser,
+    WorkerMetricsSnapshot,
 )
 from src.models_v2.base import now
 
@@ -46,6 +49,26 @@ async def dashboard_summary(_: LocalUser = Depends(get_current_user)):
             RuntimeEvent.level == "ERROR"
         ).order_by(RuntimeEvent.created_at.desc()).limit(10).all()
 
+        # 今日 Worker 运行指标汇总（按指标列求和）
+        m = db.query(
+            func.coalesce(func.sum(WorkerMetricsSnapshot.total_requests), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.total_responses), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.bytes_in), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.bytes_out), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.mem_cache_hits), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.r2_cache_hits), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.cache_miss), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.blocked_ip), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.blocked_ua), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.blocked_abuse), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.invalid_route), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.upstream_429), 0),
+        ).filter(WorkerMetricsSnapshot.snapshot_at >= today_start).first()
+        total_req, total_resp, b_in, b_out, mem_hit, r2_hit, miss, \
+            blk_ip, blk_ua, blk_abuse, inv_route, up429 = [int(x or 0) for x in m]
+        total_hits = mem_hit + r2_hit
+        hit_rate = round(total_hits / (total_hits + miss) * 100, 1) if (total_hits + miss) > 0 else 0.0
+
         data = {
             "worker": {
                 "connected": node.connected if node else False,
@@ -57,6 +80,23 @@ async def dashboard_summary(_: LocalUser = Depends(get_current_user)):
             "today": {
                 "fallback_hits": stale_hits,
                 "cache_hits": normal_hits,
+            },
+            "worker_metrics_today": {
+                "total_requests": total_req,
+                "total_responses": total_resp,
+                "bytes_in": b_in,
+                "bytes_out": b_out,
+                "cache_hits": total_hits,
+                "mem_cache_hits": mem_hit,
+                "r2_cache_hits": r2_hit,
+                "cache_miss": miss,
+                "hit_rate": hit_rate,
+                "blocked_total": blk_ip + blk_ua + blk_abuse,
+                "blocked_ip": blk_ip,
+                "blocked_ua": blk_ua,
+                "blocked_abuse": blk_abuse,
+                "invalid_route": inv_route,
+                "upstream_429": up429,
             },
             "totals": {
                 "cache_count": db.query(ApiResponseCache).count(),
@@ -112,3 +152,52 @@ async def dashboard_trends(days: int = 7, _: LocalUser = Depends(get_current_use
         })
     finally:
         db.close()
+
+
+@router.get("/metrics-trends")
+async def dashboard_metrics_trends(days: int = 7, _: LocalUser = Depends(get_current_user)):
+    """近 N 天 Worker 运行指标趋势（请求量/命中/拦截/流量，按天聚合）"""
+    days = max(1, min(days, 30))
+    db = get_db_sync()
+    try:
+        start = now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+        rows = db.query(WorkerMetricsSnapshot).filter(
+            WorkerMetricsSnapshot.snapshot_at >= start
+        ).all()
+        # 初始化日期桶
+        buckets = {}
+        for i in range(days):
+            d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+            buckets[d] = {"requests": 0, "hits": 0, "miss": 0, "blocked": 0, "bytes_out": 0}
+        for r in rows:
+            if not r.snapshot_at:
+                continue
+            d = r.snapshot_at.strftime("%Y-%m-%d")
+            if d not in buckets:
+                continue
+            b = buckets[d]
+            b["requests"] += r.total_requests or 0
+            b["hits"] += (r.mem_cache_hits or 0) + (r.r2_cache_hits or 0)
+            b["miss"] += r.cache_miss or 0
+            b["blocked"] += (r.blocked_ip or 0) + (r.blocked_ua or 0) + (r.blocked_abuse or 0)
+            b["bytes_out"] += r.bytes_out or 0
+        labels = list(buckets.keys())
+        return ApiResult(data={
+            "labels": labels,
+            "requests": [buckets[d]["requests"] for d in labels],
+            "hits": [buckets[d]["hits"] for d in labels],
+            "miss": [buckets[d]["miss"] for d in labels],
+            "blocked": [buckets[d]["blocked"] for d in labels],
+            "bytes_out": [buckets[d]["bytes_out"] for d in labels],
+        })
+    finally:
+        db.close()
+
+
+@router.get("/db-stats")
+async def dashboard_db_stats(_: LocalUser = Depends(get_current_user)):
+    """数据库与 Redis 状态：SQL 表统计/占用/连接池 + Redis INFO"""
+    from src.services_v2.db_stats_service import collect_sql_stats, collect_redis_stats
+    sql = collect_sql_stats()
+    redis_info = await collect_redis_stats()
+    return ApiResult(data={"sql": sql, "redis": redis_info})

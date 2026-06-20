@@ -25,6 +25,7 @@
             <td>{{ (r.path_limits && r.path_limits.length) || 0 }} 条</td>
             <td>{{ r.enabled ? '是' : '否' }}</td>
             <td class="actions">
+              <button class="link" @click="openEdit(r)">编辑</button>
               <button class="link" @click="toggle(r)">{{ r.enabled ? '停用' : '启用' }}</button>
               <button class="link danger" @click="del(r.id)">删除</button>
             </td>
@@ -41,14 +42,23 @@
 
     <div v-if="showCreate" class="modal-mask" @click.self="showCreate=false">
       <div class="modal">
-        <div class="modal-header"><h2>新增 UA 限流规则</h2><button class="modal-close" @click="showCreate=false">×</button></div>
-        <div class="form-item"><label>ua_key（唯一标识，如 dandanplay）</label><input v-model="form.ua_key" class="input full" /></div>
+        <div class="modal-header"><h2>{{ editId ? '编辑' : '新增' }} UA 限流规则</h2><button class="modal-close" @click="showCreate=false">×</button></div>
+        <div class="form-item"><label>ua_key（唯一标识，如 dandanplay）</label><input v-model="form.ua_key" class="input full" :disabled="!!editId" /></div>
         <div class="form-item"><label>UA 匹配子串（default 可留空）</label><input v-model="form.user_agent" class="input full" /></div>
         <div class="form-item"><label>最大请求数（0 表示无限制）</label><input v-model.number="form.max_requests" type="number" class="input full" /></div>
         <div class="form-item"><label>时间窗口（毫秒）</label><input v-model.number="form.window_ms" type="number" class="input full" /></div>
+        <div class="form-item">
+          <label>路径限流（按路径单独限每小时请求数）</label>
+          <div v-for="(pl, i) in form.path_limits" :key="i" class="path-row">
+            <input v-model="pl.path" class="input" placeholder="路径前缀，如 /api/v2/search" style="flex:1" />
+            <input v-model.number="pl.maxRequestsPerHour" type="number" class="input" placeholder="每小时上限" style="width:120px" />
+            <button class="link danger" @click="removePathLimit(i)">删除</button>
+          </div>
+          <button class="btn" style="margin-top:8px" @click="addPathLimit">+ 添加路径限流</button>
+        </div>
         <div class="modal-actions">
           <button class="btn" @click="showCreate=false">取消</button>
-          <button class="btn btn-primary" :disabled="creating" @click="create">{{ creating ? '提交中...' : '确认' }}</button>
+          <button class="btn btn-primary" :disabled="creating" @click="submit">{{ creating ? '提交中...' : '确认' }}</button>
         </div>
       </div>
     </div>
@@ -70,7 +80,8 @@ export default {
     const msg = ref('')
     const showCreate = ref(false)
     const creating = ref(false)
-    const form = reactive({ ua_key: '', user_agent: '', max_requests: 0, window_ms: 60000 })
+    const editId = ref(null)
+    const form = reactive({ ua_key: '', user_agent: '', max_requests: 0, window_ms: 60000, path_limits: [] })
 
     const load = async () => {
       msg.value = ''
@@ -83,16 +94,46 @@ export default {
       } catch (e) { msg.value = e.message }
     }
 
-    const openCreate = () => {
-      form.ua_key = ''; form.user_agent = ''; form.max_requests = 0; form.window_ms = 60000
+    // 重置表单
+    const resetForm = () => {
+      form.ua_key = ''; form.user_agent = ''; form.max_requests = 0
+      form.window_ms = 60000; form.path_limits = []
+    }
+    const openCreate = () => { editId.value = null; resetForm(); showCreate.value = true }
+    const openEdit = (r) => {
+      editId.value = r.id
+      form.ua_key = r.ua_key
+      form.user_agent = r.user_agent || ''
+      form.max_requests = r.max_requests || 0
+      form.window_ms = r.window_ms || 60000
+      // 深拷贝路径限流，避免直接改到列表数据
+      form.path_limits = (r.path_limits || []).map(p => ({
+        path: p.path || '', maxRequestsPerHour: p.maxRequestsPerHour || 0,
+      }))
       showCreate.value = true
     }
-    const create = async () => {
+    const addPathLimit = () => { form.path_limits.push({ path: '', maxRequestsPerHour: 0 }) }
+    const removePathLimit = (i) => { form.path_limits.splice(i, 1) }
+
+    // 新增或编辑提交（按 editId 区分）
+    const submit = async () => {
       if (!form.ua_key) { msg.value = '请填写 ua_key'; return }
+      // 过滤空路径行
+      const pathLimits = form.path_limits.filter(p => p.path && p.path.trim())
       creating.value = true
       try {
-        const res = await apiV2('/ua-rules', { method: 'POST', body: { ...form } })
-        msg.value = res.message || '创建成功'
+        if (editId.value) {
+          const body = {
+            user_agent: form.user_agent, max_requests: form.max_requests,
+            window_ms: form.window_ms, path_limits: pathLimits,
+          }
+          const res = await apiV2(`/ua-rules/${editId.value}`, { method: 'PUT', body })
+          msg.value = res.message || '更新成功'
+        } else {
+          const body = { ...form, path_limits: pathLimits }
+          const res = await apiV2('/ua-rules', { method: 'POST', body })
+          msg.value = res.message || '创建成功'
+        }
         showCreate.value = false
         load()
       } catch (e) { msg.value = e.message } finally { creating.value = false }
@@ -115,8 +156,8 @@ export default {
     const next = () => { if (page.value * pageSize.value < total.value) { page.value++; load() } }
 
     onMounted(load)
-    return { items, total, page, pageSize, keyword, msg, showCreate, creating, form,
-      load, openCreate, create, toggle, del, resync, prev, next }
+    return { items, total, page, pageSize, keyword, msg, showCreate, creating, editId, form,
+      load, openCreate, openEdit, addPathLimit, removePathLimit, submit, toggle, del, resync, prev, next }
   }
 }
 </script>
@@ -148,5 +189,6 @@ export default {
 .form-item { margin-bottom: 14px; }
 .form-item label { display: block; margin-bottom: 6px; color: #555; font-size: 13px; }
 .input.full { width: 100%; }
+.path-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 </style>

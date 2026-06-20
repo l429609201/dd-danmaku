@@ -90,3 +90,38 @@ class WorkerRequestLog(Base):
     level = Column(String(20), index=True, nullable=False, default="INFO")
     message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=now, index=True, nullable=False)
+
+
+class WorkerMetricsSnapshot(Base):
+    """Worker 运行指标周期快照（每分钟一条/实例，仪表盘趋势数据源）
+
+    指标含义为"上报窗口内增量"（请求/响应/流量/命中/拦截），
+    便于按时间桶聚合；瞬时态（总请求、缓存规模）单独记录。
+    """
+    __tablename__ = "worker_metrics_snapshot"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    worker_id = Column(String(100), index=True, nullable=False)
+    snapshot_at = Column(DateTime, default=now, index=True, nullable=False)
+    # 流量与请求
+    total_requests = Column(BigInteger, default=0, nullable=False)
+    total_responses = Column(BigInteger, default=0, nullable=False)
+    bytes_in = Column(BigInteger, default=0, nullable=False)
+    bytes_out = Column(BigInteger, default=0, nullable=False)
+    # 缓存命中
+    mem_cache_hits = Column(BigInteger, default=0, nullable=False)
+    r2_cache_hits = Column(BigInteger, default=0, nullable=False)
+    cache_miss = Column(BigInteger, default=0, nullable=False)
+    # 拦截
+    blocked_ip = Column(BigInteger, default=0, nullable=False)
+    blocked_ua = Column(BigInteger, default=0, nullable=False)
+    blocked_abuse = Column(BigInteger, default=0, nullable=False)
+    invalid_route = Column(BigInteger, default=0, nullable=False)
+    upstream_429 = Column(BigInteger, default=0, nullable=False)
+    # 状态码分布
+    status_2xx = Column(BigInteger, default=0, nullable=False)
+    status_4xx = Column(BigInteger, default=0, nullable=False)
+    status_5xx = Column(BigInteger, default=0, nullable=False)
+    # 瞬时态
+    total_requests_lifetime = Column(BigInteger, default=0, nullable=False)
+    api_cache_size = Column(Integer, default=0, nullable=False)
