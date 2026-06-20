@@ -50,6 +50,8 @@ class ControlClient:
         self._pending: Dict[str, asyncio.Future] = {}
         self._node_id = settings.CONTROL_NODE_ID
         self._reconnect_count = 0
+        # 滥用封禁回灌的后台任务（避免在接收循环里同步等回包导致自死锁）
+        self._resync_task: Optional[asyncio.Task] = None
 
     @property
     def connected(self) -> bool:
@@ -229,19 +231,31 @@ class ControlClient:
         banned = payload.get("banned") or []
         worker_id = payload.get("worker_id", "worker-1")
         changed = abuse_service.ingest_report(worker_id, banned)
-        # 有变更则把合并后的黑名单经长连接回灌各实例（跨实例收敛）
+        # 先回包，避免阻塞接收循环（回包与下方 config.apply 回包共用同一接收循环，
+        # 若在此处同步 await push_to_worker 等回包会自死锁）
+        await self._send({
+            "id": msg_id, "type": "abuse.report.result",
+            "timestamp": _ts(), "payload": {"success": True, "changed": changed},
+        })
+        self._audit("worker_to_local", "abuse.report", "success")
+        # 有变更则把合并后的黑名单经长连接回灌各实例（跨实例收敛）——后台异步执行
         if changed > 0:
+            self._schedule_config_resync()
+
+    def _schedule_config_resync(self):
+        """调度一次配置回灌后台任务；已有未完成任务时跳过，避免任务堆叠"""
+        if self._resync_task and not self._resync_task.done():
+            return
+
+        async def _run():
             try:
                 # 延迟导入避免循环依赖（runtime_config_service 依赖 control_client）
                 from src.services_v2.runtime_config_service import runtime_config_service
                 await runtime_config_service.push_to_worker()
             except Exception as e:
                 logger.warning(f"⚠️ 滥用封禁回灌下发失败: {e}")
-        await self._send({
-            "id": msg_id, "type": "abuse.report.result",
-            "timestamp": _ts(), "payload": {"success": True, "changed": changed},
-        })
-        self._audit("worker_to_local", "abuse.report", "success")
+
+        self._resync_task = asyncio.create_task(_run())
 
     # ---------- 本地发起 RPC ----------
     async def request(self, msg_type: str, payload: Dict[str, Any],

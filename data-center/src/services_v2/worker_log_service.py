@@ -54,7 +54,8 @@ class WorkerLogService:
                     path=data.get("path"),
                     status=data.get("responseStatus") or data.get("status"),
                     ua_type=data.get("userAgent") or data.get("ua_type"),
-                    level=item.get("level", "INFO"),
+                    # 级别统一大写，兼容 Worker 端小写 warn/info，避免前端筛选失配
+                    level=str(item.get("level", "INFO")).upper(),
                     message=item.get("message", ""),
                 )
                 db.add(row)

@@ -24,7 +24,7 @@ def _cache_brief(row: ApiResponseCache) -> dict:
     return {
         "id": row.id, "cache_key": row.cache_key, "api_path": row.api_path,
         "method": row.method, "status_code": row.status_code,
-        "client_ip_hash": row.client_ip_hash,
+        "client_ip": row.client_ip,
         "body_size": row.body_size, "storage_mode": row.storage_mode,
         "fetched_at": row.fetched_at.isoformat() if row.fetched_at else None,
         "refresh_after": row.refresh_after.isoformat() if row.refresh_after else None,
@@ -37,7 +37,7 @@ def _cache_brief(row: ApiResponseCache) -> dict:
 @router.get("/responses")
 async def list_responses(
     api_path: Optional[str] = None, keyword: Optional[str] = None,
-    client_ip_hash: Optional[str] = None,
+    client_ip: Optional[str] = None,
     refresh_pending: Optional[bool] = None,
     page: int = 1, page_size: int = Query(20, le=100),
     _: LocalUser = Depends(get_current_user),
@@ -50,8 +50,8 @@ async def list_responses(
             q = q.filter(ApiResponseCache.api_path.like(f"%{api_path}%"))
         if keyword:
             q = q.filter(ApiResponseCache.cache_key.like(f"%{keyword}%"))
-        if client_ip_hash:
-            q = q.filter(ApiResponseCache.client_ip_hash.like(f"%{client_ip_hash}%"))
+        if client_ip:
+            q = q.filter(ApiResponseCache.client_ip.like(f"%{client_ip}%"))
         if refresh_pending is not None:
             q = q.filter(ApiResponseCache.refresh_pending == refresh_pending)
         total = q.count()

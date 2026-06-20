@@ -5,7 +5,7 @@
     <div class="app-toolbar">
       <el-input v-model="keyword" placeholder="搜索 cache_key" clearable style="width: 200px" @keyup.enter="reload" />
       <el-input v-model="apiPath" placeholder="api_path 过滤" clearable style="width: 200px" @keyup.enter="reload" />
-      <el-input v-model="clientIpHash" placeholder="IP 哈希过滤" clearable style="width: 200px" @keyup.enter="reload" />
+      <el-input v-model="clientIp" placeholder="客户端 IP 过滤" clearable style="width: 200px" @keyup.enter="reload" />
       <el-button type="primary" :icon="Search" @click="reload">查询</el-button>
     </div>
 
@@ -13,9 +13,9 @@
       <el-table :data="items" size="small" v-loading="loading" empty-text="暂无缓存">
         <el-table-column prop="api_path" label="api_path" show-overflow-tooltip />
         <el-table-column prop="status_code" label="状态" width="80" />
-        <el-table-column label="IP哈希" width="120">
+        <el-table-column label="客户端IP" width="150">
           <template #default="{ row }">
-            <span class="app-mono">{{ row.client_ip_hash ? row.client_ip_hash.slice(0, 8) + '...' : '—' }}</span>
+            <span class="app-mono">{{ row.client_ip || '—' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="大小" width="90">
@@ -52,7 +52,7 @@
         <el-descriptions :column="1" border size="small">
           <el-descriptions-item label="cache_key"><span class="app-mono">{{ detail.cache_key }}</span></el-descriptions-item>
           <el-descriptions-item label="api_path">{{ detail.api_path }}</el-descriptions-item>
-          <el-descriptions-item label="IP哈希"><span class="app-mono">{{ detail.client_ip_hash || '—' }}</span></el-descriptions-item>
+          <el-descriptions-item label="客户端IP"><span class="app-mono">{{ detail.client_ip || '—' }}</span></el-descriptions-item>
           <el-descriptions-item label="状态">{{ detail.status_code }} / 存储 {{ detail.storage_mode }}</el-descriptions-item>
         </el-descriptions>
         <pre class="json-body">{{ prettyBody }}</pre>
@@ -76,7 +76,7 @@ export default {
     const pageSize = ref(20)
     const keyword = ref('')
     const apiPath = ref('')
-    const clientIpHash = ref('')
+    const clientIp = ref('')
     const loading = ref(false)
     const drawerVisible = ref(false)
     const detail = ref(null)
@@ -87,7 +87,7 @@ export default {
         const q = new URLSearchParams({ page: page.value, page_size: pageSize.value })
         if (keyword.value) q.set('keyword', keyword.value)
         if (apiPath.value) q.set('api_path', apiPath.value)
-        if (clientIpHash.value) q.set('client_ip_hash', clientIpHash.value)
+        if (clientIp.value) q.set('client_ip', clientIp.value)
         const res = await apiV2(`/cache/responses?${q.toString()}`)
         items.value = res.items || []
         total.value = res.total || 0
@@ -124,7 +124,7 @@ export default {
     })
 
     onMounted(load)
-    return { items, total, page, pageSize, keyword, apiPath, clientIpHash, loading,
+    return { items, total, page, pageSize, keyword, apiPath, clientIp, loading,
       drawerVisible, detail, Search, reload, onPage, viewDetail, markRefresh, del,
       fmt, fmtSize, prettyBody }
   }

@@ -1484,14 +1484,32 @@ async function handleRequest(request, env, ctx) {
 
     // 临时封禁检查（非法路由滥用）：白名单跳过，本实例内存命中立即 403（零延迟）
     if (!ipWhitelisted && isAbuseBanned(clientIP)) {
-        addMemoryLog('warn', 'IP临时封禁拦截', { ip: clientIP });
+        // 计算剩余封禁时间，提示客户端何时可重试
+        const banRec = memoryCache.abuseTracker.get(clientIP);
+        const remainMs = banRec && banRec.bannedUntil ? Math.max(0, banRec.bannedUntil - Date.now()) : 0;
+        const remainMin = Math.ceil(remainMs / 60000);
+        const retryAfterSec = Math.ceil(remainMs / 1000);
+        console.log(`🚫 [${clientIP}] IP临时封禁中，剩余 ${remainMin} 分钟`);
+        addMemoryLog('warn', 'IP临时封禁拦截', {
+            ip: clientIP,
+            method: request.method,
+            path: urlObj.pathname,
+            responseStatus: 403,
+            userAgent: request.headers.get('X-User-Agent') || '',
+            remainMinutes: remainMin,
+        });
         return new Response(JSON.stringify({
             status: 403,
             type: 'IP临时封禁',
-            message: `IP ${clientIP} 因频繁请求非法路由已被临时封禁`
+            message: `IP ${clientIP} 因频繁请求非法路由已被临时封禁，请于约 ${remainMin} 分钟后再试`,
+            retryAfterSeconds: retryAfterSec
         }), {
             status: 403,
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+                'Retry-After': String(retryAfterSec)
+            }
         });
     }
 
@@ -1500,10 +1518,13 @@ async function handleRequest(request, env, ctx) {
     if (!ipWhitelisted && isIpBlacklisted(clientIP, ipBlacklist)) {
         console.log(`🚫 [${clientIP}] IP在黑名单中，拒绝访问`);
 
-        // 记录到内存日志
+        // 记录到内存日志（补全 method/path/status，便于日志页展示）
         addMemoryLog('warn', 'IP黑名单拦截', {
             ip: clientIP,
-            userAgent: request.headers.get('X-User-Agent')
+            method: request.method,
+            path: urlObj.pathname,
+            responseStatus: 403,
+            userAgent: request.headers.get('X-User-Agent') || ''
         });
 
         return new Response(JSON.stringify({
@@ -1533,16 +1554,38 @@ async function handleRequest(request, env, ctx) {
         // 记录非法路由命中：同一 IP 1 小时内累计超阈值 → 临时封禁该 IP 1 小时
         const justBanned = recordInvalidRoute(clientIP);
         if (justBanned) {
-            addMemoryLog('warn', '非法路由滥用封禁', { ip: clientIP, url: url.substring(0, 100) });
+            const banMin = Math.ceil(ABUSE_CONFIG.BAN_DURATION_MS / 60000);
+            console.log(`🚫 [${clientIP}] 非法路由超阈值，已临时封禁 ${banMin} 分钟`);
+            addMemoryLog('warn', '非法路由滥用封禁', {
+                ip: clientIP,
+                method: request.method,
+                path: urlObj.pathname,
+                responseStatus: 403,
+                userAgent: request.headers.get('X-User-Agent') || '',
+                invalidUrl: url.substring(0, 100),
+            });
             return new Response(JSON.stringify({
                 status: 403,
                 type: 'IP临时封禁',
-                message: `IP ${clientIP} 因频繁请求非法路由已被临时封禁 1 小时`
+                message: `IP ${clientIP} 因频繁请求非法路由已被临时封禁，请于约 ${banMin} 分钟后再试`,
+                retryAfterSeconds: Math.ceil(ABUSE_CONFIG.BAN_DURATION_MS / 1000)
             }), {
                 status: 403,
-                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                    'Retry-After': String(Math.ceil(ABUSE_CONFIG.BAN_DURATION_MS / 1000))
+                }
             });
         }
+        // 未达封禁阈值：记录一次非法路由（INFO 级），便于日志页观察滥用趋势
+        addMemoryLog('info', '非法路由请求', {
+            ip: clientIP,
+            method: request.method,
+            path: urlObj.pathname,
+            responseStatus: 400,
+            invalidUrl: url.substring(0, 100),
+        });
         return new Response(JSON.stringify({
             status: 400,
             type: 'CORS代理',

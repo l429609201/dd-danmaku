@@ -83,13 +83,23 @@ async def ensure_compatible_schema():
         inspector = inspect(engine)
         if "api_response_cache" in inspector.get_table_names():
             columns = {c["name"] for c in inspector.get_columns("api_response_cache")}
-            if "client_ip_hash" not in columns:
+            # 响应缓存改为记录明文 client_ip（不再记录哈希；老库的 client_ip_hash 列保留不动）
+            if "client_ip" not in columns:
                 with engine.begin() as conn:
                     conn.execute(text(
                         "ALTER TABLE api_response_cache "
-                        "ADD COLUMN client_ip_hash VARCHAR(100)"
+                        "ADD COLUMN client_ip VARCHAR(64)"
                     ))
-                logger.info("✅ 已为 api_response_cache 增加 client_ip_hash 字段")
+                logger.info("✅ 已为 api_response_cache 增加 client_ip 字段")
+        if "api_cache_access_logs" in inspector.get_table_names():
+            log_columns = {c["name"] for c in inspector.get_columns("api_cache_access_logs")}
+            if "client_ip" not in log_columns:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE api_cache_access_logs "
+                        "ADD COLUMN client_ip VARCHAR(64)"
+                    ))
+                logger.info("✅ 已为 api_cache_access_logs 增加 client_ip 字段")
     except Exception as e:
         logger.error(f"❌ 数据库兼容补丁执行失败: {e}")
         raise

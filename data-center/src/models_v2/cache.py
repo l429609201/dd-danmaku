@@ -30,8 +30,8 @@ class ApiResponseCache(Base, TimestampMixin):
     query_json = Column(JSON, nullable=True)
     request_body_hash = Column(String(100), index=True, nullable=True)
     request_body_json = Column(JSON, nullable=True)
-    # 记录触发该缓存写入的客户端 IP 哈希，避免明文 IP 落库
-    client_ip_hash = Column(String(100), index=True, nullable=True)
+    # 记录触发该缓存写入的客户端 IP（明文，便于直接排查来源）
+    client_ip = Column(String(64), index=True, nullable=True)
     status_code = Column(Integer, index=True, nullable=False)
     response_headers_json = Column(JSON, nullable=True)
     # 响应体：默认放 Redis，这里允许为空；SQL 冷备模式下才写入
@@ -65,7 +65,7 @@ class ApiCacheAccessLog(Base):
     upstream_status = Column(Integer, nullable=True)
     served_status = Column(Integer, nullable=True)
     worker_request_id = Column(String(100), index=True, nullable=True)
-    client_ip_hash = Column(String(100), nullable=True)
+    client_ip = Column(String(64), nullable=True)
     user_agent_type = Column(String(100), nullable=True)
     message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=now, index=True, nullable=False)
