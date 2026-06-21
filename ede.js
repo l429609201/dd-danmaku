@@ -2013,7 +2013,8 @@
             const episodeInfo = { ...currentEpisodeInfo };
             const backgroundFetchOpts = { abortOnDestroy: false };
             putBangumiEpStatus(bangumiToken, { episodeInfo, fetchOpts: backgroundFetchOpts }).then(res => {
-                embyToast({ text: `Bangumi收藏更新成功, 目标: ${targetName}, 结束播放百分比: ${pct}%, 大于需提交的设定百分比: ${bangumiPostPercent}%`});
+                const subjectDoneText = res?.subjectMarkedDone ? ', 条目已全部看完并标记为看过' : '';
+                embyToast({ text: `Bangumi收藏更新成功${subjectDoneText}, 目标: ${targetName}, 结束播放百分比: ${pct}%, 大于需提交的设定百分比: ${bangumiPostPercent}%`});
                 logger.info(`Bangumi收藏更新成功, 目标: ${targetName}`);
             }).catch(error => {
                 embyToast({ text: `Bangumi收藏更新失败, 目标: ${targetName}, ${error.message}` });
@@ -2171,6 +2172,7 @@
             logger.debug(msg, bangumiEp);
             const patchedSubject = await patchBangumiSubjectDoneIfAllEpisodesWatched(token, bangumiInfo, fetchOpts);
             if (patchedSubject) {
+                bangumiInfo.subjectMarkedDone = true;
                 window.ede.bangumiInfo = bangumiInfo;
                 localStorage.setItem(bangumiInfo._bangumi_key, JSON.stringify(bangumiInfo));
                 return bangumiInfo;
@@ -2182,6 +2184,7 @@
         await fetchJson(bangumiApi.putUserEpisodeCollection(bangumiEp.id), { ...fetchOpts, token, body, method: 'PUT' });
         bangumiEpColl.type = body.type;
         logger.info(`成功更新 Bangumi 章节收藏状态, 在看 => 看过, 详情: `, bangumiEp);
+        bangumiInfo.subjectMarkedDone = await patchBangumiSubjectDoneIfAllEpisodesWatched(token, bangumiInfo, fetchOpts);
         window.ede.bangumiInfo = bangumiInfo;
         localStorage.setItem(bangumiInfo._bangumi_key, JSON.stringify(bangumiInfo));
         return bangumiInfo;
