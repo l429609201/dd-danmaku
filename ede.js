@@ -2180,7 +2180,7 @@
         logger.debug('准备更新 Bangumi 章节收藏状态, 详情: ', bangumiEp);
         body.type = 2; // 看过状态
         await fetchJson(bangumiApi.putUserEpisodeCollection(bangumiEp.id), { ...fetchOpts, token, body, method: 'PUT' });
-        bangumiEp.type = body.type;
+        bangumiEpColl.type = body.type;
         logger.info(`成功更新 Bangumi 章节收藏状态, 在看 => 看过, 详情: `, bangumiEp);
         window.ede.bangumiInfo = bangumiInfo;
         localStorage.setItem(bangumiInfo._bangumi_key, JSON.stringify(bangumiInfo));
