@@ -94,7 +94,8 @@
         getMe: () => `${bangumiApi.prefix}/me`,
         getUserCollection: (userName, subjectId) => `${bangumiApi.prefix}/users/${userName}/collections/${subjectId}`,
         postUserCollection: (subjectId) => `${bangumiApi.prefix}/users/-/collections/${subjectId}`,
-        getUserSubjectEpisodeCollection: (subjectId) => `${bangumiApi.prefix}/users/-/collections/${subjectId}/episodes?offset=0&limit=100`,
+        patchUserCollection: (subjectId) => `${bangumiApi.prefix}/users/-/collections/${subjectId}`,
+        getUserSubjectEpisodeCollection: (subjectId) => `${bangumiApi.prefix}/users/-/collections/${subjectId}/episodes?offset=0&limit=1000`,
         putUserEpisodeCollection: (episodeId ) => `${bangumiApi.prefix}/users/-/collections/-/episodes/${episodeId}`,
     };
     const check_interval = 200;
@@ -2103,6 +2104,33 @@
         }
     }
 
+    async function patchBangumiSubjectDoneIfAllEpisodesWatched(token, bangumiInfo, fetchOpts = {}) {
+        const bangumiEpsRes = bangumiInfo?.bangumiEpsRes;
+        const episodeCollections = bangumiEpsRes?.data;
+        if (!Array.isArray(episodeCollections)) {
+            logger.debug('Bangumi 章节收藏列表为空,跳过条目看过检查');
+            return false;
+        }
+        if (bangumiEpsRes.total && episodeCollections.length < bangumiEpsRes.total) {
+            logger.warn(`Bangumi 章节收藏列表未完整加载(${episodeCollections.length}/${bangumiEpsRes.total}),跳过条目看过检查`);
+            return false;
+        }
+        const mainEpisodeCollections = episodeCollections.filter(epColl => epColl?.episode?.type === 0);
+        if (mainEpisodeCollections.length === 0) {
+            logger.debug('Bangumi 未找到本篇章节,跳过条目看过检查');
+            return false;
+        }
+        const unfinished = mainEpisodeCollections.find(epColl => epColl.type !== 2);
+        if (unfinished) {
+            const ep = unfinished.episode || {};
+            logger.debug(`Bangumi 条目尚未全部看完,未完成章节: ${ep.name_cn || ep.name || ep.id || '未知章节'}`);
+            return false;
+        }
+        await fetchJson(bangumiApi.patchUserCollection(bangumiInfo.subjectId), { ...fetchOpts, token, body: { type: 2 }, method: 'PATCH' });
+        logger.info(`Bangumi 本篇章节已全部看过,条目收藏状态已更新为看过, subjectId: ${bangumiInfo.subjectId}`);
+        return true;
+    }
+
     async function putBangumiEpStatus(token, opts = {}) {
         const fetchOpts = opts.fetchOpts || {};
         const bangumiInfo = await getEpisodeBangumiRel(opts.episodeInfo, fetchOpts);
@@ -2141,6 +2169,12 @@
         if (bangumiEpColl.type === 2) {
             msg = 'Bangumi 章节收藏已是看过状态,跳过更新';
             logger.debug(msg, bangumiEp);
+            const patchedSubject = await patchBangumiSubjectDoneIfAllEpisodesWatched(token, bangumiInfo, fetchOpts);
+            if (patchedSubject) {
+                window.ede.bangumiInfo = bangumiInfo;
+                localStorage.setItem(bangumiInfo._bangumi_key, JSON.stringify(bangumiInfo));
+                return bangumiInfo;
+            }
             throw new Error(msg);
         }
         logger.debug('准备更新 Bangumi 章节收藏状态, 详情: ', bangumiEp);
