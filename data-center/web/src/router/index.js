@@ -44,6 +44,12 @@ const routes = [
         meta: { title: '实体索引' }
       },
       {
+        path: 'media',
+        name: 'MediaLibrary',
+        component: () => import('../views/MediaLibrary.vue'),
+        meta: { title: '媒体库' }
+      },
+      {
         path: 'ip-rules',
         name: 'IpRules',
         component: () => import('../views/IpRules.vue'),

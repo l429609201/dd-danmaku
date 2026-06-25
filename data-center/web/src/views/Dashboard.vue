@@ -29,10 +29,22 @@
         <div class="card">
           <div class="card-label">今日缓存命中</div>
           <div class="card-value">{{ data.today.cache_hits }}</div>
+          <div class="card-sub">429 兜底 {{ data.today.fallback_hits }}</div>
         </div>
         <div class="card">
           <div class="card-label">今日 429 兜底</div>
           <div class="card-value">{{ data.today.fallback_hits }}</div>
+          <div class="card-sub">缓存命中 {{ data.today.cache_hits }}</div>
+        </div>
+        <div class="card card-accent" @click="goto('/key-pool')">
+          <div class="card-label">密钥池</div>
+          <div class="card-value">{{ insightCards ? insightCards.keyTotal : '—' }}</div>
+          <div class="card-sub">限流中 {{ insightCards ? insightCards.keyLimited : 0 }} 项</div>
+        </div>
+        <div class="card" :class="cs && cs.usage_ratio > 90 ? 'card-warn' : ''" @click="goto('/comment-store')">
+          <div class="card-label">弹幕存储水位</div>
+          <div class="card-value">{{ cs ? cs.usage_ratio + '%' : '—' }}</div>
+          <div class="card-sub" v-if="cs">{{ fmtBytes(cs.total_size_bytes) }} / {{ fmtBytes(cs.max_bytes) }}</div>
         </div>
       </div>
 
@@ -99,18 +111,6 @@
 
       <!-- 运维洞察 -->
       <h2 class="section-title">运维洞察（近 24h）</h2>
-      <div class="cards" v-if="insightCards">
-        <div class="card card-accent" @click="goto('/key-pool')">
-          <div class="card-label">密钥池</div>
-          <div class="card-value">{{ insightCards.keyTotal }}</div>
-          <div class="card-sub">限流中 {{ insightCards.keyLimited }} 项</div>
-        </div>
-        <div class="card" :class="cs && cs.usage_ratio > 90 ? 'card-warn' : ''" @click="goto('/comment-store')">
-          <div class="card-label">弹幕存储水位</div>
-          <div class="card-value">{{ cs ? cs.usage_ratio : 0 }}%</div>
-          <div class="card-sub" v-if="cs">{{ fmtBytes(cs.total_size_bytes) }} / {{ fmtBytes(cs.max_bytes) }}</div>
-        </div>
-      </div>
       <div class="chart-grid">
         <div class="panel">
           <h2 class="panel-title">各接口上游限流（近 24h）</h2>

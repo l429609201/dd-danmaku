@@ -41,15 +41,37 @@ def _link_dict(r: EpisodeLink) -> dict:
 def list_links(
     keyword: Optional[str] = None, anime_id: Optional[str] = None,
     bangumi_id: Optional[str] = None, episode_id: Optional[str] = None,
+    match_source: Optional[str] = None,
     page: int = 1, page_size: int = Query(20, le=100),
     _: LocalUser = Depends(get_current_user),
 ):
     """集数链接列表"""
     total, items = episode_link_service.list_links(
         keyword=keyword, anime_id=anime_id, bangumi_id=bangumi_id,
-        episode_id=episode_id, page=page, page_size=page_size,
+        episode_id=episode_id, match_source=match_source,
+        page=page, page_size=page_size,
     )
     return PageResult(total=total, items=[_link_dict(r) for r in items])
+
+
+@router.get("/links/stats")
+def link_stats(_: LocalUser = Depends(get_current_user)):
+    """集数链接概览：总数 / 人工修正数 / 各匹配来源分布"""
+    from sqlalchemy import func
+    db = get_db_sync()
+    try:
+        total = db.query(func.count(EpisodeLink.id)).scalar() or 0
+        manual = db.query(func.count(EpisodeLink.id)).filter(
+            EpisodeLink.is_manual == True  # noqa: E712
+        ).scalar() or 0
+        rows = db.query(EpisodeLink.match_source, func.count(EpisodeLink.id)) \
+            .group_by(EpisodeLink.match_source).all()
+        sources = {src or "unknown": cnt for src, cnt in rows}
+        return ApiResult(data={
+            "total": total, "manual": manual, "sources": sources,
+        })
+    finally:
+        db.close()
 
 
 @router.get("/links/{link_id}")

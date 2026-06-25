@@ -29,9 +29,38 @@ def _cache_brief(row: ApiResponseCache) -> dict:
         "fetched_at": row.fetched_at.isoformat() if row.fetched_at else None,
         "refresh_after": row.refresh_after.isoformat() if row.refresh_after else None,
         "expire_at": row.expire_at.isoformat() if row.expire_at else None,
+        "last_used_at": row.last_used_at.isoformat() if row.last_used_at else None,
         "hit_count": row.hit_count, "stale_hit_count": row.stale_hit_count,
+        "upstream_429_count": row.upstream_429_count,
         "refresh_pending": row.refresh_pending,
     }
+
+
+@router.get("/stats")
+def cache_stats(_: LocalUser = Depends(get_current_user)):
+    """响应缓存概览统计：总数 / 待刷新 / 存储分布 / 总体积"""
+    from sqlalchemy import func
+    db = get_db_sync()
+    try:
+        total = db.query(func.count(ApiResponseCache.id)).scalar() or 0
+        pending = db.query(func.count(ApiResponseCache.id)).filter(
+            ApiResponseCache.refresh_pending == True  # noqa: E712
+        ).scalar() or 0
+        redis_cnt = db.query(func.count(ApiResponseCache.id)).filter(
+            ApiResponseCache.storage_mode == "redis"
+        ).scalar() or 0
+        total_bytes = db.query(func.coalesce(func.sum(ApiResponseCache.body_size), 0)).scalar() or 0
+        # 已过期数量（expire_at 早于当前时间）
+        expired = db.query(func.count(ApiResponseCache.id)).filter(
+            ApiResponseCache.expire_at < now()
+        ).scalar() or 0
+        return ApiResult(data={
+            "total": total, "refresh_pending": pending,
+            "redis_count": redis_cnt, "sql_count": total - redis_cnt,
+            "total_bytes": int(total_bytes), "expired": expired,
+        })
+    finally:
+        db.close()
 
 
 @router.get("/responses")

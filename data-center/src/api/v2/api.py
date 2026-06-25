@@ -9,7 +9,7 @@ from src.api.v2.endpoints import (
     auth, users, cache, episodes, entities, control,
     settings as settings_ep, runtime_events, dashboard,
     ip_rules, ip_stats, worker_logs, ua_rules, cleanup, comment_store,
-    key_pool,
+    key_pool, media,
 )
 
 api_v2_router = APIRouter()
@@ -29,3 +29,4 @@ api_v2_router.include_router(worker_logs.router, prefix="/worker-logs", tags=["W
 api_v2_router.include_router(cleanup.router, prefix="/cleanup", tags=["数据清理"])
 api_v2_router.include_router(comment_store.router, prefix="/comment-store", tags=["弹幕存储"])
 api_v2_router.include_router(key_pool.router, prefix="/key-pool", tags=["密钥池"])
+api_v2_router.include_router(media.router, prefix="/media", tags=["媒体库"])

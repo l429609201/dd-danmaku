@@ -32,14 +32,18 @@ class EntityIndexService:
                     "type": "anime",
                     "id": str(a.get("animeId") or a.get("bangumiId") or ""),
                     "title": a.get("animeTitle") or a.get("title"),
+                    "raw": a,  # 保留上游原始对象（含 imageUrl/typeDescription 等）
                 })
         elif "/bangumi/" in api_path:
             bangumi = data.get("bangumi") or data
             anime_id = str(bangumi.get("animeId") or "")
             if anime_id:
+                # 番剧详情：raw 存除 episodes 外的元数据（封面/简介/评分等），避免体积过大
+                bangumi_meta = {k: v for k, v in bangumi.items() if k != "episodes"}
                 entities.append({
                     "type": "bangumi", "id": anime_id,
                     "title": bangumi.get("animeTitle") or bangumi.get("title"),
+                    "raw": bangumi_meta,
                 })
             for ep in (bangumi.get("episodes") or []):
                 entities.append({
@@ -47,6 +51,7 @@ class EntityIndexService:
                     "id": str(ep.get("episodeId") or ""),
                     "title": bangumi.get("animeTitle"),
                     "episode_title": ep.get("episodeTitle"),
+                    "raw": ep,
                 })
 
         if not entities:
@@ -73,6 +78,9 @@ class EntityIndexService:
                 row.episode_title = e.get("episode_title")
                 row.api_path = api_path
                 row.cache_key = cache_key
+                # 写入上游原始数据用于溯源/媒体库提取封面简介
+                if e.get("raw") is not None:
+                    row.raw_json = e["raw"]
                 row.last_seen_at = current
                 count += 1
             db.commit()
@@ -149,6 +157,7 @@ class EpisodeLinkService:
                    anime_id: Optional[str] = None,
                    bangumi_id: Optional[str] = None,
                    episode_id: Optional[str] = None,
+                   match_source: Optional[str] = None,
                    page: int = 1, page_size: int = 20):
         db = get_db_sync()
         try:
@@ -161,6 +170,8 @@ class EpisodeLinkService:
                 q = q.filter(EpisodeLink.dandan_bangumi_id == bangumi_id)
             if episode_id:
                 q = q.filter(EpisodeLink.dandan_episode_id == episode_id)
+            if match_source:
+                q = q.filter(EpisodeLink.match_source == match_source)
             total = q.count()
             items = q.order_by(EpisodeLink.updated_at.desc()) \
                      .offset((page - 1) * page_size).limit(page_size).all()
