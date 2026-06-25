@@ -29,6 +29,7 @@ from src.services_v2.runtime_event_service import runtime_event_service
 from src.services_v2.abuse_service import abuse_service
 from src.services_v2.metrics_service import metrics_service
 from src.services_v2.comment_store_service import comment_store_service
+from src.services_v2.key_pool_service import key_pool_service
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,8 @@ class ControlClient:
             await self._handle_abuse_report(msg_id, payload)
         elif msg_type == "metrics.report":
             await self._handle_metrics_report(msg_id, payload)
+        elif msg_type == "keypool.report":
+            await self._handle_keypool_report(msg_id, payload)
         elif msg_type == "comment.archive":
             await self._handle_comment_archive(msg_id, payload)
         elif msg_type == "comment.get":
@@ -282,6 +285,15 @@ class ControlClient:
             "timestamp": _ts(), "payload": {"success": ok},
         })
         self._audit("worker_to_local", "metrics.report", "success" if ok else "failed")
+
+    async def _handle_keypool_report(self, msg_id, payload):
+        """Worker 上报密钥限流状态快照：按 worker_id upsert worker_key_state"""
+        ok = await asyncio.to_thread(key_pool_service.ingest_key_state, payload)
+        await self._send({
+            "id": msg_id, "type": "keypool.report.result",
+            "timestamp": _ts(), "payload": {"success": ok},
+        })
+        self._audit("worker_to_local", "keypool.report", "success" if ok else "failed")
 
     async def _handle_comment_archive(self, msg_id, payload):
         """Worker 弹幕归档：以条数为准存到本地端兜底持久化"""

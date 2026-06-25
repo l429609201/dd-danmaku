@@ -18,6 +18,7 @@
           <el-menu-item index="/ip-rules"><el-icon><Lock /></el-icon><span>IP 黑白名单</span></el-menu-item>
           <el-menu-item index="/ip-stats"><el-icon><TrendCharts /></el-icon><span>IP 请求统计</span></el-menu-item>
           <el-menu-item index="/ua-rules"><el-icon><Odometer /></el-icon><span>UA 限流</span></el-menu-item>
+          <el-menu-item index="/key-pool"><el-icon><Ticket /></el-icon><span>密钥池</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item-group title="系统">
           <el-menu-item index="/worker-logs"><el-icon><Monitor /></el-icon><span>Worker 日志</span></el-menu-item>

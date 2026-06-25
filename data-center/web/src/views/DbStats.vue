@@ -31,11 +31,6 @@
           <div class="card-value">{{ data.redis.enabled ? '在线' : '未启用' }}</div>
           <div class="card-sub" v-if="data.redis.enabled">{{ data.redis.used_memory_human || '—' }}</div>
         </div>
-        <div class="card" v-if="data.redis.enabled">
-          <div class="card-label">Redis 命中率</div>
-          <div class="card-value">{{ data.redis.hit_rate }}%</div>
-          <div class="card-sub">{{ data.redis.total_keys }} keys / {{ data.redis.connected_clients }} 连接</div>
-        </div>
       </div>
 
       <!-- MySQL 性能指标 -->
@@ -51,17 +46,40 @@
         </div>
       </div>
 
-      <!-- Redis 性能指标 -->
-      <div class="panel" v-if="data.redis && data.redis.enabled">
-        <h2 class="panel-title">Redis 性能指标</h2>
-        <div class="metrics">
-          <div class="metric"><span class="m-label">ops/sec</span><span class="m-val">{{ data.redis.ops_per_sec }}</span></div>
-          <div class="metric"><span class="m-label">命中率</span><span class="m-val">{{ data.redis.hit_rate }}%</span></div>
-          <div class="metric"><span class="m-label">内存碎片率</span><span class="m-val" :class="{ warn: data.redis.mem_fragmentation_ratio > 1.5 }">{{ data.redis.mem_fragmentation_ratio }}</span></div>
-          <div class="metric"><span class="m-label">峰值内存</span><span class="m-val">{{ fmtBytes(data.redis.used_memory_peak_bytes) }}</span></div>
-          <div class="metric"><span class="m-label">淘汰 keys</span><span class="m-val" :class="{ warn: data.redis.evicted_keys > 0 }">{{ data.redis.evicted_keys }}</span></div>
-          <div class="metric"><span class="m-label">过期 keys</span><span class="m-val">{{ data.redis.expired_keys }}</span></div>
+      <!-- Redis 独立分区：连接/内存/命中/持久化分组 -->
+      <div class="panel redis-panel" v-if="data.redis && data.redis.enabled && !data.redis.error">
+        <div class="redis-head">
+          <h2 class="panel-title">Redis 状态</h2>
+          <span class="redis-badge">v{{ data.redis.version || '—' }} · 运行 {{ fmtUptime(data.redis.uptime_seconds) }}</span>
         </div>
+        <div class="redis-groups">
+          <div class="rgroup">
+            <div class="rgroup-title">连接</div>
+            <div class="kv"><span>客户端连接</span><b>{{ data.redis.connected_clients }}</b></div>
+            <div class="kv"><span>ops/sec</span><b>{{ data.redis.ops_per_sec }}</b></div>
+          </div>
+          <div class="rgroup">
+            <div class="rgroup-title">内存</div>
+            <div class="kv"><span>已用内存</span><b>{{ fmtBytes(data.redis.used_memory_bytes) }}</b></div>
+            <div class="kv"><span>峰值内存</span><b>{{ fmtBytes(data.redis.used_memory_peak_bytes) }}</b></div>
+            <div class="kv"><span>碎片率</span><b :class="{ warn: data.redis.mem_fragmentation_ratio > 1.5 }">{{ data.redis.mem_fragmentation_ratio }}</b></div>
+          </div>
+          <div class="rgroup">
+            <div class="rgroup-title">命中</div>
+            <div class="kv"><span>命中率</span><b>{{ data.redis.hit_rate }}%</b></div>
+            <div class="kv"><span>命中/未命中</span><b>{{ data.redis.keyspace_hits }} / {{ data.redis.keyspace_misses }}</b></div>
+            <div class="kv"><span>Key 总数</span><b>{{ data.redis.total_keys }}</b></div>
+          </div>
+          <div class="rgroup">
+            <div class="rgroup-title">键空间维护</div>
+            <div class="kv"><span>淘汰 keys</span><b :class="{ warn: data.redis.evicted_keys > 0 }">{{ data.redis.evicted_keys }}</b></div>
+            <div class="kv"><span>过期 keys</span><b>{{ data.redis.expired_keys }}</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="panel" v-else-if="data.redis && !data.redis.enabled">
+        <h2 class="panel-title">Redis 状态</h2>
+        <p class="muted">Redis 未启用，响应缓存使用 SQL 冷备模式。</p>
       </div>
 
       <!-- 表清单 -->
@@ -86,19 +104,6 @@
         </table>
         <div v-if="data.sql.dialect === 'sqlite' && data.sql.total_size_bytes === 0" class="muted hint">
           提示：SQLite 未编译 dbstat 扩展时无法统计单表字节，仅显示行数。
-        </div>
-      </div>
-
-      <!-- Redis 详情 -->
-      <div class="panel" v-if="data.redis.enabled && !data.redis.error">
-        <h2 class="panel-title">Redis 详情</h2>
-        <div class="kv-grid">
-          <div class="kv"><span>版本</span><b>{{ data.redis.version || '—' }}</b></div>
-          <div class="kv"><span>已用内存</span><b>{{ fmtBytes(data.redis.used_memory_bytes) }}</b></div>
-          <div class="kv"><span>连接数</span><b>{{ data.redis.connected_clients }}</b></div>
-          <div class="kv"><span>Key 总数</span><b>{{ data.redis.total_keys }}</b></div>
-          <div class="kv"><span>命中 / 未命中</span><b>{{ data.redis.keyspace_hits }} / {{ data.redis.keyspace_misses }}</b></div>
-          <div class="kv"><span>运行时长</span><b>{{ fmtUptime(data.redis.uptime_seconds) }}</b></div>
         </div>
       </div>
     </template>
@@ -187,4 +192,12 @@ export default {
 .m-label { color: #888; font-size: 13px; }
 .m-val { font-size: 16px; font-weight: 600; color: #333; }
 .m-val.warn { color: #cf1322; }
+.redis-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+.redis-head .panel-title { margin-bottom: 0; }
+.redis-badge { font-size: 12px; color: #888; background: #f5f5f5; padding: 2px 10px; border-radius: 10px; }
+.redis-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+.rgroup { background: #fafafa; border-radius: 8px; padding: 14px; }
+.rgroup-title { font-size: 13px; color: #1677ff; font-weight: 600; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #eee; }
+.rgroup .kv { background: none; padding: 5px 0; }
+.rgroup .kv b.warn { color: #cf1322; }
 </style>

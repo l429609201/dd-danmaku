@@ -90,6 +90,14 @@ class WorkerRequestLog(Base):
     path = Column(String(500), index=True, nullable=True)
     status = Column(Integer, index=True, nullable=True)
     ua_type = Column(String(100), index=True, nullable=True)
+    # 缓存来源：MEM / LOCAL / R2 / MISS / KEY-POOL 等（便于排查命中链路）
+    cache_source = Column(String(20), index=True, nullable=True)
+    # 上游响应状态（软限流时记录真实 errorCode）
+    upstream_status = Column(Integer, nullable=True)
+    # 本次请求使用的密钥 id（密钥池调度排查）
+    key_id = Column(String(64), nullable=True)
+    # 请求处理耗时（毫秒）
+    duration_ms = Column(Integer, nullable=True)
     # INFO / WARN / ERROR
     level = Column(String(20), index=True, nullable=False, default="INFO")
     message = Column(Text, nullable=True)
@@ -173,3 +181,39 @@ class CleanupPolicy(Base):
     last_cleanup_at = Column(DateTime, nullable=True)
     last_deleted = Column(BigInteger, default=0, nullable=False)
     updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
+
+
+class AppKeyPool(Base, TimestampMixin):
+    """弹弹play 密钥池：本地端维护并下发给 Worker 作为扩充
+
+    authUaKeys 为空 => 公共轮换池；非空 => 仅授权给这些 ua_key 的请求。
+    Worker 合并 env 基线 + 本地端下发，按 appId+appSecret 去重，本地端为主。
+    """
+    __tablename__ = "app_key_pool"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 逻辑标识（下发给 Worker 作为 key id，限流状态以此为键）
+    key_id = Column(String(64), unique=True, index=True, nullable=False)
+    app_id = Column(String(100), nullable=False)
+    app_secret = Column(String(200), nullable=False)
+    # 授权 ua_key 列表（关联 UaLimitRule.ua_key），空数组=公共池
+    auth_ua_keys = Column(JSON, default=list, nullable=False)
+    enabled = Column(Boolean, default=True, index=True, nullable=False)
+    remark = Column(String(500), nullable=True)
+
+
+class WorkerKeyState(Base):
+    """Worker 上报的密钥限流状态快照（每 worker 一条，覆盖更新）
+
+    key_state: { keyId: { apiGroup: { limited, limitedAt } } }
+    供前端展示每个密钥在各接口的当日限流情况。
+    """
+    __tablename__ = "worker_key_state"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    worker_id = Column(String(100), unique=True, index=True, nullable=False)
+    reset_date = Column(String(20), nullable=True)
+    keys_source = Column(String(20), nullable=True)
+    key_count = Column(Integer, default=0, nullable=False)
+    key_state = Column(JSON, default=dict, nullable=False)
+    updated_at = Column(DateTime, default=now, onupdate=now, index=True, nullable=False)

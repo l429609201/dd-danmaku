@@ -45,13 +45,19 @@
       <div class="list-head">
         <h2 class="panel-title">弹幕条目</h2>
         <div class="search">
+          <select v-model="sort" class="input" @change="reload">
+            <option value="created_at">按存入时间</option>
+            <option value="last_used_at">按最近使用</option>
+            <option value="comment_count">按弹幕数</option>
+            <option value="size_bytes">按大小</option>
+          </select>
           <input v-model="keyword" class="input" placeholder="按 episode_id 搜索" @keyup.enter="reload" />
           <button class="btn" @click="reload">搜索</button>
         </div>
       </div>
       <table class="data-table">
         <thead>
-          <tr><th>episode_id</th><th>弹幕数</th><th>大小</th><th>来源</th><th>最后使用</th><th>操作</th></tr>
+          <tr><th>episode_id</th><th>弹幕数</th><th>大小</th><th>来源</th><th>存入时间</th><th>最后使用</th><th>操作</th></tr>
         </thead>
         <tbody>
           <tr v-for="r in items" :key="r.id">
@@ -59,13 +65,14 @@
             <td>{{ (r.comment_count || 0).toLocaleString() }}</td>
             <td>{{ fmtBytes(r.size_bytes) }}</td>
             <td>{{ r.source }}</td>
+            <td>{{ fmt(r.created_at) }}</td>
             <td>{{ fmt(r.last_used_at) }}</td>
             <td>
               <button class="link" @click="view(r)">查看</button>
               <button class="link danger" @click="del(r)">删除</button>
             </td>
           </tr>
-          <tr v-if="!items.length"><td colspan="6" class="empty">暂无弹幕缓存</td></tr>
+          <tr v-if="!items.length"><td colspan="7" class="empty">暂无弹幕缓存</td></tr>
         </tbody>
       </table>
       <Pager :page="page" :page-size="pageSize" :total="total" @update:page="goPage" />
@@ -82,16 +89,19 @@
           <span>弹幕数 <b>{{ (detail.comment_count || 0).toLocaleString() }}</b></span>
           <span>大小 <b>{{ fmtBytes(detail.size_bytes) }}</b></span>
           <span>来源 <b>{{ detail.source }}</b></span>
+          <span>存入 <b>{{ fmt(detail.created_at) }}</b></span>
           <span>最后使用 <b>{{ fmt(detail.last_used_at) }}</b></span>
         </div>
         <p v-if="!detail.file_exists" class="warn-text">⚠️ 文件丢失，仅有元数据记录</p>
-        <p class="preview-tip" v-else>弹幕内容预览（前 {{ detail.preview_limit }} 条）：</p>
-        <div class="preview-box" v-if="detail.file_exists">
-          <div v-for="(c, i) in detail.preview" :key="i" class="cmt">
+        <p class="preview-tip" v-else>弹幕内容（已加载 {{ preview.length }} / {{ detail.preview_total }} 条）：</p>
+        <div class="preview-box" v-if="detail.file_exists" ref="previewBox" @scroll="onPreviewScroll">
+          <div v-for="(c, i) in preview" :key="i" class="cmt">
             <span class="cmt-time">{{ cmtTime(c) }}</span>
             <span class="cmt-text">{{ cmtText(c) }}</span>
           </div>
-          <div v-if="!detail.preview.length" class="empty">无可解析的弹幕</div>
+          <div v-if="!preview.length" class="empty">无可解析的弹幕</div>
+          <div v-if="loadingMore" class="loading-more">加载中...</div>
+          <div v-else-if="!hasMore && preview.length" class="loading-more">— 已全部加载 —</div>
         </div>
       </div>
     </div>
@@ -113,10 +123,17 @@ export default {
     const page = ref(1)
     const pageSize = ref(20)
     const keyword = ref('')
+    const sort = ref('created_at')
     const maxGb = ref(5)
     const msg = ref('')
     const busy = ref(false)
     const detail = ref(null)
+    // 详情弹窗滚动加载状态
+    const preview = ref([])
+    const previewBox = ref(null)
+    const loadingMore = ref(false)
+    const hasMore = ref(false)
+    const PREVIEW_PAGE = 100
 
     const loadStats = async () => {
       try {
@@ -127,7 +144,7 @@ export default {
     }
     const load = async () => {
       try {
-        const res = await apiV2(`/comment-store/entries?page=${page.value}&page_size=${pageSize.value}&keyword=${encodeURIComponent(keyword.value)}`)
+        const res = await apiV2(`/comment-store/entries?page=${page.value}&page_size=${pageSize.value}&sort=${sort.value}&keyword=${encodeURIComponent(keyword.value)}`)
         items.value = res.items || []
         total.value = res.total || 0
       } catch (e) { msg.value = e.message }
@@ -163,12 +180,30 @@ export default {
         msg.value = '已删除'; loadStats(); load()
       } catch (e) { msg.value = e.message }
     }
-    // 查看弹幕详情
+    // 查看弹幕详情（首屏）
     const view = async (r) => {
       try {
-        const res = await apiV2(`/comment-store/entries/${r.episode_id}`)
+        preview.value = []
+        const res = await apiV2(`/comment-store/entries/${r.episode_id}?offset=0&limit=${PREVIEW_PAGE}`)
         detail.value = res.data
+        preview.value = (res.data && res.data.preview) || []
+        hasMore.value = !!(res.data && res.data.has_more)
       } catch (e) { msg.value = e.message }
+    }
+    // 滚动到底部时加载下一批弹幕
+    const loadMorePreview = async () => {
+      if (loadingMore.value || !hasMore.value || !detail.value) return
+      loadingMore.value = true
+      try {
+        const res = await apiV2(`/comment-store/entries/${detail.value.episode_id}?offset=${preview.value.length}&limit=${PREVIEW_PAGE}`)
+        const more = (res.data && res.data.preview) || []
+        preview.value = preview.value.concat(more)
+        hasMore.value = !!(res.data && res.data.has_more)
+      } catch (e) { msg.value = e.message } finally { loadingMore.value = false }
+    }
+    const onPreviewScroll = (e) => {
+      const el = e.target
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) loadMorePreview()
     }
     // 解析弹幕字段：dandanplay 格式 { p: "时间,模式,颜色,uid", m: "文本" }
     const cmtTime = (c) => {
@@ -190,8 +225,10 @@ export default {
     }
 
     onMounted(() => { loadStats(); load() })
-    return { stats, items, total, page, pageSize, keyword, maxGb, msg, busy, detail,
-      reload, goPage, saveMax, doCleanup, doClearAll, del, view, cmtTime, cmtText, fmt, fmtBytes }
+    return { stats, items, total, page, pageSize, keyword, sort, maxGb, msg, busy, detail,
+      preview, previewBox, loadingMore, hasMore,
+      reload, goPage, saveMax, doCleanup, doClearAll, del, view, onPreviewScroll,
+      cmtTime, cmtText, fmt, fmtBytes }
   },
 }
 </script>
@@ -239,4 +276,5 @@ export default {
 .cmt { display: flex; gap: 10px; padding: 5px 6px; border-bottom: 1px solid #f7f7f7; font-size: 13px; }
 .cmt-time { color: #1677ff; font-family: monospace; flex-shrink: 0; width: 56px; }
 .cmt-text { color: #333; word-break: break-all; }
+.loading-more { text-align: center; color: #999; font-size: 12px; padding: 10px; }
 </style>

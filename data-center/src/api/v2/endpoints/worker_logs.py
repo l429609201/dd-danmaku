@@ -47,6 +47,8 @@ def list_logs(
             "id": r.id, "worker_id": r.worker_id, "client_ip": r.client_ip,
             "method": r.method, "path": r.path, "status": r.status,
             "ua_type": r.ua_type, "level": r.level, "message": r.message,
+            "cache_source": r.cache_source, "upstream_status": r.upstream_status,
+            "key_id": r.key_id, "duration_ms": r.duration_ms,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         } for r in rows]
         return PageResult(total=total, items=items)

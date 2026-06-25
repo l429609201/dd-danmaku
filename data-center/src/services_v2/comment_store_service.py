@@ -168,15 +168,24 @@ class CommentStoreService:
             logger.warning(f"⚠️ 弹幕存储 LRU 清理失败: {e}")
 
     def list_entries(self, page: int = 1, page_size: int = 20,
-                     keyword: str = "") -> Dict[str, Any]:
-        """分页列出弹幕条目，支持按 episode_id 搜索"""
+                     keyword: str = "", sort: str = "created_at") -> Dict[str, Any]:
+        """分页列出弹幕条目，支持按 episode_id 搜索
+
+        sort: created_at(存入时间,默认) / last_used_at(最近使用) / comment_count(弹幕数) / size_bytes(大小)
+        """
         db = get_db_sync()
         try:
             q = db.query(LocalCommentStore)
             if keyword:
                 q = q.filter(LocalCommentStore.episode_id.like(f"%{keyword}%"))
             total = q.count()
-            rows = q.order_by(LocalCommentStore.last_used_at.desc()) \
+            sort_col = {
+                "created_at": LocalCommentStore.created_at,
+                "last_used_at": LocalCommentStore.last_used_at,
+                "comment_count": LocalCommentStore.comment_count,
+                "size_bytes": LocalCommentStore.size_bytes,
+            }.get(sort, LocalCommentStore.created_at)
+            rows = q.order_by(sort_col.desc()) \
                     .offset((page - 1) * page_size).limit(page_size).all()
             return {
                 "total": total,
@@ -185,17 +194,24 @@ class CommentStoreService:
                     "size_bytes": r.size_bytes, "comment_count": r.comment_count,
                     "source": r.source,
                     "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
                     "last_used_at": r.last_used_at.isoformat() if r.last_used_at else None,
                 } for r in rows],
             }
         finally:
             db.close()
 
-    def get_detail(self, episode_id: str, preview_limit: int = 100) -> Optional[Dict[str, Any]]:
-        """查看单条弹幕详情：元数据 + 弹幕预览（不更新 last_used_at，避免查看影响 LRU）"""
+    def get_detail(self, episode_id: str, offset: int = 0,
+                   limit: int = 100) -> Optional[Dict[str, Any]]:
+        """查看单条弹幕详情：元数据 + 弹幕分页预览（不更新 last_used_at，避免查看影响 LRU）
+
+        offset/limit 支持前端滚动分批加载；total 为弹幕总条数。
+        """
         episode_id = str(episode_id).strip()
         if not episode_id:
             return None
+        offset = max(0, int(offset))
+        limit = max(1, min(int(limit), 500))  # 单次最多 500 条，防响应过大
         db = get_db_sync()
         try:
             row = db.query(LocalCommentStore).filter(
@@ -204,6 +220,7 @@ class CommentStoreService:
             if not row:
                 return None
             comments = []
+            total = 0
             file_exists = os.path.exists(row.file_path)
             if file_exists:
                 try:
@@ -211,8 +228,8 @@ class CommentStoreService:
                         data = json.loads(f.read())
                     raw = data.get("comments") if isinstance(data, dict) else None
                     if isinstance(raw, list):
-                        # 仅取前 preview_limit 条预览，避免大文件撑爆响应
-                        comments = raw[:preview_limit]
+                        total = len(raw)
+                        comments = raw[offset:offset + limit]
                 except Exception as e:
                     logger.warning(f"⚠️ 弹幕详情解析失败 {episode_id}: {e}")
             return {
@@ -226,7 +243,10 @@ class CommentStoreService:
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None,
                 "last_used_at": row.last_used_at.isoformat() if row.last_used_at else None,
                 "preview": comments,
-                "preview_limit": preview_limit,
+                "offset": offset,
+                "limit": limit,
+                "preview_total": total,
+                "has_more": offset + limit < total,
             }
         finally:
             db.close()

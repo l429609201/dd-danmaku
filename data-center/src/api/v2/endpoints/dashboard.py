@@ -218,6 +218,61 @@ async def dashboard_db_stats(_: LocalUser = Depends(get_current_user)):
                            "comment_store": comment_store, "engine_perf": engine_perf})
 
 
+@router.get("/insights")
+def dashboard_insights(hours: int = 24, _: LocalUser = Depends(get_current_user)):
+    """运维洞察：基于 worker_request_logs 聚合
+    - 缓存来源分布（MEM/LOCAL/R2/MISS/限流）
+    - 各接口（按 path 前缀归一）429 限流分布
+    - UA 来源 Top10
+    """
+    from src.models_v2 import WorkerRequestLog
+    hours = max(1, min(hours, 168))
+    db = get_db_sync()
+    try:
+        start = now() - timedelta(hours=hours)
+        base = db.query(WorkerRequestLog).filter(
+            WorkerRequestLog.created_at >= start)
+
+        # 缓存来源分布
+        src_rows = db.query(
+            WorkerRequestLog.cache_source, func.count()
+        ).filter(WorkerRequestLog.created_at >= start,
+                 WorkerRequestLog.cache_source.isnot(None)
+                 ).group_by(WorkerRequestLog.cache_source).all()
+        cache_sources = [{"source": s or "未知", "count": c} for s, c in src_rows]
+
+        # 各接口 429 分布（cache_source 含 429，或 upstream_status=429）
+        grp = {"search_anime": "/api/v2/search/anime",
+               "search_episodes": "/api/v2/search/episodes",
+               "bangumi": "/api/v2/bangumi/", "comment": "/api/v2/comment/",
+               "match": "/api/v2/match"}
+        api_429 = []
+        for key, prefix in grp.items():
+            cnt = base.filter(
+                WorkerRequestLog.path.like(f"{prefix}%"),
+                WorkerRequestLog.upstream_status == 429,
+            ).count()
+            api_429.append({"api_group": key, "count": cnt})
+
+        # UA 来源 Top10
+        ua_rows = db.query(
+            WorkerRequestLog.ua_type, func.count()
+        ).filter(WorkerRequestLog.created_at >= start,
+                 WorkerRequestLog.ua_type.isnot(None)
+                 ).group_by(WorkerRequestLog.ua_type
+                            ).order_by(func.count().desc()).limit(10).all()
+        ua_top = [{"ua_type": u or "未知", "count": c} for u, c in ua_rows]
+
+        return ApiResult(data={
+            "hours": hours,
+            "cache_sources": cache_sources,
+            "api_429": api_429,
+            "ua_top": ua_top,
+        })
+    finally:
+        db.close()
+
+
 @router.get("/ip-geo")
 async def dashboard_ip_geo(_: LocalUser = Depends(get_current_user)):
     """请求来源地图：解析 IP 统计为城市级散点（GeoLite2，库缺失时降级）"""

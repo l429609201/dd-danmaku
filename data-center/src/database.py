@@ -115,6 +115,22 @@ async def ensure_compatible_schema():
                             f"ALTER TABLE ua_limit_rules ADD COLUMN {col} {coltype}"
                         ))
                     logger.info(f"✅ 已为 ua_limit_rules 增加 {col} 字段")
+        # Worker 请求日志补充排查字段（缓存来源/上游状态/密钥/耗时）
+        if "worker_request_logs" in inspector.get_table_names():
+            log_cols = {c["name"] for c in inspector.get_columns("worker_request_logs")}
+            wlog_patches = {
+                "cache_source": "VARCHAR(20)",
+                "upstream_status": "INTEGER",
+                "key_id": "VARCHAR(64)",
+                "duration_ms": "INTEGER",
+            }
+            for col, coltype in wlog_patches.items():
+                if col not in log_cols:
+                    with engine.begin() as conn:
+                        conn.execute(text(
+                            f"ALTER TABLE worker_request_logs ADD COLUMN {col} {coltype}"
+                        ))
+                    logger.info(f"✅ 已为 worker_request_logs 增加 {col} 字段")
     except Exception as e:
         logger.error(f"❌ 数据库兼容补丁执行失败: {e}")
         raise

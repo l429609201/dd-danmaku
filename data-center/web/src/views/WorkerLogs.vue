@@ -40,6 +40,18 @@
         <el-table-column prop="status" label="状态" width="80">
           <template #default="{ row }">{{ row.status || '—' }}</template>
         </el-table-column>
+        <el-table-column label="缓存来源" width="110">
+          <template #default="{ row }">
+            <el-tag v-if="row.cache_source" :type="sourceType(row.cache_source)" size="small">{{ row.cache_source }}</el-tag>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="耗时" width="80">
+          <template #default="{ row }">{{ row.duration_ms != null ? row.duration_ms + 'ms' : '—' }}</template>
+        </el-table-column>
+        <el-table-column label="密钥" width="100">
+          <template #default="{ row }"><span class="app-mono">{{ row.key_id || '—' }}</span></template>
+        </el-table-column>
         <el-table-column prop="message" label="消息" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">{{ row.message || '—' }}</template>
         </el-table-column>
@@ -112,13 +124,20 @@ export default {
     }
 
     const levelType = (l) => ({ ERROR: 'danger', WARN: 'warning', INFO: 'success' }[l] || 'info')
+    // 缓存来源标签色：命中类绿色、MISS 灰、限流红
+    const sourceType = (s) => {
+      if (!s) return 'info'
+      if (s.indexOf('429') >= 0 || s.indexOf('STALE') >= 0) return 'warning'
+      if (s === 'MISS' || s === 'UPSTREAM-429') return s === 'MISS' ? 'info' : 'danger'
+      return 'success'
+    }
     const rowClass = ({ row }) => (row._live ? 'live-row' : '')
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
 
     onMounted(reload)
     onUnmounted(() => { streaming.value = false; if (abortCtrl) abortCtrl.abort() })
     return { items, level, keyword, loading, streaming, Search,
-      reload, toggleStream, levelType, rowClass, fmt }
+      reload, toggleStream, levelType, sourceType, rowClass, fmt }
   }
 }
 </script>

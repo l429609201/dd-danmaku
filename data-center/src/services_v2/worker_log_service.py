@@ -54,6 +54,10 @@ class WorkerLogService:
                     path=data.get("path"),
                     status=data.get("responseStatus") or data.get("status"),
                     ua_type=data.get("userAgent") or data.get("ua_type"),
+                    cache_source=data.get("cacheSource"),
+                    upstream_status=data.get("upstreamStatus"),
+                    key_id=data.get("keyId"),
+                    duration_ms=data.get("durationMs"),
                     # 级别统一大写，兼容 Worker 端小写 warn/info，避免前端筛选失配
                     level=str(item.get("level", "INFO")).upper(),
                     message=item.get("message", ""),
@@ -65,6 +69,9 @@ class WorkerLogService:
                     "level": row.level, "message": row.message,
                     "client_ip": row.client_ip, "method": row.method,
                     "path": row.path, "status": row.status,
+                    "cache_source": row.cache_source,
+                    "upstream_status": row.upstream_status,
+                    "key_id": row.key_id, "duration_ms": row.duration_ms,
                     "created_at": now().isoformat(),
                 })
             db.commit()

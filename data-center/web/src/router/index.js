@@ -62,6 +62,12 @@ const routes = [
         meta: { title: 'UA 限流' }
       },
       {
+        path: 'key-pool',
+        name: 'KeyPool',
+        component: () => import('../views/KeyPool.vue'),
+        meta: { title: '密钥池' }
+      },
+      {
         path: 'worker-logs',
         name: 'WorkerLogs',
         component: () => import('../views/WorkerLogs.vue'),

@@ -50,19 +50,29 @@ async def update_max_bytes(body: MaxBytesUpdate,
 @router.get("/entries")
 async def list_entries(
     keyword: Optional[str] = None,
-    page: int = 1, page_size: int = Query(20, le=100),
+    sort: str = "created_at",
+    page: int = 1, page_size: int = Query(20, le=200),
     _: LocalUser = Depends(get_current_user),
 ):
-    """弹幕条目列表（分页+按 episode_id 搜索）"""
+    """弹幕条目列表（分页+按 episode_id 搜索+排序）
+
+    sort: created_at(存入时间,默认)/last_used_at/comment_count/size_bytes
+    """
     result = await asyncio.to_thread(
-        comment_store_service.list_entries, page, page_size, keyword or "")
+        comment_store_service.list_entries, page, page_size, keyword or "", sort)
     return PageResult(total=result["total"], items=result["items"])
 
 
 @router.get("/entries/{episode_id}")
-async def get_entry(episode_id: str, _: LocalUser = Depends(get_current_user)):
-    """查看单条弹幕详情（元数据 + 弹幕预览）"""
-    detail = await asyncio.to_thread(comment_store_service.get_detail, episode_id)
+async def get_entry(
+    episode_id: str,
+    offset: int = 0,
+    limit: int = Query(100, le=500),
+    _: LocalUser = Depends(get_current_user),
+):
+    """查看单条弹幕详情（元数据 + 弹幕分页预览，支持滚动加载）"""
+    detail = await asyncio.to_thread(
+        comment_store_service.get_detail, episode_id, offset, limit)
     if not detail:
         return ApiResult(success=False, message="条目不存在")
     return ApiResult(data=detail)

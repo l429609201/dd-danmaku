@@ -51,10 +51,16 @@ class RuntimeConfigService:
                 if u.description:
                     cfg["description"] = u.description
                 ua_configs[u.ua_key] = cfg
+
+            # 密钥池：本地端启用的密钥列表，下发给 Worker 合并
+            from src.services_v2.key_pool_service import key_pool_service
+            key_pool = key_pool_service.build_pool_payload()
+
             return {
                 "ip_blacklist": blacklist,
                 "ip_whitelist": whitelist,
                 "ua_configs": ua_configs,
+                "key_pool": key_pool,
             }
         finally:
             db.close()

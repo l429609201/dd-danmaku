@@ -97,6 +97,38 @@
         </div>
       </div>
 
+      <!-- 运维洞察 -->
+      <h2 class="section-title">运维洞察（近 24h）</h2>
+      <div class="cards" v-if="insightCards">
+        <div class="card card-accent" @click="goto('/key-pool')">
+          <div class="card-label">密钥池</div>
+          <div class="card-value">{{ insightCards.keyTotal }}</div>
+          <div class="card-sub">限流中 {{ insightCards.keyLimited }} 项</div>
+        </div>
+        <div class="card" :class="cs && cs.usage_ratio > 90 ? 'card-warn' : ''" @click="goto('/comment-store')">
+          <div class="card-label">弹幕存储水位</div>
+          <div class="card-value">{{ cs ? cs.usage_ratio : 0 }}%</div>
+          <div class="card-sub" v-if="cs">{{ fmtBytes(cs.total_size_bytes) }} / {{ fmtBytes(cs.max_bytes) }}</div>
+        </div>
+      </div>
+      <div class="chart-grid">
+        <div class="panel">
+          <h2 class="panel-title">各接口上游限流（近 24h）</h2>
+          <div v-show="has429" ref="api429Chart" class="chart chart-sm"></div>
+          <div v-show="!has429" class="empty">近 24h 无上游限流</div>
+        </div>
+        <div class="panel">
+          <h2 class="panel-title">UA 来源 Top（近 24h）</h2>
+          <div v-show="hasUaTop" ref="uaTopChart" class="chart chart-sm"></div>
+          <div v-show="!hasUaTop" class="empty">暂无 UA 数据</div>
+        </div>
+        <div class="panel">
+          <h2 class="panel-title">缓存来源构成（近 24h）</h2>
+          <div v-show="hasCacheSrc" ref="cacheSrcChart" class="chart chart-sm"></div>
+          <div v-show="!hasCacheSrc" class="empty">暂无来源数据</div>
+        </div>
+      </div>
+
       <!-- 请求来源地图 -->
       <div class="panel" style="margin: 24px 0;">
         <h2 class="panel-title">请求来源分布
@@ -147,6 +179,10 @@ export default {
     const blockChart = ref(null)
     const hitChart = ref(null)
     const mapChart = ref(null)
+    // 运维洞察图表引用
+    const api429Chart = ref(null)
+    const uaTopChart = ref(null)
+    const cacheSrcChart = ref(null)
     // 图表实例（统一管理便于 resize/dispose）
     const charts = {}
     // 数据有无标志（控制空态显示）
@@ -155,6 +191,12 @@ export default {
     const hasBlocked = ref(false)
     const hasHit = ref(false)
     const geoAvailable = ref(false)
+    // 运维洞察状态
+    const has429 = ref(false)
+    const hasUaTop = ref(false)
+    const hasCacheSrc = ref(false)
+    const insightCards = ref(null)
+    const cs = ref(null)  // 弹幕存储统计
 
     const wm = computed(() => (data.value ? data.value.worker_metrics_today : null))
 
@@ -170,6 +212,7 @@ export default {
         renderTodayCharts()
         loadTrends()
         loadGeoMap()
+        loadInsights()
       } catch (e) {
         error.value = e.message
         loading.value = false
@@ -219,6 +262,61 @@ export default {
           data: seriesData, label: { show: false }, emphasis: { label: { show: true } },
         }],
       })
+    }
+
+    // 横向柱状图（接口429 / UA Top）
+    const drawBar = (elRef, name, categories, values, color) => {
+      if (!elRef.value) return
+      const c = echarts.init(elRef.value)
+      charts[name] = c
+      c.setOption({
+        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+        grid: { left: 8, right: 16, top: 10, bottom: 8, containLabel: true },
+        xAxis: { type: 'value', minInterval: 1 },
+        yAxis: { type: 'category', data: categories, axisLabel: { fontSize: 11 } },
+        series: [{
+          name, type: 'bar', data: values, barMaxWidth: 22,
+          itemStyle: { color: color || '#1677ff', borderRadius: [0, 4, 4, 0] },
+        }],
+      })
+    }
+
+    // 加载运维洞察：密钥池状态 + 弹幕水位 + 429/UA/缓存来源
+    const loadInsights = async () => {
+      // 密钥池状态卡 + 弹幕水位（独立 try，互不影响）
+      try {
+        const st = await apiV2('/key-pool/states')
+        const states = (st.data && st.data.items) || []
+        let total = 0, limited = 0
+        states.forEach(s => {
+          total = Math.max(total, s.key_count || 0)
+          const ks = s.key_state || {}
+          Object.values(ks).forEach(grp => {
+            Object.values(grp || {}).forEach(v => { if (v && v.limited) limited++ })
+          })
+        })
+        insightCards.value = { keyTotal: total, keyLimited: limited }
+      } catch (e) { /* 忽略 */ }
+      try {
+        const r = await apiV2('/comment-store/stats')
+        cs.value = r.data
+      } catch (e) { /* 忽略 */ }
+      // 洞察图表
+      try {
+        const res = await apiV2('/dashboard/insights?hours=24')
+        const d = res.data || {}
+        await nextTick()
+        const a429 = (d.api_429 || []).filter(x => x.count > 0)
+        has429.value = a429.length > 0
+        if (has429.value) drawBar(api429Chart, '接口429', a429.map(x => x.api_group), a429.map(x => x.count), '#ff4d4f')
+        const uaTop = (d.ua_top || []).slice(0, 10).reverse()
+        hasUaTop.value = uaTop.length > 0
+        if (hasUaTop.value) drawBar(uaTopChart, 'UA Top', uaTop.map(x => x.ua_type), uaTop.map(x => x.count), '#1677ff')
+        const srcData = (d.cache_sources || []).filter(x => x.count > 0)
+          .map(x => ({ name: x.source, value: x.count }))
+        hasCacheSrc.value = srcData.length > 0
+        if (hasCacheSrc.value) drawPie(cacheSrcChart, '缓存来源', srcData)
+      } catch (e) { /* 忽略 */ }
     }
 
     // 加载并渲染 Worker 流量趋势图
@@ -307,6 +405,8 @@ export default {
       loading, error, data, wm, geo, goto, fmt, fmtBytes,
       trendChart, statusChart, blockChart, hitChart, mapChart,
       trendHasData, hasDist, hasBlocked, hasHit, geoAvailable,
+      api429Chart, uaTopChart, cacheSrcChart,
+      has429, hasUaTop, hasCacheSrc, insightCards, cs,
     }
   }
 }

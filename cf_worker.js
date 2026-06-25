@@ -5,8 +5,22 @@
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
 
-// AppSecret轮换配置
-const SECRET_ROTATION_LIMIT = 500; // 每个secret使用500次后切换
+// 弹弹play 接口分组（密钥限流状态按分组独立维护）
+const DDP_API_GROUPS = {
+    'search_anime': '/api/v2/search/anime',
+    'search_episodes': '/api/v2/search/episodes',
+    'bangumi': '/api/v2/bangumi/',
+    'comment': '/api/v2/comment/',
+    'match': '/api/v2/match',
+};
+
+// 把 apiPath 归一化为接口分组 key；不匹配返回 'other'
+function resolveApiGroup(apiPath) {
+    for (const [group, prefix] of Object.entries(DDP_API_GROUPS)) {
+        if (apiPath.startsWith(prefix)) return group;
+    }
+    return 'other';
+}
 
 // 批量同步配置 - 减少DO调用次数
 const BATCH_SYNC_THRESHOLD = 100; // 每100次请求同步一次到DO
@@ -76,7 +90,17 @@ const OAUTH_TOKEN_CACHE_MAX = 5000;
 // 全局内存缓存
 let memoryCache = {
     rateLimitCounts: new Map(), // 频率限制计数缓存
-    appSecretUsage: { count1: 0, count2: 0, current: '1' }, // AppSecret使用缓存
+    // 弹弹play 密钥池运行时状态（纯内存，每实例独立）
+    keyPool: {
+        keys: [],            // 合并后的密钥列表 [{ id, appId, appSecret, authUaKeys:[] }]
+        envKeys: [],         // env 基线密钥（启动时解析缓存，本地端下发时作为合并底座）
+        localKeys: [],       // 本地端最近一次下发的密钥
+        keysSource: 'none',  // 'env' | 'local' | 'merged'
+        lastMerge: 0,        // 上次合并时间
+        // 限流状态：keyState[keyId][apiGroup] = { limited, limitedAt }
+        keyState: {},
+        resetDate: '',       // 当前状态对应的 UTC+8 日期，跨天清空 limited
+    },
     lastSyncTime: Date.now(),
     pendingRequests: 0,
     totalRequests: 0, // 总请求计数（不会重置）
@@ -117,6 +141,7 @@ let memoryCache = {
     // 非法路由滥用追踪：记录每个 IP 的非法请求计数与临时封禁到期时间
     abuseTracker: new Map(), // 格式: { ip: { count, windowStart, bannedUntil } }
     lastAbuseReport: 0,
+    lastKeyStateReport: 0,  // 上次上报密钥限流状态时间
     // 运行指标聚合（周期上报本地端，上报后增量清零，累计趋势由本地端落库）
     metrics: {
         totalRequests: 0,   // 进入处理的请求数
@@ -486,10 +511,12 @@ function applyRuntimeConfig(cfg) {
         ...normalizeIpList(cfg.ip_whitelist),
     ]));
 
-    memoryCache.configCache.lastUpdate = Date.now();
-}
+    // 密钥池：本地端下发的密钥列表，与 env 基线合并去重（本地端为主）
+    if (Array.isArray(cfg.key_pool)) {
+        mergeKeyPool(null, cfg.key_pool);
+    }
 
-function buildStatsReportPayload() {
+    memoryCache.configCache.lastUpdate = Date.now();
     const topIps = Object.entries(memoryCache.ipRequestStats)
         .sort((a, b) => (b[1].total_count || 0) - (a[1].total_count || 0))
         .slice(0, 200)
@@ -738,8 +765,8 @@ function periodicCleanup(env) {
         tasks.push(controlHubRpc(env, 'stats.report', buildStatsReportPayload(), 3000));
     }
 
-    // 每60秒批量上报新增 Worker 日志
-    if (env?.CONTROL_HUB && now - memoryCache.lastLogReport > 60000) {
+    // 每15秒批量上报新增 Worker 日志（缩短间隔提升实时性；SSE 才能更快看到）
+    if (env?.CONTROL_HUB && now - memoryCache.lastLogReport > 15000) {
         const payload = buildLogReportPayload(now);
         if (payload.logs.length > 0) {
             tasks.push(controlHubRpc(env, 'log.report', payload, 3000));
@@ -762,6 +789,12 @@ function periodicCleanup(env) {
         tasks.push(controlHubRpc(env, 'metrics.report', buildMetricsReportPayload(now), 3000));
     }
 
+    // 每60秒上报一次密钥限流状态，供本地端展示
+    if (env?.CONTROL_HUB && now - memoryCache.lastKeyStateReport > 60000) {
+        memoryCache.lastKeyStateReport = now;
+        tasks.push(controlHubRpc(env, 'keypool.report', buildKeyStateSnapshot(), 3000));
+    }
+
     // 每5分钟轮询一次 R2 过期清理（单实例内节流，多实例下 cron 兜底）
     if (env?.DANMAKU_CACHE && (now - memoryCache.lastR2ExpireCleanup > R2_CACHE_CONFIG.EXPIRE_POLL_INTERVAL)) {
         memoryCache.lastR2ExpireCleanup = now;
@@ -781,6 +814,9 @@ async function initializeConfigCache(env) {
         // 复制环境变量到内存缓存（APP_ID/APP_SECRET始终从env读取）
         memoryCache.envCache.ENABLE_DETAILED_LOGGING = env.ENABLE_DETAILED_LOGGING === 'true';
         console.log('✅ 环境变量已复制到内存缓存（APP相关变量始终从env读取）');
+
+        // 解析 env 基线密钥池（APP_KEY_POOL 或老的 APP_ID/APP_SECRET）
+        mergeKeyPool(env, null);
 
         // 加载UA配置（env 兜底基线）
         if (env.USER_AGENT_LIMITS_CONFIG) {
@@ -1779,6 +1815,9 @@ async function handleRequest(request, env, ctx) {
             addMemoryLog('INFO', '内存缓存命中', {
                 ip: clientIP,
                 path: apiPath,
+                method: request.method,
+                responseStatus: 200,
+                cacheSource: 'MEM',
                 cacheAge: Math.round((Date.now() - cached.timestamp) / 1000) + 's'
             });
             return new Response(cached.data, {
@@ -1809,7 +1848,7 @@ async function handleRequest(request, env, ctx) {
                 bumpMetric('bytesOut', local.body.length || 0);
                 // 命中即回填本实例内存，降低后续同 key 的 DO RPC
                 memoryCache.apiCache.set(cacheKey, { data: local.body, timestamp: Date.now() });
-                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, stale: !!local.stale });
+                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: local.status || 200, cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL', stale: !!local.stale });
                 return new Response(local.body, {
                     status: local.status || 200,
                     headers: {
@@ -1834,7 +1873,7 @@ async function handleRequest(request, env, ctx) {
             bumpMetric('r2CacheHits'); bumpMetric('totalResponses');
             bumpMetric('status2xx');
             bumpMetric('bytesOut', (cachedData && cachedData.length) ? cachedData.length : 0);
-            addMemoryLog('INFO', 'R2弹幕缓存命中', { ip: clientIP, path: apiPath });
+            addMemoryLog('INFO', 'R2弹幕缓存命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: 200, cacheSource: 'R2' });
             return new Response(cachedData, {
                 status: 200,
                 headers: {
@@ -1852,7 +1891,7 @@ async function handleRequest(request, env, ctx) {
                 console.log(`📦 [${clientIP}] 本地端弹幕兜底命中: ${episodeId} (${local.comment_count}条)`);
                 bumpMetric('r2CacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
                 bumpMetric('bytesOut', local.body.length || 0);
-                addMemoryLog('INFO', '本地端弹幕兜底命中', { ip: clientIP, path: apiPath });
+                addMemoryLog('INFO', '本地端弹幕兜底命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: 200, cacheSource: 'LOCAL-COMMENT' });
                 // 回填 R2 一级缓存，下次走边缘
                 const r2Promise = r2PutComment(env, r2Key, local.body).catch(() => {});
                 if (ctx && ctx.waitUntil) ctx.waitUntil(r2Promise);
@@ -1868,30 +1907,41 @@ async function handleRequest(request, env, ctx) {
         }
     }
 
-    const appId = env.APP_ID;
-    // 使用缓存的AppSecret信息，避免每次都调用DO
-    const { appSecret } = await getCachedAppSecret(env);
+    // ========================================
+    // 🔑 密钥池选择：按 ua_key + 接口分组挑选可用密钥
+    // ========================================
+    // 启动/本地端未下发时，用 env 基线初始化密钥池
+    if (memoryCache.keyPool.keys.length === 0) {
+        mergeKeyPool(env, null);
+    }
+    const apiGroup = resolveApiGroup(apiPath);
+    const uaKey = accessCheck.uaConfig?.type || '';
+    let selectedKey = selectKey(uaKey, apiGroup);
 
-
-    const timestamp = Math.floor(Date.now() / 1000);
-    const signature = await generateSignature(appId, timestamp, apiPath, appSecret);
-
-    // 在内存中记录AppSecret使用次数
-    if (memoryCache.appSecretUsage.current === '1') {
-        memoryCache.appSecretUsage.count1++;
-        console.log(`🔢 AppSecret1计数增加: ${memoryCache.appSecretUsage.count1}`);
-    } else {
-        memoryCache.appSecretUsage.count2++;
-        console.log(`🔢 AppSecret2计数增加: ${memoryCache.appSecretUsage.count2}`);
+    if (!selectedKey) {
+        // 全部密钥该接口已限流：缓存已在前面查过，直接返回流控
+        console.log(`🚫 [${clientIP}] 接口 ${apiGroup} 所有密钥已限流，返回流控`);
+        addMemoryLog('warn', '密钥全限流', { ip: clientIP, path: apiPath, apiGroup, uaKey });
+        bumpMetric('upstream429'); bumpMetric('status4xx');
+        return new Response(JSON.stringify({
+            errorCode: 429, success: false,
+            errorMessage: '当前接口所有密钥已达调用配额上限，请稍后再试',
+        }), {
+            status: 200,
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+                'X-Cache': 'KEY-POOL-EXHAUSTED',
+            },
+        });
     }
 
     // 增加待同步请求计数
     memoryCache.pendingRequests++;
     memoryCache.totalRequests++;
 
-    console.log(`📊 [${clientIP}] 请求计数更新:`);
-    console.log(`   - 待处理请求: ${memoryCache.pendingRequests}`);
-    console.log(`   - 总请求数: ${memoryCache.totalRequests}`);
+    console.log(`📊 [${clientIP}] 请求计数更新: 待处理=${memoryCache.pendingRequests} 总数=${memoryCache.totalRequests}`);
+    console.log(`🔑 [${clientIP}] 选中密钥: ${selectedKey.id} (appId=${selectedKey.appId}, group=${apiGroup}, uaKey=${uaKey || '公共'})`);
 
     // 检查是否需要同步到存储（仅同步本地缓存，不涉及数据中心）
     if (await shouldSyncToStorage()) {
@@ -1911,39 +1961,57 @@ async function handleRequest(request, env, ctx) {
         }
     }
 
-    const finalHeaders = {
-        ...forwardHeaders,
-        "X-AppId": appId,
-        "X-Signature": signature,
-        "X-Timestamp": timestamp,
-        "X-Auth": "1",
+    // 用指定密钥签名并转发；返回 { response, responseText, errorCode, limited }
+    const doForwardWithKey = async (keyObj) => {
+        const ts = Math.floor(Date.now() / 1000);
+        const sig = await generateSignature(keyObj.appId, ts, apiPath, keyObj.appSecret);
+        const headers = {
+            ...forwardHeaders,
+            "X-AppId": keyObj.appId,
+            "X-Signature": sig,
+            "X-Timestamp": ts,
+            "X-Auth": "1",
+        };
+        if (ACCESS_CONFIG.logging.enabled) {
+            console.log(`📤 [${clientIP}] 转发请求头(key=${keyObj.id}):`, JSON.stringify(headers, null, 2));
+        }
+        const resp = await fetch(url, { headers, body: request.body, method: request.method });
+        const text = await resp.text();
+        let ec = 0;
+        try {
+            const _peek = JSON.parse(text);
+            if (_peek && typeof _peek.errorCode === 'number') ec = _peek.errorCode;
+        } catch (_) { /* 非 JSON 忽略 */ }
+        return { response: resp, responseText: text, errorCode: ec, limited: resp.status === 429 || ec === 429 };
     };
 
-    // 调试日志：显示最终的请求头
-    if (ACCESS_CONFIG.logging.enabled) {
-        console.log(`📤 [${clientIP}] 转发请求头:`, JSON.stringify(finalHeaders, null, 2));
+    // 首次转发
+    const upstreamStart = Date.now();
+    let fwd = await doForwardWithKey(selectedKey);
+    console.log(`📥 [${clientIP}] dandanplay API响应状态:`, fwd.response.status, fwd.response.statusText);
+
+    // 🔁 撞限流：标记当前密钥该接口，立即尝试切换一次（仅 GET 无 body 时安全重试）
+    if (fwd.limited) {
+        markKeyLimited(selectedKey.id, apiGroup);
+        const canRetry = request.method === 'GET';
+        if (canRetry) {
+            const retryKey = selectKey(uaKey, apiGroup);
+            if (retryKey && retryKey.id !== selectedKey.id) {
+                console.log(`🔁 [${clientIP}] 密钥 ${selectedKey.id} 限流，切换到 ${retryKey.id} 重试`);
+                selectedKey = retryKey;
+                fwd = await doForwardWithKey(retryKey);
+                console.log(`📥 [${clientIP}] 重试响应状态:`, fwd.response.status, fwd.response.statusText);
+                if (fwd.limited) markKeyLimited(retryKey.id, apiGroup);
+            } else {
+                console.log(`ℹ️ [${clientIP}] 无其他可用密钥，不重试`);
+            }
+        }
     }
 
-    let response = await fetch(url, {
-        headers: finalHeaders,
-        body: request.body,
-        method: request.method,
-    });
-
-    // 调试日志：显示dandanplay API响应内容
-    console.log(`📥 [${clientIP}] dandanplay API响应状态:`, response.status, response.statusText);
-
-    // 读取响应体（response.text() 只能调用一次，提前读以便检测软限流）
-    const responseText = await response.text();
-
-    // ⚠️ 弹弹 play 软限流：HTTP 状态是 200，但 body 里 errorCode=429（"已达到接口调用配额上限"）
-    // 必须按 body 判断；否则会把限流错误体当成正常结果缓存，且 429 兜底逻辑永不触发
-    let upstreamErrorCode = 0;
-    try {
-        const _peek = JSON.parse(responseText);
-        if (_peek && typeof _peek.errorCode === 'number') upstreamErrorCode = _peek.errorCode;
-    } catch (_) { /* 非 JSON 响应忽略 */ }
-    const isUpstreamRateLimited = response.status === 429 || upstreamErrorCode === 429;
+    let response = fwd.response;
+    const responseText = fwd.responseText;
+    const upstreamErrorCode = fwd.errorCode;
+    const isUpstreamRateLimited = fwd.limited;
     if (isUpstreamRateLimited) {
         console.log(`🚫 [${clientIP}] 检测到上游限流 (HTTP ${response.status}, errorCode=${upstreamErrorCode})`);
     }
@@ -1956,13 +2024,17 @@ async function handleRequest(request, env, ctx) {
     else if (response.status >= 400 && response.status < 500) bumpMetric('status4xx');
     else if (response.status >= 500) bumpMetric('status5xx');
 
-    // 记录API请求到内存日志
-    addMemoryLog('INFO', 'API请求处理', {
+    // 记录API请求到内存日志（含缓存来源/密钥/上游状态/耗时，便于排查）
+    addMemoryLog(isUpstreamRateLimited ? 'WARN' : 'INFO', 'API请求处理', {
         ip: clientIP,
         method: request.method,
         path: apiPath,
         userAgent: request.headers.get('X-User-Agent') || '',
         responseStatus: response.status,
+        cacheSource: isUpstreamRateLimited ? 'UPSTREAM-429' : 'MISS',
+        upstreamStatus: upstreamErrorCode || response.status,
+        keyId: selectedKey ? selectedKey.id : '',
+        durationMs: Date.now() - upstreamStart,
         timestamp: Date.now()
     });
 
@@ -2125,10 +2197,7 @@ async function syncCacheToStorage() {
     if (memoryCache.pendingRequests === 0) return;
 
     try {
-        // AppSecret使用计数现在完全在内存中管理，无需同步到DO
-        console.log(`AppSecret使用统计: Secret1=${memoryCache.appSecretUsage.count1}, Secret2=${memoryCache.appSecretUsage.count2}`);
-
-        // 重置计数器
+        // 重置计数器（密钥状态独立维护，无需在此同步）
         memoryCache.pendingRequests = 0;
         memoryCache.lastSyncTime = Date.now();
 
@@ -2139,30 +2208,142 @@ async function syncCacheToStorage() {
 
 
 
-// 获取缓存的AppSecret信息（纯内存管理）
-async function getCachedAppSecret(env) {
-    // AppSecret状态完全在内存中管理，无需从DO获取
-    console.log(`当前AppSecret状态: current=${memoryCache.appSecretUsage.current}, count1=${memoryCache.appSecretUsage.count1}, count2=${memoryCache.appSecretUsage.count2}`);
+// ========================================
+// 🔑 弹弹play 密钥池：多密钥智能调度
+// ========================================
 
-    // 检查是否需要轮换
-    const current = memoryCache.appSecretUsage.current;
-    const count1 = memoryCache.appSecretUsage.count1;
-    const count2 = memoryCache.appSecretUsage.count2;
+// 取 UTC+8 当前日期字符串（YYYY-MM-DD），用于每日重置限流状态
+function getUtc8DateStr() {
+    const utc8 = new Date(Date.now() + 8 * 3600 * 1000);
+    return utc8.toISOString().slice(0, 10);
+}
 
-    if (current === '1' && count1 >= SECRET_ROTATION_LIMIT && env.APP_SECRET_2) {
-        memoryCache.appSecretUsage.current = '2';
-        memoryCache.appSecretUsage.count1 = 0;
-        console.log('内存缓存：切换到APP_SECRET_2');
-    } else if (current === '2' && count2 >= SECRET_ROTATION_LIMIT) {
-        memoryCache.appSecretUsage.current = '1';
-        memoryCache.appSecretUsage.count2 = 0;
-        console.log('内存缓存：切换到APP_SECRET');
+// 解析 env 基线密钥池：优先 APP_KEY_POOL(JSON)，否则回退老的 APP_ID/APP_SECRET(/_2)
+function parseEnvKeyPool(env) {
+    const keys = [];
+    if (env.APP_KEY_POOL) {
+        try {
+            const parsed = JSON.parse(env.APP_KEY_POOL);
+            const list = Array.isArray(parsed) ? parsed : (parsed.keys || []);
+            for (const k of list) {
+                if (!k || !k.appId || !k.appSecret) continue;
+                keys.push({
+                    id: String(k.id || `env_${k.appId}`),
+                    appId: String(k.appId),
+                    appSecret: String(k.appSecret),
+                    authUaKeys: Array.isArray(k.authUaKeys) ? k.authUaKeys.map(String) : [],
+                });
+            }
+        } catch (e) {
+            console.log(`⚠️ APP_KEY_POOL 解析失败，回退单密钥: ${e.message}`);
+        }
     }
+    // 兼容老配置：APP_ID + APP_SECRET / APP_SECRET_2（无授权 UA，进公共池）
+    if (keys.length === 0 && env.APP_ID && env.APP_SECRET) {
+        keys.push({ id: 'legacy_1', appId: env.APP_ID, appSecret: env.APP_SECRET, authUaKeys: [] });
+        if (env.APP_SECRET_2) {
+            keys.push({ id: 'legacy_2', appId: env.APP_ID, appSecret: env.APP_SECRET_2, authUaKeys: [] });
+        }
+    }
+    return keys;
+}
 
+// 合并 env 基线 + 本地端下发，按 appId+appSecret 去重，本地端为主（覆盖同项）
+// env 传入时刷新 env 基线缓存；env=null 时用已缓存的 envKeys；localKeys=null 时用已缓存的 localKeys
+function mergeKeyPool(env, localKeys) {
+    if (env) {
+        memoryCache.keyPool.envKeys = parseEnvKeyPool(env);
+    }
+    if (Array.isArray(localKeys)) {
+        memoryCache.keyPool.localKeys = localKeys
+            .filter(k => k && k.appId && k.appSecret)
+            .map(k => ({
+                id: String(k.id || `local_${k.appId}`),
+                appId: String(k.appId),
+                appSecret: String(k.appSecret),
+                authUaKeys: Array.isArray(k.authUaKeys) ? k.authUaKeys.map(String) : [],
+            }));
+    }
+    const envKeys = memoryCache.keyPool.envKeys || [];
+    const lKeys = memoryCache.keyPool.localKeys || [];
+    const map = new Map();
+    // 先放 env 基线
+    for (const k of envKeys) map.set(`${k.appId}::${k.appSecret}`, k);
+    // 本地端覆盖（以本地端为主）
+    for (const k of lKeys) map.set(`${k.appId}::${k.appSecret}`, k);
+    const merged = Array.from(map.values());
+    memoryCache.keyPool.keys = merged;
+    memoryCache.keyPool.keysSource = lKeys.length > 0 ? 'merged' : (envKeys.length ? 'env' : 'none');
+    memoryCache.keyPool.lastMerge = Date.now();
+    console.log(`🔑 密钥池合并: env=${envKeys.length} local=${lKeys.length} 合计=${merged.length}`);
+    return merged;
+}
+
+// 每日重置（UTC+8 跨天清空所有 limited 标记）
+function ensureKeyStateFresh() {
+    const today = getUtc8DateStr();
+    if (memoryCache.keyPool.resetDate !== today) {
+        memoryCache.keyPool.keyState = {};
+        memoryCache.keyPool.resetDate = today;
+        console.log(`🔄 密钥限流状态已按 UTC+8 重置: ${today}`);
+    }
+}
+
+// 判断密钥在某接口分组是否被限流
+function isKeyLimited(keyId, apiGroup) {
+    const st = memoryCache.keyPool.keyState[keyId];
+    return !!(st && st[apiGroup] && st[apiGroup].limited);
+}
+
+// 标记密钥在某接口分组限流
+function markKeyLimited(keyId, apiGroup) {
+    ensureKeyStateFresh();
+    if (!memoryCache.keyPool.keyState[keyId]) memoryCache.keyPool.keyState[keyId] = {};
+    memoryCache.keyPool.keyState[keyId][apiGroup] = {
+        limited: true,
+        limitedAt: Math.floor(Date.now() / 1000),
+    };
+    console.log(`🚫 密钥限流标记: key=${keyId} group=${apiGroup}`);
+}
+
+// 从候选密钥中随机选一个未限流的；无可用返回 null
+function pickAvailable(candidates, apiGroup) {
+    const usable = candidates.filter(k => !isKeyLimited(k.id, apiGroup));
+    if (usable.length === 0) return null;
+    return usable[Math.floor(Math.random() * usable.length)];
+}
+
+/**
+ * 选择密钥：专属(authUaKeys含uaKey)随机 → 公共池(authUaKeys=[])随机 → null(全限流)
+ * @param {String} uaKey 由 identifyUserAgent 得到的 ua_key
+ * @param {String} apiGroup 接口分组
+ * @returns {Object|null} 选中的密钥
+ */
+function selectKey(uaKey, apiGroup) {
+    ensureKeyStateFresh();
+    const keys = memoryCache.keyPool.keys;
+    if (!keys || keys.length === 0) return null;
+
+    // 1. 专属密钥（authUaKeys 命中当前 uaKey）
+    if (uaKey) {
+        const dedicated = keys.filter(k => Array.isArray(k.authUaKeys) && k.authUaKeys.includes(uaKey));
+        const pick = pickAvailable(dedicated, apiGroup);
+        if (pick) return pick;
+    }
+    // 2. 公共池（authUaKeys 为空）
+    const pool = keys.filter(k => !k.authUaKeys || k.authUaKeys.length === 0);
+    return pickAvailable(pool, apiGroup);
+}
+
+// 导出当前密钥状态快照（用于上报本地端）
+function buildKeyStateSnapshot() {
+    ensureKeyStateFresh();
     return {
-        secretId: memoryCache.appSecretUsage.current,
-        appSecret: memoryCache.appSecretUsage.current === '2' && env.APP_SECRET_2 ?
-                   env.APP_SECRET_2 : env.APP_SECRET
+        worker_id: DATA_CENTER_CONFIG.workerId,
+        reset_date: memoryCache.keyPool.resetDate,
+        keys_source: memoryCache.keyPool.keysSource,
+        key_count: memoryCache.keyPool.keys.length,
+        key_state: memoryCache.keyPool.keyState,
     };
 }
 
