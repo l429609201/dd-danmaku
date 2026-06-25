@@ -517,6 +517,9 @@ function applyRuntimeConfig(cfg) {
     }
 
     memoryCache.configCache.lastUpdate = Date.now();
+}
+
+function buildStatsReportPayload() {
     const topIps = Object.entries(memoryCache.ipRequestStats)
         .sort((a, b) => (b[1].total_count || 0) - (a[1].total_count || 0))
         .slice(0, 200)
