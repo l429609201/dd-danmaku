@@ -150,7 +150,7 @@ class CommentStoreService:
             if total <= max_bytes:
                 return
             rows = db.query(LocalCommentStore).order_by(
-                LocalCommentStore.last_used_at.asc().nullsfirst()
+                LocalCommentStore.last_used_at.asc()
             ).all()
             for r in rows:
                 if total <= max_bytes:
@@ -176,7 +176,7 @@ class CommentStoreService:
             if keyword:
                 q = q.filter(LocalCommentStore.episode_id.like(f"%{keyword}%"))
             total = q.count()
-            rows = q.order_by(LocalCommentStore.last_used_at.desc().nullslast()) \
+            rows = q.order_by(LocalCommentStore.last_used_at.desc()) \
                     .offset((page - 1) * page_size).limit(page_size).all()
             return {
                 "total": total,
