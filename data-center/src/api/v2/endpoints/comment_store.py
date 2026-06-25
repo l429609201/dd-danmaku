@@ -57,6 +57,15 @@ async def list_entries(
     return PageResult(total=result["total"], items=result["items"])
 
 
+@router.get("/entries/{episode_id}")
+async def get_entry(episode_id: str, _: LocalUser = Depends(get_current_user)):
+    """查看单条弹幕详情（元数据 + 弹幕预览）"""
+    detail = comment_store_service.get_detail(episode_id)
+    if not detail:
+        return ApiResult(success=False, message="条目不存在")
+    return ApiResult(data=detail)
+
+
 @router.delete("/entries/{episode_id}")
 async def delete_entry(episode_id: str, _: LocalUser = Depends(require_operator)):
     """删除单条弹幕（文件+记录）"""

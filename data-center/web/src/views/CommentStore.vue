@@ -60,12 +60,40 @@
             <td>{{ fmtBytes(r.size_bytes) }}</td>
             <td>{{ r.source }}</td>
             <td>{{ fmt(r.last_used_at) }}</td>
-            <td><button class="link danger" @click="del(r)">删除</button></td>
+            <td>
+              <button class="link" @click="view(r)">查看</button>
+              <button class="link danger" @click="del(r)">删除</button>
+            </td>
           </tr>
           <tr v-if="!items.length"><td colspan="6" class="empty">暂无弹幕缓存</td></tr>
         </tbody>
       </table>
       <Pager :page="page" :page-size="pageSize" :total="total" @update:page="goPage" />
+    </div>
+
+    <!-- 弹幕详情弹窗 -->
+    <div v-if="detail" class="modal-mask" @click.self="detail=null">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>弹幕详情：{{ detail.episode_id }}</h3>
+          <button class="modal-close" @click="detail=null">×</button>
+        </div>
+        <div class="detail-meta">
+          <span>弹幕数 <b>{{ (detail.comment_count || 0).toLocaleString() }}</b></span>
+          <span>大小 <b>{{ fmtBytes(detail.size_bytes) }}</b></span>
+          <span>来源 <b>{{ detail.source }}</b></span>
+          <span>最后使用 <b>{{ fmt(detail.last_used_at) }}</b></span>
+        </div>
+        <p v-if="!detail.file_exists" class="warn-text">⚠️ 文件丢失，仅有元数据记录</p>
+        <p class="preview-tip" v-else>弹幕内容预览（前 {{ detail.preview_limit }} 条）：</p>
+        <div class="preview-box" v-if="detail.file_exists">
+          <div v-for="(c, i) in detail.preview" :key="i" class="cmt">
+            <span class="cmt-time">{{ cmtTime(c) }}</span>
+            <span class="cmt-text">{{ cmtText(c) }}</span>
+          </div>
+          <div v-if="!detail.preview.length" class="empty">无可解析的弹幕</div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -88,6 +116,7 @@ export default {
     const maxGb = ref(5)
     const msg = ref('')
     const busy = ref(false)
+    const detail = ref(null)
 
     const loadStats = async () => {
       try {
@@ -134,6 +163,22 @@ export default {
         msg.value = '已删除'; loadStats(); load()
       } catch (e) { msg.value = e.message }
     }
+    // 查看弹幕详情
+    const view = async (r) => {
+      try {
+        const res = await apiV2(`/comment-store/entries/${r.episode_id}`)
+        detail.value = res.data
+      } catch (e) { msg.value = e.message }
+    }
+    // 解析弹幕字段：dandanplay 格式 { p: "时间,模式,颜色,uid", m: "文本" }
+    const cmtTime = (c) => {
+      const p = (c && c.p) ? String(c.p).split(',')[0] : ''
+      const t = parseFloat(p)
+      if (isNaN(t)) return '—'
+      const m = Math.floor(t / 60), s = Math.floor(t % 60)
+      return `${m}:${s.toString().padStart(2, '0')}`
+    }
+    const cmtText = (c) => (c && (c.m || c.text)) || ''
 
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
     const fmtBytes = (n) => {
@@ -145,8 +190,8 @@ export default {
     }
 
     onMounted(() => { loadStats(); load() })
-    return { stats, items, total, page, pageSize, keyword, maxGb, msg, busy,
-      reload, goPage, saveMax, doCleanup, doClearAll, del, fmt, fmtBytes }
+    return { stats, items, total, page, pageSize, keyword, maxGb, msg, busy, detail,
+      reload, goPage, saveMax, doCleanup, doClearAll, del, view, cmtTime, cmtText, fmt, fmtBytes }
   },
 }
 </script>
@@ -181,4 +226,17 @@ export default {
 .link.danger { color: #cf1322; }
 .empty { text-align: center; color: #999; padding: 24px; }
 .tip { color: #999; font-size: 12px; margin-top: 10px; }
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modal { background: #fff; border-radius: 10px; padding: 20px; width: 600px; max-width: 92vw; max-height: 80vh; display: flex; flex-direction: column; }
+.modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.modal-head h3 { font-size: 16px; color: #333; margin: 0; word-break: break-all; }
+.modal-close { background: none; border: none; font-size: 22px; cursor: pointer; color: #999; line-height: 1; }
+.detail-meta { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: #888; margin-bottom: 12px; }
+.detail-meta b { color: #333; }
+.warn-text { color: #cf1322; font-size: 13px; }
+.preview-tip { color: #666; font-size: 13px; margin-bottom: 8px; }
+.preview-box { overflow-y: auto; flex: 1; border: 1px solid #f0f0f0; border-radius: 6px; padding: 8px; }
+.cmt { display: flex; gap: 10px; padding: 5px 6px; border-bottom: 1px solid #f7f7f7; font-size: 13px; }
+.cmt-time { color: #1677ff; font-family: monospace; flex-shrink: 0; width: 56px; }
+.cmt-text { color: #333; word-break: break-all; }
 </style>

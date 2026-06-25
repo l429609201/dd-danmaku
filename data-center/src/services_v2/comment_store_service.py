@@ -191,6 +191,46 @@ class CommentStoreService:
         finally:
             db.close()
 
+    def get_detail(self, episode_id: str, preview_limit: int = 100) -> Optional[Dict[str, Any]]:
+        """查看单条弹幕详情：元数据 + 弹幕预览（不更新 last_used_at，避免查看影响 LRU）"""
+        episode_id = str(episode_id).strip()
+        if not episode_id:
+            return None
+        db = get_db_sync()
+        try:
+            row = db.query(LocalCommentStore).filter(
+                LocalCommentStore.episode_id == episode_id
+            ).first()
+            if not row:
+                return None
+            comments = []
+            file_exists = os.path.exists(row.file_path)
+            if file_exists:
+                try:
+                    with open(row.file_path, "r", encoding="utf-8") as f:
+                        data = json.loads(f.read())
+                    raw = data.get("comments") if isinstance(data, dict) else None
+                    if isinstance(raw, list):
+                        # 仅取前 preview_limit 条预览，避免大文件撑爆响应
+                        comments = raw[:preview_limit]
+                except Exception as e:
+                    logger.warning(f"⚠️ 弹幕详情解析失败 {episode_id}: {e}")
+            return {
+                "episode_id": row.episode_id,
+                "file_path": row.file_path,
+                "file_exists": file_exists,
+                "size_bytes": row.size_bytes,
+                "comment_count": row.comment_count,
+                "source": row.source,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                "last_used_at": row.last_used_at.isoformat() if row.last_used_at else None,
+                "preview": comments,
+                "preview_limit": preview_limit,
+            }
+        finally:
+            db.close()
+
     def delete_entry(self, episode_id: str) -> bool:
         """删除单条弹幕（文件+记录）"""
         db = get_db_sync()
