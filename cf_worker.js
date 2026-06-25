@@ -1532,10 +1532,29 @@ export class ControlHub {
 
 export default {
   async fetch(request, env, ctx) {
-    // 初始化数据中心配置
-    await initializeDataCenterConfig(env);
+    try {
+      // 初始化数据中心配置
+      await initializeDataCenterConfig(env);
 
-    return await handleRequest(request, env, ctx);
+      return await handleRequest(request, env, ctx);
+    } catch (e) {
+      // 顶层兜底：任何未捕获异常都返回 JSON，避免 Cloudflare 1101（Worker threw exception）
+      console.error(`❌ Worker 顶层异常: ${e && e.stack ? e.stack : e}`);
+      try {
+        addMemoryLog('ERROR', 'Worker 顶层异常', {
+          path: (() => { try { return new URL(request.url).pathname; } catch (_) { return ''; } })(),
+          method: request.method,
+          message: String(e && e.message ? e.message : e),
+        });
+      } catch (_) { /* 日志失败不阻塞 */ }
+      return new Response(JSON.stringify({
+        errorCode: 500, success: false,
+        errorMessage: `Worker 内部错误: ${e && e.message ? e.message : e}`,
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      });
+    }
   },
 
   // Cron 定时触发（全局单实例）：R2 弹幕缓存清理
@@ -1975,7 +1994,12 @@ async function handleRequest(request, env, ctx) {
         if (ACCESS_CONFIG.logging.enabled) {
             console.log(`📤 [${clientIP}] 转发请求头(key=${keyObj.id}):`, JSON.stringify(headers, null, 2));
         }
-        const resp = await fetch(url, { headers, body: request.body, method: request.method });
+        // GET/HEAD 不能带 body，否则 fetch 抛 TypeError（Worker 1101）
+        const fetchInit = { headers, method: request.method };
+        if (request.method !== 'GET' && request.method !== 'HEAD') {
+            fetchInit.body = request.body;
+        }
+        const resp = await fetch(url, fetchInit);
         const text = await resp.text();
         let ec = 0;
         try {
