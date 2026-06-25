@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy import func
 
 from src.database import get_db_sync
-from src.models_v2 import LocalCommentStore
+from src.models_v2 import LocalCommentStore, AppSetting
 from src.models_v2.base import now
 
 logger = logging.getLogger(__name__)
@@ -109,19 +109,51 @@ class CommentStoreService:
         finally:
             db.close()
 
+    def get_max_bytes(self) -> int:
+        """读取存储上限：优先 AppSetting(danmaku_store_max_bytes)，回退环境变量默认"""
+        db = get_db_sync()
+        try:
+            s = db.query(AppSetting).filter(
+                AppSetting.key == "danmaku_store_max_bytes").first()
+            if s and s.value:
+                try:
+                    return max(0, int(s.value))
+                except (TypeError, ValueError):
+                    pass
+            return MAX_STORE_BYTES
+        finally:
+            db.close()
+
+    def set_max_bytes(self, max_bytes: int):
+        """更新存储上限（写 AppSetting），并立即按新上限做一次 LRU 清理"""
+        db = get_db_sync()
+        try:
+            s = db.query(AppSetting).filter(
+                AppSetting.key == "danmaku_store_max_bytes").first()
+            if s:
+                s.value = str(max(0, max_bytes))
+            else:
+                db.add(AppSetting(key="danmaku_store_max_bytes",
+                                  value=str(max(0, max_bytes))))
+            db.commit()
+            self._enforce_limit(db)
+        finally:
+            db.close()
+
     def _enforce_limit(self, db):
         """总量超上限时按 last_used_at LRU 删最旧（NULL 视为最久）"""
         try:
+            max_bytes = self.get_max_bytes()
             total = db.query(
                 func.coalesce(func.sum(LocalCommentStore.size_bytes), 0)
             ).scalar() or 0
-            if total <= MAX_STORE_BYTES:
+            if total <= max_bytes:
                 return
             rows = db.query(LocalCommentStore).order_by(
                 LocalCommentStore.last_used_at.asc().nullsfirst()
             ).all()
             for r in rows:
-                if total <= MAX_STORE_BYTES:
+                if total <= max_bytes:
                     break
                 try:
                     if os.path.exists(r.file_path):
@@ -134,6 +166,83 @@ class CommentStoreService:
         except Exception as e:
             db.rollback()
             logger.warning(f"⚠️ 弹幕存储 LRU 清理失败: {e}")
+
+    def list_entries(self, page: int = 1, page_size: int = 20,
+                     keyword: str = "") -> Dict[str, Any]:
+        """分页列出弹幕条目，支持按 episode_id 搜索"""
+        db = get_db_sync()
+        try:
+            q = db.query(LocalCommentStore)
+            if keyword:
+                q = q.filter(LocalCommentStore.episode_id.like(f"%{keyword}%"))
+            total = q.count()
+            rows = q.order_by(LocalCommentStore.last_used_at.desc().nullslast()) \
+                    .offset((page - 1) * page_size).limit(page_size).all()
+            return {
+                "total": total,
+                "items": [{
+                    "id": r.id, "episode_id": r.episode_id,
+                    "size_bytes": r.size_bytes, "comment_count": r.comment_count,
+                    "source": r.source,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "last_used_at": r.last_used_at.isoformat() if r.last_used_at else None,
+                } for r in rows],
+            }
+        finally:
+            db.close()
+
+    def delete_entry(self, episode_id: str) -> bool:
+        """删除单条弹幕（文件+记录）"""
+        db = get_db_sync()
+        try:
+            r = db.query(LocalCommentStore).filter(
+                LocalCommentStore.episode_id == str(episode_id)).first()
+            if not r:
+                return False
+            try:
+                if os.path.exists(r.file_path):
+                    os.remove(r.file_path)
+            except Exception:
+                pass
+            db.delete(r)
+            db.commit()
+            return True
+        finally:
+            db.close()
+
+    def clear_all(self) -> int:
+        """清空全部弹幕（删文件+清表），返回删除条数"""
+        db = get_db_sync()
+        try:
+            rows = db.query(LocalCommentStore).all()
+            count = len(rows)
+            for r in rows:
+                try:
+                    if os.path.exists(r.file_path):
+                        os.remove(r.file_path)
+                except Exception:
+                    pass
+                db.delete(r)
+            db.commit()
+            return count
+        finally:
+            db.close()
+
+    def manual_cleanup(self) -> Dict[str, Any]:
+        """手动触发一次 LRU 清理，返回清理前后大小"""
+        db = get_db_sync()
+        try:
+            before = db.query(
+                func.coalesce(func.sum(LocalCommentStore.size_bytes), 0)
+            ).scalar() or 0
+            self._enforce_limit(db)
+            after = db.query(
+                func.coalesce(func.sum(LocalCommentStore.size_bytes), 0)
+            ).scalar() or 0
+            return {"before": int(before), "after": int(after),
+                    "freed": int(before) - int(after)}
+        finally:
+            db.close()
 
 
 comment_store_service = CommentStoreService()

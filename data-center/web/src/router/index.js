@@ -74,6 +74,18 @@ const routes = [
         meta: { title: '数据库状态' }
       },
       {
+        path: 'cleanup',
+        name: 'Cleanup',
+        component: () => import('../views/Cleanup.vue'),
+        meta: { title: '数据清理' }
+      },
+      {
+        path: 'comment-store',
+        name: 'CommentStore',
+        component: () => import('../views/CommentStore.vue'),
+        meta: { title: '弹幕存储' }
+      },
+      {
         path: 'users',
         name: 'Users',
         component: () => import('../views/Users.vue'),

@@ -41,10 +41,12 @@ class CacheService:
         stale_max_age = settings.CACHE_STALE_MAX_AGE_SECONDS
         current = now()
 
-        # 1. body 优先写 Redis
+        # 1. body 优先写 Redis（主缓存，用于快速响应）
         storage_mode = "sql"
         if settings.CACHE_BODY_STORAGE == "redis":
             ok = await redis_cache.set(redis_key, body, ttl=stale_max_age)
+            # 双写：Redis 写成功也标记为 redis（读时优先 Redis）；
+            # 但 SQL 始终保留 body 作为冷备，Redis 重启/淘汰后可回填
             storage_mode = "redis" if ok else "sql"
 
         db = get_db_sync()
@@ -68,8 +70,9 @@ class CacheService:
             row.response_headers_json = record.get("headers")
             row.redis_key = redis_key
             row.storage_mode = storage_mode
-            # storage_mode=sql 时才把 body 落库，避免 Redis/SQL 双写
-            row.response_body = body if storage_mode == "sql" else None
+            # 双写：SQL 始终保存 body 作为冷备（即使 storage_mode=redis）。
+            # Redis 重启/淘汰丢 key 后，get 可从 SQL 回填 Redis，避免缓存变空壳。
+            row.response_body = body
             row.body_hash = body_hash
             row.body_size = body_size
             row.fetched_at = current
@@ -118,10 +121,13 @@ class CacheService:
                               client_ip=client_ip)
                 return None
 
-            # 读取 body：优先 Redis
+            # 读取 body：优先 Redis（主缓存，快路径）
             body = None
+            redis_hit = False
             if row.storage_mode == "redis" and row.redis_key:
                 body = await redis_cache.get(row.redis_key)
+                redis_hit = body is not None
+            # Redis 未命中（重启/淘汰）→ 回退 SQL 冷备
             if body is None:
                 body = row.response_body
             if body is None:
@@ -130,6 +136,14 @@ class CacheService:
                               worker_request_id=worker_request_id,
                               client_ip=client_ip)
                 return None
+
+            # 关键：Redis 没命中但 SQL 有 body → 回写 Redis 预热，
+            # 下次别人调用即可走 Redis 快路径（实现 Redis 自愈）
+            if not redis_hit and row.redis_key and settings.CACHE_BODY_STORAGE == "redis":
+                ttl = settings.CACHE_STALE_MAX_AGE_SECONDS
+                await redis_cache.set(row.redis_key, body, ttl=ttl)
+                if row.storage_mode != "redis":
+                    row.storage_mode = "redis"
 
             # 判断是否 stale，stale 则标记待刷新
             stale = bool(row.refresh_after and current > row.refresh_after)

@@ -36,10 +36,31 @@
           <div class="card-value">{{ data.redis.hit_rate }}%</div>
           <div class="card-sub">{{ data.redis.total_keys }} keys / {{ data.redis.connected_clients }} 连接</div>
         </div>
-        <div class="card" v-if="data.comment_store" :class="data.comment_store.usage_ratio > 90 ? 'card-warn' : 'card-accent'">
-          <div class="card-label">本地弹幕兜底</div>
-          <div class="card-value">{{ fmtBytes(data.comment_store.total_size_bytes) }}</div>
-          <div class="card-sub">{{ data.comment_store.file_count }} 集 / 上限 {{ fmtBytes(data.comment_store.max_bytes) }}（{{ data.comment_store.usage_ratio }}%）</div>
+      </div>
+
+      <!-- MySQL 性能指标 -->
+      <div class="panel" v-if="data.engine_perf && data.engine_perf.available">
+        <h2 class="panel-title">MySQL 性能指标</h2>
+        <div class="metrics">
+          <div class="metric"><span class="m-label">QPS</span><span class="m-val">{{ data.engine_perf.qps }}</span></div>
+          <div class="metric"><span class="m-label">运行线程</span><span class="m-val">{{ data.engine_perf.threads_running }}</span></div>
+          <div class="metric"><span class="m-label">连接使用</span><span class="m-val">{{ data.engine_perf.threads_connected }}/{{ data.engine_perf.max_connections }}（{{ data.engine_perf.conn_usage_ratio }}%）</span></div>
+          <div class="metric"><span class="m-label">慢查询</span><span class="m-val" :class="{ warn: data.engine_perf.slow_queries > 0 }">{{ data.engine_perf.slow_queries }}</span></div>
+          <div class="metric"><span class="m-label">InnoDB 缓冲池命中率</span><span class="m-val">{{ data.engine_perf.innodb_buffer_hit_rate }}%</span></div>
+          <div class="metric"><span class="m-label">失败连接</span><span class="m-val">{{ data.engine_perf.aborted_connects }}</span></div>
+        </div>
+      </div>
+
+      <!-- Redis 性能指标 -->
+      <div class="panel" v-if="data.redis && data.redis.enabled">
+        <h2 class="panel-title">Redis 性能指标</h2>
+        <div class="metrics">
+          <div class="metric"><span class="m-label">ops/sec</span><span class="m-val">{{ data.redis.ops_per_sec }}</span></div>
+          <div class="metric"><span class="m-label">命中率</span><span class="m-val">{{ data.redis.hit_rate }}%</span></div>
+          <div class="metric"><span class="m-label">内存碎片率</span><span class="m-val" :class="{ warn: data.redis.mem_fragmentation_ratio > 1.5 }">{{ data.redis.mem_fragmentation_ratio }}</span></div>
+          <div class="metric"><span class="m-label">峰值内存</span><span class="m-val">{{ fmtBytes(data.redis.used_memory_peak_bytes) }}</span></div>
+          <div class="metric"><span class="m-label">淘汰 keys</span><span class="m-val" :class="{ warn: data.redis.evicted_keys > 0 }">{{ data.redis.evicted_keys }}</span></div>
+          <div class="metric"><span class="m-label">过期 keys</span><span class="m-val">{{ data.redis.expired_keys }}</span></div>
         </div>
       </div>
 
@@ -161,4 +182,9 @@ export default {
 .kv span { color: #888; }
 .loading, .error-box { padding: 40px; text-align: center; color: #999; }
 .error-box { color: #d4380d; }
+.metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.metric { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; background: #fafafa; border-radius: 8px; }
+.m-label { color: #888; font-size: 13px; }
+.m-val { font-size: 16px; font-weight: 600; color: #333; }
+.m-val.warn { color: #cf1322; }
 </style>

@@ -19,6 +19,7 @@ from src.models_v2.cache import (
 from src.models_v2.monitoring import (
     IpRule, IpRequestStatCurrent, IpRequestStatSnapshot,
     UaLimitRule, WorkerRequestLog, WorkerMetricsSnapshot, LocalCommentStore,
+    CleanupPolicy,
 )
 
 __all__ = [
@@ -48,4 +49,5 @@ __all__ = [
     "WorkerRequestLog",
     "WorkerMetricsSnapshot",
     "LocalCommentStore",
+    "CleanupPolicy",
 ]

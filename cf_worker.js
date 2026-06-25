@@ -1802,7 +1802,7 @@ async function handleRequest(request, env, ctx) {
                 client_ip: clientIP,
                 worker_request_id: request.headers.get('cf-ray') || '',
                 prefetch: true,
-            }, 800);
+            }, 1500);
             if (local && local.hit && local.body) {
                 console.log(`📦 [${clientIP}] 本地端缓存命中${local.stale ? '(stale)' : ''}: ${apiPath}`);
                 bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
@@ -1847,7 +1847,7 @@ async function handleRequest(request, env, ctx) {
 
         // R2 无对象：查本地端兜底持久化（架构B），命中则回填 R2 并返回
         if (env.CONTROL_HUB) {
-            const local = await controlHubRpc(env, 'comment.get', { episode_id: episodeId }, 800);
+            const local = await controlHubRpc(env, 'comment.get', { episode_id: episodeId }, 1500);
             if (local && local.hit && local.body) {
                 console.log(`📦 [${clientIP}] 本地端弹幕兜底命中: ${episodeId} (${local.comment_count}条)`);
                 bumpMetric('r2CacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
@@ -2048,7 +2048,7 @@ async function handleRequest(request, env, ctx) {
             method: request.method,
             client_ip: clientIP,
             worker_request_id: request.headers.get('cf-ray') || '',
-        }, 800);
+        }, 1500);
         if (cached && cached.hit && cached.body) {
             console.log(`✅ [${clientIP}] 命中本地兜底缓存${cached.stale ? '(stale)' : ''}: ${localCacheKey}`);
             return new Response(cached.body, {
@@ -2068,7 +2068,7 @@ async function handleRequest(request, env, ctx) {
     if (response.status === 429 && isCommentApi && env.CONTROL_HUB) {
         const episodeId = apiPath.replace('/api/v2/comment/', '').split('?')[0];
         console.log(`🛟 [${clientIP}] 弹幕上游 429，尝试本地端弹幕兜底: ${episodeId}`);
-        const local = await controlHubRpc(env, 'comment.get', { episode_id: episodeId }, 800);
+        const local = await controlHubRpc(env, 'comment.get', { episode_id: episodeId }, 1500);
         if (local && local.hit && local.body) {
             console.log(`✅ [${clientIP}] 命中本地端弹幕兜底: ${episodeId} (${local.comment_count}条)`);
             return new Response(local.body, {

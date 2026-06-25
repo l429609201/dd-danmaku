@@ -1,0 +1,184 @@
+<template>
+  <div class="page">
+    <h1 class="page-title">弹幕存储</h1>
+    <p v-if="msg" class="msg">{{ msg }}</p>
+
+    <!-- 统计概览 -->
+    <div class="cards" v-if="stats">
+      <div class="card">
+        <div class="card-label">弹幕集数</div>
+        <div class="card-value">{{ stats.file_count }}</div>
+      </div>
+      <div class="card">
+        <div class="card-label">总大小</div>
+        <div class="card-value">{{ fmtBytes(stats.total_size_bytes) }}</div>
+      </div>
+      <div class="card">
+        <div class="card-label">总弹幕条数</div>
+        <div class="card-value">{{ (stats.total_comments || 0).toLocaleString() }}</div>
+      </div>
+      <div class="card" :class="stats.usage_ratio > 90 ? 'card-warn' : 'card-accent'">
+        <div class="card-label">容量占用</div>
+        <div class="card-value">{{ stats.usage_ratio }}%</div>
+        <div class="card-sub">上限 {{ fmtBytes(stats.max_bytes) }}</div>
+      </div>
+    </div>
+
+    <!-- 配置与操作 -->
+    <div class="panel">
+      <h2 class="panel-title">存储配置</h2>
+      <div class="cfg-row">
+        <div class="cfg-item">
+          存储上限
+          <input type="number" min="0" step="0.5" v-model.number="maxGb" class="num" />
+          GB
+          <button class="btn btn-primary" @click="saveMax">保存上限</button>
+        </div>
+        <button class="btn" :disabled="busy" @click="doCleanup">手动 LRU 清理</button>
+        <button class="btn btn-danger" :disabled="busy" @click="doClearAll">清空全部</button>
+      </div>
+      <p class="tip">目录：{{ stats ? stats.dir : '—' }}。超上限时按"最久未使用"自动删除。</p>
+    </div>
+
+    <!-- 条目列表 -->
+    <div class="panel">
+      <div class="list-head">
+        <h2 class="panel-title">弹幕条目</h2>
+        <div class="search">
+          <input v-model="keyword" class="input" placeholder="按 episode_id 搜索" @keyup.enter="reload" />
+          <button class="btn" @click="reload">搜索</button>
+        </div>
+      </div>
+      <table class="data-table">
+        <thead>
+          <tr><th>episode_id</th><th>弹幕数</th><th>大小</th><th>来源</th><th>最后使用</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in items" :key="r.id">
+            <td>{{ r.episode_id }}</td>
+            <td>{{ (r.comment_count || 0).toLocaleString() }}</td>
+            <td>{{ fmtBytes(r.size_bytes) }}</td>
+            <td>{{ r.source }}</td>
+            <td>{{ fmt(r.last_used_at) }}</td>
+            <td><button class="link danger" @click="del(r)">删除</button></td>
+          </tr>
+          <tr v-if="!items.length"><td colspan="6" class="empty">暂无弹幕缓存</td></tr>
+        </tbody>
+      </table>
+      <Pager :page="page" :page-size="pageSize" :total="total" @update:page="goPage" />
+    </div>
+  </div>
+</template>
+
+<script>
+import { ref, onMounted } from 'vue'
+import { apiV2 } from '../utils/api.js'
+import Pager from '../components/Pager.vue'
+
+export default {
+  name: 'CommentStore',
+  components: { Pager },
+  setup() {
+    const stats = ref(null)
+    const items = ref([])
+    const total = ref(0)
+    const page = ref(1)
+    const pageSize = ref(20)
+    const keyword = ref('')
+    const maxGb = ref(5)
+    const msg = ref('')
+    const busy = ref(false)
+
+    const loadStats = async () => {
+      try {
+        const res = await apiV2('/comment-store/stats')
+        stats.value = res.data
+        maxGb.value = Math.round((res.data.max_bytes / 1024 / 1024 / 1024) * 10) / 10
+      } catch (e) { msg.value = e.message }
+    }
+    const load = async () => {
+      try {
+        const res = await apiV2(`/comment-store/entries?page=${page.value}&page_size=${pageSize.value}&keyword=${encodeURIComponent(keyword.value)}`)
+        items.value = res.items || []
+        total.value = res.total || 0
+      } catch (e) { msg.value = e.message }
+    }
+    const reload = () => { page.value = 1; load() }
+    const goPage = (p) => { page.value = p; load() }
+
+    const saveMax = async () => {
+      try {
+        await apiV2('/comment-store/max-bytes', { method: 'PUT', body: { max_gb: maxGb.value } })
+        msg.value = '上限已更新'; loadStats()
+      } catch (e) { msg.value = e.message }
+    }
+    const doCleanup = async () => {
+      busy.value = true
+      try {
+        const res = await apiV2('/comment-store/cleanup', { method: 'POST' })
+        msg.value = res.message; loadStats(); load()
+      } catch (e) { msg.value = e.message } finally { busy.value = false }
+    }
+    const doClearAll = async () => {
+      if (!confirm('确认清空全部弹幕缓存？此操作不可恢复')) return
+      busy.value = true
+      try {
+        const res = await apiV2('/comment-store/all', { method: 'DELETE' })
+        msg.value = res.message; loadStats(); reload()
+      } catch (e) { msg.value = e.message } finally { busy.value = false }
+    }
+    const del = async (r) => {
+      if (!confirm(`删除 ${r.episode_id} 的弹幕？`)) return
+      try {
+        await apiV2(`/comment-store/entries/${r.episode_id}`, { method: 'DELETE' })
+        msg.value = '已删除'; loadStats(); load()
+      } catch (e) { msg.value = e.message }
+    }
+
+    const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
+    const fmtBytes = (n) => {
+      n = Number(n) || 0
+      if (n < 1024) return n + ' B'
+      if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'
+      if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB'
+      return (n / 1073741824).toFixed(2) + ' GB'
+    }
+
+    onMounted(() => { loadStats(); load() })
+    return { stats, items, total, page, pageSize, keyword, maxGb, msg, busy,
+      reload, goPage, saveMax, doCleanup, doClearAll, del, fmt, fmtBytes }
+  },
+}
+</script>
+
+<style scoped>
+.page { padding: 24px; }
+.page-title { font-size: 22px; margin-bottom: 20px; color: #333; }
+.msg { color: #1677ff; margin-bottom: 12px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 18px; }
+.card { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.card-accent { border-left: 4px solid #1677ff; }
+.card-warn { border-left: 4px solid #faad14; }
+.card-label { color: #888; font-size: 13px; margin-bottom: 8px; }
+.card-value { font-size: 26px; font-weight: 600; color: #333; }
+.card-sub { color: #999; font-size: 12px; margin-top: 4px; }
+.panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 18px; }
+.panel-title { font-size: 16px; margin-bottom: 14px; color: #333; }
+.cfg-row { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.cfg-item { display: flex; align-items: center; gap: 8px; color: #555; }
+.list-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+.search { display: flex; gap: 8px; }
+.num { width: 80px; padding: 5px 8px; border: 1px solid #d9d9d9; border-radius: 6px; text-align: center; }
+.input { padding: 6px 10px; border: 1px solid #d9d9d9; border-radius: 6px; }
+.data-table { width: 100%; border-collapse: collapse; }
+.data-table th, .data-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+.data-table th { color: #888; font-weight: 500; }
+.btn { padding: 6px 14px; border: 1px solid #d9d9d9; background: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.btn-primary { background: #1677ff; color: #fff; border-color: #1677ff; }
+.btn-danger { background: #fff1f0; color: #cf1322; border-color: #ffa39e; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.link { color: #1677ff; background: none; border: none; cursor: pointer; font-size: 13px; }
+.link.danger { color: #cf1322; }
+.empty { text-align: center; color: #999; padding: 24px; }
+.tip { color: #999; font-size: 12px; margin-top: 10px; }
+</style>

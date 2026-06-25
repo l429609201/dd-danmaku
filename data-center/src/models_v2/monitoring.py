@@ -149,3 +149,27 @@ class LocalCommentStore(Base):
     created_at = Column(DateTime, default=now, index=True, nullable=False)
     updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
     last_used_at = Column(DateTime, index=True, nullable=True)
+
+
+class CleanupPolicy(Base):
+    """可配置数据清理策略：每个可清理表一条配置，前端可勾选/调保留天数
+
+    cleanup_service 启动时确保默认策略存在，运行时按本表配置驱动清理。
+    """
+    __tablename__ = "cleanup_policy"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 表标识（与 cleanup_service 的 TABLE_REGISTRY key 对应）
+    table_key = Column(String(64), unique=True, index=True, nullable=False)
+    display_name = Column(String(100), nullable=False)
+    # 是否纳入清理
+    enabled = Column(Boolean, default=False, nullable=False)
+    # 保留天数（0 表示不按天清理）
+    retention_days = Column(Integer, default=30, nullable=False)
+    # 业务敏感标记：敏感表前端红色警示、默认关闭
+    is_safe = Column(Boolean, default=True, nullable=False)
+    # 仅清过期空壳（针对 api_response_cache 这类特殊清理模式）
+    expired_only = Column(Boolean, default=False, nullable=False)
+    last_cleanup_at = Column(DateTime, nullable=True)
+    last_deleted = Column(BigInteger, default=0, nullable=False)
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)

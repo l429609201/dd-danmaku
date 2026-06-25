@@ -206,11 +206,14 @@ async def dashboard_db_stats(_: LocalUser = Depends(get_current_user)):
     """数据库与 Redis 状态：SQL 表统计/占用/连接池 + Redis INFO + 弹幕兜底存储"""
     from src.services_v2.db_stats_service import (
         collect_sql_stats, collect_redis_stats, collect_comment_store_stats,
+        collect_engine_perf,
     )
     sql = collect_sql_stats()
     redis_info = await collect_redis_stats()
     comment_store = collect_comment_store_stats()
-    return ApiResult(data={"sql": sql, "redis": redis_info, "comment_store": comment_store})
+    engine_perf = collect_engine_perf()
+    return ApiResult(data={"sql": sql, "redis": redis_info,
+                           "comment_store": comment_store, "engine_perf": engine_perf})
 
 
 @router.get("/ip-geo")
