@@ -1933,11 +1933,26 @@ async function handleRequest(request, env, ctx) {
     // 调试日志：显示dandanplay API响应内容
     console.log(`📥 [${clientIP}] dandanplay API响应状态:`, response.status, response.statusText);
 
+    // 读取响应体（response.text() 只能调用一次，提前读以便检测软限流）
+    const responseText = await response.text();
+
+    // ⚠️ 弹弹 play 软限流：HTTP 状态是 200，但 body 里 errorCode=429（"已达到接口调用配额上限"）
+    // 必须按 body 判断；否则会把限流错误体当成正常结果缓存，且 429 兜底逻辑永不触发
+    let upstreamErrorCode = 0;
+    try {
+        const _peek = JSON.parse(responseText);
+        if (_peek && typeof _peek.errorCode === 'number') upstreamErrorCode = _peek.errorCode;
+    } catch (_) { /* 非 JSON 响应忽略 */ }
+    const isUpstreamRateLimited = response.status === 429 || upstreamErrorCode === 429;
+    if (isUpstreamRateLimited) {
+        console.log(`🚫 [${clientIP}] 检测到上游限流 (HTTP ${response.status}, errorCode=${upstreamErrorCode})`);
+    }
+
     // 指标：回源响应（可缓存请求走到这里即未命中）+ 状态码分布 + 429
     bumpMetric('totalResponses');
     if (isCacheable || isCommentApi) bumpMetric('cacheMiss');
-    if (response.status >= 200 && response.status < 300) bumpMetric('status2xx');
-    else if (response.status === 429) { bumpMetric('upstream429'); bumpMetric('status4xx'); }
+    if (isUpstreamRateLimited) { bumpMetric('upstream429'); bumpMetric('status4xx'); }
+    else if (response.status >= 200 && response.status < 300) bumpMetric('status2xx');
     else if (response.status >= 400 && response.status < 500) bumpMetric('status4xx');
     else if (response.status >= 500) bumpMetric('status5xx');
 
@@ -1951,8 +1966,6 @@ async function handleRequest(request, env, ctx) {
         timestamp: Date.now()
     });
 
-    // 读取响应内容用于日志记录
-    const responseText = await response.text();
     // 指标：出流量（回源响应体字节）
     if (responseText) bumpMetric('bytesOut', responseText.length);
     // 新增：根据API路径选择性地记录响应内容，避免日志超限
@@ -1975,7 +1988,7 @@ async function handleRequest(request, env, ctx) {
     // ========================================
     // 📦 缓存存入
     // ========================================
-    if (response.status === 200) {
+    if (response.status === 200 && !isUpstreamRateLimited) {
         if (isCacheable) {
             // 内存缓存：搜索/番剧/匹配/分集
             const cacheKey = `api_cache_${url}`;
@@ -2039,9 +2052,9 @@ async function handleRequest(request, env, ctx) {
     // ========================================
     // 🛟 上游 429 限流：尝试本地缓存兜底
     // ========================================
-    if (response.status === 429 && env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)) {
+    if (isUpstreamRateLimited && env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)) {
         const localCacheKey = buildLocalCacheKey(request.method, apiPath, tUrlObj.searchParams);
-        console.log(`🛟 [${clientIP}] 上游 429，尝试本地缓存兜底: ${localCacheKey}`);
+        console.log(`🛟 [${clientIP}] 上游限流，尝试本地缓存兜底: ${localCacheKey}`);
         const cached = await controlHubRpc(env, 'cache.get', {
             cache_key: localCacheKey,
             api_path: apiPath,
@@ -2065,9 +2078,9 @@ async function handleRequest(request, env, ctx) {
     }
 
     // 上游 429 且为弹幕接口：查本地端弹幕兜底持久化（R2 可能也无对象）
-    if (response.status === 429 && isCommentApi && env.CONTROL_HUB) {
+    if (isUpstreamRateLimited && isCommentApi && env.CONTROL_HUB) {
         const episodeId = apiPath.replace('/api/v2/comment/', '').split('?')[0];
-        console.log(`🛟 [${clientIP}] 弹幕上游 429，尝试本地端弹幕兜底: ${episodeId}`);
+        console.log(`🛟 [${clientIP}] 弹幕上游限流，尝试本地端弹幕兜底: ${episodeId}`);
         const local = await controlHubRpc(env, 'comment.get', { episode_id: episodeId }, 1500);
         if (local && local.hit && local.body) {
             console.log(`✅ [${clientIP}] 命中本地端弹幕兜底: ${episodeId} (${local.comment_count}条)`);
