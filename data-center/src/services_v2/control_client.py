@@ -28,6 +28,7 @@ from src.services_v2.worker_log_service import worker_log_service
 from src.services_v2.runtime_event_service import runtime_event_service
 from src.services_v2.abuse_service import abuse_service
 from src.services_v2.metrics_service import metrics_service
+from src.services_v2.comment_store_service import comment_store_service
 
 logger = logging.getLogger(__name__)
 
@@ -162,19 +163,26 @@ class ControlClient:
             await self._handle_abuse_report(msg_id, payload)
         elif msg_type == "metrics.report":
             await self._handle_metrics_report(msg_id, payload)
+        elif msg_type == "comment.archive":
+            await self._handle_comment_archive(msg_id, payload)
+        elif msg_type == "comment.get":
+            await self._handle_comment_get(msg_id, payload)
         elif msg_type == "ping":
             await self._send({"id": msg_id, "type": "pong", "timestamp": _ts()})
         else:
             logger.debug(f"ℹ️ 未处理的消息类型: {msg_type}")
 
     async def _handle_cache_get(self, msg_id, payload):
-        """Worker 429 兜底：查询本地缓存"""
+        """Worker 缓存查询：429 兜底或内存未命中预查。
+        预查（prefetch=true）不写 miss 日志，避免 access_logs 暴涨"""
         cache_key = payload.get("cache_key", "")
         worker_request_id = payload.get("worker_request_id")
         client_ip = payload.get("client_ip")
+        # prefetch 标记：内存未命中的主动预查，命中才有日志价值
+        log_miss = not bool(payload.get("prefetch"))
         result = await cache_service.get(
             cache_key, worker_request_id=worker_request_id,
-            client_ip=client_ip,
+            client_ip=client_ip, log_miss=log_miss,
         )
         hit = bool(result and result.get("hit"))
         await self._send({
@@ -274,6 +282,31 @@ class ControlClient:
             "timestamp": _ts(), "payload": {"success": ok},
         })
         self._audit("worker_to_local", "metrics.report", "success" if ok else "failed")
+
+    async def _handle_comment_archive(self, msg_id, payload):
+        """Worker 弹幕归档：以条数为准存到本地端兜底持久化"""
+        episode_id = payload.get("episode_id", "")
+        body = payload.get("body", "")
+        source = payload.get("source", "r2_archive")
+        result = comment_store_service.archive(episode_id, body, source=source)
+        await self._send({
+            "id": msg_id, "type": "comment.archive.result",
+            "timestamp": _ts(), "payload": result,
+        })
+        self._audit("worker_to_local", "comment.archive",
+                    "success" if result.get("saved") else "skipped")
+
+    async def _handle_comment_get(self, msg_id, payload):
+        """Worker 弹幕兜底读取：429/R2 无对象时按 episode_id 取本地端"""
+        episode_id = payload.get("episode_id", "")
+        result = comment_store_service.get(episode_id)
+        hit = bool(result and result.get("hit"))
+        await self._send({
+            "id": msg_id, "type": "comment.get.result",
+            "timestamp": _ts(), "payload": result if hit else {"hit": False},
+        })
+        self._audit("worker_to_local", "comment.get",
+                    "success" if hit else "miss")
 
     # ---------- 本地发起 RPC ----------
     async def request(self, msg_type: str, payload: Dict[str, Any],

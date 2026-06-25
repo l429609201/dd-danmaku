@@ -92,8 +92,10 @@ class CacheService:
 
     async def get(self, cache_key: str,
                   worker_request_id: Optional[str] = None,
-                  client_ip: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Worker 429 兜底读取本地缓存"""
+                  client_ip: Optional[str] = None,
+                  log_miss: bool = True) -> Optional[Dict[str, Any]]:
+        """读取本地缓存。log_miss=False 时不写 miss/expired 访问日志
+        （主动预查场景调用频繁，避免 access_logs 暴涨）"""
         client_ip = (client_ip or None)
         db = get_db_sync()
         try:
@@ -101,17 +103,19 @@ class CacheService:
                 ApiResponseCache.cache_key == cache_key
             ).first()
             if not row:
-                self._log(db, cache_key, "", "miss",
-                          worker_request_id=worker_request_id,
-                          client_ip=client_ip)
+                if log_miss:
+                    self._log(db, cache_key, "", "miss",
+                              worker_request_id=worker_request_id,
+                              client_ip=client_ip)
                 return None
 
             current = now()
             # 超过 expire_at 不再兜底
             if row.expire_at and current > row.expire_at:
-                self._log(db, cache_key, row.api_path, "expired",
-                          worker_request_id=worker_request_id,
-                          client_ip=client_ip)
+                if log_miss:
+                    self._log(db, cache_key, row.api_path, "expired",
+                              worker_request_id=worker_request_id,
+                              client_ip=client_ip)
                 return None
 
             # 读取 body：优先 Redis
@@ -121,9 +125,10 @@ class CacheService:
             if body is None:
                 body = row.response_body
             if body is None:
-                self._log(db, cache_key, row.api_path, "miss",
-                          worker_request_id=worker_request_id,
-                          client_ip=client_ip)
+                if log_miss:
+                    self._log(db, cache_key, row.api_path, "miss",
+                              worker_request_id=worker_request_id,
+                              client_ip=client_ip)
                 return None
 
             # 判断是否 stale，stale 则标记待刷新

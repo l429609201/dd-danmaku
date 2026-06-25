@@ -28,11 +28,7 @@
           <tr v-if="!items.length"><td colspan="5" class="empty">暂无日志</td></tr>
         </tbody>
       </table>
-      <div class="pager">
-        <button class="btn" :disabled="page<=1" @click="prev">上一页</button>
-        <span>第 {{ page }} 页 / 共 {{ total }} 条</span>
-        <button class="btn" :disabled="page*pageSize>=total" @click="next">下一页</button>
-      </div>
+      <Pager :page="page" :page-size="pageSize" :total="total" @update:page="goPage" />
     </div>
   </div>
 </template>
@@ -40,9 +36,11 @@
 <script>
 import { ref, onMounted } from 'vue'
 import { apiV2 } from '../utils/api.js'
+import Pager from '../components/Pager.vue'
 
 export default {
   name: 'RuntimeEvents',
+  components: { Pager },
   setup() {
     const items = ref([])
     const total = ref(0)
@@ -65,12 +63,11 @@ export default {
     }
 
     const reload = () => { page.value = 1; load() }
-    const prev = () => { if (page.value > 1) { page.value--; load() } }
-    const next = () => { if (page.value * pageSize.value < total.value) { page.value++; load() } }
+    const goPage = (p) => { page.value = p; load() }
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
 
     onMounted(load)
-    return { items, total, page, pageSize, level, category, msg, reload, prev, next, fmt }
+    return { items, total, page, pageSize, level, category, msg, reload, goPage, fmt }
   }
 }
 </script>

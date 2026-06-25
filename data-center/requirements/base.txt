@@ -25,3 +25,4 @@ passlib[bcrypt]==1.7.4  # 密码哈希（必需）
 pytz==2024.2  # 时区处理
 python-jose[cryptography]==3.3.0  # JWT令牌处理（与misaka_danmu_server保持一致）
 psutil==5.9.6  # 系统监控
+geoip2==4.8.0  # IP 地理定位（MaxMind GeoLite2 离线库，请求地图城市级散点）

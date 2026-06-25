@@ -63,9 +63,13 @@ async def dashboard_summary(_: LocalUser = Depends(get_current_user)):
             func.coalesce(func.sum(WorkerMetricsSnapshot.blocked_abuse), 0),
             func.coalesce(func.sum(WorkerMetricsSnapshot.invalid_route), 0),
             func.coalesce(func.sum(WorkerMetricsSnapshot.upstream_429), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.status_2xx), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.status_4xx), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.status_5xx), 0),
         ).filter(WorkerMetricsSnapshot.snapshot_at >= today_start).first()
         total_req, total_resp, b_in, b_out, mem_hit, r2_hit, miss, \
-            blk_ip, blk_ua, blk_abuse, inv_route, up429 = [int(x or 0) for x in m]
+            blk_ip, blk_ua, blk_abuse, inv_route, up429, \
+            s2xx, s4xx, s5xx = [int(x or 0) for x in m]
         total_hits = mem_hit + r2_hit
         hit_rate = round(total_hits / (total_hits + miss) * 100, 1) if (total_hits + miss) > 0 else 0.0
 
@@ -97,6 +101,9 @@ async def dashboard_summary(_: LocalUser = Depends(get_current_user)):
                 "blocked_abuse": blk_abuse,
                 "invalid_route": inv_route,
                 "upstream_429": up429,
+                "status_2xx": s2xx,
+                "status_4xx": s4xx,
+                "status_5xx": s5xx,
             },
             "totals": {
                 "cache_count": db.query(ApiResponseCache).count(),
@@ -196,8 +203,21 @@ async def dashboard_metrics_trends(days: int = 7, _: LocalUser = Depends(get_cur
 
 @router.get("/db-stats")
 async def dashboard_db_stats(_: LocalUser = Depends(get_current_user)):
-    """数据库与 Redis 状态：SQL 表统计/占用/连接池 + Redis INFO"""
-    from src.services_v2.db_stats_service import collect_sql_stats, collect_redis_stats
+    """数据库与 Redis 状态：SQL 表统计/占用/连接池 + Redis INFO + 弹幕兜底存储"""
+    from src.services_v2.db_stats_service import (
+        collect_sql_stats, collect_redis_stats, collect_comment_store_stats,
+    )
     sql = collect_sql_stats()
     redis_info = await collect_redis_stats()
-    return ApiResult(data={"sql": sql, "redis": redis_info})
+    comment_store = collect_comment_store_stats()
+    return ApiResult(data={"sql": sql, "redis": redis_info, "comment_store": comment_store})
+
+
+@router.get("/ip-geo")
+async def dashboard_ip_geo(_: LocalUser = Depends(get_current_user)):
+    """请求来源地图：解析 IP 统计为城市级散点（GeoLite2，库缺失时降级）"""
+    import asyncio
+    from src.services_v2.geoip_service import geoip_service
+    # 解析可能涉及大量 IP，放线程池避免阻塞事件循环
+    data = await asyncio.to_thread(geoip_service.aggregate_points)
+    return ApiResult(data=data)

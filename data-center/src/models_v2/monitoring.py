@@ -129,3 +129,23 @@ class WorkerMetricsSnapshot(Base):
     # 瞬时态
     total_requests_lifetime = Column(BigInteger, default=0, nullable=False)
     api_cache_size = Column(Integer, default=0, nullable=False)
+
+
+class LocalCommentStore(Base):
+    """本地端弹幕兜底持久化存储元数据（实际弹幕体存文件系统）
+
+    架构B：R2 为一级实时缓存，本地端为兜底持久化。
+    以弹幕条数为准更新（新响应条数 >= 旧值才覆盖，避免残缺响应污染）。
+    """
+    __tablename__ = "local_comment_store"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    episode_id = Column(String(64), unique=True, index=True, nullable=False)
+    # 弹幕 JSON 文件相对/绝对路径
+    file_path = Column(String(500), nullable=False)
+    size_bytes = Column(BigInteger, default=0, nullable=False)
+    comment_count = Column(Integer, default=0, index=True, nullable=False)
+    source = Column(String(50), default="r2_archive", nullable=False)
+    created_at = Column(DateTime, default=now, index=True, nullable=False)
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
+    last_used_at = Column(DateTime, index=True, nullable=True)

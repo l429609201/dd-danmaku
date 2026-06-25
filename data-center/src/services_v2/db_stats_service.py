@@ -138,3 +138,32 @@ async def collect_redis_stats() -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"⚠️ Redis 状态采集失败: {e}")
         return {"enabled": True, "error": str(e)}
+
+
+def collect_comment_store_stats() -> Dict[str, Any]:
+    """采集本地端弹幕兜底存储统计：文件数、总大小、上限、占比"""
+    from src.models_v2 import LocalCommentStore
+    from src.services_v2.comment_store_service import MAX_STORE_BYTES
+    db = get_db_sync()
+    try:
+        count = db.query(func.count(LocalCommentStore.id)).scalar() or 0
+        total_size = db.query(
+            func.coalesce(func.sum(LocalCommentStore.size_bytes), 0)
+        ).scalar() or 0
+        total_comments = db.query(
+            func.coalesce(func.sum(LocalCommentStore.comment_count), 0)
+        ).scalar() or 0
+        ratio = round(int(total_size) / MAX_STORE_BYTES * 100, 1) if MAX_STORE_BYTES > 0 else 0.0
+        return {
+            "file_count": int(count),
+            "total_size_bytes": int(total_size),
+            "total_comments": int(total_comments),
+            "max_bytes": MAX_STORE_BYTES,
+            "usage_ratio": ratio,
+        }
+    except Exception as e:
+        logger.warning(f"⚠️ 弹幕存储统计失败: {e}")
+        return {"file_count": 0, "total_size_bytes": 0, "total_comments": 0,
+                "max_bytes": MAX_STORE_BYTES, "usage_ratio": 0.0}
+    finally:
+        db.close()

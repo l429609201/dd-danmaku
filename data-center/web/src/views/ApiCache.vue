@@ -42,7 +42,7 @@
         </el-table-column>
       </el-table>
       <div class="app-pager">
-        <el-pagination layout="prev, pager, next, total" :total="total"
+        <el-pagination layout="prev, pager, next, jumper, total" :total="total"
                        :page-size="pageSize" :current-page="page" @current-change="onPage" />
       </div>
     </el-card>

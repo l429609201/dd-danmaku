@@ -9,6 +9,8 @@ import logging
 from datetime import timedelta
 from typing import Optional
 
+from sqlalchemy import inspect
+
 from src.database import get_db_sync
 from src.models_v2 import (
     ApiCacheAccessLog, ApiResponseCache, AppSetting,
@@ -78,7 +80,7 @@ class CleanupService:
             ),
             "worker_request_logs": self._delete_older_than(
                 WorkerRequestLog, "created_at", current,
-                self._get_int("cleanup_worker_log_retention_days", 14),
+                self._get_int("cleanup_worker_log_retention_days", 7),
             ),
             "worker_metrics_snapshot": self._delete_older_than(
                 WorkerMetricsSnapshot, "snapshot_at", current,
@@ -86,7 +88,7 @@ class CleanupService:
             ),
             "ip_request_stats_snapshot": self._delete_older_than(
                 IpRequestStatSnapshot, "snapshot_at", current,
-                self._get_int("cleanup_ip_snapshot_retention_days", 14),
+                self._get_int("cleanup_ip_snapshot_retention_days", 7),
             ),
         }
 
@@ -98,24 +100,35 @@ class CleanupService:
         return result
 
     def _delete_older_than(self, model, field_name: str, current, days: int) -> int:
-        """删除指定模型中早于保留期的数据"""
+        """删除早于保留期的数据：分批 SQL DELETE，避免百万行 load 进内存导致 OOM"""
         if days <= 0:
             return 0
         cutoff = current - timedelta(days=days)
-        db = get_db_sync()
-        try:
-            field = getattr(model, field_name)
-            rows = db.query(model).filter(field < cutoff).all()
-            count = len(rows)
-            for row in rows:
-                db.delete(row)
-            db.commit()
-            return count
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+        field = getattr(model, field_name)
+        total = 0
+        batch = 5000
+        # 循环分批删除，每批提交，直到没有更多过期行
+        while True:
+            db = get_db_sync()
+            try:
+                # 子查询取一批主键，再按主键删除（兼容 MySQL/SQLite/PG）
+                pk = inspect(model).primary_key[0]
+                ids = [r[0] for r in db.query(pk).filter(field < cutoff)
+                       .limit(batch).all()]
+                if not ids:
+                    break
+                deleted = db.query(model).filter(pk.in_(ids)) \
+                    .delete(synchronize_session=False)
+                db.commit()
+                total += deleted
+                if deleted < batch:
+                    break
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
+        return total
 
     async def _delete_expired_cache_shells(self, current, retention_days: int) -> int:
         """可选删除过期很久的响应缓存空壳，并顺带清 Redis key"""

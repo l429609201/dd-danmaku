@@ -35,11 +35,7 @@
           <tr v-if="!items.length"><td colspan="7" class="empty">暂无规则</td></tr>
         </tbody>
       </table>
-      <div class="pager">
-        <button class="btn" :disabled="page<=1" @click="prev">上一页</button>
-        <span>第 {{ page }} 页 / 共 {{ total }} 条</span>
-        <button class="btn" :disabled="page*pageSize>=total" @click="next">下一页</button>
-      </div>
+      <Pager :page="page" :page-size="pageSize" :total="total" @update:page="goPage" />
     </div>
 
     <div v-if="showCreate" class="modal-mask" @click.self="showCreate=false">
@@ -92,9 +88,11 @@
 <script>
 import { reactive, ref, onMounted } from 'vue'
 import { apiV2 } from '../utils/api.js'
+import Pager from '../components/Pager.vue'
 
 export default {
   name: 'UaRules',
+  components: { Pager },
   setup() {
     const items = ref([])
     const total = ref(0)
@@ -218,13 +216,13 @@ export default {
       catch (e) { msg.value = e.message }
     }
 
-    const prev = () => { if (page.value > 1) { page.value--; load() } }
-    const next = () => { if (page.value * pageSize.value < total.value) { page.value++; load() } }
+    // 跳转到指定页（含上下页/输入跳转）
+    const goPage = (p) => { page.value = p; load() }
 
     onMounted(load)
     return { items, total, page, pageSize, keyword, msg, showCreate, creating, editId, form,
       showImport, importText, replaceAll, importing, importError,
-      load, openCreate, openEdit, addPathLimit, removePathLimit, submit, toggle, del, resync, prev, next,
+      load, openCreate, openEdit, addPathLimit, removePathLimit, submit, toggle, del, resync, goPage,
       openImport, doImport, exportJson }
   }
 }

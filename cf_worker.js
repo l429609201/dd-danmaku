@@ -1791,6 +1791,35 @@ async function handleRequest(request, env, ctx) {
                 }
             });
         }
+
+        // 内存未命中：先查本地端缓存，命中则直接返回，避免每次都打弹弹触发 429
+        if (env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)) {
+            const localCacheKey = buildLocalCacheKey(request.method, apiPath, tUrlObj.searchParams);
+            const local = await controlHubRpc(env, 'cache.get', {
+                cache_key: localCacheKey,
+                api_path: apiPath,
+                method: request.method,
+                client_ip: clientIP,
+                worker_request_id: request.headers.get('cf-ray') || '',
+                prefetch: true,
+            }, 800);
+            if (local && local.hit && local.body) {
+                console.log(`📦 [${clientIP}] 本地端缓存命中${local.stale ? '(stale)' : ''}: ${apiPath}`);
+                bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
+                bumpMetric('bytesOut', local.body.length || 0);
+                // 命中即回填本实例内存，降低后续同 key 的 DO RPC
+                memoryCache.apiCache.set(cacheKey, { data: local.body, timestamp: Date.now() });
+                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, stale: !!local.stale });
+                return new Response(local.body, {
+                    status: local.status || 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*',
+                        'X-Cache': local.stale ? 'HIT-LOCAL-STALE' : 'HIT-LOCAL',
+                    }
+                });
+            }
+        }
     }
 
     // --- R2 弹幕缓存命中检查 ---
@@ -1814,6 +1843,28 @@ async function handleRequest(request, env, ctx) {
                     'X-Cache': 'HIT-R2',
                 }
             });
+        }
+
+        // R2 无对象：查本地端兜底持久化（架构B），命中则回填 R2 并返回
+        if (env.CONTROL_HUB) {
+            const local = await controlHubRpc(env, 'comment.get', { episode_id: episodeId }, 800);
+            if (local && local.hit && local.body) {
+                console.log(`📦 [${clientIP}] 本地端弹幕兜底命中: ${episodeId} (${local.comment_count}条)`);
+                bumpMetric('r2CacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
+                bumpMetric('bytesOut', local.body.length || 0);
+                addMemoryLog('INFO', '本地端弹幕兜底命中', { ip: clientIP, path: apiPath });
+                // 回填 R2 一级缓存，下次走边缘
+                const r2Promise = r2PutComment(env, r2Key, local.body).catch(() => {});
+                if (ctx && ctx.waitUntil) ctx.waitUntil(r2Promise);
+                return new Response(local.body, {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*',
+                        'X-Cache': 'HIT-LOCAL-COMMENT',
+                    }
+                });
+            }
         }
     }
 
@@ -1966,6 +2017,16 @@ async function handleRequest(request, env, ctx) {
                         console.log(`⚠️ [${clientIP}] R2弹幕缓存存入失败: ${e.message}`);
                     });
                     if (ctx && ctx.waitUntil) ctx.waitUntil(r2Promise);
+
+                    // 架构B：同时归档到本地端兜底持久化（以弹幕条数为准更新）
+                    if (env.CONTROL_HUB) {
+                        const archivePromise = controlHubRpc(env, 'comment.archive', {
+                            episode_id: episodeId,
+                            body: responseText,
+                            source: 'origin',
+                        }, 3000).catch(e => console.log(`⚠️ [${clientIP}] comment.archive 失败: ${e.message}`));
+                        if (ctx && ctx.waitUntil) ctx.waitUntil(archivePromise);
+                    }
                 } else {
                     console.log(`📦 [${clientIP}] 弹幕为空，跳过R2缓存: ${apiPath}`);
                 }
@@ -2001,6 +2062,26 @@ async function handleRequest(request, env, ctx) {
             });
         }
         console.log(`ℹ️ [${clientIP}] 本地无可用兜底缓存，原样返回 429`);
+    }
+
+    // 上游 429 且为弹幕接口：查本地端弹幕兜底持久化（R2 可能也无对象）
+    if (response.status === 429 && isCommentApi && env.CONTROL_HUB) {
+        const episodeId = apiPath.replace('/api/v2/comment/', '').split('?')[0];
+        console.log(`🛟 [${clientIP}] 弹幕上游 429，尝试本地端弹幕兜底: ${episodeId}`);
+        const local = await controlHubRpc(env, 'comment.get', { episode_id: episodeId }, 800);
+        if (local && local.hit && local.body) {
+            console.log(`✅ [${clientIP}] 命中本地端弹幕兜底: ${episodeId} (${local.comment_count}条)`);
+            return new Response(local.body, {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                    'X-Cache': 'HIT-LOCAL-COMMENT',
+                    'X-Upstream-Status': '429',
+                },
+            });
+        }
+        console.log(`ℹ️ [${clientIP}] 本地端无弹幕兜底，原样返回 429`);
     }
 
     // 重新创建Response对象（因为body已经被读取）

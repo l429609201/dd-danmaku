@@ -74,7 +74,38 @@
       <!-- Worker 近 7 天趋势图 -->
       <div class="panel" style="margin-bottom: 24px;">
         <h2 class="panel-title">近 7 天 Worker 流量趋势</h2>
-        <div ref="trendChart" class="chart"></div>
+        <div v-show="trendHasData" ref="trendChart" class="chart"></div>
+        <div v-show="!trendHasData" class="empty">暂无趋势数据（需 Worker 连接并上报指标后生成）</div>
+      </div>
+
+      <!-- 分布图表：状态码 / 拦截 / 命中 -->
+      <div class="chart-grid">
+        <div class="panel">
+          <h2 class="panel-title">状态码分布（今日）</h2>
+          <div v-show="hasDist" ref="statusChart" class="chart chart-sm"></div>
+          <div v-show="!hasDist" class="empty">暂无数据</div>
+        </div>
+        <div class="panel">
+          <h2 class="panel-title">拦截类型分布（今日）</h2>
+          <div v-show="hasBlocked" ref="blockChart" class="chart chart-sm"></div>
+          <div v-show="!hasBlocked" class="empty">今日无拦截</div>
+        </div>
+        <div class="panel">
+          <h2 class="panel-title">缓存命中构成（今日）</h2>
+          <div v-show="hasHit" ref="hitChart" class="chart chart-sm"></div>
+          <div v-show="!hasHit" class="empty">暂无命中数据</div>
+        </div>
+      </div>
+
+      <!-- 请求来源地图 -->
+      <div class="panel" style="margin: 24px 0;">
+        <h2 class="panel-title">请求来源分布
+          <span class="map-sub" v-if="geo && geo.available">已解析 {{ geo.resolved }} / {{ geo.total_ips }} 个 IP</span>
+        </h2>
+        <div v-show="geoAvailable" ref="mapChart" class="chart chart-map"></div>
+        <div v-show="!geoAvailable" class="empty">
+          未配置 IP 地理库。请下载 GeoLite2-City.mmdb 放到 /app/config/ 后重启
+        </div>
       </div>
 
       <!-- 最近错误 -->
@@ -99,6 +130,7 @@
 <script>
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
+import * as echarts from 'echarts'
 import { apiV2 } from '../utils/api.js'
 
 export default {
@@ -108,10 +140,22 @@ export default {
     const loading = ref(true)
     const error = ref('')
     const data = ref(null)
+    const geo = ref(null)
+    // 图表 DOM 引用
     const trendChart = ref(null)
-    let chartInstance = null
+    const statusChart = ref(null)
+    const blockChart = ref(null)
+    const hitChart = ref(null)
+    const mapChart = ref(null)
+    // 图表实例（统一管理便于 resize/dispose）
+    const charts = {}
+    // 数据有无标志（控制空态显示）
+    const trendHasData = ref(false)
+    const hasDist = ref(false)
+    const hasBlocked = ref(false)
+    const hasHit = ref(false)
+    const geoAvailable = ref(false)
 
-    // Worker 今日指标（summary 里的 worker_metrics_today）
     const wm = computed(() => (data.value ? data.value.worker_metrics_today : null))
 
     const load = async () => {
@@ -120,28 +164,80 @@ export default {
       try {
         const res = await apiV2('/dashboard/summary')
         data.value = res.data
+        loading.value = false
         await nextTick()
-        await loadTrends()
+        // 并行渲染各图表，互不阻塞
+        renderTodayCharts()
+        loadTrends()
+        loadGeoMap()
       } catch (e) {
         error.value = e.message
-      } finally {
         loading.value = false
       }
     }
 
+    // 今日分布饼图（状态码/拦截/命中），数据来自 summary
+    const renderTodayCharts = () => {
+      const m = data.value && data.value.worker_metrics_today
+      if (!m) return
+      // 状态码分布
+      const statusData = [
+        { name: '2xx', value: m.status_2xx || 0, itemStyle: { color: '#52c41a' } },
+        { name: '4xx', value: m.status_4xx || 0, itemStyle: { color: '#faad14' } },
+        { name: '5xx', value: m.status_5xx || 0, itemStyle: { color: '#ff4d4f' } },
+      ].filter(x => x.value > 0)
+      hasDist.value = statusData.length > 0
+      if (hasDist.value) drawPie(statusChart, '状态码', statusData)
+      // 拦截类型分布
+      const blockData = [
+        { name: 'IP 拦截', value: m.blocked_ip || 0 },
+        { name: 'UA 拦截', value: m.blocked_ua || 0 },
+        { name: '滥用封禁', value: m.blocked_abuse || 0 },
+        { name: '非法路由', value: m.invalid_route || 0 },
+      ].filter(x => x.value > 0)
+      hasBlocked.value = blockData.length > 0
+      if (hasBlocked.value) drawPie(blockChart, '拦截', blockData)
+      // 命中构成
+      const hitData = [
+        { name: '内存命中', value: m.mem_cache_hits || 0, itemStyle: { color: '#1677ff' } },
+        { name: 'R2 命中', value: m.r2_cache_hits || 0, itemStyle: { color: '#13c2c2' } },
+        { name: '回源', value: m.cache_miss || 0, itemStyle: { color: '#faad14' } },
+      ].filter(x => x.value > 0)
+      hasHit.value = hitData.length > 0
+      if (hasHit.value) drawPie(hitChart, '命中', hitData)
+    }
+
+    const drawPie = (elRef, name, seriesData) => {
+      if (!elRef.value) return
+      const c = echarts.init(elRef.value)
+      charts[name] = c
+      c.setOption({
+        tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+        legend: { bottom: 0, type: 'scroll' },
+        series: [{
+          name, type: 'pie', radius: ['40%', '70%'], center: ['50%', '45%'],
+          data: seriesData, label: { show: false }, emphasis: { label: { show: true } },
+        }],
+      })
+    }
+
     // 加载并渲染 Worker 流量趋势图
     const loadTrends = async () => {
-      if (!trendChart.value) return
       try {
         const res = await apiV2('/dashboard/metrics-trends?days=7')
         const d = res.data
-        // 动态加载 echarts，避免打进主 chunk
-        const echarts = await import('echarts')
-        if (!chartInstance) chartInstance = echarts.init(trendChart.value)
-        chartInstance.setOption({
+        // 判断是否有非零数据点
+        const sum = (arr) => (arr || []).reduce((a, b) => a + (b || 0), 0)
+        trendHasData.value = sum(d.requests) + sum(d.hits) + sum(d.miss) + sum(d.blocked) > 0
+        if (!trendHasData.value) return
+        await nextTick()
+        if (!trendChart.value) return
+        const c = echarts.init(trendChart.value)
+        charts.trend = c
+        c.setOption({
           tooltip: { trigger: 'axis' },
           legend: { data: ['请求', '命中', '回源', '拦截'] },
-          grid: { left: 40, right: 20, top: 40, bottom: 30 },
+          grid: { left: 50, right: 20, top: 40, bottom: 30 },
           xAxis: { type: 'category', data: d.labels },
           yAxis: { type: 'value' },
           series: [
@@ -154,7 +250,42 @@ export default {
       } catch (e) { /* 趋势图失败不阻塞页面 */ }
     }
 
-    const onResize = () => { if (chartInstance) chartInstance.resize() }
+    // 加载并渲染请求来源地图（城市级散点）
+    const loadGeoMap = async () => {
+      try {
+        const res = await apiV2('/dashboard/ip-geo')
+        geo.value = res.data
+        geoAvailable.value = !!(res.data && res.data.available && res.data.points.length)
+        if (!geoAvailable.value) return
+        await nextTick()
+        if (!mapChart.value) return
+        // 运行时加载世界地图 GeoJSON（echarts5 不再内置；失败则降级为无底图散点）
+        let worldJson = null
+        if (!echarts.getMap('world')) {
+          worldJson = await fetch('https://fastly.jsdelivr.net/npm/echarts@4.9.0/map/json/world.json')
+            .then(r => r.ok ? r.json() : null).catch(() => null)
+          if (worldJson) echarts.registerMap('world', worldJson)
+        }
+        const hasMap = !!echarts.getMap('world')
+        const c = echarts.init(mapChart.value)
+        charts.map = c
+        const pts = geo.value.points
+        const maxV = Math.max(...pts.map(p => p.value[2]), 1)
+        c.setOption({
+          tooltip: { trigger: 'item', formatter: (p) => `${p.name}<br/>请求量: ${p.value ? p.value[2] : 0}` },
+          visualMap: { min: 0, max: maxV, calculable: true, left: 10, bottom: 10,
+            inRange: { color: ['#a3d2ff', '#1677ff', '#ff4d4f'] } },
+          geo: hasMap ? { map: 'world', roam: true, itemStyle: { areaColor: '#f0f2f5', borderColor: '#ccc' } } : undefined,
+          series: [{
+            type: 'scatter', coordinateSystem: hasMap ? 'geo' : undefined,
+            data: pts, symbolSize: (v) => 6 + (v[2] / maxV) * 24,
+            encode: { value: 2 },
+          }],
+        })
+      } catch (e) { /* 地图失败不阻塞 */ }
+    }
+
+    const onResize = () => { Object.values(charts).forEach(c => c && c.resize()) }
 
     const goto = (path) => router.push(path)
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
@@ -170,9 +301,13 @@ export default {
     onMounted(() => { load(); window.addEventListener('resize', onResize) })
     onUnmounted(() => {
       window.removeEventListener('resize', onResize)
-      if (chartInstance) { chartInstance.dispose(); chartInstance = null }
+      Object.values(charts).forEach(c => c && c.dispose())
     })
-    return { loading, error, data, wm, trendChart, goto, fmt, fmtBytes }
+    return {
+      loading, error, data, wm, geo, goto, fmt, fmtBytes,
+      trendChart, statusChart, blockChart, hitChart, mapChart,
+      trendHasData, hasDist, hasBlocked, hasHit, geoAvailable,
+    }
   }
 }
 </script>
@@ -188,6 +323,10 @@ export default {
 .card-accent { border-left: 4px solid #1677ff; }
 .section-title { font-size: 16px; margin: 8px 0 14px; color: #555; }
 .chart { width: 100%; height: 320px; }
+.chart-sm { height: 260px; }
+.chart-map { height: 460px; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.map-sub { font-size: 12px; color: #999; font-weight: normal; margin-left: 10px; }
 .card-label { color: #888; font-size: 13px; margin-bottom: 8px; }
 .card-value { font-size: 26px; font-weight: 600; color: #333; }
 .card-sub { color: #999; font-size: 12px; margin-top: 4px; }

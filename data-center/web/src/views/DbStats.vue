@@ -36,6 +36,11 @@
           <div class="card-value">{{ data.redis.hit_rate }}%</div>
           <div class="card-sub">{{ data.redis.total_keys }} keys / {{ data.redis.connected_clients }} 连接</div>
         </div>
+        <div class="card" v-if="data.comment_store" :class="data.comment_store.usage_ratio > 90 ? 'card-warn' : 'card-accent'">
+          <div class="card-label">本地弹幕兜底</div>
+          <div class="card-value">{{ fmtBytes(data.comment_store.total_size_bytes) }}</div>
+          <div class="card-sub">{{ data.comment_store.file_count }} 集 / 上限 {{ fmtBytes(data.comment_store.max_bytes) }}（{{ data.comment_store.usage_ratio }}%）</div>
+        </div>
       </div>
 
       <!-- 表清单 -->
