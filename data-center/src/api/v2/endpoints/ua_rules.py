@@ -3,6 +3,7 @@ UA 限流规则管理接口（S6）
 
 结构化管理 Worker uaConfigs；增删改后通过统一 runtime 配置一次性下发。
 """
+import asyncio
 import logging
 from typing import Optional
 
@@ -68,7 +69,7 @@ def _normalize_import(data) -> list:
 
 
 @router.get("")
-async def list_rules(
+def list_rules(
     keyword: Optional[str] = None,
     page: int = 1, page_size: int = Query(50, le=200),
     _: LocalUser = Depends(get_current_user),
@@ -164,7 +165,7 @@ async def resync(_: LocalUser = Depends(require_operator)):
 
 
 @router.get("/export")
-async def export_rules(_: LocalUser = Depends(get_current_user)):
+def export_rules(_: LocalUser = Depends(get_current_user)):
     """导出全部 UA 规则为 Worker 对象格式 JSON"""
     db = get_db_sync()
     try:
@@ -191,57 +192,62 @@ async def import_rules(body: UaRuleImport, _: LocalUser = Depends(require_operat
     if not items:
         raise HTTPException(status_code=400, detail="JSON 为空或格式不正确")
 
-    created = updated = 0
-    errors = []
-    db = get_db_sync()
-    try:
-        if body.replace_all:
-            db.query(UaLimitRule).delete()
+    # 同步 DB 导入循环抽成内部函数，放线程池执行避免阻塞事件循环
+    def _do_import():
+        created = updated = 0
+        errors = []
+        db = get_db_sync()
+        try:
+            if body.replace_all:
+                db.query(UaLimitRule).delete()
+                db.commit()
+
+            for it in items:
+                ua_key = str(it.get("ua_key") or "").strip()
+                if not ua_key:
+                    errors.append("缺少 ua_key 的条目已跳过")
+                    continue
+                # 兼容两种字段命名
+                user_agent = it.get("userAgent") or it.get("user_agent")
+                per_hour = _pick_int(it.get("maxRequestsPerHour"))
+                per_day = _pick_int(it.get("maxRequestsPerDay"))
+                path_limits = it.get("pathLimits") or it.get("path_limits") or []
+                description = it.get("description")
+                enabled = it.get("enabled", True)
+                # max_requests/window_ms：优先显式值，否则用每小时上限映射为小时窗口
+                max_requests = _pick_int(it.get("maxRequests")) or _pick_int(it.get("max_requests"))
+                window_ms = _pick_int(it.get("windowMs")) or _pick_int(it.get("window_ms"))
+                if max_requests is None:
+                    max_requests = per_hour if per_hour is not None else 0
+                    window_ms = window_ms or (3600000 if per_hour is not None else 60000)
+                if window_ms is None:
+                    window_ms = 60000
+
+                row = db.query(UaLimitRule).filter(UaLimitRule.ua_key == ua_key).first()
+                if row is None:
+                    row = UaLimitRule(ua_key=ua_key)
+                    db.add(row)
+                    created += 1
+                else:
+                    updated += 1
+                row.user_agent = user_agent
+                row.max_requests = max_requests
+                row.window_ms = window_ms
+                row.max_requests_per_hour = per_hour
+                row.max_requests_per_day = per_day
+                row.description = description
+                row.path_limits_json = path_limits
+                row.enabled = bool(enabled)
+                row.updated_at = now()
             db.commit()
+            return created, updated, errors
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=f"导入失败: {e}")
+        finally:
+            db.close()
 
-        for it in items:
-            ua_key = str(it.get("ua_key") or "").strip()
-            if not ua_key:
-                errors.append("缺少 ua_key 的条目已跳过")
-                continue
-            # 兼容两种字段命名
-            user_agent = it.get("userAgent") or it.get("user_agent")
-            per_hour = _pick_int(it.get("maxRequestsPerHour"))
-            per_day = _pick_int(it.get("maxRequestsPerDay"))
-            path_limits = it.get("pathLimits") or it.get("path_limits") or []
-            description = it.get("description")
-            enabled = it.get("enabled", True)
-            # max_requests/window_ms：优先显式值，否则用每小时上限映射为小时窗口
-            max_requests = _pick_int(it.get("maxRequests")) or _pick_int(it.get("max_requests"))
-            window_ms = _pick_int(it.get("windowMs")) or _pick_int(it.get("window_ms"))
-            if max_requests is None:
-                max_requests = per_hour if per_hour is not None else 0
-                window_ms = window_ms or (3600000 if per_hour is not None else 60000)
-            if window_ms is None:
-                window_ms = 60000
-
-            row = db.query(UaLimitRule).filter(UaLimitRule.ua_key == ua_key).first()
-            if row is None:
-                row = UaLimitRule(ua_key=ua_key)
-                db.add(row)
-                created += 1
-            else:
-                updated += 1
-            row.user_agent = user_agent
-            row.max_requests = max_requests
-            row.window_ms = window_ms
-            row.max_requests_per_hour = per_hour
-            row.max_requests_per_day = per_day
-            row.description = description
-            row.path_limits_json = path_limits
-            row.enabled = bool(enabled)
-            row.updated_at = now()
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"导入失败: {e}")
-    finally:
-        db.close()
+    created, updated, errors = await asyncio.to_thread(_do_import)
 
     pushed = await runtime_config_service.push_to_worker()
     msg = f"导入完成：新增 {created}，更新 {updated}"

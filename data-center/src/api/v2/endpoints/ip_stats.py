@@ -19,7 +19,7 @@ router = APIRouter()
 
 
 @router.get("/current")
-async def list_current(
+def list_current(
     worker_id: Optional[str] = None,
     keyword: Optional[str] = None,
     order_by: str = "total_count",
@@ -51,7 +51,7 @@ async def list_current(
 
 
 @router.get("/snapshots")
-async def list_snapshots(
+def list_snapshots(
     ip: Optional[str] = None,
     worker_id: Optional[str] = None,
     page: int = 1, page_size: int = Query(100, le=500),

@@ -4,6 +4,7 @@ API v2 依赖注入：JWT 认证 + 角色权限校验
 通过 Authorization: Bearer <token> 解析当前用户。
 角色等级：viewer < operator < admin。
 """
+import asyncio
 import logging
 from typing import Optional
 
@@ -22,7 +23,8 @@ async def get_current_user(
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="未提供认证令牌")
     token = authorization.split(" ", 1)[1]
-    user = await auth_service_v2.validate_jwt(token)
+    # 同步 DB 校验放线程池，避免阻塞事件循环（每个请求都走这里）
+    user = await asyncio.to_thread(auth_service_v2.validate_jwt, token)
     if not user:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
     return user

@@ -17,7 +17,7 @@ router = APIRouter()
 
 
 @router.get("")
-async def list_users(_: LocalUser = Depends(require_admin)):
+def list_users(_: LocalUser = Depends(require_admin)):
     """用户列表"""
     db = get_db_sync()
     try:
@@ -28,7 +28,7 @@ async def list_users(_: LocalUser = Depends(require_admin)):
 
 
 @router.post("")
-async def create_user(body: UserCreate, _: LocalUser = Depends(require_admin)):
+def create_user(body: UserCreate, _: LocalUser = Depends(require_admin)):
     """新增用户"""
     if body.role not in ("admin", "operator", "viewer"):
         raise HTTPException(status_code=400, detail="非法角色")
@@ -50,7 +50,7 @@ async def create_user(body: UserCreate, _: LocalUser = Depends(require_admin)):
 
 
 @router.put("/{user_id}")
-async def update_user(user_id: int, body: UserUpdate,
+def update_user(user_id: int, body: UserUpdate,
                       _: LocalUser = Depends(require_admin)):
     """更新用户"""
     db = get_db_sync()
@@ -76,7 +76,7 @@ async def update_user(user_id: int, body: UserUpdate,
 
 
 @router.delete("/{user_id}")
-async def delete_user(user_id: int, current: LocalUser = Depends(require_admin)):
+def delete_user(user_id: int, current: LocalUser = Depends(require_admin)):
     """删除用户（不能删自己）"""
     if user_id == current.id:
         raise HTTPException(status_code=400, detail="不能删除当前登录用户")
@@ -94,7 +94,7 @@ async def delete_user(user_id: int, current: LocalUser = Depends(require_admin))
 
 # ---------- API Token ----------
 @router.get("/api-tokens/list")
-async def list_tokens(_: LocalUser = Depends(require_admin)):
+def list_tokens(_: LocalUser = Depends(require_admin)):
     """Token 列表（只显示 hash 摘要）"""
     db = get_db_sync()
     try:
@@ -111,7 +111,7 @@ async def list_tokens(_: LocalUser = Depends(require_admin)):
 
 
 @router.post("/api-tokens")
-async def create_token(body: ApiTokenCreate,
+def create_token(body: ApiTokenCreate,
                        current: LocalUser = Depends(require_admin)):
     """创建 Token，仅此次返回明文"""
     raw = secrets.token_urlsafe(32)
@@ -133,7 +133,7 @@ async def create_token(body: ApiTokenCreate,
 
 
 @router.delete("/api-tokens/{token_id}")
-async def delete_token(token_id: int, _: LocalUser = Depends(require_admin)):
+def delete_token(token_id: int, _: LocalUser = Depends(require_admin)):
     """删除 Token"""
     db = get_db_sync()
     try:

@@ -50,7 +50,7 @@ def _policy_dict(p: CleanupPolicy) -> dict:
 
 
 @router.get("/policies")
-async def list_policies(_: LocalUser = Depends(get_current_user)):
+def list_policies(_: LocalUser = Depends(get_current_user)):
     """列出所有清理策略 + 定时配置 + 各表当前行数"""
     cleanup_service.ensure_default_policies()
     db = get_db_sync()
@@ -79,7 +79,7 @@ async def list_policies(_: LocalUser = Depends(get_current_user)):
 
 
 @router.put("/policies/{table_key}")
-async def update_policy(table_key: str, body: PolicyUpdate,
+def update_policy(table_key: str, body: PolicyUpdate,
                         _: LocalUser = Depends(require_operator)):
     """更新单表清理策略（启用/保留天数）"""
     if table_key not in TABLE_REGISTRY:
@@ -102,7 +102,7 @@ async def update_policy(table_key: str, body: PolicyUpdate,
 
 
 @router.put("/schedule")
-async def update_schedule(body: ScheduleUpdate,
+def update_schedule(body: ScheduleUpdate,
                           _: LocalUser = Depends(require_operator)):
     """更新定时任务全局开关与间隔"""
     db = get_db_sync()

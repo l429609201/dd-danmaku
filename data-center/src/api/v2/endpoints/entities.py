@@ -16,7 +16,7 @@ router = APIRouter()
 
 
 @router.get("")
-async def list_entities(
+def list_entities(
     type: Optional[str] = Query(None, description="anime/bangumi/episode"),
     keyword: Optional[str] = None,
     page: int = 1, page_size: int = Query(20, le=100),

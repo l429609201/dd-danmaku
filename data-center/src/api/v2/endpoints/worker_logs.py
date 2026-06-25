@@ -23,7 +23,7 @@ router = APIRouter()
 
 
 @router.get("")
-async def list_logs(
+def list_logs(
     worker_id: Optional[str] = None,
     level: Optional[str] = None,
     keyword: Optional[str] = None,

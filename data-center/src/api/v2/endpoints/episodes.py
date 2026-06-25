@@ -38,7 +38,7 @@ def _link_dict(r: EpisodeLink) -> dict:
 
 
 @router.get("/links")
-async def list_links(
+def list_links(
     keyword: Optional[str] = None, anime_id: Optional[str] = None,
     bangumi_id: Optional[str] = None, episode_id: Optional[str] = None,
     page: int = 1, page_size: int = Query(20, le=100),
@@ -53,7 +53,7 @@ async def list_links(
 
 
 @router.get("/links/{link_id}")
-async def get_link(link_id: int, _: LocalUser = Depends(get_current_user)):
+def get_link(link_id: int, _: LocalUser = Depends(get_current_user)):
     """集数链接详情"""
     db = get_db_sync()
     try:
@@ -66,7 +66,7 @@ async def get_link(link_id: int, _: LocalUser = Depends(get_current_user)):
 
 
 @router.post("/links")
-async def create_link(body: EpisodeLinkCreate,
+def create_link(body: EpisodeLinkCreate,
                       _: LocalUser = Depends(require_operator)):
     """手动创建集数链接"""
     row = episode_link_service.create_link(body.model_dump())
@@ -74,7 +74,7 @@ async def create_link(body: EpisodeLinkCreate,
 
 
 @router.put("/links/{link_id}")
-async def update_link(link_id: int, body: EpisodeLinkUpdate,
+def update_link(link_id: int, body: EpisodeLinkUpdate,
                       current: LocalUser = Depends(require_operator)):
     """人工修正集数链接"""
     row = episode_link_service.update_link(

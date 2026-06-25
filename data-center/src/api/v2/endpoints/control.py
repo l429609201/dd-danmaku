@@ -17,7 +17,7 @@ router = APIRouter()
 
 
 @router.get("/nodes")
-async def list_nodes(_: LocalUser = Depends(get_current_user)):
+def list_nodes(_: LocalUser = Depends(get_current_user)):
     """Worker 长连接节点状态"""
     db = get_db_sync()
     try:
@@ -38,7 +38,7 @@ async def list_nodes(_: LocalUser = Depends(get_current_user)):
 
 
 @router.get("/messages")
-async def list_messages(
+def list_messages(
     node_id: Optional[str] = None,
     direction: Optional[str] = None,
     message_type: Optional[str] = None,

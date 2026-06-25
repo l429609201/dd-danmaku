@@ -16,7 +16,7 @@ router = APIRouter()
 
 
 @router.get("")
-async def list_settings(_: LocalUser = Depends(get_current_user)):
+def list_settings(_: LocalUser = Depends(get_current_user)):
     """获取所有设置（敏感项脱敏）"""
     db = get_db_sync()
     try:
@@ -34,7 +34,7 @@ async def list_settings(_: LocalUser = Depends(get_current_user)):
 
 
 @router.put("/{key}")
-async def update_setting(
+def update_setting(
     key: str, req: SettingUpdate,
     _: LocalUser = Depends(require_admin),
 ):

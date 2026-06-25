@@ -118,11 +118,14 @@ class CleanupService:
             return {"enabled": False}
 
         current = now()
-        db = get_db_sync()
-        try:
-            policies = db.query(CleanupPolicy).all()
-        finally:
-            db.close()
+
+        def _load_policies():
+            db = get_db_sync()
+            try:
+                return db.query(CleanupPolicy).all()
+            finally:
+                db.close()
+        policies = await asyncio.to_thread(_load_policies)
 
         result = {}
         for p in policies:
@@ -140,10 +143,11 @@ class CleanupService:
                     deleted = await self._delete_expired_cache_shells(
                         current, p.retention_days)
                 else:
-                    deleted = self._delete_older_than(
-                        model, time_field, current, p.retention_days)
+                    # 同步分批 DELETE（可能删百万行）放线程池，避免阻塞事件循环
+                    deleted = await asyncio.to_thread(
+                        self._delete_older_than, model, time_field, current, p.retention_days)
                 result[p.table_key] = deleted
-                self._mark_policy_done(p.table_key, deleted)
+                await asyncio.to_thread(self._mark_policy_done, p.table_key, deleted)
             except Exception as e:
                 logger.error(f"❌ 清理 {p.table_key} 失败: {e}")
                 result[p.table_key] = f"error: {e}"

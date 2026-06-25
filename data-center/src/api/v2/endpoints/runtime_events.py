@@ -16,7 +16,7 @@ router = APIRouter()
 
 
 @router.get("")
-async def list_events(
+def list_events(
     level: Optional[str] = None,
     category: Optional[str] = None,
     event: Optional[str] = None,

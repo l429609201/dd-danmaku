@@ -3,6 +3,7 @@ v2 认证端点：登录 / 登出 / 当前用户 / 初始化状态
 """
 import hashlib
 import logging
+import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -26,13 +27,13 @@ def _ip_hash(request: Request) -> str:
 @router.post("/login", response_model=ApiResult)
 async def login(body: LoginRequest, request: Request):
     """用户登录，返回 JWT"""
-    user = await auth_service_v2.authenticate(body.username, body.password)
+    # 认证含 bcrypt（CPU 密集）+ DB，放线程池避免阻塞事件循环
+    user = await asyncio.to_thread(auth_service_v2.authenticate, body.username, body.password)
     if not user:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
-    token = await auth_service_v2.create_session(
-        user,
-        ip_hash=_ip_hash(request),
-        user_agent=request.headers.get("user-agent"),
+    token = await asyncio.to_thread(
+        auth_service_v2.create_session, user,
+        24, _ip_hash(request), request.headers.get("user-agent"),
     )
     return ApiResult(data={
         "access_token": token,
@@ -46,18 +47,18 @@ async def logout(request: Request, current_user: LocalUser = Depends(get_current
     """登出，吊销当前会话"""
     auth = request.headers.get("authorization", "")
     if auth.startswith("Bearer "):
-        await auth_service_v2.revoke(auth.split(" ", 1)[1])
+        await asyncio.to_thread(auth_service_v2.revoke, auth.split(" ", 1)[1])
     return ApiResult(message="已登出")
 
 
 @router.get("/me", response_model=ApiResult)
-async def me(current_user: LocalUser = Depends(get_current_user)):
+def me(current_user: LocalUser = Depends(get_current_user)):
     """获取当前登录用户信息"""
     return ApiResult(data=current_user.to_dict())
 
 
 @router.post("/change-password", response_model=ApiResult)
-async def change_password(
+def change_password(
     body: ChangePasswordRequest,
     current_user: LocalUser = Depends(get_current_user),
 ):
@@ -90,7 +91,7 @@ async def change_password(
 
 
 @router.get("/init-status", response_model=ApiResult)
-async def init_status():
+def init_status():
     """初始化状态：是否已存在 admin"""
     db = get_db_sync()
     try:

@@ -29,7 +29,7 @@ def _brief(r: IpRule) -> dict:
 
 
 @router.get("")
-async def list_rules(
+def list_rules(
     rule_type: Optional[str] = None,
     keyword: Optional[str] = None,
     page: int = 1, page_size: int = Query(50, le=200),

@@ -35,7 +35,7 @@ def _cache_brief(row: ApiResponseCache) -> dict:
 
 
 @router.get("/responses")
-async def list_responses(
+def list_responses(
     api_path: Optional[str] = None, keyword: Optional[str] = None,
     client_ip: Optional[str] = None,
     refresh_pending: Optional[bool] = None,
@@ -101,7 +101,7 @@ async def delete_response(cache_id: int, _: LocalUser = Depends(require_operator
 
 
 @router.post("/responses/{cache_id}/mark-refresh")
-async def mark_refresh(cache_id: int, _: LocalUser = Depends(require_operator)):
+def mark_refresh(cache_id: int, _: LocalUser = Depends(require_operator)):
     """标记待刷新"""
     db = get_db_sync()
     try:
@@ -124,7 +124,7 @@ async def mark_refresh(cache_id: int, _: LocalUser = Depends(require_operator)):
 
 
 @router.get("/access-logs")
-async def list_access_logs(
+def list_access_logs(
     cache_key: Optional[str] = None, access_type: Optional[str] = None,
     page: int = 1, page_size: int = Query(50, le=200),
     _: LocalUser = Depends(get_current_user),

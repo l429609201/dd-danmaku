@@ -23,7 +23,7 @@ router = APIRouter()
 
 
 @router.get("/summary")
-async def dashboard_summary(_: LocalUser = Depends(get_current_user)):
+def dashboard_summary(_: LocalUser = Depends(get_current_user)):
     """Dashboard 汇总数据"""
     db = get_db_sync()
     try:
@@ -123,7 +123,7 @@ async def dashboard_summary(_: LocalUser = Depends(get_current_user)):
 
 
 @router.get("/trends")
-async def dashboard_trends(days: int = 7, _: LocalUser = Depends(get_current_user)):
+def dashboard_trends(days: int = 7, _: LocalUser = Depends(get_current_user)):
     """近 N 天缓存命中 / 429 兜底 / 未命中趋势（基于访问日志按天聚合）"""
     days = max(1, min(days, 30))
     db = get_db_sync()
@@ -162,7 +162,7 @@ async def dashboard_trends(days: int = 7, _: LocalUser = Depends(get_current_use
 
 
 @router.get("/metrics-trends")
-async def dashboard_metrics_trends(days: int = 7, _: LocalUser = Depends(get_current_user)):
+def dashboard_metrics_trends(days: int = 7, _: LocalUser = Depends(get_current_user)):
     """近 N 天 Worker 运行指标趋势（请求量/命中/拦截/流量，按天聚合）"""
     days = max(1, min(days, 30))
     db = get_db_sync()
@@ -204,14 +204,16 @@ async def dashboard_metrics_trends(days: int = 7, _: LocalUser = Depends(get_cur
 @router.get("/db-stats")
 async def dashboard_db_stats(_: LocalUser = Depends(get_current_user)):
     """数据库与 Redis 状态：SQL 表统计/占用/连接池 + Redis INFO + 弹幕兜底存储"""
+    import asyncio
     from src.services_v2.db_stats_service import (
         collect_sql_stats, collect_redis_stats, collect_comment_store_stats,
         collect_engine_perf,
     )
-    sql = collect_sql_stats()
+    # 同步阻塞采集（遍历大表 COUNT/SHOW STATUS）放线程池，避免卡事件循环
+    sql = await asyncio.to_thread(collect_sql_stats)
     redis_info = await collect_redis_stats()
-    comment_store = collect_comment_store_stats()
-    engine_perf = collect_engine_perf()
+    comment_store = await asyncio.to_thread(collect_comment_store_stats)
+    engine_perf = await asyncio.to_thread(collect_engine_perf)
     return ApiResult(data={"sql": sql, "redis": redis_info,
                            "comment_store": comment_store, "engine_perf": engine_perf})
 

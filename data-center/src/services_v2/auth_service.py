@@ -22,7 +22,7 @@ ROLE_LEVEL = {"viewer": 1, "operator": 2, "admin": 3}
 class AuthServiceV2:
     """用户认证服务 v2"""
 
-    async def authenticate(self, username: str, password: str) -> Optional[LocalUser]:
+    def authenticate(self, username: str, password: str) -> Optional[LocalUser]:
         """校验用户名密码"""
         db = get_db_sync()
         try:
@@ -47,7 +47,7 @@ class AuthServiceV2:
         finally:
             db.close()
 
-    async def create_session(self, user: LocalUser,
+    def create_session(self, user: LocalUser,
                              expires_hours: int = 24,
                              ip_hash: Optional[str] = None,
                              user_agent: Optional[str] = None) -> str:
@@ -73,7 +73,7 @@ class AuthServiceV2:
         finally:
             db.close()
 
-    async def validate_jwt(self, token: str) -> Optional[LocalUser]:
+    def validate_jwt(self, token: str) -> Optional[LocalUser]:
         """校验 JWT + 会话有效性，返回用户"""
         payload = jwt_utils.verify_token(token)
         if not payload:
@@ -102,7 +102,7 @@ class AuthServiceV2:
         finally:
             db.close()
 
-    async def revoke(self, token: str) -> bool:
+    def revoke(self, token: str) -> bool:
         """吊销会话"""
         token_hash = LocalLoginSession.hash_token(token)
         db = get_db_sync()
