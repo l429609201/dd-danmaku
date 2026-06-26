@@ -14,7 +14,7 @@ from src.models_v2.control import (
 )
 from src.models_v2.cache import (
     ApiResponseCache, ApiCacheAccessLog, ApiCacheRefreshTask,
-    ApiResponseEntity, EpisodeLink,
+    ApiResponseEntity, EpisodeLink, MediaLibrary,
 )
 from src.models_v2.monitoring import (
     IpRule, IpRequestStatCurrent, IpRequestStatSnapshot,
@@ -41,6 +41,7 @@ __all__ = [
     "ApiCacheRefreshTask",
     "ApiResponseEntity",
     "EpisodeLink",
+    "MediaLibrary",
     # 监控 / 访问控制
     "IpRule",
     "IpRequestStatCurrent",

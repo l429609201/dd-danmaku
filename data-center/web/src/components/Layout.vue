@@ -14,6 +14,7 @@
           <el-menu-item index="/cache"><el-icon><Box /></el-icon><span>响应缓存</span></el-menu-item>
           <el-menu-item index="/episodes"><el-icon><VideoCamera /></el-icon><span>集数链接</span></el-menu-item>
           <el-menu-item index="/entities"><el-icon><Collection /></el-icon><span>实体索引</span></el-menu-item>
+          <el-menu-item index="/comment-store"><el-icon><ChatLineSquare /></el-icon><span>弹幕存储</span></el-menu-item>
         </el-menu-item-group>
         <el-menu-item-group title="访问控制">
           <el-menu-item index="/ip-rules"><el-icon><Lock /></el-icon><span>IP 黑白名单</span></el-menu-item>
@@ -25,7 +26,6 @@
           <el-menu-item index="/worker-logs"><el-icon><Monitor /></el-icon><span>Worker 日志</span></el-menu-item>
           <el-menu-item index="/db-stats"><el-icon><Coin /></el-icon><span>数据库状态</span></el-menu-item>
           <el-menu-item index="/cleanup"><el-icon><Delete /></el-icon><span>数据清理</span></el-menu-item>
-          <el-menu-item index="/comment-store"><el-icon><ChatLineSquare /></el-icon><span>弹幕存储</span></el-menu-item>
           <el-menu-item index="/runtime-events"><el-icon><Document /></el-icon><span>运行日志</span></el-menu-item>
           <el-menu-item index="/users"><el-icon><User /></el-icon><span>用户与 Token</span></el-menu-item>
           <el-menu-item index="/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>

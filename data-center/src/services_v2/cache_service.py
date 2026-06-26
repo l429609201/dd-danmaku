@@ -6,6 +6,7 @@
 - Redis 不可用时降级为 SQL 存储 body（storage_mode=sql）。
 """
 import hashlib
+import json
 import logging
 from datetime import timedelta
 from typing import Any, Dict, Optional
@@ -23,6 +24,36 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def is_clean_cache_body(api_path: str, body: str) -> bool:
+    """校验响应体是否「干净可缓存」（与 Worker 侧 isCacheableResponseBody 对齐）。
+
+    挡掉 success:false / errorCode!=0 / 空结果，作为脏数据落库的双保险。
+    """
+    if not body:
+        return False
+    try:
+        data = json.loads(body)
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("success") is False:
+        return False
+    ec = data.get("errorCode")
+    if isinstance(ec, int) and ec != 0:
+        return False
+    if "/search/anime" in api_path or "/search/episodes" in api_path:
+        animes = data.get("animes")
+        return isinstance(animes, list) and len(animes) > 0
+    if "/bangumi/" in api_path:
+        bangumi = data.get("bangumi") or data
+        return bool(bangumi and (bangumi.get("animeId") or bangumi.get("animeTitle")))
+    if "/match" in api_path:
+        matches = data.get("matches")
+        return isinstance(matches, list) and len(matches) > 0
+    return True
+
+
 class CacheService:
     """上游响应缓存服务"""
 
@@ -33,6 +64,11 @@ class CacheService:
         """Worker 200 响应写入本地缓存"""
         cache_key = record["cache_key"]
         body = record.get("body") or ""
+        api_path = record.get("api_path", "")
+        # 双保险：脏响应（空结果/success:false/errorCode!=0）拒绝落库
+        if not is_clean_cache_body(api_path, body):
+            logger.info(f"🧹 拒绝缓存脏响应: {api_path} (cache_key={cache_key})")
+            return False
         body_hash = record.get("body_hash") or f"sha256:{_sha256(body)}"
         body_size = len(body.encode("utf-8")) if body else 0
         redis_key = self._redis_key(cache_key)
@@ -187,6 +223,40 @@ class CacheService:
             db.commit()
         except Exception:
             db.rollback()
+
+    async def purge_dirty(self, limit: int = 2000) -> Dict[str, int]:
+        """扫描并清理脏缓存：success:false / 空结果 / errorCode!=0 的历史响应缓存。
+
+        逐条取 body（优先 Redis，回退 SQL）用 is_clean_cache_body 判定，
+        命中即删除 SQL 行 + Redis key。返回 {scanned, deleted}。
+        """
+        scanned = 0
+        deleted = 0
+        db = get_db_sync()
+        try:
+            rows = db.query(ApiResponseCache).limit(limit).all()
+            for row in rows:
+                scanned += 1
+                body = None
+                if row.storage_mode == "redis" and row.redis_key:
+                    body = await redis_cache.get(row.redis_key)
+                if body is None:
+                    body = row.response_body
+                # body 拿不到或为脏数据 → 删除
+                if not is_clean_cache_body(row.api_path or "", body or ""):
+                    if row.redis_key:
+                        await redis_cache.delete(row.redis_key)
+                    db.delete(row)
+                    deleted += 1
+            db.commit()
+            logger.info(f"🧹 脏缓存清理完成: 扫描 {scanned} 删除 {deleted}")
+            return {"scanned": scanned, "deleted": deleted}
+        except Exception as e:
+            db.rollback()
+            logger.error(f"❌ 脏缓存清理失败: {e}")
+            return {"scanned": scanned, "deleted": deleted, "error": str(e)}
+        finally:
+            db.close()
 
 
 cache_service = CacheService()

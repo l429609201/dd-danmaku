@@ -129,3 +129,29 @@ class EpisodeLink(Base, TimestampMixin):
     is_manual = Column(Boolean, default=False, nullable=False)
     verified_by_user_id = Column(Integer, index=True, nullable=True)
     last_used_at = Column(DateTime, index=True, nullable=True)
+
+
+class MediaLibrary(Base, TimestampMixin):
+    """媒体信息库：从搜索/番剧响应抽取的番剧级媒体信息（海报/类型/简介等）
+
+    与 api_response_entities（碎片去重索引）不同，本表是面向展示的番剧主档，
+    以 dandan_anime_id 为唯一键，聚合海报、类型、总集数等元信息，供媒体库页使用。
+    """
+    __tablename__ = "media_library"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    anime_id = Column(String(100), unique=True, index=True, nullable=False)
+    title = Column(String(500), index=True, nullable=True)
+    # 原始海报 URL（dandanplay imageUrl，展示时走本地代理避免防盗链）
+    image_url = Column(String(1000), nullable=True)
+    type_code = Column(String(50), nullable=True)
+    type_desc = Column(String(100), nullable=True)
+    summary = Column(Text, nullable=True)
+    rating = Column(String(50), nullable=True)
+    start_date = Column(String(50), nullable=True)
+    # 上游声明的总集数（来自 search 的 episodeCount 或 bangumi 的 episodes 长度）
+    episode_count = Column(Integer, default=0, nullable=False)
+    # 数据来源：search_anime / bangumi
+    source = Column(String(50), index=True, nullable=True)
+    first_seen_at = Column(DateTime, default=now, nullable=False)
+    last_seen_at = Column(DateTime, default=now, index=True, nullable=False)

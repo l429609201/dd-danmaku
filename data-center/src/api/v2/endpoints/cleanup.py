@@ -124,6 +124,15 @@ async def run_cleanup(body: RunRequest, _: LocalUser = Depends(require_operator)
     return ApiResult(message="清理完成", data=result)
 
 
+@router.post("/purge-dirty-cache")
+async def purge_dirty_cache(_: LocalUser = Depends(require_operator)):
+    """清理脏缓存：删除 success:false / 空结果 / errorCode!=0 的历史响应缓存"""
+    from src.services_v2.cache_service import cache_service
+    result = await cache_service.purge_dirty()
+    return ApiResult(message=f"脏缓存清理完成：扫描 {result.get('scanned', 0)}，删除 {result.get('deleted', 0)}",
+                     data=result)
+
+
 # ---------- AppSetting 读写辅助 ----------
 def _get_setting_bool(db, key: str, default: bool) -> bool:
     s = db.query(AppSetting).filter(AppSetting.key == key).first()

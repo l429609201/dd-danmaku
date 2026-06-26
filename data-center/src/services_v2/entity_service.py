@@ -7,7 +7,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from src.database import get_db_sync
-from src.models_v2 import ApiResponseEntity, EpisodeLink
+from src.models_v2 import ApiResponseEntity, EpisodeLink, MediaLibrary
 from src.models_v2.base import now
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,9 @@ class EntityIndexService:
                     row.raw_json = e["raw"]
                 row.last_seen_at = current
                 count += 1
+                # anime/bangumi 实体同步进媒体库主档（含海报/类型/简介）
+                if e["type"] in ("anime", "bangumi") and isinstance(e.get("raw"), dict):
+                    self._upsert_media(db, e["id"], e["raw"], e["type"], current)
             db.commit()
             return count
         except Exception as ex:
@@ -91,6 +94,46 @@ class EntityIndexService:
             return 0
         finally:
             db.close()
+
+    def _upsert_media(self, db, anime_id: str, raw: dict, source: str, current):
+        """从 anime/bangumi 原始对象抽取媒体信息，upsert 到 media_library。
+        在同一事务内执行（不单独 commit）；字段以非空为准增量更新。"""
+        if not anime_id:
+            return
+        # 兼容 search(anime 对象) 与 bangumi(详情对象) 两种结构
+        title = raw.get("animeTitle") or raw.get("title")
+        image_url = raw.get("imageUrl")
+        type_code = raw.get("type")
+        type_desc = raw.get("typeDescription")
+        summary = raw.get("summary")
+        rating = raw.get("rating")
+        start_date = raw.get("startDate") or raw.get("airDate")
+        ep_count = raw.get("episodeCount")
+        if ep_count is None and isinstance(raw.get("episodes"), list):
+            ep_count = len(raw["episodes"])
+        m = db.query(MediaLibrary).filter(MediaLibrary.anime_id == anime_id).first()
+        if not m:
+            m = MediaLibrary(anime_id=anime_id, first_seen_at=current,
+                             source=f"search_anime" if source == "anime" else "bangumi")
+            db.add(m)
+        # 非空才覆盖，避免后续残缺响应清掉已有海报/简介
+        if title:
+            m.title = title
+        if image_url:
+            m.image_url = image_url
+        if type_code:
+            m.type_code = str(type_code)
+        if type_desc:
+            m.type_desc = type_desc
+        if summary:
+            m.summary = summary
+        if rating is not None:
+            m.rating = str(rating)
+        if start_date:
+            m.start_date = str(start_date)
+        if isinstance(ep_count, int) and ep_count > 0:
+            m.episode_count = ep_count
+        m.last_seen_at = current
 
 
 class EpisodeLinkService:

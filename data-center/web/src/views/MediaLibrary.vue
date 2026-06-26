@@ -14,8 +14,8 @@
       <el-row :gutter="16" v-else>
         <el-col :span="6" v-for="m in items" :key="m.anime_id" class="media-col">
           <el-card shadow="hover" class="media-card" @click="openDetail(m.anime_id)">
-            <div class="cover" :style="coverStyle(m.image_url)">
-              <span v-if="!m.image_url" class="cover-ph">{{ (m.title || '?').slice(0, 2) }}</span>
+            <div class="cover" :style="coverStyle(m.image_proxy)">
+              <span v-if="!m.image_proxy" class="cover-ph">{{ (m.title || '?').slice(0, 2) }}</span>
               <el-tag v-if="m.type_desc" size="small" class="type-tag">{{ m.type_desc }}</el-tag>
             </div>
             <div class="media-title" :title="m.title">{{ m.title }}</div>
@@ -42,14 +42,15 @@
     <el-drawer v-model="drawerVisible" :title="detail ? detail.title : '番剧详情'" size="46%">
       <template v-if="detail">
         <div class="detail-head">
-          <div class="cover-lg" :style="coverStyle(detail.meta && detail.meta.image_url)">
-            <span v-if="!(detail.meta && detail.meta.image_url)" class="cover-ph">{{ detail.title.slice(0, 2) }}</span>
+          <div class="cover-lg" :style="coverStyle(detail.image_proxy)">
+            <span v-if="!detail.image_proxy" class="cover-ph">{{ detail.title.slice(0, 2) }}</span>
           </div>
           <div class="detail-meta">
             <div class="meta-row"><b>animeId</b> {{ detail.anime_id }}</div>
-            <div class="meta-row"><b>类型</b> {{ (detail.meta && detail.meta.type_desc) || '—' }}</div>
+            <div class="meta-row"><b>类型</b> {{ detail.type_desc || '—' }}</div>
+            <div class="meta-row" v-if="detail.rating"><b>评分</b> {{ detail.rating }}</div>
             <div class="meta-row"><b>弹幕覆盖</b> {{ detail.danmaku_count }}/{{ detail.ep_total }}（缺 {{ detail.missing_danmaku }}）</div>
-            <div class="summary" v-if="detail.meta && detail.meta.summary">{{ detail.meta.summary }}</div>
+            <div class="summary" v-if="detail.summary">{{ detail.summary }}</div>
           </div>
         </div>
         <el-divider>分集状态</el-divider>

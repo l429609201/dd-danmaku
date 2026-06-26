@@ -1,9 +1,8 @@
 """
-媒体库聚合服务
+媒体库聚合服务（基于 media_library 主档表）
 
-以 episode_links 为核心，按 dandan_anime_id 聚合成"番剧"维度视图，
-关联 local_comment_store（弹幕覆盖）与 api_response_entities（封面/简介），
-并检测缺失情况（哪些集没弹幕、没链接），供媒体库页面展示与补全。
+media_library 由 entity_service 从搜索/番剧响应抽取写入（含海报/类型/简介）。
+本服务负责：按番剧聚合分页、关联集数链接与弹幕覆盖、缺失检测、海报代理。
 """
 import logging
 from typing import Any, Dict, List, Optional
@@ -11,86 +10,60 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import func
 
 from src.database import get_db_sync
-from src.models_v2 import ApiResponseEntity, EpisodeLink, LocalCommentStore
+from src.models_v2 import EpisodeLink, LocalCommentStore, MediaLibrary
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_cover_summary(raw: Any) -> Dict[str, Any]:
-    """从 bangumi 实体 raw_json 提取封面/简介/评分等媒体元数据"""
-    if not isinstance(raw, dict):
-        return {}
-    return {
-        "image_url": raw.get("imageUrl") or None,
-        "summary": raw.get("summary") or None,
-        "type_desc": raw.get("typeDescription") or raw.get("type") or None,
-        "rating": raw.get("rating") or raw.get("ratingDetails") or None,
-        "air_date": raw.get("airDate") or None,
-    }
 
 
 class MediaService:
     """媒体库聚合"""
 
-    def _anime_meta(self, db, anime_id: str) -> Dict[str, Any]:
-        """取该 anime 的 bangumi 实体元数据（封面/简介）"""
-        ent = db.query(ApiResponseEntity).filter(
-            ApiResponseEntity.entity_type == "bangumi",
-            ApiResponseEntity.entity_id == anime_id,
-        ).first()
-        if not ent:
-            return {}
-        return _extract_cover_summary(ent.raw_json)
+    def _danmaku_stats(self, db, anime_id: str):
+        """返回该番剧 (链接集数, 有弹幕集数)"""
+        ep_ids = [r[0] for r in db.query(EpisodeLink.dandan_episode_id).filter(
+            EpisodeLink.dandan_anime_id == anime_id).all()]
+        link_total = len(ep_ids)
+        danmaku_cnt = 0
+        if ep_ids:
+            danmaku_cnt = db.query(func.count(LocalCommentStore.id)).filter(
+                LocalCommentStore.episode_id.in_(ep_ids),
+                LocalCommentStore.comment_count > 0,
+            ).scalar() or 0
+        return link_total, danmaku_cnt
 
     def list_library(self, keyword: Optional[str] = None,
                      only_missing: bool = False,
                      page: int = 1, page_size: int = 12) -> Dict[str, Any]:
-        """按番剧聚合分页。only_missing=True 仅返回存在缺失(弹幕/链接)的番剧"""
+        """媒体库分页：以 media_library 为主档，关联弹幕覆盖与缺失"""
         db = get_db_sync()
         try:
-            # 按 anime_id 聚合：集数、动画名、最近使用
-            base = db.query(
-                EpisodeLink.dandan_anime_id.label("anime_id"),
-                func.max(EpisodeLink.anime_title).label("title"),
-                func.count(EpisodeLink.id).label("ep_count"),
-                func.max(EpisodeLink.last_used_at).label("last_used"),
-            ).filter(EpisodeLink.dandan_anime_id.isnot(None))
+            q = db.query(MediaLibrary)
             if keyword:
-                base = base.filter(EpisodeLink.anime_title.like(f"%{keyword}%"))
-            base = base.group_by(EpisodeLink.dandan_anime_id)
-            groups = base.all()
+                q = q.filter(MediaLibrary.title.like(f"%{keyword}%"))
+            medias = q.order_by(MediaLibrary.last_seen_at.desc()).all()
 
             items: List[Dict[str, Any]] = []
-            for g in groups:
-                anime_id = g.anime_id
-                # 该番剧所有集的 episodeId
-                ep_ids = [r[0] for r in db.query(EpisodeLink.dandan_episode_id).filter(
-                    EpisodeLink.dandan_anime_id == anime_id).all()]
-                ep_total = len(ep_ids)
-                # 弹幕覆盖：local_comment_store 中存在且条数 > 0 的集
-                danmaku_cnt = 0
-                if ep_ids:
-                    danmaku_cnt = db.query(func.count(LocalCommentStore.id)).filter(
-                        LocalCommentStore.episode_id.in_(ep_ids),
-                        LocalCommentStore.comment_count > 0,
-                    ).scalar() or 0
-                missing_danmaku = ep_total - danmaku_cnt
-                meta = self._anime_meta(db, anime_id) if anime_id else {}
+            for m in medias:
+                link_total, danmaku_cnt = self._danmaku_stats(db, m.anime_id)
+                # 总集数：优先上游声明，回退已建链接数
+                ep_total = m.episode_count or link_total
+                missing = max(0, ep_total - danmaku_cnt)
                 ratio = round(danmaku_cnt / ep_total * 100, 1) if ep_total else 0.0
-                if only_missing and missing_danmaku <= 0:
+                if only_missing and missing <= 0:
                     continue
                 items.append({
-                    "anime_id": anime_id,
-                    "title": g.title or "未知番剧",
+                    "anime_id": m.anime_id,
+                    "title": m.title or "未知番剧",
                     "ep_total": ep_total,
+                    "link_total": link_total,
                     "danmaku_count": danmaku_cnt,
-                    "missing_danmaku": missing_danmaku,
+                    "missing_danmaku": missing,
                     "danmaku_ratio": ratio,
-                    "image_url": meta.get("image_url"),
-                    "type_desc": meta.get("type_desc"),
-                    "last_used_at": g.last_used.isoformat() if g.last_used else None,
+                    "image_proxy": self.proxy_url(m.image_url),
+                    "type_desc": m.type_desc,
+                    "rating": m.rating,
+                    "last_seen_at": m.last_seen_at.isoformat() if m.last_seen_at else None,
                 })
-            # 内存分页（番剧数量级可控）
             items.sort(key=lambda x: (x["missing_danmaku"], x["ep_total"]), reverse=True)
             total = len(items)
             start = (page - 1) * page_size
@@ -99,12 +72,14 @@ class MediaService:
             db.close()
 
     def get_detail(self, anime_id: str) -> Optional[Dict[str, Any]]:
-        """番剧详情：每集状态（是否有弹幕/弹幕条数）+ 元数据"""
+        """番剧详情：媒体元信息 + 每集弹幕/链接状态"""
         db = get_db_sync()
         try:
+            m = db.query(MediaLibrary).filter(
+                MediaLibrary.anime_id == anime_id).first()
             links = db.query(EpisodeLink).filter(
                 EpisodeLink.dandan_anime_id == anime_id).all()
-            if not links:
+            if not m and not links:
                 return None
             ep_ids = [l.dandan_episode_id for l in links]
             store_map = {}
@@ -121,22 +96,43 @@ class MediaService:
                     "episode_title": l.episode_title,
                     "has_danmaku": cnt > 0,
                     "comment_count": cnt,
-                    "is_manual": l.is_manual,
-                    "confidence": l.confidence,
                 })
-            meta = self._anime_meta(db, anime_id)
-            title = links[0].anime_title or "未知番剧"
             danmaku_cnt = sum(1 for e in episodes if e["has_danmaku"])
+            ep_total = (m.episode_count if m else 0) or len(episodes)
+            title = (m.title if m else None) or (links[0].anime_title if links else "未知番剧")
             return {
                 "anime_id": anime_id, "title": title,
-                "ep_total": len(episodes),
+                "ep_total": ep_total,
+                "link_total": len(episodes),
                 "danmaku_count": danmaku_cnt,
-                "missing_danmaku": len(episodes) - danmaku_cnt,
-                "meta": meta,
+                "missing_danmaku": max(0, ep_total - danmaku_cnt),
+                "image_proxy": self.proxy_url(m.image_url if m else None),
+                "type_desc": m.type_desc if m else None,
+                "summary": m.summary if m else None,
+                "rating": m.rating if m else None,
+                "start_date": m.start_date if m else None,
                 "episodes": episodes,
             }
         finally:
             db.close()
+
+    def get_image_url(self, anime_id: str) -> Optional[str]:
+        """取番剧原始海报 URL（供代理回源用）"""
+        db = get_db_sync()
+        try:
+            m = db.query(MediaLibrary).filter(
+                MediaLibrary.anime_id == anime_id).first()
+            return m.image_url if m else None
+        finally:
+            db.close()
+
+    @staticmethod
+    def proxy_url(image_url: Optional[str]) -> Optional[str]:
+        """把上游海报转成本地代理路径，绕开防盗链。前端用此地址显示。"""
+        if not image_url:
+            return None
+        from urllib.parse import quote
+        return f"/api/v2/media/poster?url={quote(image_url, safe='')}"
 
 
 media_service = MediaService()

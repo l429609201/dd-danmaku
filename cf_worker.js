@@ -434,6 +434,35 @@ function shouldUseLocalCache(apiPath, method) {
     return method === 'GET' && LOCAL_CACHE_PATTERNS.some(p => apiPath.startsWith(p));
 }
 
+// 校验上游响应体是否「干净可缓存」：挡掉 success:false / errorCode!=0 / 空结果。
+// 仅缓存真正有数据的成功响应，避免空响应/限流/错误污染缓存。
+function isCacheableResponseBody(apiPath, responseText) {
+    if (!responseText) return false;
+    let data;
+    try {
+        data = JSON.parse(responseText);
+    } catch (_) {
+        return false; // 非 JSON 不缓存
+    }
+    if (!data || typeof data !== 'object') return false;
+    // dandanplay 统一约定：success=false 或 errorCode 非 0 即失败响应
+    if (data.success === false) return false;
+    if (typeof data.errorCode === 'number' && data.errorCode !== 0) return false;
+    // 按接口校验是否含实际数据，空结果不缓存
+    if (apiPath.startsWith('/api/v2/search/anime') || apiPath.startsWith('/api/v2/search/episodes')) {
+        return Array.isArray(data.animes) && data.animes.length > 0;
+    }
+    if (apiPath.startsWith('/api/v2/bangumi/')) {
+        const bangumi = data.bangumi || data;
+        return !!(bangumi && (bangumi.animeId || bangumi.animeTitle));
+    }
+    if (apiPath.startsWith('/api/v2/match')) {
+        return Array.isArray(data.matches) && data.matches.length > 0;
+    }
+    // 其他接口：只要不是失败响应即可缓存
+    return true;
+}
+
 // 构造标准化 cache key：METHOD:PATH?sorted_query（剔除 _t/timestamp）
 function buildLocalCacheKey(method, apiPath, searchParams) {
     const sorted = [...searchParams.entries()]
@@ -2089,6 +2118,10 @@ async function handleRequest(request, env, ctx) {
     // ========================================
     if (response.status === 200 && !isUpstreamRateLimited) {
         if (isCacheable) {
+            // 脏响应过滤：空结果/success:false/errorCode!=0 一律不缓存，避免污染
+            if (!isCacheableResponseBody(apiPath, responseText)) {
+                console.log(`🧹 [${clientIP}] 响应无有效数据或为失败响应，跳过缓存: ${apiPath}`);
+            } else {
             // 内存缓存：搜索/番剧/匹配/分集
             const cacheKey = `api_cache_${url}`;
             memoryCache.apiCache.set(cacheKey, {
@@ -2114,6 +2147,7 @@ async function handleRequest(request, env, ctx) {
                 const upsertPromise = controlHubRpc(env, 'cache.upsert', upsertPayload, 3000)
                     .catch(e => console.log(`⚠️ [${clientIP}] cache.upsert 失败: ${e.message}`));
                 if (ctx && ctx.waitUntil) ctx.waitUntil(upsertPromise);
+            }
             }
         } else if (isCommentApi) {
             // R2 缓存：弹幕接口，只缓存有弹幕的响应

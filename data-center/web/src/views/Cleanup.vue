@@ -22,6 +22,21 @@
       </div>
     </div>
 
+    <!-- 专项清理 -->
+    <div class="panel">
+      <h2 class="panel-title">专项清理</h2>
+      <div class="sched-row">
+        <div class="purge-desc">
+          清理脏缓存：删除响应缓存中
+          <b>空结果 / success:false / errorCode≠0</b>
+          的无效数据（SQL + Redis），修复"搜索命中却返回空"的问题。
+        </div>
+        <button class="btn btn-danger" :disabled="purging" @click="purgeDirty">
+          {{ purging ? '清理中...' : '清理脏缓存' }}
+        </button>
+      </div>
+    </div>
+
     <!-- 表策略 -->
     <div class="panel">
       <h2 class="panel-title">可清理表（勾选启用，设置保留天数）</h2>
@@ -74,6 +89,7 @@ export default {
     const intervalMin = ref(60)
     const msg = ref('')
     const running = ref(false)
+    const purging = ref(false)
     const lastResult = ref('')
 
     const load = async () => {
@@ -118,11 +134,23 @@ export default {
     const runAll = () => doRun(null)
     const runOne = (p) => doRun([p.table_key])
 
+    // 脏缓存专项清理：删除空结果/success:false/errorCode!=0 的历史响应缓存
+    const purgeDirty = async () => {
+      purging.value = true
+      msg.value = ''
+      try {
+        const res = await apiV2('/cleanup/purge-dirty-cache', { method: 'POST' })
+        lastResult.value = JSON.stringify(res.data, null, 2)
+        msg.value = res.message || '脏缓存清理完成'
+        await load()
+      } catch (e) { msg.value = e.message } finally { purging.value = false }
+    }
+
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
 
     onMounted(load)
-    return { policies, schedule, intervalMin, msg, running, lastResult,
-      savePolicy, saveSchedule, runAll, runOne, fmt }
+    return { policies, schedule, intervalMin, msg, running, purging, lastResult,
+      savePolicy, saveSchedule, runAll, runOne, purgeDirty, fmt }
   },
 }
 </script>
@@ -144,6 +172,9 @@ export default {
 .badge-warn { background: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; border-radius: 4px; padding: 0 6px; font-size: 11px; margin-left: 6px; }
 .btn { padding: 6px 14px; border: 1px solid #d9d9d9; background: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .btn-primary { background: #1677ff; color: #fff; border-color: #1677ff; }
+.btn-danger { background: #ff4d4f; color: #fff; border-color: #ff4d4f; }
+.purge-desc { flex: 1; min-width: 280px; color: #555; font-size: 13px; line-height: 1.6; }
+.purge-desc b { color: #cf1322; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .link { color: #1677ff; background: none; border: none; cursor: pointer; font-size: 13px; }
 .link:disabled { opacity: .5; cursor: not-allowed; }
