@@ -224,39 +224,110 @@ class CacheService:
         except Exception:
             db.rollback()
 
-    async def purge_dirty(self, limit: int = 2000) -> Dict[str, int]:
-        """扫描并清理脏缓存：success:false / 空结果 / errorCode!=0 的历史响应缓存。
+    async def purge_dirty(self, dry_run: bool = False,
+                          api_path_prefix: Optional[str] = None,
+                          older_than_days: int = 0,
+                          reasons: Optional[list] = None,
+                          batch_size: int = 2000) -> Dict[str, Any]:
+        """扫描并清理脏缓存（success:false / 空结果 / errorCode!=0）。
 
-        逐条取 body（优先 Redis，回退 SQL）用 is_clean_cache_body 判定，
-        命中即删除 SQL 行 + Redis key。返回 {scanned, deleted}。
+        - dry_run=True 仅统计不删除（预览）
+        - api_path_prefix 只处理指定接口前缀
+        - older_than_days>0 只处理 fetched_at 早于 N 天前的记录
+        - reasons 指定脏类型白名单：['empty','fail','error_code']，None=全部
+        - 游标分批扫描全表，避免大表 OOM
+        返回 {scanned, deleted, by_reason:{...}}
         """
+        from datetime import timedelta
         scanned = 0
         deleted = 0
-        db = get_db_sync()
+        by_reason = {"empty": 0, "fail": 0, "error_code": 0}
+        reason_set = set(reasons) if reasons else None
+        cutoff = now() - timedelta(days=older_than_days) if older_than_days > 0 else None
+
+        last_id = 0
+        while True:
+            db = get_db_sync()
+            try:
+                q = db.query(ApiResponseCache).filter(ApiResponseCache.id > last_id)
+                if api_path_prefix:
+                    q = q.filter(ApiResponseCache.api_path.like(f"{api_path_prefix}%"))
+                if cutoff is not None:
+                    q = q.filter(ApiResponseCache.fetched_at < cutoff)
+                rows = q.order_by(ApiResponseCache.id).limit(batch_size).all()
+                if not rows:
+                    break
+                for row in rows:
+                    last_id = row.id
+                    scanned += 1
+                    body = None
+                    if row.storage_mode == "redis" and row.redis_key:
+                        body = await redis_cache.get(row.redis_key)
+                    if body is None:
+                        body = row.response_body
+                    reason = self._dirty_reason(row.api_path or "", body or "")
+                    if reason is None:
+                        continue  # 干净数据，跳过
+                    # 脏类型白名单过滤
+                    if reason_set is not None and reason not in reason_set:
+                        continue
+                    by_reason[reason] = by_reason.get(reason, 0) + 1
+                    if not dry_run:
+                        if row.redis_key:
+                            await redis_cache.delete(row.redis_key)
+                        db.delete(row)
+                        deleted += 1
+                if not dry_run:
+                    db.commit()
+                if len(rows) < batch_size:
+                    break
+            except Exception as e:
+                db.rollback()
+                logger.error(f"❌ 脏缓存清理失败: {e}")
+                return {"scanned": scanned, "deleted": deleted,
+                        "by_reason": by_reason, "error": str(e)}
+            finally:
+                db.close()
+
+        dirty_total = sum(by_reason.values())
+        logger.info(f"🧹 脏缓存{'预览' if dry_run else '清理'}完成: "
+                    f"扫描 {scanned} 脏数据 {dirty_total} 删除 {deleted}")
+        return {"scanned": scanned, "dirty_total": dirty_total,
+                "deleted": deleted, "by_reason": by_reason, "dry_run": dry_run}
+
+    @staticmethod
+    def _dirty_reason(api_path: str, body: str) -> Optional[str]:
+        """判定脏数据原因：empty/fail/error_code，干净返回 None。
+
+        与 is_clean_cache_body 同源，但区分具体原因便于分组统计。
+        """
+        if not body:
+            return "empty"
         try:
-            rows = db.query(ApiResponseCache).limit(limit).all()
-            for row in rows:
-                scanned += 1
-                body = None
-                if row.storage_mode == "redis" and row.redis_key:
-                    body = await redis_cache.get(row.redis_key)
-                if body is None:
-                    body = row.response_body
-                # body 拿不到或为脏数据 → 删除
-                if not is_clean_cache_body(row.api_path or "", body or ""):
-                    if row.redis_key:
-                        await redis_cache.delete(row.redis_key)
-                    db.delete(row)
-                    deleted += 1
-            db.commit()
-            logger.info(f"🧹 脏缓存清理完成: 扫描 {scanned} 删除 {deleted}")
-            return {"scanned": scanned, "deleted": deleted}
-        except Exception as e:
-            db.rollback()
-            logger.error(f"❌ 脏缓存清理失败: {e}")
-            return {"scanned": scanned, "deleted": deleted, "error": str(e)}
-        finally:
-            db.close()
+            data = json.loads(body)
+        except Exception:
+            return "empty"
+        if not isinstance(data, dict):
+            return "empty"
+        if data.get("success") is False:
+            return "fail"
+        ec = data.get("errorCode")
+        if isinstance(ec, int) and ec != 0:
+            return "error_code"
+        # 数据为空判定
+        if "/search/anime" in api_path or "/search/episodes" in api_path:
+            animes = data.get("animes")
+            if not (isinstance(animes, list) and len(animes) > 0):
+                return "empty"
+        elif "/bangumi/" in api_path:
+            bangumi = data.get("bangumi") or data
+            if not (bangumi and (bangumi.get("animeId") or bangumi.get("animeTitle"))):
+                return "empty"
+        elif "/match" in api_path:
+            matches = data.get("matches")
+            if not (isinstance(matches, list) and len(matches) > 0):
+                return "empty"
+        return None
 
 
 cache_service = CacheService()

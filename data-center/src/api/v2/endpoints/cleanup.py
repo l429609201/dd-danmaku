@@ -39,6 +39,15 @@ class RunRequest(BaseModel):
     table_keys: Optional[List[str]] = None
 
 
+class DirtyCacheRequest(BaseModel):
+    """脏缓存清理/预览请求"""
+    dry_run: bool = False
+    api_path_prefix: Optional[str] = None
+    older_than_days: int = 0
+    # 脏类型白名单：empty / fail / error_code，空=全部
+    reasons: Optional[List[str]] = None
+
+
 def _policy_dict(p: CleanupPolicy) -> dict:
     return {
         "table_key": p.table_key, "display_name": p.display_name,
@@ -124,13 +133,32 @@ async def run_cleanup(body: RunRequest, _: LocalUser = Depends(require_operator)
     return ApiResult(message="清理完成", data=result)
 
 
-@router.post("/purge-dirty-cache")
-async def purge_dirty_cache(_: LocalUser = Depends(require_operator)):
-    """清理脏缓存：删除 success:false / 空结果 / errorCode!=0 的历史响应缓存"""
+@router.post("/scan-dirty-cache")
+async def scan_dirty_cache(body: DirtyCacheRequest = DirtyCacheRequest(),
+                           _: LocalUser = Depends(get_current_user)):
+    """预览脏缓存：按筛选条件统计各类脏数据数量，不删除"""
     from src.services_v2.cache_service import cache_service
-    result = await cache_service.purge_dirty()
-    return ApiResult(message=f"脏缓存清理完成：扫描 {result.get('scanned', 0)}，删除 {result.get('deleted', 0)}",
-                     data=result)
+    result = await cache_service.purge_dirty(
+        dry_run=True, api_path_prefix=body.api_path_prefix,
+        older_than_days=body.older_than_days, reasons=body.reasons)
+    br = result.get("by_reason", {})
+    return ApiResult(
+        message=f"扫描 {result.get('scanned', 0)} 条，发现脏数据 {result.get('dirty_total', 0)} 条"
+                f"（空 {br.get('empty', 0)} / 失败 {br.get('fail', 0)} / 错误码 {br.get('error_code', 0)}）",
+        data=result)
+
+
+@router.post("/purge-dirty-cache")
+async def purge_dirty_cache(body: DirtyCacheRequest = DirtyCacheRequest(),
+                            _: LocalUser = Depends(require_operator)):
+    """清理脏缓存：删除 success:false / 空结果 / errorCode!=0 的历史响应缓存（SQL+Redis）"""
+    from src.services_v2.cache_service import cache_service
+    result = await cache_service.purge_dirty(
+        dry_run=False, api_path_prefix=body.api_path_prefix,
+        older_than_days=body.older_than_days, reasons=body.reasons)
+    return ApiResult(
+        message=f"脏缓存清理完成：扫描 {result.get('scanned', 0)}，删除 {result.get('deleted', 0)}",
+        data=result)
 
 
 # ---------- AppSetting 读写辅助 ----------

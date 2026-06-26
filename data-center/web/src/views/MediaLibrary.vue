@@ -7,6 +7,7 @@
       <el-input v-model="keyword" placeholder="搜索番剧名" clearable style="width: 240px" @keyup.enter="reload" />
       <el-checkbox v-model="onlyMissing" label="仅看有缺失" border @change="reload" />
       <el-button type="primary" :icon="Search" @click="reload">查询</el-button>
+      <el-button :icon="Refresh" :loading="rebuilding" @click="rebuild">从缓存回填</el-button>
     </div>
 
     <div v-loading="loading">
@@ -73,7 +74,7 @@
 <script>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Search } from '@element-plus/icons-vue'
+import { Search, Refresh } from '@element-plus/icons-vue'
 import { apiV2 } from '../utils/api.js'
 
 export default {
@@ -86,6 +87,7 @@ export default {
     const keyword = ref('')
     const onlyMissing = ref(false)
     const loading = ref(false)
+    const rebuilding = ref(false)
     const drawerVisible = ref(false)
     const detail = ref(null)
 
@@ -112,9 +114,20 @@ export default {
       ? { backgroundImage: `url(${url})` }
       : { background: 'linear-gradient(135deg, #c6d4e8, #93a8c9)' })
 
+    // 从已存储的响应缓存批量回填媒体库
+    const rebuild = async () => {
+      rebuilding.value = true
+      try {
+        const res = await apiV2('/media/rebuild', { method: 'POST' })
+        ElMessage.success(res.message || '回填完成')
+        page.value = 1
+        await load()
+      } catch (e) { ElMessage.error(e.message) } finally { rebuilding.value = false }
+    }
+
     onMounted(load)
-    return { items, total, page, pageSize, keyword, onlyMissing, loading,
-      drawerVisible, detail, Search, reload, onPage, openDetail, coverStyle }
+    return { items, total, page, pageSize, keyword, onlyMissing, loading, rebuilding,
+      drawerVisible, detail, Search, Refresh, reload, onPage, openDetail, coverStyle, rebuild }
   }
 }
 </script>

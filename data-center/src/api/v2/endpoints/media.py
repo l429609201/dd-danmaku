@@ -11,7 +11,7 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
-from src.api.v2.deps import get_current_user
+from src.api.v2.deps import get_current_user, require_operator
 from src.api.v2.schemas import ApiResult, PageResult
 from src.models_v2 import LocalUser
 from src.services_v2.media_service import media_service
@@ -31,6 +31,15 @@ async def list_library(
     result = await asyncio.to_thread(
         media_service.list_library, keyword, only_missing, page, page_size)
     return PageResult(total=result["total"], items=result["items"])
+
+
+@router.post("/rebuild")
+async def rebuild_library(_: LocalUser = Depends(require_operator)):
+    """从已存储的响应缓存批量回填媒体库（解析历史 search/bangumi 响应）"""
+    result = await media_service.rebuild_from_cache()
+    return ApiResult(
+        message=f"媒体库回填完成：扫描 {result.get('scanned', 0)}，解析 {result.get('parsed', 0)}",
+        data=result)
 
 
 @router.get("/poster")

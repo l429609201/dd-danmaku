@@ -22,18 +22,45 @@
       </div>
     </div>
 
-    <!-- 专项清理 -->
+    <!-- 专项清理：脏缓存 -->
     <div class="panel">
-      <h2 class="panel-title">专项清理</h2>
-      <div class="sched-row">
-        <div class="purge-desc">
-          清理脏缓存：删除响应缓存中
-          <b>空结果 / success:false / errorCode≠0</b>
-          的无效数据（SQL + Redis），修复"搜索命中却返回空"的问题。
+      <h2 class="panel-title">脏缓存清理</h2>
+      <p class="purge-desc">
+        清理响应缓存中
+        <b>空结果 / success:false / errorCode≠0</b>
+        的无效数据（SQL + Redis），修复"搜索命中却返回空"的问题。建议先扫描预览再清理。
+      </p>
+      <div class="filter-grid">
+        <div class="filter-item">
+          <label>接口前缀</label>
+          <input v-model="dirty.api_path_prefix" class="input" placeholder="留空=全部，如 /api/v2/search/anime" />
         </div>
-        <button class="btn btn-danger" :disabled="purging" @click="purgeDirty">
-          {{ purging ? '清理中...' : '清理脏缓存' }}
+        <div class="filter-item">
+          <label>时间范围</label>
+          <select v-model.number="dirty.older_than_days" class="input">
+            <option :value="0">全部时间</option>
+            <option :value="7">7 天前</option>
+            <option :value="30">30 天前</option>
+            <option :value="90">90 天前</option>
+          </select>
+        </div>
+        <div class="filter-item">
+          <label>脏类型（不选=全部）</label>
+          <div class="checks">
+            <label><input type="checkbox" value="empty" v-model="dirty.reasons" /> 空结果</label>
+            <label><input type="checkbox" value="fail" v-model="dirty.reasons" /> success:false</label>
+            <label><input type="checkbox" value="error_code" v-model="dirty.reasons" /> errorCode≠0</label>
+          </div>
+        </div>
+      </div>
+      <div class="purge-actions">
+        <button class="btn" :disabled="scanning || purging" @click="scanDirty">
+          {{ scanning ? '扫描中...' : '先扫描预览' }}
         </button>
+        <button class="btn btn-danger" :disabled="purging || scanning" @click="purgeDirty">
+          {{ purging ? '清理中...' : '确认清理' }}
+        </button>
+        <span v-if="scanResult" class="scan-result">{{ scanResult }}</span>
       </div>
     </div>
 
@@ -90,6 +117,10 @@ export default {
     const msg = ref('')
     const running = ref(false)
     const purging = ref(false)
+    const scanning = ref(false)
+    const scanResult = ref('')
+    // 脏缓存清理筛选条件
+    const dirty = ref({ api_path_prefix: '', older_than_days: 0, reasons: [] })
     const lastResult = ref('')
 
     const load = async () => {
@@ -134,14 +165,34 @@ export default {
     const runAll = () => doRun(null)
     const runOne = (p) => doRun([p.table_key])
 
-    // 脏缓存专项清理：删除空结果/success:false/errorCode!=0 的历史响应缓存
+    // 构造脏缓存筛选请求体（reasons 为空数组时传 null=全部）
+    const dirtyBody = () => ({
+      api_path_prefix: dirty.value.api_path_prefix || null,
+      older_than_days: dirty.value.older_than_days || 0,
+      reasons: dirty.value.reasons.length ? dirty.value.reasons : null,
+    })
+
+    // 脏缓存预览：只统计不删除
+    const scanDirty = async () => {
+      scanning.value = true
+      scanResult.value = ''
+      msg.value = ''
+      try {
+        const res = await apiV2('/cleanup/scan-dirty-cache', { method: 'POST', body: dirtyBody() })
+        scanResult.value = res.message || ''
+        lastResult.value = JSON.stringify(res.data, null, 2)
+      } catch (e) { msg.value = e.message } finally { scanning.value = false }
+    }
+
+    // 脏缓存清理：按当前筛选执行删除
     const purgeDirty = async () => {
       purging.value = true
       msg.value = ''
       try {
-        const res = await apiV2('/cleanup/purge-dirty-cache', { method: 'POST' })
+        const res = await apiV2('/cleanup/purge-dirty-cache', { method: 'POST', body: dirtyBody() })
         lastResult.value = JSON.stringify(res.data, null, 2)
         msg.value = res.message || '脏缓存清理完成'
+        scanResult.value = ''
         await load()
       } catch (e) { msg.value = e.message } finally { purging.value = false }
     }
@@ -149,8 +200,9 @@ export default {
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
 
     onMounted(load)
-    return { policies, schedule, intervalMin, msg, running, purging, lastResult,
-      savePolicy, saveSchedule, runAll, runOne, purgeDirty, fmt }
+    return { policies, schedule, intervalMin, msg, running, purging, scanning,
+      scanResult, dirty, lastResult,
+      savePolicy, saveSchedule, runAll, runOne, scanDirty, purgeDirty, fmt }
   },
 }
 </script>
@@ -175,6 +227,14 @@ export default {
 .btn-danger { background: #ff4d4f; color: #fff; border-color: #ff4d4f; }
 .purge-desc { flex: 1; min-width: 280px; color: #555; font-size: 13px; line-height: 1.6; }
 .purge-desc b { color: #cf1322; }
+.filter-grid { display: flex; gap: 20px; flex-wrap: wrap; margin: 14px 0; }
+.filter-item { display: flex; flex-direction: column; gap: 6px; }
+.filter-item label { font-size: 12px; color: #888; }
+.filter-item .input { padding: 6px 10px; border: 1px solid #d9d9d9; border-radius: 6px; min-width: 240px; font-size: 13px; }
+.checks { display: flex; gap: 14px; align-items: center; }
+.checks label { display: flex; align-items: center; gap: 4px; font-size: 13px; color: #555; cursor: pointer; }
+.purge-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.scan-result { color: #1677ff; font-size: 13px; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .link { color: #1677ff; background: none; border: none; cursor: pointer; font-size: 13px; }
 .link:disabled { opacity: .5; cursor: not-allowed; }

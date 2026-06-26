@@ -10,7 +10,9 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import func
 
 from src.database import get_db_sync
-from src.models_v2 import EpisodeLink, LocalCommentStore, MediaLibrary
+from src.models_v2 import (
+    ApiResponseCache, EpisodeLink, LocalCommentStore, MediaLibrary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +127,64 @@ class MediaService:
             return m.image_url if m else None
         finally:
             db.close()
+
+    async def rebuild_from_cache(self, limit: int = 0) -> Dict[str, Any]:
+        """从已存储的响应缓存批量回填媒体库与实体索引。
+
+        遍历 api_response_cache 中的 search/anime、search/episodes、bangumi 响应，
+        取 body（优先 Redis，回退 SQL）重新调用实体解析，补全历史数据。
+        limit=0 表示处理全部。返回 {scanned, parsed}。
+        """
+        from src.services_v2.redis_cache import redis_cache
+        from src.services_v2.entity_service import entity_index_service
+        scanned = 0
+        parsed = 0
+        last_id = 0
+        batch = 500
+        stop = False
+        while not stop:
+            db = get_db_sync()
+            try:
+                q = db.query(ApiResponseCache).filter(
+                    ApiResponseCache.id > last_id,
+                    ApiResponseCache.api_path.like("%/api/v2/%"),
+                )
+                rows = q.order_by(ApiResponseCache.id).limit(batch).all()
+                if len(rows) < batch:
+                    stop = True  # 本批不足说明已到末尾
+                # 先把本批数据取出，避免会话跨 await
+                pending = []
+                for row in rows:
+                    last_id = row.id
+                    ap = row.api_path or ""
+                    # 仅处理含媒体信息的接口
+                    if not ("/search/anime" in ap or "/search/episodes" in ap or "/bangumi/" in ap):
+                        continue
+                    pending.append((ap, row.cache_key, row.redis_key,
+                                    row.storage_mode, row.response_body))
+            finally:
+                db.close()
+
+            for ap, cache_key, redis_key, storage, sql_body in pending:
+                scanned += 1
+                body = None
+                if storage == "redis" and redis_key:
+                    body = await redis_cache.get(redis_key)
+                if body is None:
+                    body = sql_body
+                if not body:
+                    continue
+                try:
+                    # 复用实体解析：同时写 api_response_entities 与 media_library
+                    entity_index_service.index_from_response(ap, cache_key, body)
+                    parsed += 1
+                except Exception as e:
+                    logger.warning(f"⚠️ 媒体库回填解析失败 {cache_key}: {e}")
+                if limit and scanned >= limit:
+                    stop = True
+                    break
+        logger.info(f"🎬 媒体库回填完成: 扫描 {scanned} 解析 {parsed}")
+        return {"scanned": scanned, "parsed": parsed}
 
     @staticmethod
     def proxy_url(image_url: Optional[str]) -> Optional[str]:
