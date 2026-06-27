@@ -134,7 +134,7 @@
       </div>
       <table class="data-table detail-table">
         <thead>
-          <tr><th>原因</th><th>接口路径</th><th>缓存键</th><th>状态码</th><th>存储</th><th>大小</th><th>抓取时间</th><th>内容摘要</th></tr>
+          <tr><th>原因</th><th>接口路径</th><th>缓存键</th><th>状态码</th><th>存储</th><th>大小</th><th>抓取时间</th><th>内容摘要</th><th>操作</th></tr>
         </thead>
         <tbody>
           <tr v-for="s in samples" :key="s.id">
@@ -146,6 +146,7 @@
             <td>{{ fmtSize(s.body_size) }}</td>
             <td>{{ fmt(s.fetched_at) }}</td>
             <td class="mono ellipsis snippet" :title="s.body_snippet">{{ s.body_snippet || '(空)' }}</td>
+            <td><button class="link" @click="viewDetail(s.id)">详情</button></td>
           </tr>
         </tbody>
       </table>
@@ -163,11 +164,34 @@
       <h2 class="panel-title">上次操作结果</h2>
       <pre class="result">{{ lastResult }}</pre>
     </div>
+
+    <!-- 脏数据详情弹窗：查看完整缓存内容（复用 /cache/responses/{id}） -->
+    <div v-if="detailVisible" class="modal-mask" @click.self="detailVisible = false">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>脏缓存详情</h3>
+          <button class="modal-close" @click="detailVisible = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="detailLoading" class="empty">加载中...</div>
+          <template v-else-if="detail">
+            <div class="kv"><span>cache_key</span><b class="mono">{{ detail.cache_key }}</b></div>
+            <div class="kv"><span>接口</span><b class="mono">{{ detail.method }} {{ detail.api_path }}</b></div>
+            <div class="kv"><span>状态 / 存储</span><b>{{ detail.status_code }} / {{ detail.storage_mode }}</b></div>
+            <div class="kv"><span>大小</span><b>{{ fmtSize(detail.body_size) }}</b></div>
+            <div class="kv"><span>获取时间</span><b>{{ fmt(detail.fetched_at) }}</b></div>
+            <div class="kv"><span>过期时间</span><b>{{ fmt(detail.expire_at) }}</b></div>
+            <div class="body-label">完整响应内容：</div>
+            <pre class="result body-pre">{{ prettyBody }}</pre>
+          </template>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { apiV2 } from '../utils/api.js'
 
 export default {
@@ -193,6 +217,11 @@ export default {
     const detailPage = ref(1)           // 当前页码
     const totalPages = ref(1)           // 后端返回的总页数
     const pageSize = ref(20)            // 每页条数（前端可选，传给后端）
+    const scanToken = ref('')           // 扫描结果令牌，翻页用（避免重复全表扫描）
+    // 详情弹窗
+    const detailVisible = ref(false)
+    const detail = ref(null)
+    const detailLoading = ref(false)
 
     const load = async () => {
       try {
@@ -236,62 +265,79 @@ export default {
     const runAll = () => doRun(null)
     const runOne = (p) => doRun([p.table_key])
 
-    // 构造脏缓存筛选请求体（原因筛选下推后端：明细 chip 选中时只扫该类）
-    const dirtyBody = (extra = {}) => {
-      // 明细筛选(detailFilter)优先；否则用顶部勾选的脏类型
-      let reasons = null
-      if (detailFilter.value !== 'all') {
-        reasons = [detailFilter.value]
-      } else if (dirty.value.reasons.length) {
-        reasons = dirty.value.reasons
-      }
-      return {
-        api_path_prefix: dirty.value.api_path_prefix || null,
-        older_than_days: dirty.value.older_than_days || 0,
-        reasons,
-        ...extra,
-      }
+    // 构造脏缓存清理请求体（清理时用顶部勾选的脏类型）
+    const dirtyBody = (extra = {}) => ({
+      api_path_prefix: dirty.value.api_path_prefix || null,
+      older_than_days: dirty.value.older_than_days || 0,
+      reasons: dirty.value.reasons.length ? dirty.value.reasons : null,
+      ...extra,
+    })
+
+    // 应用某页数据到视图
+    const applyPage = (d) => {
+      samples.value = d.samples || []
+      byReason.value = d.by_reason || {}
+      dirtyTotal.value = d.dirty_total || 0
+      detailPage.value = d.page || 1
+      totalPages.value = d.total_pages || 1
     }
 
-    // 脏缓存预览：统计 + 取指定页明细（分页/每页条数全部下推后端）
-    const scanDirty = async (resetFilter = true) => {
+    // 脏缓存预览：全表扫一次，拿 scan_token，后续翻页只切片不重扫
+    const scanDirty = async () => {
       scanning.value = true
       scanResult.value = ''
       msg.value = ''
-      if (resetFilter) {
-        detailFilter.value = 'all'
-        detailPage.value = 1
-      }
+      detailFilter.value = 'all'
+      detailPage.value = 1
       try {
         const res = await apiV2('/cleanup/scan-dirty-cache', {
           method: 'POST',
-          body: dirtyBody({ page: detailPage.value, page_size: pageSize.value }),
+          body: dirtyBody({ page: 1, page_size: pageSize.value }),
         })
         scanResult.value = res.message || ''
         const d = res.data || {}
-        samples.value = d.samples || []
-        byReason.value = d.by_reason || {}
-        dirtyTotal.value = d.dirty_total || 0
-        detailPage.value = d.page || 1
-        totalPages.value = d.total_pages || 1
+        scanToken.value = d.scan_token || ''
+        applyPage(d)
         lastResult.value = JSON.stringify(
-          { ...d, samples: `[当前页 ${samples.value.length} 条，共 ${dirtyTotal.value} 条]` }, null, 2)
+          { scanned: d.scanned, dirty_total: d.dirty_total, by_reason: d.by_reason }, null, 2)
       } catch (e) { msg.value = e.message } finally { scanning.value = false }
     }
 
-    // 翻页：保留筛选，仅换页重扫
+    // 翻页 / 筛选 / 改每页条数：走缓存切片接口，毫秒级返回
+    const loadDirtyPage = async (page) => {
+      if (!scanToken.value) return
+      scanning.value = true
+      try {
+        const res = await apiV2('/cleanup/dirty-cache-page', {
+          method: 'POST',
+          body: {
+            scan_token: scanToken.value,
+            page,
+            page_size: pageSize.value,
+            reason: detailFilter.value,
+          },
+        })
+        if (res.success === false) {
+          // 扫描结果过期，提示重新扫描
+          msg.value = res.message || '扫描结果已过期，请重新扫描'
+          scanToken.value = ''
+          return
+        }
+        applyPage(res.data || {})
+      } catch (e) { msg.value = e.message } finally { scanning.value = false }
+    }
+
+    // 翻页：保留筛选，仅换页（切片）
     const gotoPage = (p) => {
       if (p < 1 || p > totalPages.value) return
-      detailPage.value = p
-      scanDirty(false)
+      loadDirtyPage(p)
     }
-    // 切换每页条数：回到第 1 页重扫
-    const changePageSize = () => { detailPage.value = 1; scanDirty(false) }
-    // 点原因 chip：下推后端按该原因重扫第 1 页
+    // 切换每页条数：回到第 1 页
+    const changePageSize = () => loadDirtyPage(1)
+    // 点原因 chip：按该原因从缓存切片，回到第 1 页
     const setDetailFilter = (r) => {
       detailFilter.value = r
-      detailPage.value = 1
-      scanDirty(false)
+      loadDirtyPage(1)
     }
 
     // 脏缓存清理：按当前筛选执行删除
@@ -306,6 +352,7 @@ export default {
         samples.value = []
         dirtyTotal.value = 0
         totalPages.value = 1
+        scanToken.value = ''
         await load()
       } catch (e) { msg.value = e.message } finally { purging.value = false }
     }
@@ -319,11 +366,30 @@ export default {
     }
     const reasonLabel = (r) => ({ empty: '空结果', fail: 'success:false', error_code: 'errorCode≠0' }[r] || r)
 
+    // 查看脏缓存完整内容（复用响应缓存详情接口，id 即 ApiResponseCache.id）
+    const viewDetail = async (id) => {
+      detailVisible.value = true
+      detailLoading.value = true
+      detail.value = null
+      try {
+        const res = await apiV2(`/cache/responses/${id}`)
+        detail.value = res.data
+      } catch (e) { msg.value = e.message; detailVisible.value = false }
+      finally { detailLoading.value = false }
+    }
+    // body 美化：能解析 JSON 则缩进展示，否则原样
+    const prettyBody = computed(() => {
+      if (!detail.value || !detail.value.body) return '（空）'
+      try { return JSON.stringify(JSON.parse(detail.value.body), null, 2) }
+      catch { return detail.value.body }
+    })
+
     onMounted(load)
     return { activeTab, policies, schedule, intervalMin, msg, running, purging, scanning,
       scanResult, dirty, lastResult,
       samples, byReason, dirtyTotal,
       detailFilter, detailPage, pageSize, totalPages,
+      detailVisible, detail, detailLoading, prettyBody, viewDetail,
       savePolicy, saveSchedule, runAll, runOne, scanDirty, purgeDirty,
       gotoPage, changePageSize, setDetailFilter,
       fmt, fmtSize, reasonLabel }
@@ -386,4 +452,16 @@ export default {
 .r-error_code { background: #f9f0ff; color: #531dab; }
 .pager { display: flex; align-items: center; gap: 12px; margin-top: 14px; justify-content: center; }
 .pager-info { font-size: 13px; color: #888; }
+/* 详情弹窗 */
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modal { background: #fff; border-radius: 10px; width: 720px; max-width: 92vw; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.2); }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid #f0f0f0; }
+.modal-head h3 { font-size: 16px; color: #333; margin: 0; }
+.modal-close { border: none; background: none; font-size: 16px; color: #999; cursor: pointer; }
+.modal-body { padding: 16px 20px; overflow: auto; }
+.kv { display: flex; gap: 12px; padding: 5px 0; font-size: 13px; border-bottom: 1px dashed #f0f0f0; }
+.kv span { color: #888; min-width: 88px; }
+.kv b { color: #333; font-weight: 500; word-break: break-all; }
+.body-label { margin: 14px 0 6px; font-size: 13px; color: #555; }
+.body-pre { max-height: 360px; }
 </style>

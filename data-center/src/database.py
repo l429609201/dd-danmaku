@@ -2,7 +2,7 @@
 数据库连接和配置
 """
 import logging
-from sqlalchemy import create_engine, inspect, MetaData, text
+from sqlalchemy import create_engine, MetaData, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
@@ -78,61 +78,17 @@ async def init_db():
 
 
 async def ensure_compatible_schema():
-    """对既有数据库做轻量兼容补丁；create_all 不会修改已有表字段"""
+    """表完整性检查：基于 ORM 模型自动补齐缺失字段（只增不删）。
+
+    替代过去逐个手写 ALTER 的方式——以后给模型加字段，重启即自动补列，
+    无需再在此处硬编码。删表/删列/改类型等敏感操作一律不执行。
+    """
     try:
-        inspector = inspect(engine)
-        if "api_response_cache" in inspector.get_table_names():
-            columns = {c["name"] for c in inspector.get_columns("api_response_cache")}
-            # 响应缓存改为记录明文 client_ip（不再记录哈希；老库的 client_ip_hash 列保留不动）
-            if "client_ip" not in columns:
-                with engine.begin() as conn:
-                    conn.execute(text(
-                        "ALTER TABLE api_response_cache "
-                        "ADD COLUMN client_ip VARCHAR(64)"
-                    ))
-                logger.info("✅ 已为 api_response_cache 增加 client_ip 字段")
-        if "api_cache_access_logs" in inspector.get_table_names():
-            log_columns = {c["name"] for c in inspector.get_columns("api_cache_access_logs")}
-            if "client_ip" not in log_columns:
-                with engine.begin() as conn:
-                    conn.execute(text(
-                        "ALTER TABLE api_cache_access_logs "
-                        "ADD COLUMN client_ip VARCHAR(64)"
-                    ))
-                logger.info("✅ 已为 api_cache_access_logs 增加 client_ip 字段")
-        # UA 限流规则补充 Worker 对象格式字段（每小时/每天上限 + 说明）
-        if "ua_limit_rules" in inspector.get_table_names():
-            ua_cols = {c["name"] for c in inspector.get_columns("ua_limit_rules")}
-            ua_patches = {
-                "max_requests_per_hour": "INTEGER",
-                "max_requests_per_day": "INTEGER",
-                "description": "VARCHAR(300)",
-            }
-            for col, coltype in ua_patches.items():
-                if col not in ua_cols:
-                    with engine.begin() as conn:
-                        conn.execute(text(
-                            f"ALTER TABLE ua_limit_rules ADD COLUMN {col} {coltype}"
-                        ))
-                    logger.info(f"✅ 已为 ua_limit_rules 增加 {col} 字段")
-        # Worker 请求日志补充排查字段（缓存来源/上游状态/密钥/耗时）
-        if "worker_request_logs" in inspector.get_table_names():
-            log_cols = {c["name"] for c in inspector.get_columns("worker_request_logs")}
-            wlog_patches = {
-                "cache_source": "VARCHAR(20)",
-                "upstream_status": "INTEGER",
-                "key_id": "VARCHAR(64)",
-                "duration_ms": "INTEGER",
-            }
-            for col, coltype in wlog_patches.items():
-                if col not in log_cols:
-                    with engine.begin() as conn:
-                        conn.execute(text(
-                            f"ALTER TABLE worker_request_logs ADD COLUMN {col} {coltype}"
-                        ))
-                    logger.info(f"✅ 已为 worker_request_logs 增加 {col} 字段")
+        from src.database_schema_guard import SchemaGuard
+        guard = SchemaGuard(engine, Base.metadata)
+        guard.run()
     except Exception as e:
-        logger.error(f"❌ 数据库兼容补丁执行失败: {e}")
+        logger.error(f"❌ 表完整性检查失败: {e}")
         raise
 
 

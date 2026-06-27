@@ -2093,6 +2093,12 @@ async function handleRequest(request, env, ctx) {
             "X-Timestamp": ts,
             "X-Auth": "1",
         };
+        // 密钥配置了 forwardUa 则覆盖 User-Agent；留空则保持请求者原 UA。
+        // forwardHeaders 来自 headers.entries()（key 为小写），先删小写键再设标准键，避免重复头
+        if (keyObj.forwardUa) {
+            delete headers['user-agent'];
+            headers['User-Agent'] = keyObj.forwardUa;
+        }
         if (ACCESS_CONFIG.logging.enabled) {
             console.log(`📤 [${clientIP}] 转发请求头(key=${keyObj.id}):`, JSON.stringify(headers, null, 2));
         }
@@ -2363,6 +2369,7 @@ function parseEnvKeyPool(env) {
                     appId: String(k.appId),
                     appSecret: String(k.appSecret),
                     authUaKeys: Array.isArray(k.authUaKeys) ? k.authUaKeys.map(String) : [],
+                    forwardUa: k.forwardUa ? String(k.forwardUa) : '',
                 });
             }
         } catch (e) {
@@ -2371,9 +2378,9 @@ function parseEnvKeyPool(env) {
     }
     // 兼容老配置：APP_ID + APP_SECRET / APP_SECRET_2（无授权 UA，进公共池）
     if (keys.length === 0 && env.APP_ID && env.APP_SECRET) {
-        keys.push({ id: 'legacy_1', appId: env.APP_ID, appSecret: env.APP_SECRET, authUaKeys: [] });
+        keys.push({ id: 'legacy_1', appId: env.APP_ID, appSecret: env.APP_SECRET, authUaKeys: [], forwardUa: '' });
         if (env.APP_SECRET_2) {
-            keys.push({ id: 'legacy_2', appId: env.APP_ID, appSecret: env.APP_SECRET_2, authUaKeys: [] });
+            keys.push({ id: 'legacy_2', appId: env.APP_ID, appSecret: env.APP_SECRET_2, authUaKeys: [], forwardUa: '' });
         }
     }
     return keys;
@@ -2393,6 +2400,7 @@ function mergeKeyPool(env, localKeys) {
                 appId: String(k.appId),
                 appSecret: String(k.appSecret),
                 authUaKeys: Array.isArray(k.authUaKeys) ? k.authUaKeys.map(String) : [],
+                forwardUa: k.forwardUa ? String(k.forwardUa) : '',
             }));
     }
     const envKeys = memoryCache.keyPool.envKeys || [];

@@ -51,6 +51,15 @@ class DirtyCacheRequest(BaseModel):
     page_size: int = 20
 
 
+class DirtyPageRequest(BaseModel):
+    """脏缓存扫描结果翻页请求（纯内存切片，不重扫）"""
+    scan_token: str
+    page: int = 1
+    page_size: int = 20
+    # 按原因筛选：all / empty / fail / error_code
+    reason: Optional[str] = None
+
+
 def _policy_dict(p: CleanupPolicy) -> dict:
     return {
         "table_key": p.table_key, "display_name": p.display_name,
@@ -139,10 +148,10 @@ async def run_cleanup(body: RunRequest, _: LocalUser = Depends(require_operator)
 @router.post("/scan-dirty-cache")
 async def scan_dirty_cache(body: DirtyCacheRequest = DirtyCacheRequest(),
                            _: LocalUser = Depends(get_current_user)):
-    """预览脏缓存：按筛选条件统计各类脏数据数量，并分页返回明细，不删除"""
+    """预览脏缓存：全表扫描一次并缓存明细，返回首页 + scan_token（翻页用）"""
     from src.services_v2.cache_service import cache_service
-    result = await cache_service.purge_dirty(
-        dry_run=True, api_path_prefix=body.api_path_prefix,
+    result = await cache_service.scan_dirty(
+        api_path_prefix=body.api_path_prefix,
         older_than_days=body.older_than_days, reasons=body.reasons,
         page=body.page, page_size=body.page_size)
     br = result.get("by_reason", {})
@@ -150,6 +159,20 @@ async def scan_dirty_cache(body: DirtyCacheRequest = DirtyCacheRequest(),
         message=f"扫描 {result.get('scanned', 0)} 条，发现脏数据 {result.get('dirty_total', 0)} 条"
                 f"（空 {br.get('empty', 0)} / 失败 {br.get('fail', 0)} / 错误码 {br.get('error_code', 0)}）",
         data=result)
+
+
+@router.post("/dirty-cache-page")
+async def dirty_cache_page(body: DirtyPageRequest,
+                           _: LocalUser = Depends(get_current_user)):
+    """脏缓存扫描结果翻页：从缓存切片，不重扫数据库（毫秒级）。
+    scan_token 失效时返回 expired=True，前端需重新扫描。"""
+    from src.services_v2.cache_service import cache_service
+    result = cache_service.get_dirty_page(
+        scan_token=body.scan_token, page=body.page,
+        page_size=body.page_size, reason=body.reason)
+    if result.get("expired"):
+        return ApiResult(success=False, message="扫描结果已过期，请重新扫描", data=result)
+    return ApiResult(data=result)
 
 
 @router.post("/purge-dirty-cache")

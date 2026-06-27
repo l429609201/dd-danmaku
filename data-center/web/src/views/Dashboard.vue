@@ -250,30 +250,36 @@ export default {
       if (hasHit.value) drawPie(hitChart, '命中', hitData)
     }
 
-    const drawPie = (elRef, name, seriesData) => {
+    const drawPie = async (elRef, name, seriesData) => {
       if (!elRef.value) return
-      const c = echarts.init(elRef.value)
+      // 先等 DOM 真正显示（v-show 刚置 true），否则 0 宽容器会画歪/图例重叠
+      await nextTick()
+      const c = echarts.getInstanceByDom(elRef.value) || echarts.init(elRef.value)
       charts[name] = c
       c.setOption({
         tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-        // 图例改到右侧纵向滚动，一次可见多项（原底部横向滚动只能 ◀1/n▶ 翻页）
+        // 图例右侧纵向滚动；用百分比宽度区分饼图区与图例区，避免重叠
         legend: {
-          type: 'scroll', orient: 'vertical', right: 8, top: 'middle',
-          itemWidth: 10, itemHeight: 10, textStyle: { fontSize: 11 },
-          formatter: (v) => (v && v.length > 10 ? v.slice(0, 10) + '…' : v),
+          type: 'scroll', orient: 'vertical', right: '2%', top: 'middle',
+          itemWidth: 10, itemHeight: 10, itemGap: 8,
+          textStyle: { fontSize: 11 },
+          formatter: (v) => (v && v.length > 8 ? v.slice(0, 8) + '…' : v),
         },
         series: [{
-          // 饼图左移并缩半径，给右侧图例腾出空间
-          name, type: 'pie', radius: ['38%', '62%'], center: ['38%', '50%'],
+          // 饼图占左 60% 区域居中，右侧 40% 留给图例，杜绝重叠
+          name, type: 'pie', radius: ['35%', '58%'], center: ['30%', '50%'],
           data: seriesData, label: { show: false }, emphasis: { label: { show: true } },
         }],
-      })
+      }, true) // 第二参 true：清空旧 option，避免复用实例残留
+      c.resize() // 兜底：确保按当前真实容器尺寸渲染
     }
 
     // 横向柱状图（接口429 / UA Top）
-    const drawBar = (elRef, name, categories, values, color) => {
+    const drawBar = async (elRef, name, categories, values, color) => {
       if (!elRef.value) return
-      const c = echarts.init(elRef.value)
+      // 先等 DOM 显示，否则 0 宽容器会把整图压成一条竖条
+      await nextTick()
+      const c = echarts.getInstanceByDom(elRef.value) || echarts.init(elRef.value)
       charts[name] = c
       c.setOption({
         // tooltip 显示完整类目名（Y 轴标签会被截断，靠 tooltip 看全名）
@@ -292,7 +298,8 @@ export default {
           name, type: 'bar', data: values, barMaxWidth: 22,
           itemStyle: { color: color || '#1677ff', borderRadius: [0, 4, 4, 0] },
         }],
-      })
+      }, true)
+      c.resize() // 兜底：按真实容器尺寸重绘，杜绝竖条
     }
 
     // 加载运维洞察：密钥池状态 + 弹幕水位 + 429/UA/缓存来源
@@ -315,11 +322,10 @@ export default {
         const r = await apiV2('/comment-store/stats')
         cs.value = r.data
       } catch (e) { /* 忽略 */ }
-      // 洞察图表
+      // 洞察图表（drawBar/drawPie 内部已等 nextTick 再渲染，避免 0 宽容器画歪）
       try {
         const res = await apiV2('/dashboard/insights?hours=24')
         const d = res.data || {}
-        await nextTick()
         const a429 = (d.api_429 || []).filter(x => x.count > 0)
         has429.value = a429.length > 0
         if (has429.value) drawBar(api429Chart, '接口429', a429.map(x => x.api_group), a429.map(x => x.count), '#ff4d4f')

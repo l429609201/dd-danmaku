@@ -34,6 +34,7 @@ class KeyPoolService:
             "app_id": r.app_id,
             "app_secret": secret_show,
             "auth_ua_keys": r.auth_ua_keys or [],
+            "forward_ua": r.forward_ua or "",
             "enabled": r.enabled,
             "remark": r.remark,
             "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -70,6 +71,8 @@ class KeyPoolService:
                 app_id=str(data.get("app_id") or "").strip(),
                 app_secret=str(data.get("app_secret") or "").strip(),
                 auth_ua_keys=list(data.get("auth_ua_keys") or []),
+                forward_ua=(str(data.get("forward_ua")).strip() or None)
+                if data.get("forward_ua") else None,
                 enabled=bool(data.get("enabled", True)),
                 remark=data.get("remark"),
             )
@@ -92,6 +95,10 @@ class KeyPoolService:
                 row.app_secret = str(data["app_secret"]).strip()
             if "auth_ua_keys" in data and data["auth_ua_keys"] is not None:
                 row.auth_ua_keys = list(data["auth_ua_keys"])
+            if "forward_ua" in data:
+                # 允许置空（恢复为转发请求者 UA）；空串 → None
+                fu = data.get("forward_ua")
+                row.forward_ua = str(fu).strip() if fu and str(fu).strip() else None
             if "enabled" in data and data["enabled"] is not None:
                 row.enabled = bool(data["enabled"])
             if "remark" in data:
@@ -125,6 +132,8 @@ class KeyPoolService:
                 "appId": r.app_id,
                 "appSecret": r.app_secret,
                 "authUaKeys": r.auth_ua_keys or [],
+                # 转发 UA：仅在配置了才下发，Worker 端空则用请求者原 UA
+                **({"forwardUa": r.forward_ua} if r.forward_ua else {}),
             } for r in rows]
         finally:
             db.close()
@@ -165,6 +174,7 @@ class KeyPoolService:
                     "appId": r.app_id,
                     "appSecret": r.app_secret,
                     "authUaKeys": r.auth_ua_keys or [],
+                    "forwardUa": r.forward_ua or "",
                     "enabled": r.enabled,
                     "remark": r.remark or "",
                 } for r in rows]
@@ -217,6 +227,11 @@ class KeyPoolService:
                 row.app_id = app_id
                 row.app_secret = secret
                 row.auth_ua_keys = list(ua_keys) if isinstance(ua_keys, list) else []
+                # 转发 UA（兼容 camelCase/snake_case），空串归一为 None
+                fu = it.get("forwardUa")
+                if fu is None:
+                    fu = it.get("forward_ua")
+                row.forward_ua = str(fu).strip() if fu and str(fu).strip() else None
                 if "enabled" in it and it["enabled"] is not None:
                     row.enabled = bool(it["enabled"])
                 if it.get("remark") is not None:

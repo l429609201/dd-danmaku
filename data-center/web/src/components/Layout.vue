@@ -1,8 +1,13 @@
 <template>
   <el-container class="layout">
-    <el-aside width="220px" class="sidebar">
+    <!-- 移动端抽屉遮罩：点击关闭侧边栏 -->
+    <div v-if="isMobile && drawerOpen" class="sidebar-mask" @click="drawerOpen = false"></div>
+
+    <el-aside width="220px" class="sidebar"
+              :class="{ 'sidebar--mobile': isMobile, 'sidebar--open': drawerOpen }">
       <div class="brand">⚡ 数据交互中心</div>
-      <el-menu :default-active="$route.path" router class="side-menu" :collapse="false">
+      <el-menu :default-active="$route.path" router class="side-menu" :collapse="false"
+               @select="onMenuSelect">
         <el-menu-item-group title="概览">
           <el-menu-item index="/"><el-icon><DataLine /></el-icon><span>仪表盘</span></el-menu-item>
         </el-menu-item-group>
@@ -35,7 +40,10 @@
 
     <el-container>
       <el-header class="header">
+        <!-- 移动端汉堡按钮：切换侧边栏抽屉 -->
+        <el-icon v-if="isMobile" class="hamburger" @click="drawerOpen = !drawerOpen"><Fold /></el-icon>
         <div class="header-title">{{ $route.meta.title || '控制台' }}</div>
+        <div class="header-spacer"></div>
         <el-dropdown trigger="click" @command="onCommand">
           <span class="user-trigger">
             <el-icon><Avatar /></el-icon>
@@ -59,7 +67,7 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { logout as apiLogout, authFetch } from '../utils/api.js'
@@ -69,6 +77,15 @@ export default {
   setup() {
     const router = useRouter()
     const username = ref('')
+    // 移动端响应式：窄屏侧边栏改为抽屉
+    const isMobile = ref(false)
+    const drawerOpen = ref(false)
+    const checkMobile = () => {
+      isMobile.value = window.innerWidth <= 768
+      if (!isMobile.value) drawerOpen.value = false // 切回宽屏时复位
+    }
+    // 移动端点击菜单后自动收起抽屉
+    const onMenuSelect = () => { if (isMobile.value) drawerOpen.value = false }
 
     const triggerPasswordModal = () => {
       if (router.currentRoute.value.path === '/settings') {
@@ -91,6 +108,8 @@ export default {
     }
 
     onMounted(async () => {
+      checkMobile()
+      window.addEventListener('resize', checkMobile)
       const token = localStorage.getItem('access_token')
       if (!token) {
         router.push('/login')
@@ -112,7 +131,9 @@ export default {
       }
     })
 
-    return { username, onCommand }
+    onUnmounted(() => window.removeEventListener('resize', checkMobile))
+
+    return { username, onCommand, isMobile, drawerOpen, onMenuSelect }
   }
 }
 </script>
@@ -175,5 +196,39 @@ export default {
 .main-content {
   background: var(--app-bg);
   padding: 0;
+}
+.header-spacer {
+  flex: 1;
+}
+.hamburger {
+  font-size: 22px;
+  cursor: pointer;
+  margin-right: 12px;
+  color: var(--app-text);
+}
+/* 移动端抽屉遮罩 */
+.sidebar-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 1000;
+}
+/* 窄屏：侧边栏改为抽屉，默认滑出屏幕外 */
+@media (max-width: 768px) {
+  .sidebar--mobile {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    z-index: 1001;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+  }
+  .sidebar--mobile.sidebar--open {
+    transform: translateX(0);
+  }
+  .header {
+    padding: 0 14px;
+  }
 }
 </style>

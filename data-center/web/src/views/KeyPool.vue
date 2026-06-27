@@ -18,7 +18,7 @@
       <table class="data-table">
         <thead><tr>
           <th>key_id</th><th>App ID</th><th>App Secret</th>
-          <th>授权 UA（空=公共池）</th><th>启用</th><th>备注</th><th>操作</th>
+          <th>授权 UA（空=公共池）</th><th>请求 UA（空=随请求者）</th><th>启用</th><th>备注</th><th>操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="r in items" :key="r.id">
@@ -29,6 +29,10 @@
               <span v-if="!r.auth_ua_keys || !r.auth_ua_keys.length" class="badge badge-pool">公共池</span>
               <span v-else v-for="u in r.auth_ua_keys" :key="u" class="badge">{{ u }}</span>
             </td>
+            <td class="msg">
+              <span v-if="r.forward_ua" :title="r.forward_ua">{{ r.forward_ua }}</span>
+              <span v-else class="muted">随请求者</span>
+            </td>
             <td>{{ r.enabled ? '是' : '否' }}</td>
             <td class="msg">{{ r.remark || '—' }}</td>
             <td class="actions">
@@ -37,7 +41,7 @@
               <button class="link danger" @click="del(r.id)">删除</button>
             </td>
           </tr>
-          <tr v-if="!items.length"><td colspan="7" class="empty">暂无密钥，使用 env APP_KEY_POOL 兜底</td></tr>
+          <tr v-if="!items.length"><td colspan="8" class="empty">暂无密钥，使用 env APP_KEY_POOL 兜底</td></tr>
         </tbody>
       </table>
     </div>
@@ -82,6 +86,10 @@
             <span v-if="!uaKeys.length" class="muted">暂无 UA 规则，先到「UA 限流」添加</span>
           </div>
         </div>
+        <div class="form-item">
+          <label>请求 UA（留空=转发请求者的 UA；填写则请求官方时用此 UA）</label>
+          <input v-model="form.forward_ua" class="input full" placeholder="留空=随请求者；例如 dandanplay/3.0" />
+        </div>
         <div class="form-item"><label>备注</label><input v-model="form.remark" class="input full" /></div>
         <label class="chk"><input type="checkbox" v-model="form.enabled" /> 启用</label>
         <div class="modal-actions">
@@ -124,7 +132,7 @@ export default {
     const showEdit = ref(false)
     const saving = ref(false)
     const editId = ref(null)
-    const form = reactive({ key_id: '', app_id: '', app_secret: '', auth_ua_keys: [], remark: '', enabled: true })
+    const form = reactive({ key_id: '', app_id: '', app_secret: '', auth_ua_keys: [], forward_ua: '', remark: '', enabled: true })
     // JSON 导入/导出状态
     const showImport = ref(false)
     const importText = ref('')
@@ -149,7 +157,7 @@ export default {
 
     const resetForm = () => {
       form.key_id = ''; form.app_id = ''; form.app_secret = ''
-      form.auth_ua_keys = []; form.remark = ''; form.enabled = true
+      form.auth_ua_keys = []; form.forward_ua = ''; form.remark = ''; form.enabled = true
     }
     const openCreate = () => { editId.value = null; resetForm(); showEdit.value = true }
     const openEdit = (r) => {
@@ -158,6 +166,7 @@ export default {
       form.app_id = r.app_id
       form.app_secret = ''  // 留空表示不修改
       form.auth_ua_keys = [...(r.auth_ua_keys || [])]
+      form.forward_ua = r.forward_ua || ''
       form.remark = r.remark || ''
       form.enabled = r.enabled
       showEdit.value = true
@@ -169,7 +178,7 @@ export default {
       saving.value = true
       try {
         if (editId.value) {
-          const body = { app_id: form.app_id, auth_ua_keys: form.auth_ua_keys, remark: form.remark, enabled: form.enabled }
+          const body = { app_id: form.app_id, auth_ua_keys: form.auth_ua_keys, forward_ua: form.forward_ua, remark: form.remark, enabled: form.enabled }
           if (form.app_secret) body.app_secret = form.app_secret
           const res = await apiV2(`/key-pool/${editId.value}`, { method: 'PUT', body })
           msg.value = res.message || '更新成功'

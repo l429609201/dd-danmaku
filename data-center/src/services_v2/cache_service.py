@@ -54,6 +54,48 @@ def is_clean_cache_body(api_path: str, body: str) -> bool:
     return True
 
 
+# ============ 脏缓存扫描结果缓存（单进程内存，避免翻页重复全表扫描） ============
+# uvicorn --workers 1，进程内缓存即可，无需跨进程同步。
+# 结构：token -> {created_at, scanned, by_reason, samples:[全部脏条目明细]}
+import time
+import uuid
+
+_DIRTY_SCAN_CACHE: Dict[str, Dict[str, Any]] = {}
+_DIRTY_SCAN_TTL = 300          # 扫描结果保留 5 分钟
+_DIRTY_SCAN_MAX_ENTRIES = 5    # 最多保留 5 份扫描结果，超出淘汰最旧
+
+
+def _prune_dirty_scan_cache():
+    """清理过期/超量的扫描结果，防内存堆积"""
+    nowt = time.time()
+    expired = [t for t, v in _DIRTY_SCAN_CACHE.items()
+               if nowt - v["created_at"] > _DIRTY_SCAN_TTL]
+    for t in expired:
+        _DIRTY_SCAN_CACHE.pop(t, None)
+    # 超量则淘汰最旧
+    while len(_DIRTY_SCAN_CACHE) > _DIRTY_SCAN_MAX_ENTRIES:
+        oldest = min(_DIRTY_SCAN_CACHE.items(), key=lambda kv: kv[1]["created_at"])[0]
+        _DIRTY_SCAN_CACHE.pop(oldest, None)
+
+
+def _paginate_samples(samples: list, page: int, page_size: int,
+                      reason: Optional[str]) -> Dict[str, Any]:
+    """从已缓存的全量明细中切片返回某页（纯内存，无 DB）"""
+    import math
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
+    filtered = samples if not reason or reason == "all" \
+        else [s for s in samples if s["reason"] == reason]
+    total = len(filtered)
+    total_pages = max(1, math.ceil(total / page_size)) if total else 1
+    start = (page - 1) * page_size
+    return {
+        "samples": filtered[start:start + page_size],
+        "page": page, "page_size": page_size,
+        "total_pages": total_pages, "filtered_total": total,
+    }
+
+
 class CacheService:
     """上游响应缓存服务"""
 
@@ -229,31 +271,24 @@ class CacheService:
                           older_than_days: int = 0,
                           reasons: Optional[list] = None,
                           batch_size: int = 2000,
-                          page: int = 1,
-                          page_size: int = 20) -> Dict[str, Any]:
+                          collect_samples: bool = False) -> Dict[str, Any]:
         """扫描并清理脏缓存（success:false / 空结果 / errorCode!=0）。
 
-        - dry_run=True 仅统计不删除（预览）：完整统计 by_reason/dirty_total，
-          并按 page/page_size 收集“当前页”的脏条目明细供界面逐条核查、翻页
+        - dry_run=True 仅统计不删除（预览）
+        - collect_samples=True 时一次性收集全部脏条目明细（供扫描结果缓存，翻页用）
         - api_path_prefix 只处理指定接口前缀
         - older_than_days>0 只处理 fetched_at 早于 N 天前的记录
         - reasons 指定脏类型白名单：['empty','fail','error_code']，None=全部
-        - 游标分批扫描全表，避免大表 OOM；翻页时只保留当前页明细，内存恒定
-        返回 {scanned, deleted, dirty_total, by_reason, samples, page, page_size, total_pages}
+        - 游标分批扫描全表，避免大表 OOM
+        返回 {scanned, deleted, dirty_total, by_reason, samples?}
         """
         from datetime import timedelta
         scanned = 0
         deleted = 0
         by_reason = {"empty": 0, "fail": 0, "error_code": 0}
-        samples = []  # 仅预览时收集“当前页”脏条目明细
+        samples = []  # collect_samples=True 时收集全部脏条目明细
         reason_set = set(reasons) if reasons else None
         cutoff = now() - timedelta(days=older_than_days) if older_than_days > 0 else None
-        # 当前页明细区间（基于脏数据顺序的下标）
-        page = max(1, page)
-        page_size = max(1, min(page_size, 200))
-        page_start = (page - 1) * page_size
-        page_end = page_start + page_size
-        dirty_index = 0  # 已遇到的脏数据序号（用于定位页区间）
 
         last_id = 0
         while True:
@@ -282,8 +317,8 @@ class CacheService:
                     if reason_set is not None and reason not in reason_set:
                         continue
                     by_reason[reason] = by_reason.get(reason, 0) + 1
-                    # 预览时只收集落在当前页区间的明细（翻页内存恒定）
-                    if dry_run and page_start <= dirty_index < page_end:
+                    # 收集全部明细（仅扫描预览缓存用）
+                    if collect_samples:
                         samples.append({
                             "id": row.id,
                             "cache_key": row.cache_key,
@@ -295,7 +330,6 @@ class CacheService:
                             "body_snippet": (body or "")[:200],
                             "fetched_at": row.fetched_at.isoformat() if row.fetched_at else None,
                         })
-                    dirty_index += 1
                     if not dry_run:
                         if row.redis_key:
                             await redis_cache.delete(row.redis_key)
@@ -316,12 +350,62 @@ class CacheService:
         dirty_total = sum(by_reason.values())
         logger.info(f"🧹 脏缓存{'预览' if dry_run else '清理'}完成: "
                     f"扫描 {scanned} 脏数据 {dirty_total} 删除 {deleted}")
-        import math
-        total_pages = max(1, math.ceil(dirty_total / page_size)) if dry_run else 1
         return {"scanned": scanned, "dirty_total": dirty_total,
                 "deleted": deleted, "by_reason": by_reason, "dry_run": dry_run,
-                "samples": samples, "page": page, "page_size": page_size,
-                "total_pages": total_pages}
+                "samples": samples}
+
+    async def scan_dirty(self, api_path_prefix: Optional[str] = None,
+                         older_than_days: int = 0, reasons: Optional[list] = None,
+                         page: int = 1, page_size: int = 20) -> Dict[str, Any]:
+        """扫描脏缓存并缓存全量明细，返回首页切片 + scan_token（翻页用）。
+
+        全表只扫一次，结果存进程内缓存（TTL 5 分钟），后续翻页走 get_dirty_page。
+        """
+        result = await self.purge_dirty(
+            dry_run=True, api_path_prefix=api_path_prefix,
+            older_than_days=older_than_days, reasons=reasons,
+            collect_samples=True)
+        if result.get("error"):
+            return result
+        all_samples = result["samples"]
+        # 缓存全量明细
+        _prune_dirty_scan_cache()
+        token = uuid.uuid4().hex
+        _DIRTY_SCAN_CACHE[token] = {
+            "created_at": time.time(),
+            "scanned": result["scanned"],
+            "by_reason": result["by_reason"],
+            "samples": all_samples,
+        }
+        page_data = _paginate_samples(all_samples, page, page_size, "all")
+        return {
+            "scan_token": token,
+            "scanned": result["scanned"],
+            "dirty_total": result["dirty_total"],
+            "by_reason": result["by_reason"],
+            "dry_run": True,
+            **page_data,
+        }
+
+    def get_dirty_page(self, scan_token: str, page: int = 1,
+                       page_size: int = 20, reason: Optional[str] = None) -> Dict[str, Any]:
+        """从已缓存的扫描结果中取某页（纯内存切片，无 DB，毫秒级）。
+
+        scan_token 失效（过期/重启）时返回 expired=True，前端需重新扫描。
+        """
+        _prune_dirty_scan_cache()
+        entry = _DIRTY_SCAN_CACHE.get(scan_token)
+        if not entry:
+            return {"expired": True}
+        page_data = _paginate_samples(entry["samples"], page, page_size, reason)
+        return {
+            "scan_token": scan_token,
+            "scanned": entry["scanned"],
+            "dirty_total": len(entry["samples"]),
+            "by_reason": entry["by_reason"],
+            "expired": False,
+            **page_data,
+        }
 
     @staticmethod
     def _dirty_reason(api_path: str, body: str) -> Optional[str]:

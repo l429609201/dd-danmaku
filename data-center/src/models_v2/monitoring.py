@@ -198,6 +198,8 @@ class AppKeyPool(Base, TimestampMixin):
     app_secret = Column(String(200), nullable=False)
     # 授权 ua_key 列表（关联 UaLimitRule.ua_key），空数组=公共池
     auth_ua_keys = Column(JSON, default=list, nullable=False)
+    # 转发官方 API 时使用的 User-Agent：空=转发请求者原始 UA，非空=用此 UA 覆盖
+    forward_ua = Column(String(300), nullable=True)
     enabled = Column(Boolean, default=True, index=True, nullable=False)
     remark = Column(String(500), nullable=True)
 
