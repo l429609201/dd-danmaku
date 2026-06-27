@@ -1375,13 +1375,22 @@ async function handleOAuthRequest(request, env, urlObj) {
                         access_token: accessToken,
                         client_id: config.clientId,
                     });
+                    // 回传刷新所需字段（供应用侧落库后做临期自动刷新）
+                    if (tokenData.refresh_token) redirectParams.set('refresh_token', tokenData.refresh_token);
+                    if (tokenData.expires_in) redirectParams.set('expires_in', String(tokenData.expires_in));
                     return Response.redirect(`${appRedirectUri}?${redirectParams}`, 302);
                 } catch (e) {
                     addMemoryLog('WARN', 'redirect_uri decode failed', { error: e.message });
                 }
             }
             // 没有 redirect_uri 或解码失败，返回 JSON
-            return oauthJson({ token: jwt, user: user.id, name: user.name, provider, client_id: config.clientId });
+            return oauthJson({
+                token: jwt, user: user.id, name: user.name, provider,
+                client_id: config.clientId,
+                access_token: accessToken,
+                refresh_token: tokenData.refresh_token || '',
+                expires_in: tokenData.expires_in || 0,
+            });
         } catch (err) {
             addMemoryLog('ERROR', 'OAuth 回调异常', { error: err.message });
             return oauthJson({ error: `OAuth 处理异常: ${err.message}` }, 500);
@@ -1393,6 +1402,67 @@ async function handleOAuthRequest(request, env, urlObj) {
         const payload = await extractAndVerifyToken(request, env);
         if (!payload) return oauthJson({ valid: false }, 401);
         return oauthJson({ valid: true, user: payload.sub, provider: payload.provider, exp: payload.exp });
+    }
+
+    // POST /oauth/refresh — 用 refresh_token 换新 access_token（服务端持有 client_secret）
+    // body: { provider, refresh_token }
+    if (path === '/oauth/refresh') {
+        if (request.method !== 'POST') return oauthJson({ error: '仅支持 POST' }, 405);
+        let body;
+        try {
+            body = await request.json();
+        } catch {
+            return oauthJson({ error: '请求体非 JSON' }, 400);
+        }
+        const provider = body?.provider;
+        const refreshToken = body?.refresh_token;
+        if (!provider || !refreshToken) {
+            return oauthJson({ error: '缺少 provider 或 refresh_token' }, 400);
+        }
+        const config = getProviderConfig(provider, env);
+        if (!config) return oauthJson({ error: `Provider "${provider}" 不可用或未配置` }, 400);
+        try {
+            const refreshBody = {
+                client_id: config.clientId,
+                client_secret: config.clientSecret,
+                refresh_token: refreshToken,
+                redirect_uri: `${origin}/oauth/callback`,
+                grant_type: 'refresh_token',
+            };
+            const useJson = config.tokenContentType === 'json';
+            const res = await fetch(config.tokenUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': useJson ? 'application/json' : 'application/x-www-form-urlencoded',
+                    'Accept': 'application/json',
+                    'User-Agent': 'CF-Worker-OAuth/1.0',
+                },
+                body: useJson ? JSON.stringify(refreshBody) : new URLSearchParams(refreshBody),
+            });
+            const text = await res.text();
+            let data;
+            try {
+                data = JSON.parse(text);
+            } catch {
+                return oauthJson({ error: 'Token 接口返回非 JSON', status: res.status, body: text.slice(0, 300) }, 502);
+            }
+            if (!data.access_token) {
+                addMemoryLog('WARN', 'OAuth 刷新失败', { provider, status: res.status });
+                return oauthJson({ error: '刷新失败', detail: data }, 400);
+            }
+            addMemoryLog('INFO', 'OAuth 刷新成功', { provider });
+            // 原样回传新令牌，部分 Provider 刷新后会轮换 refresh_token
+            return oauthJson({
+                access_token: data.access_token,
+                refresh_token: data.refresh_token || refreshToken,
+                expires_in: data.expires_in || 0,
+                token_type: data.token_type || 'Bearer',
+                created_at: data.created_at || Math.floor(Date.now() / 1000),
+            });
+        } catch (err) {
+            addMemoryLog('ERROR', 'OAuth 刷新异常', { provider, error: err.message });
+            return oauthJson({ error: `刷新异常: ${err.message}` }, 500);
+        }
     }
 
     return oauthJson({ error: 'OAuth 路由不存在' }, 404);
