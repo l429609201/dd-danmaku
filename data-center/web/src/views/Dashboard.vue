@@ -385,7 +385,8 @@ export default {
           if (worldJson) echarts.registerMap('world', worldJson)
         }
         const hasMap = !!echarts.getMap('world')
-        const c = echarts.init(mapChart.value)
+        await nextTick()
+        const c = echarts.getInstanceByDom(mapChart.value) || echarts.init(mapChart.value)
         charts.map = c
         const pts = geo.value.points
         const maxV = Math.max(...pts.map(p => p.value[2]), 1)
@@ -400,6 +401,7 @@ export default {
             encode: { value: 2 },
           }],
         })
+        c.resize() // 兜底：确保按真实容器尺寸渲染（修复窄屏/显隐切换时地图偏小）
       } catch (e) { /* 地图失败不阻塞 */ }
     }
 

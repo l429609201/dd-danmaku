@@ -219,3 +219,23 @@ class WorkerKeyState(Base):
     key_count = Column(Integer, default=0, nullable=False)
     key_state = Column(JSON, default=dict, nullable=False)
     updated_at = Column(DateTime, default=now, onupdate=now, index=True, nullable=False)
+
+
+class IpGeoCache(Base):
+    """IP 地理解析结果持久化缓存（ip 唯一）
+
+    GeoLite2 解析结果落库，避免每次打开地图重复解析：
+    - resolved=True：已成功解析，存经纬度/城市/国家
+    - resolved=False：解析失败（私有IP/未收录），记录以跳过重复尝试
+    每次聚合只对「未入此表的新 IP」解析，已存的直接读表。
+    """
+    __tablename__ = "ip_geo_cache"
+
+    ip = Column(String(64), primary_key=True)
+    lng = Column(String(20), nullable=True)
+    lat = Column(String(20), nullable=True)
+    city = Column(String(120), nullable=True)
+    country = Column(String(8), nullable=True)
+    # 是否解析成功（False 表示无法定位，记录避免重复 lookup）
+    resolved = Column(Boolean, default=False, index=True, nullable=False)
+    resolved_at = Column(DateTime, default=now, nullable=False)

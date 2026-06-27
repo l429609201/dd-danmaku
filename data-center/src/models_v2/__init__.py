@@ -19,7 +19,7 @@ from src.models_v2.cache import (
 from src.models_v2.monitoring import (
     IpRule, IpRequestStatCurrent, IpRequestStatSnapshot,
     UaLimitRule, WorkerRequestLog, WorkerMetricsSnapshot, LocalCommentStore,
-    CleanupPolicy, AppKeyPool, WorkerKeyState,
+    CleanupPolicy, AppKeyPool, WorkerKeyState, IpGeoCache,
 )
 
 __all__ = [
@@ -53,4 +53,5 @@ __all__ = [
     "CleanupPolicy",
     "AppKeyPool",
     "WorkerKeyState",
+    "IpGeoCache",
 ]

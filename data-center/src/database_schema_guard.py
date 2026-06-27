@@ -34,6 +34,7 @@ class SchemaGuard:
         # 统计：本次补了哪些列 / 跳过哪些缺表
         self.added_columns: List[str] = []
         self.missing_tables: List[str] = []
+        self.failed_columns: List[str] = []
 
     # ---------- 类型与默认值编译 ----------
     def _compile_type(self, column: Column) -> str:
@@ -70,20 +71,25 @@ class SchemaGuard:
         return "DEFAULT ''"
 
     def _build_add_column_sql(self, table_name: str, column: Column) -> str:
-        """构造单列 ADD COLUMN 语句（带 NULL 约束与安全默认值）"""
+        """构造单列 ADD COLUMN 语句（带 NULL 约束与安全默认值）。
+
+        标识符用方言 preparer 正确转义：MySQL→反引号，PostgreSQL/SQLite→双引号，
+        避免硬编码双引号在 MySQL（无 ANSI_QUOTES）下被当字符串导致语法错误。
+        """
+        prep = self.dialect.identifier_preparer
+        tbl = prep.quote(table_name)
+        col = prep.quote(column.name)
         col_type = self._compile_type(column)
-        parts = [f'ADD COLUMN "{column.name}" {col_type}']
+        parts = [f'ADD COLUMN {col} {col_type}']
+        default_sql = self._server_default_sql(column)
         if not column.nullable:
-            default_sql = self._server_default_sql(column)
             # NOT NULL 必须配 DEFAULT，否则存量行无法满足约束
             if default_sql:
                 parts.append(default_sql)
             parts.append("NOT NULL")
-        else:
-            default_sql = self._server_default_sql(column)
-            if default_sql:
-                parts.append(default_sql)
-        return f'ALTER TABLE "{table_name}" ' + " ".join(parts)
+        elif default_sql:
+            parts.append(default_sql)
+        return f'ALTER TABLE {tbl} ' + " ".join(parts)
 
     # ---------- 主流程 ----------
     def run(self) -> dict:
@@ -104,9 +110,15 @@ class SchemaGuard:
                         f"{', '.join(self.added_columns)}")
         else:
             logger.info("✅ SchemaGuard 检查完成，表结构完整，无需补列")
+        # 有补列失败的，醒目告警（这些列缺失会导致相关接口 500，需人工处理）
+        if self.failed_columns:
+            logger.error(
+                f"🛑 SchemaGuard 有 {len(self.failed_columns)} 个字段补齐失败，"
+                f"相关接口可能报错: {', '.join(self.failed_columns)}。请检查数据库权限/类型兼容性")
         return {
             "added_columns": self.added_columns,
             "missing_tables": self.missing_tables,
+            "failed_columns": self.failed_columns,
         }
 
     def _check_table_columns(self, inspector, table):
@@ -126,4 +138,5 @@ class SchemaGuard:
             self.added_columns.append(f"{table_name}.{column.name}")
             logger.info(f"✅ 已为 {table_name} 自动增加字段 {column.name}（{sql}）")
         except Exception as e:
+            self.failed_columns.append(f"{table_name}.{column.name}")
             logger.error(f"❌ 为 {table_name} 增加字段 {column.name} 失败，跳过: {e}")

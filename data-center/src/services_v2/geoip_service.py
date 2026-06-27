@@ -15,6 +15,7 @@ from sqlalchemy import func
 
 from src.database import get_db_sync
 from src.models_v2 import IpRequestStatCurrent
+from src.models_v2.base import now
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +63,20 @@ class GeoIpService:
             # 私有 IP / 未收录 / 解析异常都跳过
             return None
 
-    def aggregate_points(self, limit_ips: int = 5000,
+    def aggregate_points(self, limit_ips: int = 200000,
                          top_points: int = 500) -> Dict[str, Any]:
-        """解析 Top IP 聚合为散点：按 经纬度 网格合并请求量
+        """解析 Top IP 聚合为散点：按经纬度网格合并请求量。
 
-        返回 { available, points: [{name,value:[lng,lat,count]}], total_ips, resolved }
+        解析结果持久化到 ip_geo_cache 表：已解析的 IP（含解析失败的）直接读表，
+        只对未入表的「新 IP」做 GeoLite2 lookup 并写回，避免每次全量重算。
+
+        返回 { available, points:[{name,value:[lng,lat,count]}], total_ips, resolved }
         """
         self._ensure_reader()
         if not self._available:
             return {"available": False, "points": [], "total_ips": 0, "resolved": 0}
 
+        from src.models_v2 import IpGeoCache
         db = get_db_sync()
         try:
             # 按总请求量取 Top IP（合并同 IP 多 worker 的计数）
@@ -81,22 +86,56 @@ class GeoIpService:
             ).group_by(IpRequestStatCurrent.ip) \
              .order_by(func.sum(IpRequestStatCurrent.total_count).desc()) \
              .limit(limit_ips).all()
+
+            ip_counts = {str(ip): int(cnt or 0) for ip, cnt in rows}
+            if not ip_counts:
+                return {"available": True, "points": [], "total_ips": 0, "resolved": 0}
+
+            # 1. 读已缓存的解析结果（含失败记录，避免重复 lookup）
+            cached = {c.ip: c for c in db.query(IpGeoCache).filter(
+                IpGeoCache.ip.in_(list(ip_counts.keys()))).all()}
+
+            # 2. 对未缓存的新 IP 解析并写回表（增量）
+            new_count = 0
+            for ip in ip_counts:
+                if ip in cached:
+                    continue
+                geo = self._lookup(ip)
+                rec = IpGeoCache(
+                    ip=ip,
+                    lng=str(geo["lng"]) if geo else None,
+                    lat=str(geo["lat"]) if geo else None,
+                    city=geo["city"] if geo else None,
+                    country=geo["country"] if geo else None,
+                    resolved=bool(geo),
+                    resolved_at=now(),
+                )
+                db.merge(rec)
+                cached[ip] = rec
+                new_count += 1
+            if new_count:
+                db.commit()
+                logger.info(f"🌍 IP 地理解析增量 {new_count} 个新 IP（总 {len(ip_counts)}）")
         finally:
             db.close()
 
-        # 按坐标聚合（同城市/同坐标合并）
+        # 3. 按坐标聚合（只用解析成功的）
         agg: Dict[tuple, Dict[str, Any]] = {}
         resolved = 0
-        for ip, cnt in rows:
-            geo = self._lookup(str(ip))
-            if not geo:
+        for ip, cnt in ip_counts.items():
+            c = cached.get(ip)
+            if not c or not c.resolved or c.lng is None or c.lat is None:
                 continue
             resolved += 1
-            key = (geo["lng"], geo["lat"])
+            try:
+                lng, lat = float(c.lng), float(c.lat)
+            except (TypeError, ValueError):
+                continue
+            key = (lng, lat)
             if key not in agg:
-                agg[key] = {"name": geo["city"], "country": geo["country"],
-                            "lng": geo["lng"], "lat": geo["lat"], "count": 0}
-            agg[key]["count"] += int(cnt or 0)
+                agg[key] = {"name": c.city or "未知", "country": c.country or "",
+                            "lng": lng, "lat": lat, "count": 0}
+            agg[key]["count"] += cnt
 
         points = sorted(agg.values(), key=lambda x: x["count"], reverse=True)[:top_points]
         return {
@@ -105,7 +144,7 @@ class GeoIpService:
                 "name": p["name"], "country": p["country"],
                 "value": [p["lng"], p["lat"], p["count"]],
             } for p in points],
-            "total_ips": len(rows),
+            "total_ips": len(ip_counts),
             "resolved": resolved,
         }
 

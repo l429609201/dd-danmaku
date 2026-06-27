@@ -63,7 +63,10 @@ async def init_db():
 
         # 创建所有 v2 表
         Base.metadata.create_all(bind=engine)
+        # 1) 结构补齐：基于 ORM 模型自动补缺失字段（只增不删）
         await ensure_compatible_schema()
+        # 2) 特殊补丁：SchemaGuard 做不了的数据回填/索引/一次性修正等
+        await apply_db_patches()
         logger.info("✅ 数据库表结构初始化完成")
 
         # 初始化系统默认设置
@@ -90,6 +93,19 @@ async def ensure_compatible_schema():
     except Exception as e:
         logger.error(f"❌ 表完整性检查失败: {e}")
         raise
+
+
+async def apply_db_patches():
+    """执行数据库特殊补丁（数据回填/索引/一次性修正等）。
+
+    补丁逻辑集中在 database_patches.py，单补丁失败不中断启动。
+    """
+    try:
+        from src.database_patches import apply_patches
+        apply_patches(engine)
+    except Exception as e:
+        # 补丁入口本身异常也不阻断启动（补丁是兜底修正，非关键路径）
+        logger.error(f"❌ 数据库补丁入口执行异常（已跳过）: {e}")
 
 
 async def init_app_settings():
