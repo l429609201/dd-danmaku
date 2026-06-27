@@ -7,7 +7,7 @@ media_library 由 entity_service 从搜索/番剧响应抽取写入（含海报/
 import logging
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 
 from src.database import get_db_sync
 from src.models_v2 import (
@@ -19,19 +19,6 @@ logger = logging.getLogger(__name__)
 
 class MediaService:
     """媒体库聚合"""
-
-    def _danmaku_stats(self, db, anime_id: str):
-        """返回该番剧 (链接集数, 有弹幕集数)"""
-        ep_ids = [r[0] for r in db.query(EpisodeLink.dandan_episode_id).filter(
-            EpisodeLink.dandan_anime_id == anime_id).all()]
-        link_total = len(ep_ids)
-        danmaku_cnt = 0
-        if ep_ids:
-            danmaku_cnt = db.query(func.count(LocalCommentStore.id)).filter(
-                LocalCommentStore.episode_id.in_(ep_ids),
-                LocalCommentStore.comment_count > 0,
-            ).scalar() or 0
-        return link_total, danmaku_cnt
 
     @staticmethod
     def _ep_sort_key(ep_number):
@@ -45,10 +32,40 @@ class MediaService:
         except (ValueError, TypeError):
             return (1, 0.0, s)
 
+    def _danmaku_stats_bulk(self, db, anime_ids: List[str]) -> Dict[str, tuple]:
+        """批量统计多番剧的 (链接集数, 有弹幕集数)，一条聚合 SQL 解决 N+1。
+
+        EpisodeLink LEFT JOIN LocalCommentStore（episode_id 关联），
+        按 dandan_anime_id 分组：
+        - link_total = distinct episode 数
+        - danmaku_cnt = comment_count>0 的 episode 数
+        返回 { anime_id: (link_total, danmaku_cnt) }
+        """
+        if not anime_ids:
+            return {}
+        # 有弹幕标记：LocalCommentStore.comment_count > 0 记 1，否则 0
+        has_dm = func.sum(
+            case((LocalCommentStore.comment_count > 0, 1), else_=0)
+        ).label("danmaku_cnt")
+        rows = db.query(
+            EpisodeLink.dandan_anime_id.label("aid"),
+            func.count(func.distinct(EpisodeLink.dandan_episode_id)).label("link_total"),
+            has_dm,
+        ).outerjoin(
+            LocalCommentStore,
+            LocalCommentStore.episode_id == EpisodeLink.dandan_episode_id,
+        ).filter(
+            EpisodeLink.dandan_anime_id.in_(anime_ids)
+        ).group_by(EpisodeLink.dandan_anime_id).all()
+        return {r.aid: (int(r.link_total or 0), int(r.danmaku_cnt or 0)) for r in rows}
+
     def list_library(self, keyword: Optional[str] = None,
                      only_missing: bool = False,
                      page: int = 1, page_size: int = 12) -> Dict[str, Any]:
-        """媒体库分页：以 media_library 为主档，关联弹幕覆盖与缺失"""
+        """媒体库分页：以 media_library 为主档，关联弹幕覆盖与缺失。
+
+        性能：弹幕统计改为批量聚合（一条 SQL），避免原先逐番剧 2 条 SQL 的 N+1。
+        """
         db = get_db_sync()
         try:
             q = db.query(MediaLibrary)
@@ -56,9 +73,12 @@ class MediaService:
                 q = q.filter(MediaLibrary.title.like(f"%{keyword}%"))
             medias = q.order_by(MediaLibrary.last_seen_at.desc()).all()
 
+            # 批量取所有番剧的弹幕统计（一条聚合 SQL）
+            stats = self._danmaku_stats_bulk(db, [m.anime_id for m in medias])
+
             items: List[Dict[str, Any]] = []
             for m in medias:
-                link_total, danmaku_cnt = self._danmaku_stats(db, m.anime_id)
+                link_total, danmaku_cnt = stats.get(m.anime_id, (0, 0))
                 # 总集数：优先上游声明，回退已建链接数
                 ep_total = m.episode_count or link_total
                 missing = max(0, ep_total - danmaku_cnt)

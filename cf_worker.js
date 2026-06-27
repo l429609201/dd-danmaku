@@ -540,9 +540,14 @@ function applyRuntimeConfig(cfg) {
         ...normalizeIpList(cfg.ip_whitelist),
     ]));
 
-    // 密钥池：本地端下发的密钥列表，与 env 基线合并去重（本地端为主）
-    if (Array.isArray(cfg.key_pool)) {
-        mergeKeyPool(null, cfg.key_pool);
+    // 密钥池：本地端下发的密钥列表为权威全量，整体替换 localKeys（与 env 基线合并）。
+    // 注意：必须区分「字段存在但为空数组」与「字段缺失」——
+    //   - key_pool 存在（含空数组 []）：本地端已表态，按其全量应用（空=清空本地密钥），
+    //     确保删 UA/删密钥能传播，不残留旧值；
+    //   - key_pool 缺失：本地端未下发密钥配置（旧版本/非密钥下发），保持现状不动。
+    if ('key_pool' in cfg) {
+        const pool = Array.isArray(cfg.key_pool) ? cfg.key_pool : [];
+        mergeKeyPool(null, pool);
     }
 
     memoryCache.configCache.lastUpdate = Date.now();

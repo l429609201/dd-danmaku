@@ -12,27 +12,29 @@
 
     <div v-loading="loading">
       <el-empty v-if="!items.length" description="暂无媒体数据（需 Worker 抓取番剧详情后生成）" />
-      <el-row :gutter="16" v-else>
-        <el-col :span="6" v-for="m in items" :key="m.anime_id" class="media-col">
-          <el-card shadow="hover" class="media-card" @click="openDetail(m.anime_id)">
-            <div class="cover" :style="coverStyle(m.image_proxy)">
-              <span v-if="!m.image_proxy" class="cover-ph">{{ (m.title || '?').slice(0, 2) }}</span>
-              <el-tag v-if="m.type_desc" size="small" class="type-tag">{{ m.type_desc }}</el-tag>
-            </div>
-            <div class="media-title" :title="m.title">{{ m.title }}</div>
-            <div class="media-sub">animeId: {{ m.anime_id }} · {{ m.ep_total }} 集</div>
-            <div class="prog-line">
-              <span>弹幕 {{ m.danmaku_count }}/{{ m.ep_total }}</span>
-              <span :class="m.missing_danmaku > 0 ? 'miss' : 'ok'">
-                {{ m.missing_danmaku > 0 ? `缺 ${m.missing_danmaku}` : '完整' }}
-              </span>
-            </div>
-            <el-progress :percentage="m.danmaku_ratio"
+      <div v-else class="poster-grid">
+        <div v-for="m in items" :key="m.anime_id" class="poster-card" @click="openDetail(m.anime_id)">
+          <!-- 竖式海报：2:3 比例，图片懒加载，无图显示首字占位 -->
+          <div class="poster-img">
+            <img v-if="m.image_proxy" :src="m.image_proxy" :alt="m.title"
+                 loading="lazy" referrerpolicy="no-referrer" @error="onImgError" />
+            <div v-else class="poster-ph">{{ (m.title || '?').slice(0, 2) }}</div>
+            <span v-if="m.type_desc" class="poster-type">{{ m.type_desc }}</span>
+            <span v-if="m.rating" class="poster-rating">⭐ {{ m.rating }}</span>
+            <!-- 缺失角标：完整=绿，缺失=橙 -->
+            <span class="poster-badge" :class="m.missing_danmaku > 0 ? 'is-miss' : 'is-ok'">
+              {{ m.missing_danmaku > 0 ? `缺 ${m.missing_danmaku}` : '完整' }}
+            </span>
+          </div>
+          <div class="poster-meta">
+            <div class="poster-title" :title="m.title">{{ m.title }}</div>
+            <div class="poster-sub">{{ m.danmaku_count }}/{{ m.ep_total }} 集弹幕</div>
+            <el-progress :percentage="m.danmaku_ratio" :show-text="false"
                          :status="m.danmaku_ratio >= 100 ? 'success' : m.danmaku_ratio < 50 ? 'exception' : ''"
-                         :stroke-width="8" />
-          </el-card>
-        </el-col>
-      </el-row>
+                         :stroke-width="6" />
+          </div>
+        </div>
+      </div>
       <div class="app-pager" v-if="total > pageSize">
         <el-pagination layout="prev, pager, next, total" :total="total"
                        :page-size="pageSize" :current-page="page" @current-change="onPage" />
@@ -109,10 +111,12 @@ export default {
       try { const res = await apiV2(`/media/${animeId}`); detail.value = res.data; drawerVisible.value = true }
       catch (e) { ElMessage.error(e.message) }
     }
-    // 封面背景样式：有图用图，无图显示占位底色
+    // 封面背景样式：有图用图，无图显示占位底色（详情抽屉用）
     const coverStyle = (url) => (url
       ? { backgroundImage: `url(${url})` }
       : { background: 'linear-gradient(135deg, #c6d4e8, #93a8c9)' })
+    // 海报图加载失败：隐藏 img，露出底层占位（避免浏览器破图标）
+    const onImgError = (e) => { if (e && e.target) e.target.style.display = 'none' }
 
     // 从已存储的响应缓存批量回填媒体库
     const rebuild = async () => {
@@ -127,28 +131,63 @@ export default {
 
     onMounted(load)
     return { items, total, page, pageSize, keyword, onlyMissing, loading, rebuilding,
-      drawerVisible, detail, Search, Refresh, reload, onPage, openDetail, coverStyle, rebuild }
+      drawerVisible, detail, Search, Refresh, reload, onPage, openDetail, coverStyle, onImgError, rebuild }
   }
 }
 </script>
 
 <style scoped>
 .page-desc { color: #909399; font-size: 13px; margin-bottom: 16px; }
-.media-col { margin-bottom: 16px; }
-.media-card { border-radius: 12px; cursor: pointer; transition: transform .15s; }
-.media-card:hover { transform: translateY(-3px); }
-.cover { position: relative; height: 150px; border-radius: 8px; background-size: cover; background-position: center;
-  display: flex; align-items: center; justify-content: center; margin-bottom: 10px; overflow: hidden; }
-.cover-ph { color: #fff; font-size: 28px; font-weight: 700; opacity: .85; }
-.type-tag { position: absolute; top: 8px; left: 8px; }
-.media-title { font-size: 14px; font-weight: 600; color: #303133; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.media-sub { font-size: 12px; color: #909399; margin: 2px 0 8px; }
-.prog-line { display: flex; justify-content: space-between; font-size: 12px; color: #606266; margin-bottom: 4px; }
-.prog-line .miss { color: #e6a23c; }
-.prog-line .ok { color: #67c23a; }
+
+/* 竖式海报网格：自适应列数，窄屏少列、宽屏多列 */
+.poster-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 18px;
+}
+.poster-card {
+  background: #fff; border-radius: 12px; overflow: hidden; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .06); transition: transform .15s, box-shadow .15s;
+}
+.poster-card:hover { transform: translateY(-4px); box-shadow: 0 8px 20px rgba(0, 0, 0, .12); }
+
+/* 海报图区：2:3 竖图比例 */
+.poster-img {
+  position: relative; width: 100%; aspect-ratio: 2 / 3;
+  background: linear-gradient(135deg, #c6d4e8, #93a8c9); overflow: hidden;
+}
+.poster-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.poster-ph {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 32px; font-weight: 700; opacity: .9;
+}
+.poster-type {
+  position: absolute; top: 8px; left: 8px; padding: 2px 8px; border-radius: 6px;
+  background: rgba(0, 0, 0, .55); color: #fff; font-size: 11px;
+}
+.poster-rating {
+  position: absolute; top: 8px; right: 8px; padding: 2px 8px; border-radius: 6px;
+  background: rgba(0, 0, 0, .55); color: #ffd666; font-size: 11px; font-weight: 600;
+}
+.poster-badge {
+  position: absolute; bottom: 8px; right: 8px; padding: 2px 8px; border-radius: 6px;
+  font-size: 11px; font-weight: 600; color: #fff;
+}
+.poster-badge.is-ok { background: rgba(103, 194, 58, .9); }
+.poster-badge.is-miss { background: rgba(230, 162, 60, .92); }
+
+.poster-meta { padding: 10px 12px 12px; }
+.poster-title {
+  font-size: 14px; font-weight: 600; color: #303133; line-height: 1.4;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.poster-sub { font-size: 12px; color: #909399; margin: 4px 0 8px; }
+
+/* 详情抽屉 */
 .detail-head { display: flex; gap: 16px; }
 .cover-lg { width: 120px; height: 168px; border-radius: 8px; background-size: cover; background-position: center;
   flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.cover-ph { color: #fff; font-size: 28px; font-weight: 700; opacity: .85; }
 .detail-meta { flex: 1; font-size: 13px; }
 .meta-row { margin-bottom: 8px; color: #606266; }
 .meta-row b { color: #909399; margin-right: 8px; font-weight: 500; }
