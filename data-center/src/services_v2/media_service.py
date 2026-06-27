@@ -33,6 +33,18 @@ class MediaService:
             ).scalar() or 0
         return link_total, danmaku_cnt
 
+    @staticmethod
+    def _ep_sort_key(ep_number):
+        """集号排序键：纯数字按数值排序（避免 "47" 排到 "470" 后面的字典序问题），
+        非纯数字（OVA/SP 等）排到数字之后，按字符串排。
+        返回 (组, 数值, 文本)：组 0=数字在前，组 1=其他在后。"""
+        s = (ep_number or "").strip()
+        try:
+            # 支持 "12" 与 "12.5" 这类小数集号
+            return (0, float(s), "")
+        except (ValueError, TypeError):
+            return (1, 0.0, s)
+
     def list_library(self, keyword: Optional[str] = None,
                      only_missing: bool = False,
                      page: int = 1, page_size: int = 12) -> Dict[str, Any]:
@@ -61,7 +73,8 @@ class MediaService:
                     "danmaku_count": danmaku_cnt,
                     "missing_danmaku": missing,
                     "danmaku_ratio": ratio,
-                    "image_proxy": self.proxy_url(m.image_url),
+                    # 海报直连上游图床（dandanplay 图床不防盗链，无需本地代理）
+                    "image_proxy": m.image_url,
                     "type_desc": m.type_desc,
                     "rating": m.rating,
                     "last_seen_at": m.last_seen_at.isoformat() if m.last_seen_at else None,
@@ -90,7 +103,7 @@ class MediaService:
                         LocalCommentStore.episode_id.in_(ep_ids)).all():
                     store_map[s.episode_id] = s.comment_count or 0
             episodes = []
-            for l in sorted(links, key=lambda x: (x.episode_number or "")):
+            for l in sorted(links, key=lambda x: self._ep_sort_key(x.episode_number)):
                 cnt = store_map.get(l.dandan_episode_id, 0)
                 episodes.append({
                     "episode_id": l.dandan_episode_id,
@@ -108,7 +121,8 @@ class MediaService:
                 "link_total": len(episodes),
                 "danmaku_count": danmaku_cnt,
                 "missing_danmaku": max(0, ep_total - danmaku_cnt),
-                "image_proxy": self.proxy_url(m.image_url if m else None),
+                # 海报直连上游图床，无需本地代理
+                "image_proxy": (m.image_url if m else None),
                 "type_desc": m.type_desc if m else None,
                 "summary": m.summary if m else None,
                 "rating": m.rating if m else None,
@@ -185,14 +199,6 @@ class MediaService:
                     break
         logger.info(f"🎬 媒体库回填完成: 扫描 {scanned} 解析 {parsed}")
         return {"scanned": scanned, "parsed": parsed}
-
-    @staticmethod
-    def proxy_url(image_url: Optional[str]) -> Optional[str]:
-        """把上游海报转成本地代理路径，绕开防盗链。前端用此地址显示。"""
-        if not image_url:
-            return None
-        from urllib.parse import quote
-        return f"/api/v2/media/poster?url={quote(image_url, safe='')}"
 
 
 media_service = MediaService()

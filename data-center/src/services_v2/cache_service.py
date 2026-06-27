@@ -228,22 +228,32 @@ class CacheService:
                           api_path_prefix: Optional[str] = None,
                           older_than_days: int = 0,
                           reasons: Optional[list] = None,
-                          batch_size: int = 2000) -> Dict[str, Any]:
+                          batch_size: int = 2000,
+                          page: int = 1,
+                          page_size: int = 20) -> Dict[str, Any]:
         """扫描并清理脏缓存（success:false / 空结果 / errorCode!=0）。
 
-        - dry_run=True 仅统计不删除（预览）
+        - dry_run=True 仅统计不删除（预览）：完整统计 by_reason/dirty_total，
+          并按 page/page_size 收集“当前页”的脏条目明细供界面逐条核查、翻页
         - api_path_prefix 只处理指定接口前缀
         - older_than_days>0 只处理 fetched_at 早于 N 天前的记录
         - reasons 指定脏类型白名单：['empty','fail','error_code']，None=全部
-        - 游标分批扫描全表，避免大表 OOM
-        返回 {scanned, deleted, by_reason:{...}}
+        - 游标分批扫描全表，避免大表 OOM；翻页时只保留当前页明细，内存恒定
+        返回 {scanned, deleted, dirty_total, by_reason, samples, page, page_size, total_pages}
         """
         from datetime import timedelta
         scanned = 0
         deleted = 0
         by_reason = {"empty": 0, "fail": 0, "error_code": 0}
+        samples = []  # 仅预览时收集“当前页”脏条目明细
         reason_set = set(reasons) if reasons else None
         cutoff = now() - timedelta(days=older_than_days) if older_than_days > 0 else None
+        # 当前页明细区间（基于脏数据顺序的下标）
+        page = max(1, page)
+        page_size = max(1, min(page_size, 200))
+        page_start = (page - 1) * page_size
+        page_end = page_start + page_size
+        dirty_index = 0  # 已遇到的脏数据序号（用于定位页区间）
 
         last_id = 0
         while True:
@@ -272,6 +282,20 @@ class CacheService:
                     if reason_set is not None and reason not in reason_set:
                         continue
                     by_reason[reason] = by_reason.get(reason, 0) + 1
+                    # 预览时只收集落在当前页区间的明细（翻页内存恒定）
+                    if dry_run and page_start <= dirty_index < page_end:
+                        samples.append({
+                            "id": row.id,
+                            "cache_key": row.cache_key,
+                            "api_path": row.api_path,
+                            "reason": reason,
+                            "status_code": row.status_code,
+                            "storage_mode": row.storage_mode,
+                            "body_size": row.body_size or 0,
+                            "body_snippet": (body or "")[:200],
+                            "fetched_at": row.fetched_at.isoformat() if row.fetched_at else None,
+                        })
+                    dirty_index += 1
                     if not dry_run:
                         if row.redis_key:
                             await redis_cache.delete(row.redis_key)
@@ -285,15 +309,19 @@ class CacheService:
                 db.rollback()
                 logger.error(f"❌ 脏缓存清理失败: {e}")
                 return {"scanned": scanned, "deleted": deleted,
-                        "by_reason": by_reason, "error": str(e)}
+                        "by_reason": by_reason, "samples": samples, "error": str(e)}
             finally:
                 db.close()
 
         dirty_total = sum(by_reason.values())
         logger.info(f"🧹 脏缓存{'预览' if dry_run else '清理'}完成: "
                     f"扫描 {scanned} 脏数据 {dirty_total} 删除 {deleted}")
+        import math
+        total_pages = max(1, math.ceil(dirty_total / page_size)) if dry_run else 1
         return {"scanned": scanned, "dirty_total": dirty_total,
-                "deleted": deleted, "by_reason": by_reason, "dry_run": dry_run}
+                "deleted": deleted, "by_reason": by_reason, "dry_run": dry_run,
+                "samples": samples, "page": page, "page_size": page_size,
+                "total_pages": total_pages}
 
     @staticmethod
     def _dirty_reason(api_path: str, body: str) -> Optional[str]:

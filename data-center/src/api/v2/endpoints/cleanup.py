@@ -46,6 +46,9 @@ class DirtyCacheRequest(BaseModel):
     older_than_days: int = 0
     # 脏类型白名单：empty / fail / error_code，空=全部
     reasons: Optional[List[str]] = None
+    # 预览明细分页（仅 scan 使用）
+    page: int = 1
+    page_size: int = 20
 
 
 def _policy_dict(p: CleanupPolicy) -> dict:
@@ -136,11 +139,12 @@ async def run_cleanup(body: RunRequest, _: LocalUser = Depends(require_operator)
 @router.post("/scan-dirty-cache")
 async def scan_dirty_cache(body: DirtyCacheRequest = DirtyCacheRequest(),
                            _: LocalUser = Depends(get_current_user)):
-    """预览脏缓存：按筛选条件统计各类脏数据数量，不删除"""
+    """预览脏缓存：按筛选条件统计各类脏数据数量，并分页返回明细，不删除"""
     from src.services_v2.cache_service import cache_service
     result = await cache_service.purge_dirty(
         dry_run=True, api_path_prefix=body.api_path_prefix,
-        older_than_days=body.older_than_days, reasons=body.reasons)
+        older_than_days=body.older_than_days, reasons=body.reasons,
+        page=body.page, page_size=body.page_size)
     br = result.get("by_reason", {})
     return ApiResult(
         message=f"扫描 {result.get('scanned', 0)} 条，发现脏数据 {result.get('dirty_total', 0)} 条"

@@ -256,9 +256,15 @@ export default {
       charts[name] = c
       c.setOption({
         tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-        legend: { bottom: 0, type: 'scroll' },
+        // 图例改到右侧纵向滚动，一次可见多项（原底部横向滚动只能 ◀1/n▶ 翻页）
+        legend: {
+          type: 'scroll', orient: 'vertical', right: 8, top: 'middle',
+          itemWidth: 10, itemHeight: 10, textStyle: { fontSize: 11 },
+          formatter: (v) => (v && v.length > 10 ? v.slice(0, 10) + '…' : v),
+        },
         series: [{
-          name, type: 'pie', radius: ['40%', '70%'], center: ['50%', '45%'],
+          // 饼图左移并缩半径，给右侧图例腾出空间
+          name, type: 'pie', radius: ['38%', '62%'], center: ['38%', '50%'],
           data: seriesData, label: { show: false }, emphasis: { label: { show: true } },
         }],
       })
@@ -270,10 +276,18 @@ export default {
       const c = echarts.init(elRef.value)
       charts[name] = c
       c.setOption({
+        // tooltip 显示完整类目名（Y 轴标签会被截断，靠 tooltip 看全名）
         tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
         grid: { left: 8, right: 16, top: 10, bottom: 8, containLabel: true },
         xAxis: { type: 'value', minInterval: 1 },
-        yAxis: { type: 'category', data: categories, axisLabel: { fontSize: 11 } },
+        yAxis: {
+          type: 'category', data: categories,
+          axisLabel: {
+            fontSize: 11,
+            width: 96, overflow: 'truncate', // 限宽并截断，避免长名重叠糊成一团
+            formatter: (v) => (v && v.length > 12 ? v.slice(0, 12) + '…' : v),
+          },
+        },
         series: [{
           name, type: 'bar', data: values, barMaxWidth: 22,
           itemStyle: { color: color || '#1677ff', borderRadius: [0, 4, 4, 0] },
