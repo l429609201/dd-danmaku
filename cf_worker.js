@@ -430,7 +430,9 @@ const LOCAL_CACHE_PATTERNS = [
 ];
 
 // 判断某接口是否需要走本地缓存（记录 / 兜底）
+// GET 接口按路径白名单；match 是 POST，单独放行（缓存键由调用方用 fileName 构造）
 function shouldUseLocalCache(apiPath, method) {
+    if (apiPath.startsWith('/api/v2/match')) return method === 'POST';
     return method === 'GET' && LOCAL_CACHE_PATTERNS.some(p => apiPath.startsWith(p));
 }
 
@@ -1921,15 +1923,42 @@ async function handleRequest(request, env, ctx) {
     // 📦 缓存策略判断
     // ========================================
     const apiPath = tUrlObj.pathname;
+    const isMatchApi = apiPath.startsWith('/api/v2/match');
+
+    // match 是 POST，参数在 body 里。转发前先把 body 读成文本（流只能读一次），
+    // 解析出 fileName 作为缓存键的唯一依据（fileHash/fileSize 多变，不纳入键）。
+    // matchBodyText 同时用于重建转发 body，避免流被消费后无法转发。
+    let matchBodyText = null;
+    let matchFileName = '';
+    let matchPayloadObj = null;  // 完整 match 请求参数（fileName/fileHash/fileSize/videoDuration/matchMode），随缓存一并保存
+    if (isMatchApi && request.method === 'POST') {
+        try {
+            matchBodyText = await request.text();
+            const mp = JSON.parse(matchBodyText);
+            matchPayloadObj = (mp && typeof mp === 'object') ? mp : null;
+            matchFileName = (mp && typeof mp.fileName === 'string') ? mp.fileName.trim() : '';
+        } catch (_) { /* body 非 JSON 或读取失败：matchFileName 留空，不缓存 */ }
+    }
+    // match 专用缓存键：仅用 fileName，同一集视频缓存键恒定，429 必命中兜底
+    const matchCacheKeyOf = () => matchFileName
+        ? `POST:/api/v2/match?fileName=${encodeURIComponent(matchFileName)}`
+        : null;
+
     // 内存缓存：搜索、番剧、匹配、搜索分集
     const memoryCachePatterns = ['/api/v2/search/anime', '/api/v2/search/episodes', '/api/v2/bangumi/', '/api/v2/match'];
-    const isCacheable = request.method === 'GET' && memoryCachePatterns.some(p => apiPath.startsWith(p));
+    // GET 接口按路径判定；match(POST) 仅在成功解析出 fileName 时才视为可缓存
+    const isCacheable = (request.method === 'GET' && memoryCachePatterns.some(p => apiPath.startsWith(p)))
+        || (isMatchApi && request.method === 'POST' && !!matchFileName);
     // R2 缓存：弹幕接口
     const isCommentApi = request.method === 'GET' && apiPath.startsWith('/api/v2/comment/');
+    // 内存缓存键：match 用 fileName 区分（POST 的 url 无 query，否则不同文件会脏命中）
+    const memCacheKey = (isMatchApi && matchFileName)
+        ? `api_cache_match_${matchFileName}`
+        : `api_cache_${url}`;
 
     // --- 内存缓存命中检查 ---
     if (isCacheable) {
-        const cacheKey = `api_cache_${url}`;
+        const cacheKey = memCacheKey;
         const cached = memoryCache.apiCache.get(cacheKey);
 
         if (cached && (Date.now() - cached.timestamp < MEMORY_LIMITS.API_CACHE_TTL)) {
@@ -1958,8 +1987,11 @@ async function handleRequest(request, env, ctx) {
         }
 
         // 内存未命中：先查本地端缓存，命中则直接返回，避免每次都打弹弹触发 429
+        // match(POST) 用 fileName 专用键；其他 GET 用 query 键
         if (env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)) {
-            const localCacheKey = buildLocalCacheKey(request.method, apiPath, tUrlObj.searchParams);
+            const localCacheKey = isMatchApi
+                ? matchCacheKeyOf()
+                : buildLocalCacheKey(request.method, apiPath, tUrlObj.searchParams);
             const local = await controlHubRpc(env, 'cache.get', {
                 cache_key: localCacheKey,
                 api_path: apiPath,
@@ -2110,7 +2142,9 @@ async function handleRequest(request, env, ctx) {
         // GET/HEAD 不能带 body，否则 fetch 抛 TypeError（Worker 1101）
         const fetchInit = { headers, method: request.method };
         if (request.method !== 'GET' && request.method !== 'HEAD') {
-            fetchInit.body = request.body;
+            // match 的 body 流已被提前读取用于解析 fileName，用文本重建转发
+            // （流只能读一次，且可支持限流切换密钥时的重试）；其他 POST 沿用原始流
+            fetchInit.body = (matchBodyText !== null) ? matchBodyText : request.body;
         }
         const resp = await fetch(url, fetchInit);
         const text = await resp.text();
@@ -2203,8 +2237,8 @@ async function handleRequest(request, env, ctx) {
             if (!isCacheableResponseBody(apiPath, responseText)) {
                 console.log(`🧹 [${clientIP}] 响应无有效数据或为失败响应，跳过缓存: ${apiPath}`);
             } else {
-            // 内存缓存：搜索/番剧/匹配/分集
-            const cacheKey = `api_cache_${url}`;
+            // 内存缓存：搜索/番剧/匹配/分集（match 用 fileName 专用键）
+            const cacheKey = memCacheKey;
             memoryCache.apiCache.set(cacheKey, {
                 data: responseText,
                 timestamp: Date.now()
@@ -2213,18 +2247,29 @@ async function handleRequest(request, env, ctx) {
 
             // 同时异步推送到本地端 cache.upsert（不阻塞响应；本地端做 429 兜底数据源）
             if (env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)) {
-                const localCacheKey = buildLocalCacheKey(request.method, apiPath, tUrlObj.searchParams);
+                // match(POST) 用 fileName 专用键与 query，其他 GET 用 URL query
+                const localCacheKey = isMatchApi
+                    ? matchCacheKeyOf()
+                    : buildLocalCacheKey(request.method, apiPath, tUrlObj.searchParams);
                 const upsertPayload = {
                     cache_key: localCacheKey,
                     source: 'dandanplay',
                     method: request.method,
                     api_path: apiPath,
                     client_ip: clientIP,
-                    query: Object.fromEntries(tUrlObj.searchParams.entries()),
+                    // match：缓存键只用 fileName，但完整请求参数(fileHash/fileSize/
+                    // videoDuration/matchMode)一并保存，保留当初匹配上下文
+                    query: isMatchApi
+                        ? (matchPayloadObj || { fileName: matchFileName })
+                        : Object.fromEntries(tUrlObj.searchParams.entries()),
                     status: 200,
                     headers: { 'content-type': 'application/json' },
                     body: responseText,
                 };
+                // match 原始请求体也存入，供本地端 request_body_json 落库
+                if (isMatchApi && matchBodyText !== null) {
+                    upsertPayload.request_body = matchBodyText;
+                }
                 const upsertPromise = controlHubRpc(env, 'cache.upsert', upsertPayload, 3000)
                     .catch(e => console.log(`⚠️ [${clientIP}] cache.upsert 失败: ${e.message}`));
                 if (ctx && ctx.waitUntil) ctx.waitUntil(upsertPromise);
@@ -2266,8 +2311,12 @@ async function handleRequest(request, env, ctx) {
     // ========================================
     // 🛟 上游 429 限流：尝试本地缓存兜底
     // ========================================
-    if (isUpstreamRateLimited && env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)) {
-        const localCacheKey = buildLocalCacheKey(request.method, apiPath, tUrlObj.searchParams);
+    if (isUpstreamRateLimited && env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)
+        && !(isMatchApi && !matchFileName)) {
+        // match(POST) 用 fileName 专用键；其他 GET 用 query 键
+        const localCacheKey = isMatchApi
+            ? matchCacheKeyOf()
+            : buildLocalCacheKey(request.method, apiPath, tUrlObj.searchParams);
         console.log(`🛟 [${clientIP}] 上游限流，尝试本地缓存兜底: ${localCacheKey}`);
         const cached = await controlHubRpc(env, 'cache.get', {
             cache_key: localCacheKey,

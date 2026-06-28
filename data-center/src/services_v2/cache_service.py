@@ -142,6 +142,14 @@ class CacheService:
             row.normalized_query = record.get("normalized_query")
             row.query_json = record.get("query")
             row.request_body_hash = record.get("request_body_hash")
+            # match 等 POST 接口：保存原始请求体（完整参数 fileHash/fileSize 等），
+            # 便于保留匹配上下文与排查；解析失败则存原始文本
+            _req_body = record.get("request_body")
+            if _req_body is not None:
+                try:
+                    row.request_body_json = json.loads(_req_body) if isinstance(_req_body, str) else _req_body
+                except Exception:
+                    row.request_body_json = {"raw": str(_req_body)}
             # 记录写入缓存的客户端 IP（明文，便于直接排查来源）
             row.client_ip = (record.get("client_ip") or None)
             row.status_code = record.get("status", 200)
