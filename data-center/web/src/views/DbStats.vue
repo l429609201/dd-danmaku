@@ -33,17 +33,26 @@
         </div>
       </div>
 
-      <!-- MySQL 性能指标 -->
+      <!-- 数据库引擎性能指标：按方言分组卡片展示 -->
       <div class="panel" v-if="data.engine_perf && data.engine_perf.available">
-        <h2 class="panel-title">MySQL 性能指标</h2>
-        <div class="metrics">
-          <div class="metric"><span class="m-label">QPS</span><span class="m-val">{{ data.engine_perf.qps }}</span></div>
-          <div class="metric"><span class="m-label">运行线程</span><span class="m-val">{{ data.engine_perf.threads_running }}</span></div>
-          <div class="metric"><span class="m-label">连接使用</span><span class="m-val">{{ data.engine_perf.threads_connected }}/{{ data.engine_perf.max_connections }}（{{ data.engine_perf.conn_usage_ratio }}%）</span></div>
-          <div class="metric"><span class="m-label">慢查询</span><span class="m-val" :class="{ warn: data.engine_perf.slow_queries > 0 }">{{ data.engine_perf.slow_queries }}</span></div>
-          <div class="metric"><span class="m-label">InnoDB 缓冲池命中率</span><span class="m-val">{{ data.engine_perf.innodb_buffer_hit_rate }}%</span></div>
-          <div class="metric"><span class="m-label">失败连接</span><span class="m-val">{{ data.engine_perf.aborted_connects }}</span></div>
+        <div class="redis-head">
+          <h2 class="panel-title">{{ enginePerfTitle }}</h2>
+          <span class="redis-badge" v-if="data.engine_perf.version">v{{ data.engine_perf.version }}</span>
         </div>
+        <div class="redis-groups">
+          <div class="rgroup" v-for="g in data.engine_perf.groups" :key="g.title">
+            <div class="rgroup-title">{{ g.title }}</div>
+            <div class="kv" v-for="it in g.items" :key="it.label">
+              <span>{{ it.label }}</span>
+              <b :class="{ warn: it.warn }">{{ it.value }}</b>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- 不支持性能指标的数据库（如旧版/未知方言）给个说明占位 -->
+      <div class="panel" v-else-if="data.engine_perf && !data.engine_perf.available">
+        <h2 class="panel-title">数据库引擎指标</h2>
+        <p class="muted">{{ data.engine_perf.note || data.engine_perf.error || '当前数据库暂无性能指标' }}</p>
       </div>
 
       <!-- Redis 独立分区：连接/内存/命中/持久化分组 -->
@@ -137,6 +146,13 @@ export default {
       return `${p.checked_out ?? 0} / ${p.size}`
     })
 
+    // 引擎性能面板标题：随实际连接的数据库类型变化
+    const enginePerfTitle = computed(() => {
+      const d = data.value && data.value.engine_perf && data.value.engine_perf.dialect
+      const map = { mysql: 'MySQL 性能指标', postgresql: 'PostgreSQL 性能指标', sqlite: 'SQLite 性能指标' }
+      return map[d] || '数据库引擎指标'
+    })
+
     const fmtBytes = (n) => {
       n = Number(n) || 0
       if (n < 1024) return n + ' B'
@@ -151,7 +167,7 @@ export default {
     }
 
     onMounted(load)
-    return { loading, error, data, updatedAt, poolText, fmtBytes, fmtUptime, load }
+    return { loading, error, data, updatedAt, poolText, enginePerfTitle, fmtBytes, fmtUptime, load }
   }
 }
 </script>

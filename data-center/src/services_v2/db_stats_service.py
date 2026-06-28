@@ -179,11 +179,31 @@ def collect_comment_store_stats() -> Dict[str, Any]:
 
 
 def collect_engine_perf() -> Dict[str, Any]:
-    """采集数据库引擎性能指标（MySQL 专属，其他方言返回 available=False）"""
-    dialect = engine.dialect.name
-    if dialect != "mysql":
+    """采集数据库引擎性能指标，按方言分派。
+
+    统一返回结构，便于前端通用渲染分组卡片：
+    {
+      available: bool, dialect: str, version: str,
+      groups: [ { title: str, items: [ {label, value, warn?} ] } ]
+    }
+    """
+    dialect = engine.dialect.name  # sqlite / mysql / postgresql
+    try:
+        if dialect == "mysql":
+            return _engine_perf_mysql()
+        if dialect == "postgresql":
+            return _engine_perf_postgresql()
+        if dialect == "sqlite":
+            return _engine_perf_sqlite()
         return {"available": False, "dialect": dialect,
-                "note": "性能指标仅 MySQL 支持"}
+                "note": f"暂不支持 {dialect} 的性能指标"}
+    except Exception as e:
+        logger.warning(f"⚠️ 引擎性能采集失败({dialect}): {e}")
+        return {"available": False, "dialect": dialect, "error": str(e)}
+
+
+def _engine_perf_mysql() -> Dict[str, Any]:
+    """MySQL 性能指标：查询/连接/InnoDB/运行 四组"""
     db = get_db_sync()
     try:
         def _status(rows):
@@ -193,10 +213,14 @@ def collect_engine_perf() -> Dict[str, Any]:
             "SHOW GLOBAL STATUS WHERE Variable_name IN "
             "('Questions','Uptime','Threads_running','Threads_connected',"
             "'Slow_queries','Innodb_buffer_pool_read_requests',"
-            "'Innodb_buffer_pool_reads','Aborted_connects')"
+            "'Innodb_buffer_pool_reads','Aborted_connects','Max_used_connections',"
+            "'Com_select','Com_insert','Com_update','Com_delete',"
+            "'Innodb_rows_read','Innodb_rows_inserted','Innodb_rows_updated',"
+            "'Innodb_rows_deleted','Bytes_received','Bytes_sent',"
+            "'Open_tables','Table_locks_waited','Qcache_hits','Connections')"
         )).fetchall())
         variables = _status(db.execute(text(
-            "SHOW VARIABLES WHERE Variable_name IN ('max_connections')"
+            "SHOW VARIABLES WHERE Variable_name IN ('max_connections','version')"
         )).fetchall())
 
         def _i(d, k):
@@ -209,26 +233,182 @@ def collect_engine_perf() -> Dict[str, Any]:
         questions = _i(status, "Questions")
         bp_reads = _i(status, "Innodb_buffer_pool_reads")
         bp_req = _i(status, "Innodb_buffer_pool_read_requests") or 1
-        # InnoDB 缓冲池命中率：1 - 磁盘读/逻辑读
         bp_hit_rate = round((1 - bp_reads / bp_req) * 100, 2) if bp_req > 0 else 0.0
         max_conn = _i(variables, "max_connections") or 1
         threads_connected = _i(status, "Threads_connected")
+        slow = _i(status, "Slow_queries")
+        version = variables.get("version") or "—"
 
-        return {
-            "available": True,
-            "dialect": "mysql",
-            "qps": round(questions / uptime, 1),       # 平均 QPS
-            "threads_running": _i(status, "Threads_running"),
-            "threads_connected": threads_connected,
-            "max_connections": max_conn,
-            "conn_usage_ratio": round(threads_connected / max_conn * 100, 1),
-            "slow_queries": _i(status, "Slow_queries"),
-            "aborted_connects": _i(status, "Aborted_connects"),
-            "innodb_buffer_hit_rate": bp_hit_rate,
-            "uptime_seconds": uptime,
-        }
-    except Exception as e:
-        logger.warning(f"⚠️ MySQL 性能采集失败: {e}")
-        return {"available": False, "dialect": dialect, "error": str(e)}
+        def _fmt_bytes(n):
+            n = int(n or 0)
+            if n < 1024:
+                return f"{n} B"
+            if n < 1048576:
+                return f"{n/1024:.1f} KB"
+            if n < 1073741824:
+                return f"{n/1048576:.1f} MB"
+            return f"{n/1073741824:.2f} GB"
+
+        groups = [
+            {"title": "查询", "items": [
+                {"label": "平均 QPS", "value": round(questions / uptime, 1)},
+                {"label": "总查询数", "value": questions},
+                {"label": "慢查询", "value": slow, "warn": slow > 0},
+                {"label": "查询缓存命中", "value": _i(status, "Qcache_hits")},
+            ]},
+            {"title": "连接", "items": [
+                {"label": "当前连接", "value": f"{threads_connected}/{max_conn}"},
+                {"label": "连接使用率", "value": f"{round(threads_connected/max_conn*100,1)}%",
+                 "warn": threads_connected / max_conn > 0.8},
+                {"label": "运行线程", "value": _i(status, "Threads_running")},
+                {"label": "历史最大连接", "value": _i(status, "Max_used_connections")},
+                {"label": "失败连接", "value": _i(status, "Aborted_connects"),
+                 "warn": _i(status, "Aborted_connects") > 0},
+                {"label": "累计连接数", "value": _i(status, "Connections")},
+            ]},
+            {"title": "InnoDB", "items": [
+                {"label": "缓冲池命中率", "value": f"{bp_hit_rate}%",
+                 "warn": bp_hit_rate < 95},
+                {"label": "逻辑读请求", "value": bp_req},
+                {"label": "磁盘读", "value": bp_reads},
+                {"label": "行读/写", "value": f"{_i(status,'Innodb_rows_read')}/{_i(status,'Innodb_rows_inserted')}"},
+                {"label": "行更新/删除", "value": f"{_i(status,'Innodb_rows_updated')}/{_i(status,'Innodb_rows_deleted')}"},
+            ]},
+            {"title": "运行 / 网络", "items": [
+                {"label": "运行时长", "value": _fmt_uptime(uptime)},
+                {"label": "网络收/发", "value": f"{_fmt_bytes(_i(status,'Bytes_received'))} / {_fmt_bytes(_i(status,'Bytes_sent'))}"},
+                {"label": "打开表数", "value": _i(status, "Open_tables")},
+                {"label": "表锁等待", "value": _i(status, "Table_locks_waited"),
+                 "warn": _i(status, "Table_locks_waited") > 0},
+            ]},
+        ]
+        return {"available": True, "dialect": "mysql", "version": version,
+                "groups": groups}
     finally:
         db.close()
+
+
+def _fmt_uptime(s) -> str:
+    """秒转可读时长"""
+    s = int(s or 0)
+    d, h, m = s // 86400, (s % 86400) // 3600, (s % 3600) // 60
+    if d > 0:
+        return f"{d}天{h}小时"
+    if h > 0:
+        return f"{h}小时{m}分"
+    return f"{m}分"
+
+
+def _engine_perf_sqlite() -> Dict[str, Any]:
+    """SQLite 指标：版本/页大小/页数/journal模式/缓存/文件大小 等"""
+    db = get_db_sync()
+    try:
+        conn = db.connection()
+
+        def _scalar(sql):
+            try:
+                return conn.execute(text(sql)).scalar()
+            except Exception:
+                return None
+
+        version = _scalar("SELECT sqlite_version()") or "—"
+        page_size = int(_scalar("PRAGMA page_size") or 0)
+        page_count = int(_scalar("PRAGMA page_count") or 0)
+        freelist = int(_scalar("PRAGMA freelist_count") or 0)
+        journal_mode = _scalar("PRAGMA journal_mode") or "—"
+        cache_size = int(_scalar("PRAGMA cache_size") or 0)
+        synchronous = _scalar("PRAGMA synchronous")
+        file_size = page_size * page_count
+
+        def _fmt_bytes(n):
+            n = int(n or 0)
+            if n < 1048576:
+                return f"{n/1024:.1f} KB"
+            if n < 1073741824:
+                return f"{n/1048576:.1f} MB"
+            return f"{n/1073741824:.2f} GB"
+
+        sync_map = {0: "OFF", 1: "NORMAL", 2: "FULL", 3: "EXTRA"}
+        groups = [
+            {"title": "存储", "items": [
+                {"label": "数据文件大小", "value": _fmt_bytes(file_size)},
+                {"label": "页大小", "value": f"{page_size} B"},
+                {"label": "页数量", "value": page_count},
+                {"label": "空闲页", "value": freelist,
+                 "warn": page_count > 0 and freelist / page_count > 0.25},
+            ]},
+            {"title": "运行模式", "items": [
+                {"label": "journal 模式", "value": str(journal_mode).upper()},
+                {"label": "同步模式", "value": sync_map.get(synchronous, str(synchronous))},
+                {"label": "缓存页数", "value": cache_size},
+                {"label": "SQLite 版本", "value": version},
+            ]},
+        ]
+        return {"available": True, "dialect": "sqlite", "version": version,
+                "groups": groups}
+    finally:
+        db.close()
+
+
+def _engine_perf_postgresql() -> Dict[str, Any]:
+    """PostgreSQL 指标：连接/缓存命中/事务/库大小 等"""
+    db = get_db_sync()
+    try:
+        def _scalar(sql):
+            try:
+                return db.execute(text(sql)).scalar()
+            except Exception:
+                return None
+
+        version = (_scalar("SHOW server_version") or "—")
+        max_conn = int(_scalar("SHOW max_connections") or 1)
+        cur_conn = int(_scalar(
+            "SELECT count(*) FROM pg_stat_activity") or 0)
+        active = int(_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE state='active'") or 0)
+        # 当前库的统计（pg_stat_database）
+        row = db.execute(text(
+            "SELECT blks_hit, blks_read, xact_commit, xact_rollback, "
+            "tup_returned, tup_fetched FROM pg_stat_database "
+            "WHERE datname = current_database()"
+        )).fetchone()
+        blks_hit = int((row[0] if row else 0) or 0)
+        blks_read = int((row[1] if row else 0) or 0)
+        xact_commit = int((row[2] if row else 0) or 0)
+        xact_rollback = int((row[3] if row else 0) or 0)
+        total_blk = blks_hit + blks_read
+        hit_rate = round(blks_hit / total_blk * 100, 2) if total_blk > 0 else 0.0
+        db_size = _scalar("SELECT pg_database_size(current_database())") or 0
+
+        def _fmt_bytes(n):
+            n = int(n or 0)
+            if n < 1048576:
+                return f"{n/1024:.1f} KB"
+            if n < 1073741824:
+                return f"{n/1048576:.1f} MB"
+            return f"{n/1073741824:.2f} GB"
+
+        groups = [
+            {"title": "连接", "items": [
+                {"label": "当前连接", "value": f"{cur_conn}/{max_conn}"},
+                {"label": "连接使用率", "value": f"{round(cur_conn/max_conn*100,1)}%",
+                 "warn": cur_conn / max_conn > 0.8},
+                {"label": "活跃查询", "value": active},
+            ]},
+            {"title": "缓存 / 事务", "items": [
+                {"label": "缓存命中率", "value": f"{hit_rate}%", "warn": hit_rate < 95},
+                {"label": "命中/磁盘读", "value": f"{blks_hit}/{blks_read}"},
+                {"label": "事务提交", "value": xact_commit},
+                {"label": "事务回滚", "value": xact_rollback, "warn": xact_rollback > 0},
+            ]},
+            {"title": "存储", "items": [
+                {"label": "数据库大小", "value": _fmt_bytes(db_size)},
+                {"label": "PG 版本", "value": version},
+            ]},
+        ]
+        return {"available": True, "dialect": "postgresql", "version": version,
+                "groups": groups}
+    finally:
+        db.close()
+
+
