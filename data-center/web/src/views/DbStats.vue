@@ -10,49 +10,38 @@
     <div v-else-if="error" class="error-box">{{ error }}</div>
 
     <template v-else-if="data">
-      <!-- 概览卡 -->
-      <div class="cards">
-        <div class="card card-accent">
-          <div class="card-label">数据库类型</div>
-          <div class="card-value">{{ data.sql.dialect }}</div>
-          <div class="card-sub">{{ data.sql.table_count }} 张表</div>
-        </div>
-        <div class="card">
-          <div class="card-label">SQL 总占用</div>
-          <div class="card-value">{{ fmtBytes(data.sql.total_size_bytes) }}</div>
-        </div>
-        <div class="card">
-          <div class="card-label">连接池</div>
-          <div class="card-value">{{ poolText }}</div>
-          <div class="card-sub">活跃 / 池大小</div>
-        </div>
-        <div class="card" :class="data.redis.enabled ? 'card-ok' : 'card-warn'">
-          <div class="card-label">Redis</div>
-          <div class="card-value">{{ data.redis.enabled ? '在线' : '未启用' }}</div>
-          <div class="card-sub" v-if="data.redis.enabled">{{ data.redis.used_memory_human || '—' }}</div>
-        </div>
-      </div>
-
-      <!-- 数据库引擎性能指标：按方言分组卡片展示 -->
-      <div class="panel" v-if="data.engine_perf && data.engine_perf.available">
+      <!-- 数据库引擎性能指标：按方言分组卡片展示（概况组 + 引擎指标组合并一个面板） -->
+      <div class="panel">
         <div class="redis-head">
           <h2 class="panel-title">{{ enginePerfTitle }}</h2>
-          <span class="redis-badge" v-if="data.engine_perf.version">v{{ data.engine_perf.version }}</span>
+          <span class="redis-badge" v-if="data.engine_perf && data.engine_perf.version">v{{ data.engine_perf.version }}</span>
+          <span class="redis-badge" :class="data.redis.enabled ? 'badge-ok' : 'badge-warn'">
+            Redis {{ data.redis.enabled ? '在线' : '未启用' }}
+          </span>
         </div>
         <div class="redis-groups">
-          <div class="rgroup" v-for="g in data.engine_perf.groups" :key="g.title">
-            <div class="rgroup-title">{{ g.title }}</div>
-            <div class="kv" v-for="it in g.items" :key="it.label">
-              <span>{{ it.label }}</span>
-              <b :class="{ warn: it.warn }">{{ it.value }}</b>
-            </div>
+          <!-- 概况组：原顶部 4 卡信息并入此处 -->
+          <div class="rgroup">
+            <div class="rgroup-title">概况</div>
+            <div class="kv"><span>数据库类型</span><b>{{ data.sql.dialect }}</b></div>
+            <div class="kv"><span>表数量</span><b>{{ data.sql.table_count }}</b></div>
+            <div class="kv"><span>SQL 总占用</span><b>{{ fmtBytes(data.sql.total_size_bytes) }}</b></div>
+            <div class="kv"><span>连接池</span><b>{{ poolText }}</b></div>
           </div>
+          <!-- 引擎各分组（available 时才有） -->
+          <template v-if="data.engine_perf && data.engine_perf.available">
+            <div class="rgroup" v-for="g in data.engine_perf.groups" :key="g.title">
+              <div class="rgroup-title">{{ g.title }}</div>
+              <div class="kv" v-for="it in g.items" :key="it.label">
+                <span>{{ it.label }}</span>
+                <b :class="{ warn: it.warn }">{{ it.value }}</b>
+              </div>
+            </div>
+          </template>
         </div>
-      </div>
-      <!-- 不支持性能指标的数据库（如旧版/未知方言）给个说明占位 -->
-      <div class="panel" v-else-if="data.engine_perf && !data.engine_perf.available">
-        <h2 class="panel-title">数据库引擎指标</h2>
-        <p class="muted">{{ data.engine_perf.note || data.engine_perf.error || '当前数据库暂无性能指标' }}</p>
+        <p class="muted hint" v-if="data.engine_perf && !data.engine_perf.available">
+          {{ data.engine_perf.note || data.engine_perf.error || '当前数据库暂无更多性能指标' }}
+        </p>
       </div>
 
       <!-- Redis 独立分区：连接/内存/命中/持久化分组 -->
@@ -211,6 +200,8 @@ export default {
 .redis-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
 .redis-head .panel-title { margin-bottom: 0; }
 .redis-badge { font-size: 12px; color: #888; background: #f5f5f5; padding: 2px 10px; border-radius: 10px; }
+.redis-badge.badge-ok { color: #389e0d; background: #f6ffed; }
+.redis-badge.badge-warn { color: #d48806; background: #fffbe6; }
 .redis-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
 .rgroup { background: #fafafa; border-radius: 8px; padding: 14px; }
 .rgroup-title { font-size: 13px; color: #1677ff; font-weight: 600; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #eee; }
