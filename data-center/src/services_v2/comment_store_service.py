@@ -109,6 +109,34 @@ class CommentStoreService:
         finally:
             db.close()
 
+    def is_unlimited(self) -> bool:
+        """是否「永久保存」：开启后跳过 LRU 容量淘汰，弹幕只增不删"""
+        db = get_db_sync()
+        try:
+            s = db.query(AppSetting).filter(
+                AppSetting.key == "danmaku_store_unlimited").first()
+            return bool(s and str(s.value).lower() in ("1", "true", "yes", "on"))
+        finally:
+            db.close()
+
+    def set_unlimited(self, unlimited: bool):
+        """设置「永久保存」开关；关闭时立即按当前上限补做一次 LRU 清理"""
+        db = get_db_sync()
+        try:
+            val = "true" if unlimited else "false"
+            s = db.query(AppSetting).filter(
+                AppSetting.key == "danmaku_store_unlimited").first()
+            if s:
+                s.value = val
+            else:
+                db.add(AppSetting(key="danmaku_store_unlimited", value=val))
+            db.commit()
+            # 从永久切回有限额时，立即按上限清理一次，避免超额残留
+            if not unlimited:
+                self._enforce_limit(db)
+        finally:
+            db.close()
+
     def get_max_bytes(self) -> int:
         """读取存储上限：优先 AppSetting(danmaku_store_max_bytes)，回退环境变量默认"""
         db = get_db_sync()
@@ -141,8 +169,12 @@ class CommentStoreService:
             db.close()
 
     def _enforce_limit(self, db):
-        """总量超上限时按 last_used_at LRU 删最旧（NULL 视为最久）"""
+        """总量超上限时按 last_used_at LRU 删最旧（NULL 视为最久）。
+        「永久保存」开启时直接跳过，弹幕只增不删。"""
         try:
+            # 永久保存：跳过所有 LRU 淘汰，确保弹幕不被清理
+            if self.is_unlimited():
+                return
             max_bytes = self.get_max_bytes()
             total = db.query(
                 func.coalesce(func.sum(LocalCommentStore.size_bytes), 0)

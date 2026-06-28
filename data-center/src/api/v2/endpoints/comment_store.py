@@ -30,11 +30,27 @@ class MaxBytesUpdate(BaseModel):
 
 @router.get("/stats")
 async def store_stats(_: LocalUser = Depends(get_current_user)):
-    """弹幕存储统计概览 + 当前目录"""
+    """弹幕存储统计概览 + 当前目录 + 永久保存开关状态"""
     # 同步阻塞调用放线程池，避免卡住事件循环
     data = await asyncio.to_thread(collect_comment_store_stats)
     data["dir"] = DANMAKU_DIR
+    # 永久保存开关状态：开启时前端禁用上限、不触发 LRU
+    data["unlimited"] = await asyncio.to_thread(comment_store_service.is_unlimited)
     return ApiResult(data=data)
+
+
+class UnlimitedUpdate(BaseModel):
+    """永久保存开关"""
+    unlimited: bool
+
+
+@router.put("/unlimited")
+async def update_unlimited(body: UnlimitedUpdate,
+                           _: LocalUser = Depends(require_operator)):
+    """设置「永久保存」开关：开启后跳过 LRU 容量淘汰，弹幕只增不删"""
+    await asyncio.to_thread(comment_store_service.set_unlimited, body.unlimited)
+    msg = "已开启永久保存（不再按容量淘汰）" if body.unlimited else "已关闭永久保存（恢复按上限 LRU 清理）"
+    return ApiResult(message=msg, data={"unlimited": body.unlimited})
 
 
 @router.put("/max-bytes")

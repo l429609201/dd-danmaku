@@ -36,8 +36,9 @@
         </div>
       </div>
       <div class="app-pager" v-if="total > pageSize">
-        <el-pagination layout="prev, pager, next, total" :total="total"
-                       :page-size="pageSize" :current-page="page" @current-change="onPage" />
+        <el-pagination layout="sizes, prev, pager, next, total" :total="total"
+                       :page-size="pageSize" :page-sizes="[12, 24, 36, 48, 60]"
+                       :current-page="page" @current-change="onPage" @size-change="onSizeChange" />
       </div>
     </div>
 
@@ -85,7 +86,7 @@ export default {
     const items = ref([])
     const total = ref(0)
     const page = ref(1)
-    const pageSize = ref(12)
+    const pageSize = ref(24)
     const keyword = ref('')
     const onlyMissing = ref(false)
     const loading = ref(false)
@@ -106,6 +107,8 @@ export default {
     }
     const reload = () => { page.value = 1; load() }
     const onPage = (p) => { page.value = p; load() }
+    // 切换每页数量：重置到第一页再加载
+    const onSizeChange = (s) => { pageSize.value = s; page.value = 1; load() }
 
     const openDetail = async (animeId) => {
       try { const res = await apiV2(`/media/${animeId}`); detail.value = res.data; drawerVisible.value = true }
@@ -131,7 +134,7 @@ export default {
 
     onMounted(load)
     return { items, total, page, pageSize, keyword, onlyMissing, loading, rebuilding,
-      drawerVisible, detail, Search, Refresh, reload, onPage, openDetail, coverStyle, onImgError, rebuild }
+      drawerVisible, detail, Search, Refresh, reload, onPage, onSizeChange, openDetail, coverStyle, onImgError, rebuild }
   }
 }
 </script>

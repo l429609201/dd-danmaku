@@ -28,16 +28,23 @@
     <div class="panel">
       <h2 class="panel-title">存储配置</h2>
       <div class="cfg-row">
+        <label class="cfg-item perm">
+          <input type="checkbox" v-model="unlimited" @change="saveUnlimited" />
+          永久保存（关闭容量淘汰，弹幕只增不删）
+        </label>
+      </div>
+      <div class="cfg-row">
         <div class="cfg-item">
           存储上限
-          <input type="number" min="0" step="0.5" v-model.number="maxGb" class="num" />
+          <input type="number" min="0" step="0.5" v-model.number="maxGb" class="num" :disabled="unlimited" />
           GB
-          <button class="btn btn-primary" @click="saveMax">保存上限</button>
+          <button class="btn btn-primary" @click="saveMax" :disabled="unlimited">保存上限</button>
         </div>
-        <button class="btn" :disabled="busy" @click="doCleanup">手动 LRU 清理</button>
+        <button class="btn" :disabled="busy || unlimited" @click="doCleanup">手动 LRU 清理</button>
         <button class="btn btn-danger" :disabled="busy" @click="doClearAll">清空全部</button>
       </div>
-      <p class="tip">目录：{{ stats ? stats.dir : '—' }}。超上限时按"最久未使用"自动删除。</p>
+      <p class="tip" v-if="unlimited">⚠️ 已开启永久保存：弹幕不会被自动清理，请关注磁盘占用（目录：{{ stats ? stats.dir : '—' }}）。</p>
+      <p class="tip" v-else>目录：{{ stats ? stats.dir : '—' }}。超上限时按"最久未使用"自动删除。</p>
     </div>
 
     <!-- 条目列表 -->
@@ -125,6 +132,7 @@ export default {
     const keyword = ref('')
     const sort = ref('created_at')
     const maxGb = ref(5)
+    const unlimited = ref(false)
     const msg = ref('')
     const busy = ref(false)
     const detail = ref(null)
@@ -140,6 +148,7 @@ export default {
         const res = await apiV2('/comment-store/stats')
         stats.value = res.data
         maxGb.value = Math.round((res.data.max_bytes / 1024 / 1024 / 1024) * 10) / 10
+        unlimited.value = !!res.data.unlimited
       } catch (e) { msg.value = e.message }
     }
     const load = async () => {
@@ -157,6 +166,13 @@ export default {
         await apiV2('/comment-store/max-bytes', { method: 'PUT', body: { max_gb: maxGb.value } })
         msg.value = '上限已更新'; loadStats()
       } catch (e) { msg.value = e.message }
+    }
+    const saveUnlimited = async () => {
+      try {
+        await apiV2('/comment-store/unlimited', { method: 'PUT', body: { unlimited: unlimited.value } })
+        msg.value = unlimited.value ? '已开启永久保存' : '已关闭永久保存'
+        loadStats()
+      } catch (e) { msg.value = e.message; unlimited.value = !unlimited.value /* 失败回滚 */ }
     }
     const doCleanup = async () => {
       busy.value = true
@@ -225,9 +241,9 @@ export default {
     }
 
     onMounted(() => { loadStats(); load() })
-    return { stats, items, total, page, pageSize, keyword, sort, maxGb, msg, busy, detail,
+    return { stats, items, total, page, pageSize, keyword, sort, maxGb, unlimited, msg, busy, detail,
       preview, previewBox, loadingMore, hasMore,
-      reload, goPage, saveMax, doCleanup, doClearAll, del, view, onPreviewScroll,
+      reload, goPage, saveMax, saveUnlimited, doCleanup, doClearAll, del, view, onPreviewScroll,
       cmtTime, cmtText, fmt, fmtBytes }
   },
 }
@@ -246,8 +262,10 @@ export default {
 .card-sub { color: #999; font-size: 12px; margin-top: 4px; }
 .panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 18px; }
 .panel-title { font-size: 16px; margin-bottom: 14px; color: #333; }
-.cfg-row { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.cfg-row { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; margin-bottom: 12px; }
 .cfg-item { display: flex; align-items: center; gap: 8px; color: #555; }
+.cfg-item.perm { cursor: pointer; font-weight: 500; color: #d46b08; }
+.cfg-item.perm input { width: 16px; height: 16px; cursor: pointer; }
 .list-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .search { display: flex; gap: 8px; }
 .num { width: 80px; padding: 5px 8px; border: 1px solid #d9d9d9; border-radius: 6px; text-align: center; }
