@@ -48,9 +48,16 @@
       <div class="panel redis-panel" v-if="data.redis && data.redis.enabled && !data.redis.error">
         <div class="redis-head">
           <h2 class="panel-title">Redis 状态</h2>
-          <span class="redis-badge">v{{ data.redis.version || '—' }} · 运行 {{ fmtUptime(data.redis.uptime_seconds) }}</span>
+          <span class="redis-badge badge-ok">在线</span>
         </div>
         <div class="redis-groups">
+          <div class="rgroup">
+            <div class="rgroup-title">概况</div>
+            <div class="kv"><span>版本</span><b>{{ data.redis.version || '—' }}</b></div>
+            <div class="kv"><span>运行时长</span><b>{{ fmtUptime(data.redis.uptime_seconds) }}</b></div>
+            <div class="kv"><span>总命令数</span><b>{{ (data.redis.total_commands || 0).toLocaleString() }}</b></div>
+            <div class="kv"><span>被拒连接</span><b :class="{ warn: data.redis.rejected_connections > 0 }">{{ data.redis.rejected_connections }}</b></div>
+          </div>
           <div class="rgroup">
             <div class="rgroup-title">连接</div>
             <div class="kv"><span>客户端连接</span><b>{{ data.redis.connected_clients }}</b></div>
@@ -135,12 +142,8 @@ export default {
       return `${p.checked_out ?? 0} / ${p.size}`
     })
 
-    // 引擎性能面板标题：随实际连接的数据库类型变化
-    const enginePerfTitle = computed(() => {
-      const d = data.value && data.value.engine_perf && data.value.engine_perf.dialect
-      const map = { mysql: 'MySQL 性能指标', postgresql: 'PostgreSQL 性能指标', sqlite: 'SQLite 性能指标' }
-      return map[d] || '数据库引擎指标'
-    })
+    // 引擎性能面板标题：统一为"数据库性能指标"（面板含概况+各方言引擎指标）
+    const enginePerfTitle = computed(() => '数据库性能指标')
 
     const fmtBytes = (n) => {
       n = Number(n) || 0
