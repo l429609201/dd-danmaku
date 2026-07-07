@@ -22,7 +22,7 @@ from src.database import get_db_sync
 from src.models_v2 import ControlNode, ControlMessage
 from src.models_v2.base import now
 from src.services_v2.cache_service import cache_service
-from src.services_v2.entity_service import entity_index_service, episode_link_service
+from src.services_v2.entity_ingest_queue import entity_ingest_queue
 from src.services_v2.ip_stats_service import ip_stats_service
 from src.services_v2.worker_log_service import worker_log_service
 from src.services_v2.runtime_event_service import runtime_event_service
@@ -200,15 +200,15 @@ class ControlClient:
     async def _handle_cache_upsert(self, msg_id, payload):
         """Worker 200 响应：写入本地缓存 + 解析实体/集数链接"""
         ok = await cache_service.upsert(payload)
-        # 解析实体与集数链接（失败不影响 upsert 结果）
+        # 实体/集数解析投递到异步批量队列（非阻塞），由后台消费者攒批落库，
+        # 削平写入峰值、减少 commit 次数；不再每条即时写库。
         try:
             api_path = payload.get("api_path", "")
             cache_key = payload.get("cache_key", "")
             body = payload.get("body") or ""
-            entity_index_service.index_from_response(api_path, cache_key, body)
-            episode_link_service.link_from_response(api_path, cache_key, body)
+            entity_ingest_queue.submit(api_path, cache_key, body)
         except Exception as e:
-            logger.warning(f"⚠️ 实体/集数解析失败: {e}")
+            logger.warning(f"⚠️ 实体/集数解析投递失败: {e}")
         await self._send({
             "id": msg_id, "type": "cache.upsert.result",
             "timestamp": _ts(),

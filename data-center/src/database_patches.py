@@ -43,10 +43,75 @@ def _patch_example_noop(engine: Engine) -> bool:
     return False
 
 
+# 缓存相关表的「无用索引」清理清单：table -> {不再需要索引的列名}
+# 依据：全代码 grep 确认这些列从不作为精确查询条件（或仅 LIKE '%x%' 用不上索引），
+# 保留索引纯属写放大。DROP INDEX 可逆（删错重建即可，不丢数据），风险低。
+_UNUSED_INDEX_COLUMNS = {
+    "api_response_cache": {
+        "source", "method", "status_code", "body_hash", "request_body_hash",
+        "redis_key", "storage_mode", "last_used_at", "last_refresh_at", "client_ip",
+    },
+    "api_cache_access_logs": {
+        "cache_key", "api_path", "worker_request_id",
+    },
+    "api_response_entities": {
+        "title", "api_path", "cache_key",
+    },
+    "episode_links": {
+        "local_title", "season_number", "episode_number", "file_name_hash",
+        "source_cache_key", "bangumi_cache_key", "comment_cache_key",
+        "verified_by_user_id",
+    },
+}
+
+
+def _patch_drop_unused_indexes(engine: Engine) -> bool:
+    """删除缓存相关表上从不用于查询的冗余单列索引，降低写放大。
+
+    幂等：用 inspector 读实际索引，只删「单列且该列在清理清单内」的索引；
+    索引不存在则跳过。unique 约束索引一律不动（保证唯一性）。
+    单表失败不影响其它表。
+    """
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    changed = False
+
+    for table, drop_cols in _UNUSED_INDEX_COLUMNS.items():
+        if table not in table_names:
+            continue
+        try:
+            indexes = inspector.get_indexes(table)
+        except Exception as e:
+            logger.warning(f"⚠️ 读取 {table} 索引失败，跳过: {e}")
+            continue
+        for idx in indexes:
+            cols = idx.get("column_names") or []
+            name = idx.get("name")
+            # 只处理单列、非唯一、且列名在清理清单内的索引
+            if idx.get("unique"):
+                continue
+            if len(cols) != 1 or cols[0] not in drop_cols or not name:
+                continue
+            try:
+                with engine.begin() as conn:
+                    # 反引号包裹索引名，兼容 MySQL；SQLite/PG 也接受标准 DROP INDEX
+                    dialect = engine.dialect.name
+                    if dialect == "mysql":
+                        conn.exec_driver_sql(f"DROP INDEX `{name}` ON `{table}`")
+                    else:
+                        conn.exec_driver_sql(f'DROP INDEX IF EXISTS "{name}"')
+                logger.info(f"🗑️ 已删除冗余索引 {table}.{name}（列={cols[0]}）")
+                changed = True
+            except Exception as e:
+                logger.warning(f"⚠️ 删除索引 {table}.{name} 失败（跳过）: {e}")
+    return changed
+
+
 # ============ 补丁注册表 ============
 # 按顺序执行；新增补丁在此登记即生效。
 _PATCHES: List[Callable[[Engine], bool]] = [
     _patch_example_noop,
+    _patch_drop_unused_indexes,
 ]
 
 

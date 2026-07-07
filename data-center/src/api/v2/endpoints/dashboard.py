@@ -21,10 +21,48 @@ from src.models_v2.base import now
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# 聚合接口 Redis 短 TTL 缓存：前端轮询频繁，30~60 秒内直接复用上次聚合结果，
+# 避免每次都跑全表 count / GROUP BY，显著降低 DB 压力。Redis 不可用则自动回退实时算。
+import json as _json
+from src.services_v2.redis_cache import redis_cache
+
+_SUMMARY_TTL = 30      # summary 缓存 30 秒
+_TRENDS_TTL = 300      # 趋势按天聚合，缓存 5 分钟足够
+
+
+async def _cache_get_json(key: str):
+    """从 Redis 读缓存的聚合结果；miss/异常返回 None"""
+    try:
+        raw = await redis_cache.get(key)
+        return _json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+async def _cache_set_json(key: str, data, ttl: int):
+    """把聚合结果写入 Redis（失败静默，不影响主流程）"""
+    try:
+        await redis_cache.set(key, _json.dumps(data, ensure_ascii=False), ttl=ttl)
+    except Exception:
+        pass
+
 
 @router.get("/summary")
-def dashboard_summary(_: LocalUser = Depends(get_current_user)):
-    """Dashboard 汇总数据"""
+async def dashboard_summary(_: LocalUser = Depends(get_current_user)):
+    """Dashboard 汇总数据（Redis 短 TTL 缓存，避免全表 count 重复执行）"""
+    cache_key = "dashboard:summary"
+    cached = await _cache_get_json(cache_key)
+    if cached is not None:
+        return ApiResult(data=cached)
+    # 同步聚合（含全表 count / SUM）放线程池，避免阻塞事件循环
+    import asyncio
+    data = await asyncio.to_thread(_build_summary)
+    await _cache_set_json(cache_key, data, _SUMMARY_TTL)
+    return ApiResult(data=data)
+
+
+def _build_summary() -> dict:
+    """构建 summary 数据（同步，供线程池调用）"""
     db = get_db_sync()
     try:
         today_start = now() - timedelta(days=1)
@@ -117,88 +155,139 @@ def dashboard_summary(_: LocalUser = Depends(get_current_user)):
                 "created_at": e.created_at.isoformat() if e.created_at else None,
             } for e in errors],
         }
-        return ApiResult(data=data)
+        return data
     finally:
         db.close()
 
 
 @router.get("/trends")
-def dashboard_trends(days: int = 7, _: LocalUser = Depends(get_current_user)):
-    """近 N 天缓存命中 / 429 兜底 / 未命中趋势（基于访问日志按天聚合）"""
+async def dashboard_trends(days: int = 7, _: LocalUser = Depends(get_current_user)):
+    """近 N 天缓存命中 / 429 兜底 / 未命中趋势（Redis 缓存 + DB 端按天聚合）"""
     days = max(1, min(days, 30))
+    cache_key = f"dashboard:trends:{days}"
+    cached = await _cache_get_json(cache_key)
+    if cached is not None:
+        return ApiResult(data=cached)
+    import asyncio
+    data = await asyncio.to_thread(_build_trends, days)
+    await _cache_set_json(cache_key, data, _TRENDS_TTL)
+    return ApiResult(data=data)
+
+
+def _build_trends(days: int) -> dict:
+    """构建缓存命中趋势（同步，供线程池调用）"""
     db = get_db_sync()
     try:
         start = now() - timedelta(days=days - 1)
-        rows = db.query(ApiCacheAccessLog).filter(
-            ApiCacheAccessLog.created_at >= start.replace(hour=0, minute=0, second=0, microsecond=0)
-        ).all()
+        start_day = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        # 数据库端按天 + access_type 分组聚合（避免全表 load 进内存导致 OOM）
+        day_col = func.date(ApiCacheAccessLog.created_at)
+        grouped = db.query(
+            day_col.label("d"),
+            ApiCacheAccessLog.access_type,
+            func.count().label("cnt"),
+        ).filter(
+            ApiCacheAccessLog.created_at >= start_day
+        ).group_by(day_col, ApiCacheAccessLog.access_type).all()
+
         # 初始化日期桶
         buckets = {}
         for i in range(days):
             d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
             buckets[d] = {"hit": 0, "stale_hit": 0, "miss": 0}
-        for r in rows:
-            if not r.created_at:
-                continue
-            d = r.created_at.strftime("%Y-%m-%d")
+        for d_val, access_type, cnt in grouped:
+            d = str(d_val)[:10]  # 兼容 date/datetime/str 返回
             if d not in buckets:
                 continue
-            t = r.access_type
-            if t == "hit":
-                buckets[d]["hit"] += 1
-            elif t == "stale_hit":
-                buckets[d]["stale_hit"] += 1
-            elif t in ("miss", "expired"):
-                buckets[d]["miss"] += 1
+            cnt = int(cnt or 0)
+            if access_type == "hit":
+                buckets[d]["hit"] += cnt
+            elif access_type == "stale_hit":
+                buckets[d]["stale_hit"] += cnt
+            elif access_type in ("miss", "expired"):
+                buckets[d]["miss"] += cnt
         labels = list(buckets.keys())
-        return ApiResult(data={
+        return {
             "labels": labels,
             "hit": [buckets[d]["hit"] for d in labels],
             "fallback": [buckets[d]["stale_hit"] for d in labels],
             "miss": [buckets[d]["miss"] for d in labels],
-        })
+        }
     finally:
         db.close()
 
 
 @router.get("/metrics-trends")
-def dashboard_metrics_trends(days: int = 7, _: LocalUser = Depends(get_current_user)):
-    """近 N 天 Worker 运行指标趋势（请求量/命中/拦截/流量，按天聚合）"""
+async def dashboard_metrics_trends(days: int = 7, _: LocalUser = Depends(get_current_user)):
+    """近 N 天 Worker 运行指标趋势（Redis 缓存 + DB 端按天 SUM 聚合）"""
     days = max(1, min(days, 30))
+    cache_key = f"dashboard:metrics-trends:{days}"
+    cached = await _cache_get_json(cache_key)
+    if cached is not None:
+        return ApiResult(data=cached)
+    import asyncio
+    data = await asyncio.to_thread(_build_metrics_trends, days)
+    await _cache_set_json(cache_key, data, _TRENDS_TTL)
+    return ApiResult(data=data)
+
+
+def _build_metrics_trends(days: int) -> dict:
+    """构建 Worker 指标趋势（同步，供线程池调用）"""
     db = get_db_sync()
     try:
         start = now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
-        rows = db.query(WorkerMetricsSnapshot).filter(
+        # 数据库端按天分组 SUM 聚合（避免全表 load 进内存）
+        day_col = func.date(WorkerMetricsSnapshot.snapshot_at)
+        grouped = db.query(
+            day_col.label("d"),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.total_requests), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.mem_cache_hits), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.r2_cache_hits), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.cache_miss), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.blocked_ip), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.blocked_ua), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.blocked_abuse), 0),
+            func.coalesce(func.sum(WorkerMetricsSnapshot.bytes_out), 0),
+        ).filter(
             WorkerMetricsSnapshot.snapshot_at >= start
-        ).all()
+        ).group_by(day_col).all()
+
         # 初始化日期桶
         buckets = {}
         for i in range(days):
             d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
             buckets[d] = {"requests": 0, "hits": 0, "miss": 0, "blocked": 0, "bytes_out": 0}
-        for r in rows:
-            if not r.snapshot_at:
-                continue
-            d = r.snapshot_at.strftime("%Y-%m-%d")
+        for row in grouped:
+            d = str(row[0])[:10]
             if d not in buckets:
                 continue
             b = buckets[d]
-            b["requests"] += r.total_requests or 0
-            b["hits"] += (r.mem_cache_hits or 0) + (r.r2_cache_hits or 0)
-            b["miss"] += r.cache_miss or 0
-            b["blocked"] += (r.blocked_ip or 0) + (r.blocked_ua or 0) + (r.blocked_abuse or 0)
-            b["bytes_out"] += r.bytes_out or 0
+            b["requests"] += int(row[1] or 0)
+            b["hits"] += int(row[2] or 0) + int(row[3] or 0)
+            b["miss"] += int(row[4] or 0)
+            b["blocked"] += int(row[5] or 0) + int(row[6] or 0) + int(row[7] or 0)
+            b["bytes_out"] += int(row[8] or 0)
         labels = list(buckets.keys())
-        return ApiResult(data={
+        return {
             "labels": labels,
             "requests": [buckets[d]["requests"] for d in labels],
             "hits": [buckets[d]["hits"] for d in labels],
             "miss": [buckets[d]["miss"] for d in labels],
             "blocked": [buckets[d]["blocked"] for d in labels],
             "bytes_out": [buckets[d]["bytes_out"] for d in labels],
-        })
+        }
     finally:
         db.close()
+
+
+@router.get("/system")
+async def dashboard_system(_: LocalUser = Depends(get_current_user)):
+    """本地端系统资源：当前进程 + 整机 CPU / 内存占用（psutil）"""
+    import asyncio
+    from src.services_v2.system_stats_service import collect_system_stats
+    # 含 cpu_percent 短采样（阻塞约 0.3s），放线程池避免卡事件循环
+    data = await asyncio.to_thread(collect_system_stats)
+    return ApiResult(data=data)
 
 
 @router.get("/db-stats")

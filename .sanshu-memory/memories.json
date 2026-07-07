@@ -41,6 +41,14 @@
       "category": "Rule",
       "created_at": "2026-06-19T11:45:10.103726100Z",
       "updated_at": "2026-06-19T11:45:10.103726100Z"
+    },
+    {
+      "id": "2574e16a-2e9d-4db5-91bb-e7e359c73697",
+      "content": "性能优化架构（本地端 data-center）：1) 实体/集数解析走 entity_ingest_queue 异步批量队列（BATCH_SIZE=50/FLUSH_INTERVAL=2s），不再在 control_client._handle_cache_upsert 里同步解析（原是 uvicorn 空闲48%CPU元凶）；2) access_log 走 access_log_buffer 内存缓冲批量 bulk_insert（BATCH=200/2s）；两者在 main.py lifespan 启停。3) ApiResponseCache/EpisodeLink/ApiResponseEntity/ApiCacheAccessLog 已做索引瘦身（只留查询真正用到的列索引），旧库垃圾索引由 database_patches.py 的 _patch_drop_unused_indexes 幂等 DROP。4) dashboard summary/trends/metrics-trends 已改 async+线程池+Redis短TTL缓存（summary 30s/trends 300s），trends 类已从全表load改为DB端 func.date() GROUP BY 聚合。5) 仪表盘已加系统资源监控：system_stats_service(psutil) + /dashboard/system 接口 + Dashboard.vue 4张CPU/内存卡5秒轮询。",
+      "content_normalized": "性能优化架构本地端 data-center1 实体/集数解析走 entity_ingest_queue 异步批量队列batch_size=50/flush_interval=2s不再在 control_client_handle_cache_upsert 里同步解析原是 uvicorn 空闲48%cpu元凶2 access_log 走 access_log_buffer 内存缓冲批量 bulk_insertbatch=200/2s两者在 mainpy lifespan 启停3 apiresponsecache/episodelink/apiresponseentity/apicacheaccesslog 已做索引瘦身只留查询真正用到的列索引旧库垃圾索引由 database_patchespy 的 _patch_drop_unused_indexes 幂等 drop4 dashboard summary/trends/metrics-trends 已改 async+线程池+redis短ttl缓存summary 30s/trends 300strends 类已从全表load改为db端 funcdate group by 聚合5 仪表盘已加系统资源监控system_stats_servicepsutil + /dashboard/system 接口 + dashboardvue 4张cpu/内存卡5秒轮询",
+      "category": "Context",
+      "created_at": "2026-07-07T16:19:19.432240200Z",
+      "updated_at": "2026-07-07T16:19:19.432240200Z"
     }
   ],
   "last_dedup_at": "2026-06-15T13:09:37.402327400Z",

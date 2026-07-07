@@ -16,6 +16,7 @@ from src.database import get_db_sync
 from src.models_v2 import ApiResponseCache, ApiCacheAccessLog
 from src.models_v2.base import now
 from src.services_v2.redis_cache import redis_cache
+from src.services_v2.access_log_buffer import access_log_buffer
 
 logger = logging.getLogger(__name__)
 
@@ -262,17 +263,17 @@ class CacheService:
     def _log(self, db, cache_key, api_path, access_type,
              upstream_status=None, served_status=None, worker_request_id=None,
              client_ip=None):
-        """写访问日志，失败不影响主流程"""
+        """写访问日志：投递到批量缓冲（异步落库），不再逐条 insert+commit。
+        db 参数保留仅为兼容调用点签名，此处不使用。"""
         try:
-            db.add(ApiCacheAccessLog(
-                cache_key=cache_key, api_path=api_path or "",
+            access_log_buffer.submit(
+                cache_key=cache_key, api_path=api_path,
                 access_type=access_type, upstream_status=upstream_status,
                 served_status=served_status, worker_request_id=worker_request_id,
                 client_ip=client_ip,
-            ))
-            db.commit()
+            )
         except Exception:
-            db.rollback()
+            pass
 
     async def purge_dirty(self, dry_run: bool = False,
                           api_path_prefix: Optional[str] = None,

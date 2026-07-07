@@ -16,6 +16,8 @@ from src.api.v2.api import api_v2_router
 from src.services_v2.redis_cache import redis_cache
 from src.services_v2.control_client import control_client
 from src.services_v2.cleanup_service import cleanup_service
+from src.services_v2.entity_ingest_queue import entity_ingest_queue
+from src.services_v2.access_log_buffer import access_log_buffer
 
 # 配置日志系统
 from src.utils.logger_setup import setup_logging
@@ -41,6 +43,14 @@ async def lifespan(app: FastAPI):
     logger.info("🔌 启动 Worker 长连接控制客户端...")
     await control_client.start()
 
+    # 启动实体/集数解析批量落库队列（削峰写入）
+    logger.info("📥 启动实体/集数解析批量落库队列...")
+    await entity_ingest_queue.start()
+
+    # 启动访问日志批量写入缓冲（削峰最高频日志写入）
+    logger.info("📝 启动访问日志批量写入缓冲...")
+    await access_log_buffer.start()
+
     # 启动本地端 SQL 数据保留清理任务
     logger.info("🧹 启动数据保留清理任务...")
     await cleanup_service.start()
@@ -52,6 +62,8 @@ async def lifespan(app: FastAPI):
     # 关闭时清理资源
     logger.info("🛑 正在关闭数据交互中心...")
     await cleanup_service.stop()
+    await access_log_buffer.stop()
+    await entity_ingest_queue.stop()
     await control_client.stop()
     await redis_cache.close()
     logger.info("✅ 数据交互中心已安全关闭")

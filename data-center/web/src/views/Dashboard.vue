@@ -41,12 +41,36 @@
           <div class="card-value">{{ insightCards ? insightCards.keyTotal : '—' }}</div>
           <div class="card-sub">限流中 {{ insightCards ? insightCards.keyLimited : 0 }} 项</div>
         </div>
-        <div class="card" :class="cs && cs.usage_ratio > 90 ? 'card-warn' : ''" @click="goto('/comment-store')">
-          <div class="card-label">弹幕存储水位</div>
-          <div class="card-value">{{ cs ? cs.usage_ratio + '%' : '—' }}</div>
-          <div class="card-sub" v-if="cs">{{ fmtBytes(cs.total_size_bytes) }} / {{ fmtBytes(cs.max_bytes) }}</div>
+      </div>
+
+      <!-- 本地端系统资源（CPU / 内存实时占用） -->
+      <h2 class="section-title">本地端系统资源</h2>
+      <div class="cards" v-if="sys && sys.available">
+        <div class="card" :class="sys.cpu.system_percent > 85 ? 'card-warn' : 'card-accent'">
+          <div class="card-label">系统 CPU</div>
+          <div class="card-value">{{ sys.cpu.system_percent }}%</div>
+          <div class="card-sub">{{ sys.cpu.cores }} 核</div>
+        </div>
+        <div class="card" :class="sys.cpu.process_percent > 60 ? 'card-warn' : ''">
+          <div class="card-label">本进程 CPU</div>
+          <div class="card-value">{{ sys.cpu.process_percent }}%</div>
+          <div class="card-sub">整机占比（已按核数归一）</div>
+        </div>
+        <div class="card" :class="sys.memory.system_percent > 90 ? 'card-warn' : 'card-accent'">
+          <div class="card-label">系统内存</div>
+          <div class="card-value">{{ sys.memory.system_percent }}%</div>
+          <div class="card-sub">{{ fmtBytes(sys.memory.system_used) }} / {{ fmtBytes(sys.memory.system_total) }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">本进程内存</div>
+          <div class="card-value">{{ fmtBytes(sys.memory.process_rss) }}</div>
+          <div class="card-sub">占系统 {{ sys.memory.process_percent }}%</div>
         </div>
       </div>
+      <div class="cards" v-else-if="sys && !sys.available">
+        <div class="card"><div class="card-sub">系统资源采集不可用（psutil 缺失或异常）</div></div>
+      </div>
+
 
       <!-- Worker 今日运行指标（CF 侧真实流量） -->
       <h2 class="section-title">Worker 今日流量（CF 侧）</h2>
@@ -197,6 +221,8 @@ export default {
     const hasCacheSrc = ref(false)
     const insightCards = ref(null)
     const cs = ref(null)  // 弹幕存储统计
+    const sys = ref(null)  // 本地端系统资源（CPU/内存）
+    let sysTimer = null    // 系统资源轮询定时器
 
     const wm = computed(() => (data.value ? data.value.worker_metrics_today : null))
 
@@ -213,10 +239,19 @@ export default {
         loadTrends()
         loadGeoMap()
         loadInsights()
+        loadSystem()
       } catch (e) {
         error.value = e.message
         loading.value = false
       }
+    }
+
+    // 加载本地端系统资源（CPU/内存），失败静默
+    const loadSystem = async () => {
+      try {
+        const res = await apiV2('/dashboard/system')
+        sys.value = res.data
+      } catch (e) { /* 系统资源采集失败不阻塞页面 */ }
     }
 
     // 今日分布饼图（状态码/拦截/命中），数据来自 summary
@@ -418,9 +453,15 @@ export default {
       return (n / 1073741824).toFixed(2) + ' GB'
     }
 
-    onMounted(() => { load(); window.addEventListener('resize', onResize) })
+    onMounted(() => {
+      load()
+      window.addEventListener('resize', onResize)
+      // 系统资源每 5 秒轮询刷新（轻量接口，仅采集 CPU/内存）
+      sysTimer = setInterval(loadSystem, 5000)
+    })
     onUnmounted(() => {
       window.removeEventListener('resize', onResize)
+      if (sysTimer) clearInterval(sysTimer)
       Object.values(charts).forEach(c => c && c.dispose())
     })
     return {
@@ -428,7 +469,7 @@ export default {
       trendChart, statusChart, blockChart, hitChart, mapChart,
       trendHasData, hasDist, hasBlocked, hasHit, geoAvailable,
       api429Chart, uaTopChart, cacheSrcChart,
-      has429, hasUaTop, hasCacheSrc, insightCards, cs,
+      has429, hasUaTop, hasCacheSrc, insightCards, cs, sys,
     }
   }
 }

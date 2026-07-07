@@ -23,28 +23,31 @@ class ApiResponseCache(Base, TimestampMixin):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     cache_key = Column(String(700), unique=True, index=True, nullable=False)
-    source = Column(String(50), default="dandanplay", index=True, nullable=False)
-    method = Column(String(10), index=True, nullable=False)
+    # 以下列不做查询条件（source/method/status_code 低区分度，body_hash/redis_key
+    # 仅取值不 filter），去掉索引以降低写放大——每次 upsert 少维护多棵索引树
+    source = Column(String(50), default="dandanplay", nullable=False)
+    method = Column(String(10), nullable=False)
     api_path = Column(String(300), index=True, nullable=False)
     normalized_query = Column(String(1000), nullable=True)
     query_json = Column(JSON, nullable=True)
-    request_body_hash = Column(String(100), index=True, nullable=True)
+    request_body_hash = Column(String(100), nullable=True)
     request_body_json = Column(JSON, nullable=True)
     # 记录触发该缓存写入的客户端 IP（明文，便于直接排查来源）
-    client_ip = Column(String(64), index=True, nullable=True)
-    status_code = Column(Integer, index=True, nullable=False)
+    # 仅 LIKE '%ip%' 模糊查，前置通配符用不上索引，去掉
+    client_ip = Column(String(64), nullable=True)
+    status_code = Column(Integer, nullable=False)
     response_headers_json = Column(JSON, nullable=True)
     # 响应体：默认放 Redis，这里允许为空；SQL 冷备模式下才写入
     response_body = Column(Text, nullable=True)
-    # Redis key（sha256(cache_key) 派生），storage_mode=redis 时有效
-    redis_key = Column(String(300), index=True, nullable=True)
-    # redis / sql：响应体实际存储位置
-    storage_mode = Column(String(30), default="redis", index=True, nullable=False)
-    body_hash = Column(String(100), index=True, nullable=False)
+    # Redis key（sha256(cache_key) 派生），storage_mode=redis 时有效；仅取值不 filter
+    redis_key = Column(String(300), nullable=True)
+    # redis / sql：响应体实际存储位置（仅低频后台统计用，去掉索引）
+    storage_mode = Column(String(30), default="redis", nullable=False)
+    body_hash = Column(String(100), nullable=False)
     body_size = Column(Integer, default=0, nullable=False)
     fetched_at = Column(DateTime, index=True, nullable=False)
-    last_used_at = Column(DateTime, index=True, nullable=True)
-    last_refresh_at = Column(DateTime, index=True, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
+    last_refresh_at = Column(DateTime, nullable=True)
     refresh_after = Column(DateTime, index=True, nullable=False)
     expire_at = Column(DateTime, index=True, nullable=False)
     refresh_pending = Column(Boolean, default=False, index=True, nullable=False)
@@ -58,13 +61,14 @@ class ApiCacheAccessLog(Base):
     __tablename__ = "api_cache_access_logs"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    cache_key = Column(String(700), index=True, nullable=False)
-    api_path = Column(String(300), index=True, nullable=False)
-    # upsert / hit / miss / stale_hit / expired / 429
+    # cache_key 仅 LIKE '%x%' 模糊查（用不上索引），api_path 不做条件，去掉索引
+    cache_key = Column(String(700), nullable=False)
+    api_path = Column(String(300), nullable=False)
+    # upsert / hit / miss / stale_hit / expired / 429（按 access_type 过滤统计，保留）
     access_type = Column(String(50), index=True, nullable=False)
     upstream_status = Column(Integer, nullable=True)
     served_status = Column(Integer, nullable=True)
-    worker_request_id = Column(String(100), index=True, nullable=True)
+    worker_request_id = Column(String(100), nullable=True)
     client_ip = Column(String(64), nullable=True)
     user_agent_type = Column(String(100), nullable=True)
     message = Column(Text, nullable=True)
@@ -96,10 +100,11 @@ class ApiResponseEntity(Base, TimestampMixin):
     # anime / bangumi / episode
     entity_type = Column(String(50), index=True, nullable=False)
     entity_id = Column(String(100), index=True, nullable=False)
-    title = Column(String(500), index=True, nullable=True)
+    # title 仅 LIKE '%x%' 模糊查（用不上索引），api_path/cache_key 不做条件，去掉索引
+    title = Column(String(500), nullable=True)
     episode_title = Column(String(500), nullable=True)
-    api_path = Column(String(300), index=True, nullable=False)
-    cache_key = Column(String(700), index=True, nullable=False)
+    api_path = Column(String(300), nullable=False)
+    cache_key = Column(String(700), nullable=False)
     raw_json = Column(JSON, nullable=True)
     first_seen_at = Column(DateTime, default=now, nullable=False)
     last_seen_at = Column(DateTime, default=now, index=True, nullable=False)
@@ -110,11 +115,13 @@ class EpisodeLink(Base, TimestampMixin):
     __tablename__ = "episode_links"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    local_title = Column(String(500), index=True, nullable=False)
-    season_number = Column(Integer, index=True, nullable=True)
-    episode_number = Column(String(50), index=True, nullable=True)
+    # local_title 仅 LIKE '%x%'（用不上索引），去掉
+    local_title = Column(String(500), nullable=False)
+    # season/episode_number/file_name_hash 不做查询条件，去掉索引
+    season_number = Column(Integer, nullable=True)
+    episode_number = Column(String(50), nullable=True)
     episode_title = Column(String(500), nullable=True)
-    file_name_hash = Column(String(100), index=True, nullable=True)
+    file_name_hash = Column(String(100), nullable=True)
     dandan_anime_id = Column(String(100), index=True, nullable=True)
     dandan_bangumi_id = Column(String(100), index=True, nullable=True)
     dandan_episode_id = Column(String(100), index=True, nullable=False)
@@ -122,12 +129,13 @@ class EpisodeLink(Base, TimestampMixin):
     # search_anime / search_episodes / bangumi / match / manual
     match_source = Column(String(50), index=True, nullable=False)
     confidence = Column(Integer, default=0, nullable=False)
-    source_cache_key = Column(String(700), index=True, nullable=False)
-    bangumi_cache_key = Column(String(700), index=True, nullable=True)
+    # 以下 cache_key 类列仅存储不 filter，去掉索引
+    source_cache_key = Column(String(700), nullable=False)
+    bangumi_cache_key = Column(String(700), nullable=True)
     comment_api_path = Column(String(300), nullable=True)
-    comment_cache_key = Column(String(700), index=True, nullable=True)
+    comment_cache_key = Column(String(700), nullable=True)
     is_manual = Column(Boolean, default=False, nullable=False)
-    verified_by_user_id = Column(Integer, index=True, nullable=True)
+    verified_by_user_id = Column(Integer, nullable=True)
     last_used_at = Column(DateTime, index=True, nullable=True)
 
 
