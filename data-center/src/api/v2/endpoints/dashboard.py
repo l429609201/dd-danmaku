@@ -282,11 +282,36 @@ def _build_metrics_trends(days: int) -> dict:
 
 @router.get("/system")
 async def dashboard_system(_: LocalUser = Depends(get_current_user)):
-    """本地端系统资源：当前进程 + 整机 CPU / 内存占用（psutil）"""
+    """本地端运行健康度：系统资源 + 事件循环延迟 + 削峰队列 + 连接池水位"""
     import asyncio
-    from src.services_v2.system_stats_service import collect_system_stats
+    from src.services_v2.system_stats_service import collect_system_stats, get_loop_lag_ms
+    from src.services_v2.entity_ingest_queue import entity_ingest_queue
+    from src.services_v2.access_log_buffer import access_log_buffer
+    from src.database import engine
     # 含 cpu_percent 短采样（阻塞约 0.3s），放线程池避免卡事件循环
     data = await asyncio.to_thread(collect_system_stats)
+
+    def _pool_stats():
+        pool = engine.pool
+        info = {"dialect": engine.dialect.name}
+        for attr in ("size", "checkedin", "checkedout", "overflow"):
+            fn = getattr(pool, attr, None)
+            if callable(fn):
+                try:
+                    info[attr] = fn()
+                except Exception:
+                    info[attr] = None
+        return info
+
+    data["eventloop"] = {
+        "loop_lag_ms": get_loop_lag_ms(),
+        "running_tasks": len([t for t in asyncio.all_tasks() if not t.done()]),
+    }
+    data["queues"] = {
+        "entity_ingest": entity_ingest_queue.stats(),
+        "access_log": access_log_buffer.stats(),
+    }
+    data["db_pool"] = await asyncio.to_thread(_pool_stats)
     return ApiResult(data=data)
 
 

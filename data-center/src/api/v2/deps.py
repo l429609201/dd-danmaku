@@ -43,3 +43,18 @@ def require_role(required: str):
 require_admin = require_role("admin")
 require_operator = require_role("operator")
 require_viewer = require_role("viewer")
+
+
+async def verify_external_token(
+    x_external_token: Optional[str] = Header(None),
+) -> bool:
+    """外部控制 API 独立密钥校验（MCP/诊断专用，独立于用户 JWT）。
+
+    请求头：X-External-Token: <外部控制密钥>
+    """
+    from src.services_v2.external_control_service import external_control_auth
+    # 同步 DB 读取放线程池，避免阻塞事件循环
+    ok = await asyncio.to_thread(external_control_auth.verify, x_external_token or "")
+    if not ok:
+        raise HTTPException(status_code=401, detail="外部控制密钥无效")
+    return True

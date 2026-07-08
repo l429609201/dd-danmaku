@@ -6,6 +6,8 @@ psutil 缺失时降级返回 available=False，不阻断接口。
 """
 import logging
 import os
+import asyncio
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +19,51 @@ except Exception:  # pragma: no cover - psutil 未安装时降级
 # 进程句柄单例：cpu_percent 需要两次采样间隔才能算出占用，
 # 维持同一个 Process 对象跨请求复用，配合固定 interval 采样。
 _proc = None
+
+# 事件循环延迟（lag）探针：后台协程每 interval 睡眠，实际耗时超出部分即 lag。
+# lag 高 = 事件循环被同步阻塞（高并发诊断关键指标）。
+_loop_lag_ms = 0.0
+_loop_probe_task = None
+_LOOP_PROBE_INTERVAL = 0.5  # 探针睡眠间隔（秒）
+
+
+async def _loop_lag_probe():
+    """后台探针：测量事件循环调度延迟（实际睡眠 - 期望睡眠）"""
+    global _loop_lag_ms
+    while True:
+        t0 = time.monotonic()
+        try:
+            await asyncio.sleep(_LOOP_PROBE_INTERVAL)
+        except asyncio.CancelledError:
+            break
+        elapsed = time.monotonic() - t0
+        # 超出期望间隔的部分即为 lag（毫秒）；指数平滑削抖动
+        lag = max(0.0, (elapsed - _LOOP_PROBE_INTERVAL) * 1000)
+        _loop_lag_ms = round(_loop_lag_ms * 0.7 + lag * 0.3, 2)
+
+
+async def start_loop_probe():
+    """启动事件循环 lag 探针（在 lifespan 调用）"""
+    global _loop_probe_task
+    if _loop_probe_task and not _loop_probe_task.done():
+        return
+    _loop_probe_task = asyncio.create_task(_loop_lag_probe())
+
+
+async def stop_loop_probe():
+    global _loop_probe_task
+    if _loop_probe_task and not _loop_probe_task.done():
+        _loop_probe_task.cancel()
+        try:
+            await _loop_probe_task
+        except asyncio.CancelledError:
+            pass
+    _loop_probe_task = None
+
+
+def get_loop_lag_ms() -> float:
+    """当前事件循环延迟（毫秒），供诊断 API"""
+    return _loop_lag_ms
 
 
 def _get_proc():
@@ -69,12 +116,32 @@ def collect_system_stats() -> dict:
                 pass
 
         vm = psutil.virtual_memory()
+        # 扩展：系统负载、进程线程数、打开的文件描述符数（诊断资源泄漏/过载）
+        load1 = load5 = load15 = None
+        try:
+            if hasattr(os, "getloadavg"):
+                load1, load5, load15 = [round(x, 2) for x in os.getloadavg()]
+        except Exception:
+            pass
+        threads = fds = None
+        try:
+            if proc is not None:
+                threads = proc.num_threads()
+                # num_fds 仅 Unix 有；Windows 用 num_handles
+                if hasattr(proc, "num_fds"):
+                    fds = proc.num_fds()
+                elif hasattr(proc, "num_handles"):
+                    fds = proc.num_handles()
+        except Exception:
+            pass
+
         return {
             "available": True,
             "cpu": {
                 "system_percent": round(system_cpu, 1),
                 "process_percent": proc_cpu,
                 "cores": cores,
+                "load1": load1, "load5": load5, "load15": load15,
             },
             "memory": {
                 "system_total": int(vm.total),
@@ -82,6 +149,11 @@ def collect_system_stats() -> dict:
                 "system_percent": round(vm.percent, 1),
                 "process_rss": proc_rss,
                 "process_percent": proc_mem_pct,
+            },
+            "process": {
+                "threads": threads,
+                "open_fds": fds,
+                "loop_lag_ms": get_loop_lag_ms(),
             },
         }
     except Exception as e:

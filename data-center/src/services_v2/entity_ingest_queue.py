@@ -32,6 +32,22 @@ class EntityIngestQueue:
         self._queue: asyncio.Queue = None  # 延迟到 start 时创建，绑定运行中 loop
         self._task = None
         self._running = False
+        # 可观测计数：累计投递 / 累计丢弃 / 累计落库
+        self._submitted = 0
+        self._dropped = 0
+        self._flushed = 0
+
+    def stats(self) -> dict:
+        """运行时可观测指标（供外部诊断 API）"""
+        depth = self._queue.qsize() if self._queue is not None else 0
+        return {
+            "depth": depth,
+            "capacity": QUEUE_MAX,
+            "submitted": self._submitted,
+            "dropped": self._dropped,
+            "flushed": self._flushed,
+            "running": self._running,
+        }
 
     async def start(self):
         if self._task and not self._task.done():
@@ -50,6 +66,19 @@ class EntityIngestQueue:
             except asyncio.CancelledError:
                 pass
         self._task = None
+        # 关闭前把队列里剩余项尽量刷库，减少重启丢失
+        drain = []
+        if self._queue is not None:
+            while not self._queue.empty():
+                try:
+                    drain.append(self._queue.get_nowait())
+                except Exception:
+                    break
+        if drain:
+            try:
+                await asyncio.to_thread(self._flush_batch, drain)
+            except Exception:
+                pass
 
     def submit(self, api_path: str, cache_key: str, body: str):
         """投递一条解析任务（非阻塞）；队列满则丢最旧，保证不阻塞上游"""
@@ -58,10 +87,13 @@ class EntityIngestQueue:
         item = (api_path, cache_key, body)
         try:
             self._queue.put_nowait(item)
+            self._submitted += 1
         except asyncio.QueueFull:
             try:
                 self._queue.get_nowait()  # 丢最旧
+                self._dropped += 1
                 self._queue.put_nowait(item)
+                self._submitted += 1
             except Exception:
                 pass
 
@@ -89,24 +121,47 @@ class EntityIngestQueue:
             if batch:
                 # 同步批量落库放线程池，避免阻塞事件循环
                 await asyncio.to_thread(self._flush_batch, batch)
+                self._flushed += len(batch)
 
     @staticmethod
     def _flush_batch(batch):
-        """共享一个 session 批量处理整批，最后一次性 commit（减少 fsync）"""
+        """共享一个 session 批量处理整批，最后一次性 commit（减少 fsync）。
+        整批 commit 失败时回退为逐条独立事务，避免一条坏数据拖垮整批。"""
         db = get_db_sync()
         try:
             for api_path, cache_key, body in batch:
                 try:
                     entity_index_service._index_with_db(db, api_path, cache_key, body)
                     episode_link_service._link_with_db(db, api_path, cache_key, body)
+                    # session 为 autoflush=False：每条处理后手动 flush，
+                    # 使后续条目的 existing 查询能看到本条新增对象，
+                    # 避免跨 body 重复实体（尤其 MediaLibrary.anime_id 唯一约束冲突）
+                    db.flush()
                 except Exception as e:
                     logger.warning(f"⚠️ 单条实体/集数解析失败（跳过）: {e}")
+                    db.rollback()  # 回滚坏条，保持 session 干净供后续条目复用
             db.commit()
         except Exception as e:
             db.rollback()
-            logger.error(f"❌ 实体/集数批量落库失败: {e}")
+            logger.warning(f"⚠️ 实体/集数整批提交失败，回退逐条重试: {e}")
+            EntityIngestQueue._flush_one_by_one(batch)
         finally:
             db.close()
+
+    @staticmethod
+    def _flush_one_by_one(batch):
+        """逐条独立事务落库（整批失败时的兜底，隔离坏数据）"""
+        for api_path, cache_key, body in batch:
+            db = get_db_sync()
+            try:
+                entity_index_service._index_with_db(db, api_path, cache_key, body)
+                episode_link_service._link_with_db(db, api_path, cache_key, body)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"⚠️ 单条实体/集数落库失败（丢弃）: {e}")
+            finally:
+                db.close()
 
 
 entity_ingest_queue = EntityIngestQueue()

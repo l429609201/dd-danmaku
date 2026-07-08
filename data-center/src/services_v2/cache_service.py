@@ -128,6 +128,16 @@ class CacheService:
             # 但 SQL 始终保留 body 作为冷备，Redis 重启/淘汰后可回填
             storage_mode = "redis" if ok else "sql"
 
+        # 2. 元数据落库（同步 DB 段放线程池，避免阻塞事件循环 → 高并发关键）
+        import asyncio
+        return await asyncio.to_thread(
+            self._upsert_db, record, cache_key, body, body_hash, body_size,
+            redis_key, storage_mode, current, refresh_interval, stale_max_age,
+        )
+
+    def _upsert_db(self, record, cache_key, body, body_hash, body_size,
+                   redis_key, storage_mode, current, refresh_interval, stale_max_age) -> bool:
+        """upsert 的同步 DB 段（供线程池调用，不阻塞事件循环）"""
         db = get_db_sync()
         try:
             row = db.query(ApiResponseCache).filter(
@@ -185,8 +195,54 @@ class CacheService:
                   client_ip: Optional[str] = None,
                   log_miss: bool = True) -> Optional[Dict[str, Any]]:
         """读取本地缓存。log_miss=False 时不写 miss/expired 访问日志
-        （主动预查场景调用频繁，避免 access_logs 暴涨）"""
+        （主动预查场景调用频繁，避免 access_logs 暴涨）。
+
+        高并发关键：同步 DB 段放线程池，redis await 留在事件循环，避免阻塞。"""
+        import asyncio
         client_ip = (client_ip or None)
+        # ① 同步 DB 查询段（线程池）：查 row，返回字段快照 + 状态
+        snap = await asyncio.to_thread(
+            self._get_lookup, cache_key, worker_request_id, client_ip, log_miss)
+        if snap is None or not snap.get("found"):
+            return None
+        if snap.get("expired"):
+            return None
+
+        # ② redis body 读取（事件循环 await）
+        body = None
+        redis_hit = False
+        if snap["storage_mode"] == "redis" and snap["redis_key"]:
+            body = await redis_cache.get(snap["redis_key"])
+            redis_hit = body is not None
+        if body is None:
+            body = snap["response_body"]  # 回退 SQL 冷备
+        if body is None:
+            if log_miss:
+                await asyncio.to_thread(
+                    self._log_async, cache_key, snap["api_path"], "miss",
+                    worker_request_id, client_ip)
+            return None
+
+        # Redis 未命中但 SQL 有 body → 回写 Redis 预热（自愈）
+        if not redis_hit and snap["redis_key"] and settings.CACHE_BODY_STORAGE == "redis":
+            await redis_cache.set(snap["redis_key"], body,
+                                  ttl=settings.CACHE_STALE_MAX_AGE_SECONDS)
+
+        # ③ 同步 DB 更新段（线程池）：命中计数 + stale 标记 + 访问日志
+        stale = await asyncio.to_thread(
+            self._get_touch, cache_key, redis_hit,
+            worker_request_id, client_ip)
+        return {
+            "hit": True,
+            "status": snap["status_code"],
+            "headers": snap["response_headers_json"] or {},
+            "body": body,
+            "cached_at": snap["fetched_at_ms"],
+            "stale": stale,
+        }
+
+    def _get_lookup(self, cache_key, worker_request_id, client_ip, log_miss):
+        """get 段①：同步查 row，返回字段快照（不跨线程持有 ORM 对象）"""
         db = get_db_sync()
         try:
             row = db.query(ApiResponseCache).filter(
@@ -195,70 +251,67 @@ class CacheService:
             if not row:
                 if log_miss:
                     self._log(db, cache_key, "", "miss",
-                              worker_request_id=worker_request_id,
-                              client_ip=client_ip)
-                return None
-
+                              worker_request_id=worker_request_id, client_ip=client_ip)
+                return {"found": False}
             current = now()
-            # 超过 expire_at 不再兜底
             if row.expire_at and current > row.expire_at:
                 if log_miss:
                     self._log(db, cache_key, row.api_path, "expired",
-                              worker_request_id=worker_request_id,
-                              client_ip=client_ip)
-                return None
+                              worker_request_id=worker_request_id, client_ip=client_ip)
+                return {"found": True, "expired": True}
+            return {
+                "found": True, "expired": False,
+                "storage_mode": row.storage_mode, "redis_key": row.redis_key,
+                "response_body": row.response_body, "api_path": row.api_path,
+                "status_code": row.status_code,
+                "response_headers_json": row.response_headers_json,
+                "fetched_at_ms": int(row.fetched_at.timestamp() * 1000) if row.fetched_at else 0,
+            }
+        except Exception as e:
+            logger.error(f"❌ cache.get 查询失败: {e}")
+            return None
+        finally:
+            db.close()
 
-            # 读取 body：优先 Redis（主缓存，快路径）
-            body = None
-            redis_hit = False
-            if row.storage_mode == "redis" and row.redis_key:
-                body = await redis_cache.get(row.redis_key)
-                redis_hit = body is not None
-            # Redis 未命中（重启/淘汰）→ 回退 SQL 冷备
-            if body is None:
-                body = row.response_body
-            if body is None:
-                if log_miss:
-                    self._log(db, cache_key, row.api_path, "miss",
-                              worker_request_id=worker_request_id,
-                              client_ip=client_ip)
-                return None
-
-            # 关键：Redis 没命中但 SQL 有 body → 回写 Redis 预热，
-            # 下次别人调用即可走 Redis 快路径（实现 Redis 自愈）
-            if not redis_hit and row.redis_key and settings.CACHE_BODY_STORAGE == "redis":
-                ttl = settings.CACHE_STALE_MAX_AGE_SECONDS
-                await redis_cache.set(row.redis_key, body, ttl=ttl)
-                if row.storage_mode != "redis":
-                    row.storage_mode = "redis"
-
-            # 判断是否 stale，stale 则标记待刷新
+    def _get_touch(self, cache_key, redis_hit, worker_request_id, client_ip) -> bool:
+        """get 段③：同步更新命中计数/stale 标记 + 写访问日志，返回是否 stale"""
+        db = get_db_sync()
+        try:
+            row = db.query(ApiResponseCache).filter(
+                ApiResponseCache.cache_key == cache_key
+            ).first()
+            if not row:
+                return False
+            current = now()
             stale = bool(row.refresh_after and current > row.refresh_after)
             row.hit_count = (row.hit_count or 0) + 1
             row.last_used_at = current
+            # Redis 自愈后同步 storage_mode
+            if not redis_hit and row.redis_key and settings.CACHE_BODY_STORAGE == "redis":
+                if row.storage_mode != "redis":
+                    row.storage_mode = "redis"
             if stale:
                 row.refresh_pending = True
                 row.stale_hit_count = (row.stale_hit_count or 0) + 1
             db.commit()
-
             self._log(db, cache_key, row.api_path,
                       "stale_hit" if stale else "hit",
                       served_status=row.status_code,
-                      worker_request_id=worker_request_id,
-                      client_ip=client_ip)
-            return {
-                "hit": True,
-                "status": row.status_code,
-                "headers": row.response_headers_json or {},
-                "body": body,
-                "cached_at": int(row.fetched_at.timestamp() * 1000) if row.fetched_at else 0,
-                "stale": stale,
-            }
+                      worker_request_id=worker_request_id, client_ip=client_ip)
+            return stale
         except Exception as e:
-            logger.error(f"❌ cache.get 失败: {e}")
-            return None
+            logger.error(f"❌ cache.get 更新失败: {e}")
+            db.rollback()
+            return False
         finally:
             db.close()
+
+    def _log_async(self, cache_key, api_path, access_type,
+                   worker_request_id=None, client_ip=None):
+        """线程池内写访问日志（投递缓冲，不真正碰 db）"""
+        self._log(None, cache_key, api_path, access_type,
+                  worker_request_id=worker_request_id, client_ip=client_ip)
+
 
     def _log(self, db, cache_key, api_path, access_type,
              upstream_status=None, served_status=None, worker_request_id=None,

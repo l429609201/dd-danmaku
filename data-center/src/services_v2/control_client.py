@@ -55,6 +55,24 @@ class ControlClient:
         self._reconnect_count = 0
         # 滥用封禁回灌的后台任务（避免在接收循环里同步等回包导致自死锁）
         self._resync_task: Optional[asyncio.Task] = None
+        # 可观测：累计收到消息数 / 累计处理消息数（供外部诊断 API）
+        self._msg_received = 0
+        self._msg_handled = 0
+        # 消息并发处理上限（防突发击穿事件循环 / DB 连接池）；
+        # 延迟到 start() 内创建，确保绑定运行中的事件循环
+        self._dispatch_sem: Optional[asyncio.Semaphore] = None
+
+    def stats(self) -> dict:
+        """运行时可观测指标（供外部诊断 API）"""
+        return {
+            "connected": self._connected,
+            "node_id": self._node_id,
+            "reconnect_count": self._reconnect_count,
+            "pending_rpc": len(self._pending),
+            "msg_received": self._msg_received,
+            "msg_handled": self._msg_handled,
+            "msg_backlog": max(0, self._msg_received - self._msg_handled),
+        }
 
     @property
     def connected(self) -> bool:
@@ -70,6 +88,7 @@ class ControlClient:
             logger.warning("⚠️ 未安装 websockets 包，长连接客户端不可用")
             return
         self._running = True
+        self._dispatch_sem = asyncio.Semaphore(100)
         self._task = asyncio.create_task(self._run_loop())
         logger.info("✅ 本地端 WebSocket 控制客户端已启动")
 
@@ -130,14 +149,37 @@ class ControlClient:
             await asyncio.sleep(delay)
 
     async def _recv_loop(self, ws):
-        """接收并分发消息"""
+        """接收并分发消息。
+
+        并发化（K）：除 .result 回包需即时设置 future 外，其余消息处理
+        用 create_task 并发执行 + 信号量限流，避免单条慢处理（如 DB 查询）
+        阻塞整条消息流，提升高并发吞吐。
+        """
         async for raw in ws:
             try:
                 msg = json.loads(raw)
             except Exception:
                 logger.warning("⚠️ 收到非法 JSON 消息，忽略")
                 continue
-            await self._dispatch(msg)
+            self._msg_received += 1
+            msg_type = msg.get("type") or ""
+            # RPC 回包必须即时处理（设置 pending future），不能并发以免乱序
+            if msg_type.endswith(".result"):
+                await self._dispatch(msg)
+                self._msg_handled += 1
+            else:
+                # 其余消息并发处理，不阻塞后续收包
+                asyncio.create_task(self._dispatch_guarded(msg))
+
+    async def _dispatch_guarded(self, msg: Dict[str, Any]):
+        """带并发上限的分发包装（信号量限流 + 异常隔离 + 处理计数）"""
+        async with self._dispatch_sem:
+            try:
+                await self._dispatch(msg)
+            except Exception as e:
+                logger.warning(f"⚠️ 消息处理异常（隔离）: {e}")
+            finally:
+                self._msg_handled += 1
 
     # ---------- 消息分发 ----------
     async def _dispatch(self, msg: Dict[str, Any]):

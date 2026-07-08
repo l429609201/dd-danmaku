@@ -66,6 +66,26 @@
           <div class="card-value">{{ fmtBytes(sys.memory.process_rss) }}</div>
           <div class="card-sub">占系统 {{ sys.memory.process_percent }}%</div>
         </div>
+        <div class="card" v-if="sys.cpu.load1 !== null && sys.cpu.load1 !== undefined">
+          <div class="card-label">系统负载</div>
+          <div class="card-value">{{ sys.cpu.load1 }}</div>
+          <div class="card-sub">5分钟 {{ sys.cpu.load5 }} / 15分钟 {{ sys.cpu.load15 }}</div>
+        </div>
+        <div class="card" v-if="sys.process" :class="loopLagClass">
+          <div class="card-label">事件循环延迟</div>
+          <div class="card-value">{{ sys.eventloop ? sys.eventloop.loop_lag_ms : '—' }} ms</div>
+          <div class="card-sub">运行任务 {{ sys.eventloop ? sys.eventloop.running_tasks : '—' }} / 线程 {{ sys.process.threads }}</div>
+        </div>
+        <div class="card" v-if="sys.db_pool && sys.db_pool.checkedout !== undefined" :class="poolClass">
+          <div class="card-label">DB 连接池</div>
+          <div class="card-value">{{ sys.db_pool.checkedout }}/{{ (sys.db_pool.size || 0) + (sys.db_pool.overflow || 0) }}</div>
+          <div class="card-sub">在用 {{ sys.db_pool.checkedout }} / 空闲 {{ sys.db_pool.checkedin }}</div>
+        </div>
+        <div class="card" v-if="sys.queues" :class="queueClass">
+          <div class="card-label">削峰队列深度</div>
+          <div class="card-value">{{ sys.queues.entity_ingest.depth }}</div>
+          <div class="card-sub">日志缓冲 {{ sys.queues.access_log.depth }} / 丢弃 {{ sys.queues.entity_ingest.dropped }}</div>
+        </div>
       </div>
       <div class="cards" v-else-if="sys && !sys.available">
         <div class="card"><div class="card-sub">系统资源采集不可用（psutil 缺失或异常）</div></div>
@@ -225,6 +245,24 @@ export default {
     let sysTimer = null    // 系统资源轮询定时器
 
     const wm = computed(() => (data.value ? data.value.worker_metrics_today : null))
+
+    // 运行健康度告警色：超阈值标黄，便于肉眼发现瓶颈
+    const loopLagClass = computed(() => {
+      const lag = sys.value && sys.value.eventloop ? sys.value.eventloop.loop_lag_ms : 0
+      return lag > 100 ? 'card-warn' : ''  // >100ms 说明事件循环被阻塞
+    })
+    const poolClass = computed(() => {
+      const p = sys.value && sys.value.db_pool
+      if (!p || p.checkedout === undefined) return ''
+      const cap = (p.size || 0) + (p.overflow || 0)
+      return cap > 0 && p.checkedout / cap > 0.8 ? 'card-warn' : ''  // 连接池 >80%
+    })
+    const queueClass = computed(() => {
+      const q = sys.value && sys.value.queues
+      if (!q) return ''
+      const d = q.entity_ingest.depth + q.access_log.depth
+      return d > 3000 ? 'card-warn' : ''  // 队列积压
+    })
 
     const load = async () => {
       loading.value = true
@@ -470,6 +508,7 @@ export default {
       trendHasData, hasDist, hasBlocked, hasHit, geoAvailable,
       api429Chart, uaTopChart, cacheSrcChart,
       has429, hasUaTop, hasCacheSrc, insightCards, cs, sys,
+      loopLagClass, poolClass, queueClass,
     }
   }
 }

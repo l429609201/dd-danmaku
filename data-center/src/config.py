@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # Worker 长连接控制配置（本地端主动连 Worker ControlHub）
     CONTROL_WORKER_WS_URL: Optional[str] = None  # 如 wss://worker-domain/control/ws
     CONTROL_TOKEN: Optional[str] = None          # X-Control-Token
+
+    # 外部控制 API 独立密钥（供 MCP / 外部诊断调用；独立于用户登录）
+    # 优先级：AppSetting(external_control_token) > 本环境变量兜底
+    EXTERNAL_CONTROL_TOKEN: Optional[str] = None
     CONTROL_NODE_ID: str = "local-node-1"
     # 缓存策略默认值
     CACHE_REFRESH_INTERVAL_SECONDS: int = 6 * 60 * 60      # 6 小时

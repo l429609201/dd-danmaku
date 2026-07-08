@@ -49,6 +49,14 @@
       "category": "Context",
       "created_at": "2026-07-07T16:19:19.432240200Z",
       "updated_at": "2026-07-07T16:19:19.432240200Z"
+    },
+    {
+      "id": "552bc41a-e376-44eb-a8e8-467d48989fae",
+      "content": "外部控制API + 高并发优化（data-center）：1) 高并发根因是 uvicorn --workers 1 单事件循环 + cache_service.get/upsert 的 DB 同步阻塞 + control_client._recv_loop 串行。已修：cache_service upsert 抽 _upsert_db 入线程池；get 拆 _get_lookup/_get_touch 三段(DB段入线程池, redis await 留事件循环)；control_client._recv_loop 改并发分发(_dispatch_guarded + Semaphore(100)，.result回包仍即时处理)。2) 外部控制API体系：独立密钥 external_control_token（services_v2/external_control_service.py，AppSetting优先 env(EXTERNAL_CONTROL_TOKEN)兜底，无则自动生成打印日志），deps.py 的 verify_external_token 校验 X-External-Token 头；路由 /api/v2/ext/*（endpoints/external_control.py）含 diag/system|queues|db-pool|control|eventloop|snapshot。3) 可观测埋点：entity_ingest_queue.stats()/access_log_buffer.stats()/control_client.stats()，system_stats_service 加事件循环 lag 探针(start_loop_probe/get_loop_lag_ms)+负载/线程/FD。4) MCP server: data-center/mcp_server/server.py(FastMCP stdio, 环境变量 DDC_BASE_URL/DDC_EXT_TOKEN, 封装6个diag工具)。5) 仪表盘 /dashboard/system 扩展返回 eventloop/queues/db_pool，Dashboard.vue 加负载/事件循环延迟/连接池/队列深度卡片(超阈值标黄)。",
+      "content_normalized": "外部控制api + 高并发优化data-center1 高并发根因是 uvicorn --workers 1 单事件循环 + cache_serviceget/upsert 的 db 同步阻塞 + control_client_recv_loop 串行已修cache_service upsert 抽 _upsert_db 入线程池get 拆 _get_lookup/_get_touch 三段db段入线程池 redis await 留事件循环control_client_recv_loop 改并发分发_dispatch_guarded + semaphore100result回包仍即时处理2 外部控制api体系独立密钥 external_control_tokenservices_v2/external_control_servicepyappsetting优先 envexternal_control_token兜底无则自动生成打印日志depspy 的 verify_external_token 校验 x-external-token 头路由 /api/v2/ext/*endpoints/external_controlpy含 diag/system|queues|db-pool|control|eventloop|snapshot3 可观测埋点entity_ingest_queuestats/access_log_bufferstats/control_clientstatssystem_stats_service 加事件循环 lag 探针start_loop_probe/get_loop_lag_ms+负载/线程/fd4 mcp server data-center/mcp_server/serverpyfastmcp stdio 环境变量 ddc_base_url/ddc_ext_token 封装6个diag工具5 仪表盘 /dashboard/system 扩展返回 eventloop/queues/db_pooldashboardvue 加负载/事件循环延迟/连接池/队列深度卡片超阈值标黄",
+      "category": "Context",
+      "created_at": "2026-07-08T05:22:29.937777700Z",
+      "updated_at": "2026-07-08T05:22:29.937777700Z"
     }
   ],
   "last_dedup_at": "2026-06-15T13:09:37.402327400Z",

@@ -51,6 +51,10 @@ async def lifespan(app: FastAPI):
     logger.info("📝 启动访问日志批量写入缓冲...")
     await access_log_buffer.start()
 
+    # 启动事件循环延迟探针（诊断高并发下的同步阻塞）
+    from src.services_v2.system_stats_service import start_loop_probe
+    await start_loop_probe()
+
     # 启动本地端 SQL 数据保留清理任务
     logger.info("🧹 启动数据保留清理任务...")
     await cleanup_service.start()
@@ -61,6 +65,8 @@ async def lifespan(app: FastAPI):
 
     # 关闭时清理资源
     logger.info("🛑 正在关闭数据交互中心...")
+    from src.services_v2.system_stats_service import stop_loop_probe
+    await stop_loop_probe()
     await cleanup_service.stop()
     await access_log_buffer.stop()
     await entity_ingest_queue.stop()

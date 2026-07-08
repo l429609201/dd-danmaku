@@ -32,6 +32,23 @@ class AccessLogBuffer:
         self._buf = deque(maxlen=BUFFER_MAX)
         self._task = None
         self._running = False
+        # 可观测计数：累计投递 / 累计落库
+        self._submitted = 0
+        self._flushed = 0
+
+    def stats(self) -> dict:
+        """运行时可观测指标（供外部诊断 API）。
+        dropped 由 submitted-flushed-depth 估算（deque 满自动丢最旧头部）"""
+        depth = len(self._buf)
+        dropped = max(0, self._submitted - self._flushed - depth)
+        return {
+            "depth": depth,
+            "capacity": BUFFER_MAX,
+            "submitted": self._submitted,
+            "flushed": self._flushed,
+            "dropped_est": dropped,
+            "running": self._running,
+        }
 
     async def start(self):
         if self._task and not self._task.done():
@@ -69,6 +86,7 @@ class AccessLogBuffer:
             "client_ip": client_ip,
             "created_at": now(),
         })
+        self._submitted += 1
 
     async def _flush_loop(self):
         """定时刷库循环：每 FLUSH_INTERVAL 秒或缓冲超阈值就批量落库"""
@@ -101,6 +119,7 @@ class AccessLogBuffer:
                 chunk = rows[i:i + BATCH_SIZE]
                 db.bulk_insert_mappings(ApiCacheAccessLog, chunk)
             db.commit()
+            self._flushed += len(rows)
         except Exception as e:
             db.rollback()
             logger.warning(f"⚠️ 访问日志批量写入失败（丢弃 {len(rows)} 条）: {e}")
