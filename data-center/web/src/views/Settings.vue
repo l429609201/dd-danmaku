@@ -20,6 +20,27 @@
       </table>
     </div>
 
+    <!-- 外部控制密钥（MCP / 外部诊断专用，独立于登录） -->
+    <div class="panel" style="margin-top: 20px;">
+      <div class="panel-head">
+        <h2 class="panel-title">外部控制密钥（MCP 接入）</h2>
+        <div class="panel-actions">
+          <button class="btn" @click="loadExtToken" :disabled="extLoading">查看密钥</button>
+          <button class="btn btn-primary" @click="rotateExtToken" :disabled="extLoading">重新生成</button>
+        </div>
+      </div>
+      <p class="hint">
+        供 MCP / 外部诊断工具调用 <code>/api/v2/ext/*</code> 接口鉴权（请求头 <code>X-External-Token</code>）。
+        与登录账号无关，可随时轮换；轮换后旧密钥立即失效，需同步更新 MCP 配置。
+      </p>
+      <div class="token-row">
+        <input :value="extToken" class="input full" :type="extShow ? 'text' : 'password'"
+               readonly placeholder="点击「查看密钥」显示" />
+        <button class="btn" @click="extShow = !extShow" :disabled="!extToken">{{ extShow ? '隐藏' : '显示' }}</button>
+        <button class="btn" @click="copyExtToken" :disabled="!extToken">复制</button>
+      </div>
+    </div>
+
 
     <div v-if="showPasswordModal" class="modal-mask" @click.self="closePasswordModal">
       <div class="modal">
@@ -59,6 +80,51 @@ export default {
   setup() {
     const items = ref([])
     const msg = ref('')
+
+    // 外部控制密钥
+    const extToken = ref('')
+    const extShow = ref(false)
+    const extLoading = ref(false)
+
+    const loadExtToken = async () => {
+      extLoading.value = true
+      msg.value = ''
+      try {
+        const res = await apiV2('/ext/token')
+        extToken.value = res.data.token || ''
+        extShow.value = true
+      } catch (e) {
+        msg.value = '获取外部控制密钥失败：' + e.message
+      } finally {
+        extLoading.value = false
+      }
+    }
+
+    const rotateExtToken = async () => {
+      if (!confirm('轮换后旧密钥立即失效，MCP 配置需同步更新。确认？')) return
+      extLoading.value = true
+      msg.value = ''
+      try {
+        const res = await apiV2('/ext/token/rotate', { method: 'POST' })
+        extToken.value = res.data.token || ''
+        extShow.value = true
+        msg.value = res.message || '密钥已轮换，请复制并更新 MCP 配置'
+      } catch (e) {
+        msg.value = '轮换失败：' + e.message
+      } finally {
+        extLoading.value = false
+      }
+    }
+
+    const copyExtToken = async () => {
+      if (!extToken.value) return
+      try {
+        await navigator.clipboard.writeText(extToken.value)
+        msg.value = '密钥已复制到剪贴板'
+      } catch {
+        msg.value = '复制失败，请手动选中文本复制'
+      }
+    }
     const showPasswordModal = ref(false)
     const passwordLoading = ref(false)
     const passwordForm = reactive({
@@ -154,6 +220,7 @@ export default {
 
     return {
       items, msg, save,
+      extToken, extShow, extLoading, loadExtToken, rotateExtToken, copyExtToken,
       showPasswordModal, passwordForm, passwordLoading,
       closePasswordModal, submitPassword
     }
@@ -174,6 +241,14 @@ export default {
 .input.full { width: 100%; min-width: 0; }
 .link { background: none; border: none; color: #1677ff; cursor: pointer; font-size: 13px; }
 .empty { text-align: center; color: #999; padding: 20px; }
+/* 外部控制密钥面板 */
+.panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.panel-title { font-size: 16px; color: #333; margin: 0; }
+.panel-actions { display: flex; gap: 8px; }
+.hint { color: #888; font-size: 13px; margin-bottom: 12px; line-height: 1.6; }
+.hint code { background: #f5f5f5; padding: 1px 5px; border-radius: 3px; font-family: monospace; color: #d56; }
+.token-row { display: flex; gap: 8px; align-items: center; }
+.token-row .input { flex: 1; font-family: monospace; font-size: 13px; }
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; z-index: 1000; }
 .modal { width: 420px; max-width: calc(100vw - 32px); background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 10px 32px rgba(0,0,0,0.18); }
 .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }

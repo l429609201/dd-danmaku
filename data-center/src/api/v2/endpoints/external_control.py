@@ -11,12 +11,30 @@ import logging
 
 from fastapi import APIRouter, Depends
 
-from src.api.v2.deps import verify_external_token
+from src.api.v2.deps import verify_external_token, require_admin
 from src.api.v2.schemas import ApiResult
 from src.database import engine
+from src.models_v2 import LocalUser
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# ========== 密钥管理（走用户 JWT admin，供前端查看/生成/轮换） ==========
+@router.get("/token")
+async def get_external_token(_: LocalUser = Depends(require_admin)):
+    """查看当前外部控制密钥明文（admin 专用；无则自动生成）"""
+    from src.services_v2.external_control_service import external_control_auth
+    token = await asyncio.to_thread(external_control_auth.get_token)
+    return ApiResult(data={"token": token})
+
+
+@router.post("/token/rotate")
+async def rotate_external_token(_: LocalUser = Depends(require_admin)):
+    """轮换外部控制密钥（生成新值，旧密钥立即失效）"""
+    from src.services_v2.external_control_service import external_control_auth
+    token = await asyncio.to_thread(external_control_auth.rotate)
+    return ApiResult(message="已轮换，请更新 MCP 配置", data={"token": token})
 
 
 @router.get("/diag/system")
