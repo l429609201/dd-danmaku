@@ -157,6 +157,8 @@
         getComment: (episodeId, chConvert) => `${dandanplayApi.prefix}/comment/${episodeId}?withRelated=true&chConvert=${chConvert}`,
         getExtcomment: (url) => `${dandanplayApi.prefix}/extcomment?url=${encodeURI(url)}`,
         getBangumi: (animeId) => `${dandanplayApi.prefix}/bangumi/${animeId}`,
+        // [降级] 用 bangumi.tv 的 subjectId 获取弹弹play番剧详情+分集（新接口，需签名，走代理）
+        getBangumiByBgmId: (bgmtvSubjectId) => `${dandanplayApi.prefix}/bangumi/bgmtv/${bgmtvSubjectId}`,
         posterImg: (animeId) => `https://img.dandanplay.net/anime/${animeId}.jpg`,
     };
     const dandanplayApiCustom = {
@@ -183,6 +185,8 @@
         },
         accessTokenUrl: 'https://next.bgm.tv/demo/access-token',
         getCharacters: (subjectId) => `${bangumiApi.prefix}/subjects/${subjectId}/characters`,
+        // [降级] 新版番剧搜索接口（POST /v0/search/subjects），用于主接口流控时的搜索兜底
+        searchSubjects: () => `${bangumiApi.prefix}/search/subjects`,
         // need auth
         getMe: () => `${bangumiApi.prefix}/me`,
         getUserCollection: (userName, subjectId) => `${bangumiApi.prefix}/users/${userName}/collections/${subjectId}`,
@@ -455,6 +459,7 @@
         bangumiToken: { id: 'danmakuBangumiToken', defaultValue: '', name: '个人令牌' },
         bangumiPostPercent: { id: 'danmakuBangumiPostPercent', defaultValue: 95, name: '时长比', min: 1, max: 99, step: 1 },
         bangumiApiPrefix: { id: 'danmakuBangumiApiPrefix', defaultValue: 'https://api.bgm.tv', name: 'Bangumi API 地址' },
+        bgmSearchFallbackEnable: { id: 'danmakuBgmSearchFallbackEnable', defaultValue: false, name: 'BGM 搜索兜底（主源失败时用 Bangumi 搜索）' },
         bangumiImageDomain: { id: 'danmakuBangumiImageDomain', defaultValue: 'https://lain.bgm.tv', name: 'Bangumi 图片域名' },
         tmdbApiKey: { id: 'danmakuTmdbApiKey', defaultValue: '', name: 'TMDB API Key' },
         tmdbApiBaseUrl: { id: 'danmakuTmdbApiBaseUrl', defaultValue: 'https://api.themoviedb.org', name: 'TMDB API 域名' },
@@ -580,6 +585,7 @@
         timeoutCallbackTypeDiv: 'timeoutCallbackTypeDiv',
         timeoutCallbackUnitDiv: 'timeoutCallbackUnitDiv',
         bangumiEnableLabel: 'bangumiEnableLabel',
+        bgmSearchFallbackLabel: 'bgmSearchFallbackLabel',
         bangumiSettingsDiv: 'bangumiSettingsDiv',
         bangumiTokenInput: 'bangumiTokenInput',
         bangumiTokenInputDiv: 'bangumiTokenInputDiv',
@@ -1384,6 +1390,72 @@
     }
 
     /**
+     * [降级] BGM 搜索兜底：主源（弹弹play）搜索失败/流控时，
+     * 用 Bangumi(bgm.tv) 搜索拿 subjectId，再用弹弹play新接口 /bangumi/bgmtv/{id}
+     * 获取番剧详情+分集，产出与 fetchSearchEpisodes 兼容的 anime 列表。
+     * @param {String} searchTitle 搜索标题
+     * @param {String} ddpPrefix   弹弹play 前缀（用于调 /bangumi/bgmtv，需签名走代理）
+     * @returns {Array} anime 列表（含 episodes），失败返回 []
+     */
+    async function fetchBgmSearchFallback(searchTitle, ddpPrefix) {
+        if (!searchTitle) return [];
+        try {
+            // 1. 调 Bangumi 新版搜索接口（POST /v0/search/subjects），type=2 表示动画
+            const searchUrl = bangumiApi.searchSubjects();
+            const searchBody = { keyword: searchTitle, filter: { type: [2] } };
+            const searchRes = await fetchJson(searchUrl, { method: 'POST', body: searchBody });
+            const subjects = (searchRes && Array.isArray(searchRes.data)) ? searchRes.data : [];
+            if (subjects.length === 0) {
+                logger.info(`[BGM兜底] Bangumi 搜索无结果: ${searchTitle}`);
+                return [];
+            }
+            logger.info(`[BGM兜底] Bangumi 搜索命中 ${subjects.length} 个，取前 3 个查弹弹play详情`);
+
+            // 2. 取前 3 个 subjectId，并发调弹弹play /bangumi/bgmtv/{id} 拿详情+分集
+            const TOP_N = Math.min(3, subjects.length);
+            const detailPromises = [];
+            for (let i = 0; i < TOP_N; i++) {
+                const subj = subjects[i];
+                if (!subj || !subj.id) continue;
+                const detailUrl = dandanplayApi.getBangumiByBgmId(subj.id);
+                detailPromises.push(
+                    fetchJson(detailUrl)
+                        .then(result => ({ subj, result }))
+                        .catch((error) => {
+                            logger.debug(`[BGM兜底] /bangumi/bgmtv/${subj.id} 查询失败: ${error.message}`);
+                            return { subj, result: null };
+                        })
+                );
+            }
+            const detailResults = await Promise.all(detailPromises);
+
+            // 3. 组装成与 fetchSearchEpisodes 一致的 anime 结构
+            const animes = [];
+            for (const { subj, result } of detailResults) {
+                if (!result) continue;
+                // 兼容返回格式：{ bangumi: {...} } 或直接 bangumi 对象
+                const bgm = result.bangumi || result;
+                const episodes = bgm.episodes || [];
+                if (!episodes.length) continue;
+                episodes.sort((a, b) => (parseInt(a.episodeId) || 0) - (parseInt(b.episodeId) || 0));
+                animes.push({
+                    animeId: bgm.animeId,
+                    animeTitle: bgm.animeTitle || subj.name_cn || subj.name || searchTitle,
+                    typeDescription: bgm.typeDescription || 'BGM兜底',
+                    episodes: episodes,
+                    seasons: bgm.seasons,
+                    imageUrl: bgm.imageUrl || (subj.images && subj.images.common) || '',
+                });
+            }
+            logger.info(`[BGM兜底] 成功组装 ${animes.length} 个番剧（含分集）`);
+            return animes;
+        } catch (error) {
+            logger.warn(`[BGM兜底] 执行失败: ${error.message || error}`);
+            return [];
+        }
+    }
+
+    /**
      * 应用搜索内容黑名单过滤
      * @param {Array} animes - 番剧列表
      * @param {boolean} filterEpisodes - 是否同时过滤分集
@@ -2052,7 +2124,13 @@
             return matchResult;
         } catch (error) {
             logger.warn(`[API请求] match 查询失败:`, error.message || error);
-            logger.warn(`[API请求] match 失败详情 - URL: ${url}, Payload:`, payload);
+            // [脱敏] 官方源走 Worker 中转时不打印代理 URL（避免暴露代理端点），仅保留 Payload；
+            // 自定义源保留 URL 便于调试
+            if (ddSign.isProxiedOfficial(url)) {
+                logger.warn(`[API请求] match 失败详情 - Payload:`, payload);
+            } else {
+                logger.warn(`[API请求] match 失败详情 - URL: ${url}, Payload:`, payload);
+            }
             return null; // 匹配失败时返回 null
         }
     }
@@ -5864,6 +5942,10 @@
                 </div>
                 <div is="emby-collapse" title="Bangumi 设置">
                     <div class="${classes.collapseContentNav}" style="padding-top: 0.5em !important;">
+                        <label id="${eleIds.bgmSearchFallbackLabel}" class="${classes.embyLabel}"></label>
+                        <div class="${classes.embyFieldDesc}" style="margin-bottom: 0.5em;">
+                            主源（弹弹play）搜索无结果时，用 Bangumi 搜索兜底（仅手动搜索页生效）
+                        </div>
                         <label id="${eleIds.bangumiEnableLabel}" class="${classes.embyLabel}"></label>
                         <div id="${eleIds.bangumiSettingsDiv}">
                             <div id="${eleIds.bangumiTokenInputDiv}" style="display: flex;" ></div>
@@ -6275,6 +6357,15 @@
     }
 
     function buildBangumiSetting(container) {
+        // BGM 搜索兜底开关（独立于令牌收藏功能，始终可用）
+        const bgmSearchFallbackLabel = getById(eleIds.bgmSearchFallbackLabel, container);
+        if (bgmSearchFallbackLabel) {
+            bgmSearchFallbackLabel.append(embyCheckbox(
+                { label: lsKeys.bgmSearchFallbackEnable.name }, lsGetItem(lsKeys.bgmSearchFallbackEnable.id), (checked) => {
+                    lsSetItem(lsKeys.bgmSearchFallbackEnable.id, checked);
+                }
+            ));
+        }
         const bangumiSettingsDiv = getById(eleIds.bangumiSettingsDiv, container);
         const bangumiEnable = lsGetItem(lsKeys.bangumiEnable.id);
         bangumiSettingsDiv.hidden = !bangumiEnable;
@@ -7731,6 +7822,23 @@
         }
 
         logger.info(`[手动匹配] 搜索完成，共找到 ${allAnimes.length} 个结果`);
+
+        // [降级] 主源搜索为空且开启 BGM 搜索兜底时，用 Bangumi 搜索 + 弹弹play新接口兜底
+        // 仅在手动搜索页生效（本函数即手动搜索入口）
+        if (allAnimes.length < 1 && lsGetItem(lsKeys.bgmSearchFallbackEnable.id)) {
+            danmakuRemarkEle.innerText = '主源无结果，正在尝试 BGM 搜索兜底...';
+            logger.info(`[手动匹配] 主源无结果，启用 BGM 搜索兜底: ${searchName}`);
+            const officialPrefix = corsProxy + 'https://api.dandanplay.net/api/v2';
+            const fallbackAnimes = await fetchBgmSearchFallback(searchName, officialPrefix);
+            if (fallbackAnimes.length > 0) {
+                fallbackAnimes.forEach(anime => {
+                    anime.apiPrefix = officialPrefix;
+                    anime.apiName = '弹弹play(BGM兜底)';
+                });
+                allAnimes.push(...fallbackAnimes);
+                logger.info(`[手动匹配] BGM 兜底补充 ${fallbackAnimes.length} 个结果`);
+            }
+        }
 
         spinnerEle && spinnerEle.classList.add('hide');
         if (allAnimes.length < 1) {

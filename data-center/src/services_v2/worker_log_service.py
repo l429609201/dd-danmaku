@@ -54,6 +54,8 @@ class WorkerLogService:
                     path=data.get("path"),
                     status=data.get("responseStatus") or data.get("status"),
                     ua_type=data.get("userAgent") or data.get("ua_type"),
+                    # 客户端用户标识（X-Ddd-User）
+                    client_user_id=data.get("userId"),
                     cache_source=data.get("cacheSource"),
                     upstream_status=data.get("upstreamStatus"),
                     key_id=data.get("keyId"),
@@ -75,6 +77,7 @@ class WorkerLogService:
                     "client_ip": row.client_ip, "method": row.method,
                     "path": row.path, "status": row.status,
                     "ua_type": row.ua_type,
+                    "client_user_id": row.client_user_id,
                     "cache_source": row.cache_source,
                     "upstream_status": row.upstream_status,
                     "key_id": row.key_id,

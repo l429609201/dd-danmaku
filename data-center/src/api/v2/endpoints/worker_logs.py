@@ -29,10 +29,11 @@ def list_logs(
     keyword: Optional[str] = None,
     ip: Optional[str] = None,
     ua: Optional[str] = None,
+    user_id: Optional[str] = None,
     page: int = 1, page_size: int = Query(50, le=200),
     _: LocalUser = Depends(get_current_user),
 ):
-    """Worker 请求日志分页查询（支持按 path 关键词、client_ip、X-UA 过滤）"""
+    """Worker 请求日志分页查询（支持按 path 关键词、client_ip、X-UA、用户ID 过滤）"""
     db = get_db_sync()
     try:
         q = db.query(WorkerRequestLog)
@@ -48,6 +49,9 @@ def list_logs(
         # 按 X-UA（客户端 X-User-Agent，存于 ua_type 列）模糊搜索
         if ua:
             q = q.filter(WorkerRequestLog.ua_type.like(f"%{ua}%"))
+        # 按客户端用户标识（X-Ddd-User）模糊搜索
+        if user_id:
+            q = q.filter(WorkerRequestLog.client_user_id.like(f"%{user_id}%"))
         total = q.count()
         rows = q.order_by(WorkerRequestLog.created_at.desc()) \
                 .offset((page - 1) * page_size).limit(page_size).all()
@@ -56,7 +60,8 @@ def list_logs(
             "method": r.method, "path": r.path, "status": r.status,
             "ua_type": r.ua_type, "level": r.level, "message": r.message,
             "cache_source": r.cache_source, "upstream_status": r.upstream_status,
-            "key_id": r.key_id, "duration_ms": r.duration_ms,
+            "key_id": r.key_id, "client_user_id": r.client_user_id,
+            "duration_ms": r.duration_ms,
             # 补齐请求/响应体与字节数，供前端展开行展示历史日志
             "response_bytes": r.response_bytes,
             "request_body": r.request_body, "response_body": r.response_body,
