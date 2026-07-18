@@ -1914,7 +1914,7 @@ async function handleRequest(request, env, ctx) {
 
     const accessCheck = ipWhitelisted
         ? { allowed: true, reason: 'ip_whitelisted' }
-        : await checkAccess(request, tUrlObj.pathname);
+        : await checkAccess(request, tUrlObj.pathname, reqStartMs);
     if (!accessCheck.allowed) {
         const userAgent = request.headers.get('X-User-Agent') || '';
         const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
@@ -2725,7 +2725,8 @@ async function verifyClientSignature(request, apiPath, signGroupId) {
 }
 
 // 新增：访问控制检查函数
-async function checkAccess(request, targetApiPath) {
+// reqStartMs 由 handleRequest 传入（用于日志耗时统计），缺省则以当前时间兜底
+async function checkAccess(request, targetApiPath, reqStartMs = Date.now()) {
     // 内部函数：识别User-Agent类型
     function identifyUserAgent(userAgent, ACCESS_CONFIG) {
         for (const [key, config] of Object.entries(ACCESS_CONFIG.userAgentLimits)) {
