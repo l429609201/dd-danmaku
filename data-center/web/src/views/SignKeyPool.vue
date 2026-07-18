@@ -2,15 +2,13 @@
   <div class="panel" style="margin-top: 20px;">
     <div class="panel-head">
       <h2 class="panel-title">签名密钥池</h2>
-      <div class="panel-actions">
-        <button class="btn" @click="openCreate">新增密钥组</button>
-      </div>
+      <button class="btn btn-primary" @click="openCreate">新增密钥组</button>
     </div>
     <p class="hint">
       客户端请求签名验证密钥。每组 secret 需与<strong>内置该密钥、独立编译的 ede.js/sign.wasm</strong> 一致。
       在「UA 限流规则」编辑里为某个 UA 选择本组，即对该 UA 启用签名验证。
     </p>
-    <p v-if="msg" class="msg">{{ msg }}</p>
+    <div v-if="msg" class="tip">{{ msg }}</div>
 
     <table class="data-table">
       <thead><tr>
@@ -143,3 +141,36 @@ export default {
   }
 }
 </script>
+
+<style scoped>
+.panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 24px; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.panel-title { font-size: 16px; color: #333; }
+.hint { color: #666; font-size: 12px; margin-bottom: 10px; }
+.hint code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+.tip { background: #e6f4ff; border: 1px solid #91caff; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: #0958d9; font-size: 13px; }
+.muted { color: #999; font-size: 12px; }
+.data-table { width: 100%; border-collapse: collapse; }
+.data-table th, .data-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+.data-table th { color: #888; font-weight: 500; }
+.key { font-family: monospace; font-size: 12px; }
+.actions { display: flex; gap: 8px; }
+.link { background: none; border: none; color: #1677ff; cursor: pointer; font-size: 13px; }
+.link.danger { color: #cf1322; }
+.empty { text-align: center; color: #999; padding: 20px; }
+.btn { padding: 8px 16px; border: 1px solid #d9d9d9; background: #fff; border-radius: 6px; cursor: pointer; }
+.btn:disabled { opacity: .6; cursor: not-allowed; }
+.btn-primary { background: #1677ff; color: #fff; border-color: #1677ff; }
+.input { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; }
+.input.full { width: 100%; box-sizing: border-box; }
+.chk { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #555; margin-bottom: 14px; }
+.token-row { display: flex; gap: 8px; align-items: center; }
+.token-row .input.full { flex: 1; }
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modal { width: 460px; max-width: 92vw; background: #fff; border-radius: 12px; padding: 20px; }
+.modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.modal-close { border: none; background: none; font-size: 22px; color: #999; cursor: pointer; }
+.form-item { margin-bottom: 14px; }
+.form-item label { display: block; margin-bottom: 6px; color: #555; font-size: 13px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+</style>

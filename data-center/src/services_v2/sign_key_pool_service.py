@@ -65,6 +65,14 @@ class SignKeyPoolService:
             db.commit()
             db.refresh(row)
             return self._brief(row)
+        except ValueError:
+            db.rollback()
+            raise
+        except Exception as e:
+            db.rollback()
+            # DB 层错误（如表结构不一致/僵尸 NOT NULL 列）打明确日志，便于排查 500
+            logger.error(f"❌ 签名密钥组创建失败(DB): {e}")
+            raise
         finally:
             db.close()
 

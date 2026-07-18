@@ -107,11 +107,45 @@ def _patch_drop_unused_indexes(engine: Engine) -> bool:
     return changed
 
 
+def _patch_drop_sign_zombie_columns(engine: Engine) -> bool:
+    """删除签名重构遗留的僵尸 NOT NULL 列，避免新版插入违反旧约束导致 500。
+
+    - sign_key_pool.auth_ua_keys：旧「签名组绑UA」设计的列，NOT NULL，新版不再写入
+    - ua_limit_rules.sign_required：旧布尔开关，已被 sign_group_id 取代
+    仅当列存在时才 DROP（幂等）；DROP COLUMN 需 SQLite 3.35+ / MySQL / PG 均支持。
+    """
+    inspector = inspect(engine)
+    targets = {
+        "sign_key_pool": "auth_ua_keys",
+        "ua_limit_rules": "sign_required",
+    }
+    changed = False
+    tables = set(inspector.get_table_names())
+    for table, col in targets.items():
+        if table not in tables:
+            continue
+        cols = {c["name"] for c in inspector.get_columns(table)}
+        if col not in cols:
+            continue
+        try:
+            with engine.begin() as conn:
+                if engine.dialect.name == "mysql":
+                    conn.exec_driver_sql(f"ALTER TABLE `{table}` DROP COLUMN `{col}`")
+                else:
+                    conn.exec_driver_sql(f'ALTER TABLE "{table}" DROP COLUMN "{col}"')
+            logger.info(f"🗑️ 已删除签名僵尸列 {table}.{col}")
+            changed = True
+        except Exception as e:
+            logger.warning(f"⚠️ 删除僵尸列 {table}.{col} 失败（跳过，不影响启动）: {e}")
+    return changed
+
+
 # ============ 补丁注册表 ============
 # 按顺序执行；新增补丁在此登记即生效。
 _PATCHES: List[Callable[[Engine], bool]] = [
     _patch_example_noop,
     _patch_drop_unused_indexes,
+    _patch_drop_sign_zombie_columns,
 ]
 
 
