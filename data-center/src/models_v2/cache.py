@@ -54,6 +54,9 @@ class ApiResponseCache(Base, TimestampMixin):
     hit_count = Column(Integer, default=0, nullable=False)
     stale_hit_count = Column(Integer, default=0, nullable=False)
     upstream_429_count = Column(Integer, default=0, nullable=False)
+    # 空结果负缓存标记：True 表示上游真实返回空（search animes 为空，非 429/失败），
+    # 用于挡重复无效搜索。管理页单独分页展示，可配独立 TTL。
+    is_empty = Column(Boolean, default=False, index=True, nullable=False)
 
 
 class ApiCacheAccessLog(Base):

@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     # 缓存策略默认值
     CACHE_REFRESH_INTERVAL_SECONDS: int = 6 * 60 * 60      # 6 小时
     CACHE_STALE_MAX_AGE_SECONDS: int = 30 * 24 * 60 * 60   # 30 天
+    # 空结果负缓存：搜索真实返回空（非 429/失败）时缓存以挡重复无效搜索
+    EMPTY_CACHE_TTL_SECONDS: int = 6 * 60 * 60             # 空结果默认存 6 小时
+    EMPTY_CACHE_THRESHOLD: int = 3                         # 同搜索词空结果累计 N 次后才转负缓存
     
     # Telegram机器人配置
     TG_BOT_TOKEN: Optional[str] = None

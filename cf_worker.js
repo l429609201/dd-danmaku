@@ -52,6 +52,19 @@ const ABUSE_CONFIG = {
 // 日志请求/响应体截断上限（字节）：超出部分追加省略提示，防止 log.report payload 过大
 const LOG_BODY_MAX_BYTES = 4096;
 
+// 空结果负缓存配置：仅 search 接口，同一归一化搜索键空结果累计达阈值后转本地端负缓存
+const EMPTY_CACHE_CONFIG = {
+    THRESHOLD: 3,              // 同搜索词空结果累计 N 次后才上报本地端负缓存（防偶发空误伤）
+    TTL_SECONDS: 6 * 60 * 60,  // 空结果负缓存 TTL（默认 6 小时；本地端也有全局默认，此值随上报传递）
+    COUNTER_WINDOW_MS: 60 * 60 * 1000, // 计数窗口 1 小时，超窗重置
+    MAX_COUNTERS: 20000,       // 计数器上限，防内存泄漏
+};
+
+// 归一化搜索关键词：小写 + 去首尾空格 + 内部连续空白合一，让大小写/空格差异命中同一键
+function normalizeSearchKeyword(kw) {
+    return String(kw || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 // R2 弹幕缓存配置
 const R2_CACHE_CONFIG = {
     TTL: 12 * 60 * 60 * 1000,              // 12小时过期
@@ -141,6 +154,8 @@ let memoryCache = {
     r2EstimatedBytes: 0,            // R2 已写入数据量估算（由 r2ScheduledCleanup 校准）
     // API响应缓存（用于搜索和番剧接口）
     apiCache: new Map(), // 格式: { "cache_key": { data: response, timestamp: Date.now() } }
+    // 空结果计数：同一归一化搜索键累计空结果次数，达阈值后转本地端负缓存
+    emptySearchCounter: new Map(), // 格式: { "normKey": { count, firstAt } }
     // OAuth token 验证缓存（避免每次请求都做 crypto 运算）
     oauthTokenCache: new Map(), // 格式: { "token_hash": { payload, expireAt } }
     lastControlConfigPull: 0,
@@ -481,6 +496,39 @@ function isCacheableResponseBody(apiPath, responseText) {
     }
     // 其他接口：只要不是失败响应即可缓存
     return true;
+}
+
+// 判断是否为「真实空搜索结果」：200、success 非 false、errorCode==0，但 animes 为空。
+// 仅 search/anime、search/episodes 适用；明确排除 429/失败响应。
+function isTrueEmptySearch(apiPath, responseText) {
+    if (!apiPath.startsWith('/api/v2/search/anime') && !apiPath.startsWith('/api/v2/search/episodes')) return false;
+    if (!responseText) return false;
+    let data;
+    try { data = JSON.parse(responseText); } catch (_) { return false; }
+    if (!data || typeof data !== 'object') return false;
+    if (data.success === false) return false;
+    if (typeof data.errorCode === 'number' && data.errorCode !== 0) return false;
+    return Array.isArray(data.animes) && data.animes.length === 0;
+}
+
+// 空结果计数：同一归一化键累计 +1，返回是否达阈值。窗口过期或超上限时重置/清理。
+function bumpEmptySearchCount(normKey) {
+    const now = Date.now();
+    const m = memoryCache.emptySearchCounter;
+    // 超上限：清理过期项，仍超则整体重置，防内存泄漏
+    if (m.size > EMPTY_CACHE_CONFIG.MAX_COUNTERS) {
+        for (const [k, v] of m.entries()) {
+            if (now - v.firstAt > EMPTY_CACHE_CONFIG.COUNTER_WINDOW_MS) m.delete(k);
+        }
+        if (m.size > EMPTY_CACHE_CONFIG.MAX_COUNTERS) m.clear();
+    }
+    let rec = m.get(normKey);
+    if (!rec || now - rec.firstAt > EMPTY_CACHE_CONFIG.COUNTER_WINDOW_MS) {
+        rec = { count: 0, firstAt: now };
+    }
+    rec.count++;
+    m.set(normKey, rec);
+    return rec.count >= EMPTY_CACHE_CONFIG.THRESHOLD;
 }
 
 // 构造标准化 cache key：METHOD:PATH?sorted_query（剔除 _t/timestamp）
@@ -2099,6 +2147,30 @@ async function handleRequest(request, env, ctx) {
             });
         }
 
+        // 空结果负缓存命中检查：仅 search 接口，用归一化搜索词键。
+        // 命中且未过期 → 直接返回当初的空响应，不打上游（挡重复无效搜索）。
+        if (env.CONTROL_HUB && request.method === 'GET'
+            && (apiPath.startsWith('/api/v2/search/anime') || apiPath.startsWith('/api/v2/search/episodes'))) {
+            const rawKw = tUrlObj.searchParams.get('anime') || tUrlObj.searchParams.get('keyword') || '';
+            const normKw = normalizeSearchKeyword(rawKw);
+            if (normKw) {
+                const emptyKey = `EMPTY:${apiPath}?anime=${encodeURIComponent(normKw)}`;
+                const neg = await controlHubRpc(env, 'cache.get', {
+                    cache_key: emptyKey, api_path: apiPath, method: request.method,
+                    client_ip: clientIP, worker_request_id: request.headers.get('cf-ray') || '',
+                }, 1500);
+                if (neg && neg.hit && neg.body) {
+                    console.log(`🕳️ [${clientIP}] 空结果负缓存命中，直接返回空: ${normKw}`);
+                    bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
+                    addMemoryLog('INFO', '空结果负缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: 200, cacheSource: 'LOCAL-EMPTY', durationMs: Date.now() - reqStartMs, responseBytes: neg.body ? neg.body.length : 0, responseBody: truncateBody(neg.body) });
+                    return new Response(neg.body, {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-Cache': 'HIT-EMPTY' },
+                    });
+                }
+            }
+        }
+
         // 内存未命中：先查本地端缓存，命中则直接返回，避免每次都打弹弹触发 429
         // match(POST) 用 fileName 专用键；其他 GET 用 query 键
         if (env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)) {
@@ -2357,7 +2429,37 @@ async function handleRequest(request, env, ctx) {
         if (isCacheable) {
             // 脏响应过滤：空结果/success:false/errorCode!=0 一律不缓存，避免污染
             if (!isCacheableResponseBody(apiPath, responseText)) {
-                console.log(`🧹 [${clientIP}] 响应无有效数据或为失败响应，跳过缓存: ${apiPath}`);
+                // 空结果负缓存：仅对「真实空搜索」（非 429/失败）做累计计数，
+                // 同一归一化搜索词达阈值后转本地端负缓存，挡重复无效搜索。
+                if (env.CONTROL_HUB && isTrueEmptySearch(apiPath, responseText)) {
+                    const rawKw = tUrlObj.searchParams.get('anime') || tUrlObj.searchParams.get('keyword') || '';
+                    const normKw = normalizeSearchKeyword(rawKw);
+                    if (normKw && bumpEmptySearchCount(`${apiPath}|${normKw}`)) {
+                        // 达阈值：上报本地端负缓存（键用归一化搜索词，跨大小写/空格聚合）
+                        const emptyKey = `EMPTY:${apiPath}?anime=${encodeURIComponent(normKw)}`;
+                        const emptyPayload = {
+                            cache_key: emptyKey,
+                            source: 'dandanplay',
+                            method: request.method,
+                            api_path: apiPath,
+                            client_ip: clientIP,
+                            query: { anime: normKw },
+                            status: 200,
+                            headers: { 'content-type': 'application/json' },
+                            body: responseText,
+                            is_empty: true,
+                            ttl: EMPTY_CACHE_CONFIG.TTL_SECONDS,
+                        };
+                        const p = controlHubRpc(env, 'cache.upsert', emptyPayload, 3000)
+                            .catch(e => console.log(`⚠️ [${clientIP}] 空结果负缓存上报失败: ${e.message}`));
+                        if (ctx && ctx.waitUntil) ctx.waitUntil(p);
+                        console.log(`🕳️ [${clientIP}] 空结果达阈值，已转负缓存: ${normKw}`);
+                    } else {
+                        console.log(`🧹 [${clientIP}] 空搜索结果计数中，未达阈值: ${normKw || apiPath}`);
+                    }
+                } else {
+                    console.log(`🧹 [${clientIP}] 响应无有效数据或为失败响应，跳过缓存: ${apiPath}`);
+                }
             } else {
             // 内存缓存：搜索/番剧/匹配/分集（match 用 fileName 专用键）
             const cacheKey = memCacheKey;

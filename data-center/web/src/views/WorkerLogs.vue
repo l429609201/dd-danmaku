@@ -28,11 +28,11 @@
             <div v-if="row.request_body || row.response_body" class="body-expand">
               <div v-if="row.request_body" class="body-block">
                 <span class="body-label">请求体</span>
-                <pre class="body-pre">{{ renderBody(row.request_body) }}</pre>
+                <pre class="body-pre" :key="(prettyJson ? 'p' : 'r') + '-req'">{{ renderBody(row.request_body) }}</pre>
               </div>
               <div v-if="row.response_body" class="body-block">
                 <span class="body-label">响应体</span>
-                <pre class="body-pre">{{ renderBody(row.response_body) }}</pre>
+                <pre class="body-pre" :key="(prettyJson ? 'p' : 'r') + '-resp'">{{ renderBody(row.response_body) }}</pre>
               </div>
             </div>
             <div v-else class="body-empty">该条日志无请求/响应体（拦截类早退路径）</div>
@@ -159,6 +159,18 @@ export default {
       finally { loadingMore.value = false }
     }
 
+    // 客户端过滤：SSE 是后端无差别广播所有新日志，前端必须自己过滤，
+    // 语义与后端 like '%kw%' 对齐（大小写不敏感的包含匹配）。
+    const matchFilter = (item) => {
+      if (level.value && String(item.level || '').toUpperCase() !== level.value.toUpperCase()) return false
+      const inc = (val, kw) => String(val || '').toLowerCase().includes(kw.toLowerCase())
+      if (keyword.value && !inc(item.path, keyword.value)) return false
+      if (ipSearch.value && !inc(item.client_ip, ipSearch.value)) return false
+      if (uaSearch.value && !inc(item.ua_type, uaSearch.value)) return false
+      if (userIdSearch.value && !inc(item.client_user_id, userIdSearch.value)) return false
+      return true
+    }
+
     // fetch 流式读取 SSE（可携带 Authorization 头，EventSource 不支持自定义头）
     const startStream = async () => {
       abortCtrl = new AbortController()
@@ -180,6 +192,8 @@ export default {
             if (!line) continue
             try {
               const item = JSON.parse(line.slice(6))
+              // 客户端过滤：不匹配当前搜索条件的实时日志直接跳过，与历史查询保持一致
+              if (!matchFilter(item)) continue
               // SSE 推送无数据库 id，客户端生成唯一 _uid 避免 el-table 全部行共用同一 key
               item._uid = `sse-${Date.now()}-${Math.random().toString(36).slice(2)}`
               item._live = true

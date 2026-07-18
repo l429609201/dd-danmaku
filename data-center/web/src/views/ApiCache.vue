@@ -34,6 +34,11 @@
       </el-col>
     </el-row>
 
+    <el-tabs v-model="activeTab" @tab-change="onTab">
+      <el-tab-pane label="全部缓存" name="all" />
+      <el-tab-pane label="空结果负缓存" name="empty" />
+    </el-tabs>
+
     <div class="app-toolbar">
       <el-input v-model="keyword" placeholder="搜索 cache_key" clearable style="width: 200px" @keyup.enter="reload" />
       <el-input v-model="apiPath" placeholder="api_path 过滤" clearable style="width: 200px" @keyup.enter="reload" />
@@ -74,10 +79,17 @@
             <span v-else>—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="160" fixed="right">
+        <el-table-column v-if="activeTab === 'empty'" label="空结果" width="70">
+          <template #default="{ row }">
+            <el-tag v-if="row.is_empty" type="info" size="small">空</el-tag>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="210" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="viewDetail(row.id)">详情</el-button>
-            <el-button link type="primary" size="small" @click="markRefresh(row.id)">标记刷新</el-button>
+            <el-button v-if="activeTab === 'empty'" link type="primary" size="small" @click="setTtl(row.id)">设TTL</el-button>
+            <el-button v-else link type="primary" size="small" @click="markRefresh(row.id)">标记刷新</el-button>
             <el-button link type="danger" size="small" @click="del(row.id)">删除</el-button>
           </template>
         </el-table-column>
@@ -125,6 +137,7 @@ export default {
     const apiPath = ref('')
     const clientIp = ref('')
     const onlyPending = ref(false)
+    const activeTab = ref('all')   // all=全部缓存 / empty=空结果负缓存
     const stats = ref(null)
     const loading = ref(false)
     const drawerVisible = ref(false)
@@ -143,6 +156,8 @@ export default {
         if (apiPath.value) q.set('api_path', apiPath.value)
         if (clientIp.value) q.set('client_ip', clientIp.value)
         if (onlyPending.value) q.set('refresh_pending', 'true')
+        // 空结果 tab：仅看 is_empty=true；全部 tab：不传该过滤
+        if (activeTab.value === 'empty') q.set('is_empty', 'true')
         const res = await apiV2(`/cache/responses?${q.toString()}`)
         items.value = res.items || []
         total.value = res.total || 0
@@ -185,8 +200,20 @@ export default {
       if (route.query.cache_key) keyword.value = route.query.cache_key
       load(); loadStats()
     })
-    return { items, total, page, pageSize, keyword, apiPath, clientIp, onlyPending, stats, loading,
-      drawerVisible, detail, Search, reload, onPage, viewDetail, markRefresh, del,
+    // 设置空结果缓存 TTL（从当前时间起算的秒数）
+    const setTtl = async (id) => {
+      try {
+        const { value } = await ElMessageBox.prompt('设置过期时间（秒），从现在起算', '调整 TTL', {
+          inputValue: '21600', inputPattern: /^\d+$/, inputErrorMessage: '请输入正整数秒',
+        })
+        await apiV2(`/cache/responses/${id}/ttl`, { method: 'POST', body: { ttl_seconds: Number(value) } })
+        ElMessage.success('已更新过期时间'); load()
+      } catch (e) { if (e !== 'cancel') ElMessage.error(e.message || '操作失败') }
+    }
+    const onTab = () => { page.value = 1; load() }
+
+    return { items, total, page, pageSize, keyword, apiPath, clientIp, onlyPending, activeTab, stats, loading,
+      drawerVisible, detail, Search, reload, onPage, onTab, viewDetail, markRefresh, del, setTtl,
       fmt, fmtSize, isExpired, prettyBody }
   }
 }
