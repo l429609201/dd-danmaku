@@ -50,7 +50,13 @@ class RuntimeConfigService:
                     cfg["maxRequestsPerDay"] = u.max_requests_per_day
                 if u.description:
                     cfg["description"] = u.description
-                # 签名校验开关：仅在开启时下发 signRequired=true，Worker 默认不校验（灰度安全）
+                # 签名校验：下发绑定的签名组 signGroupId，Worker 据此决定是否强制验签。
+                # 注意：Worker(cf_worker.js) 判断的是 uaConfig.signGroupId，
+                #       此前仅下发已废弃的 signRequired，导致验签分支永不进入。
+                _sign_grp = getattr(u, "sign_group_id", None)
+                if _sign_grp:
+                    cfg["signGroupId"] = _sign_grp
+                # 兼容保留：旧字段 signRequired（Worker 已不读，仅用于向后可观测）
                 if getattr(u, "sign_required", False):
                     cfg["signRequired"] = True
                 ua_configs[u.ua_key] = cfg
