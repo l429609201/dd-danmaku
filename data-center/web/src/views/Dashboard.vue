@@ -1,816 +1,542 @@
 <template>
-  <div class="dashboard">
-    <!-- 页面头部 -->
-    <div class="page-header">
-      <div class="header-content">
-        <h1>🎯 DanDanPlay API 数据交互中心</h1>
-        <p>系统运行状态总览</p>
-      </div>
-      <div class="header-actions">
-        <button @click="refreshData" class="btn btn-primary" :disabled="loading">
-          {{ loading ? '刷新中...' : '🔄 刷新数据' }}
-        </button>
-      </div>
-    </div>
+  <div class="page">
+    <h1 class="page-title">概览</h1>
 
-    <!-- 统计卡片 -->
-    <div class="stats-grid">
-      <div class="stat-card">
-        <div class="stat-icon">📊</div>
-        <div class="stat-content">
-          <div class="stat-value">{{ formatNumber(stats.totalRequests) }}</div>
-          <div class="stat-label">总请求数</div>
-          <div class="stat-trend" v-if="stats.todayRequests">
-            今日: {{ formatNumber(stats.todayRequests) }}
-          </div>
-        </div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon">🤖</div>
-        <div class="stat-content">
-          <div class="stat-value">{{ stats.activeWorkers }}/{{ stats.totalWorkers }}</div>
-          <div class="stat-label">Worker状态</div>
-          <div class="stat-trend">
-            {{ stats.activeWorkers > 0 ? '在线' : '离线' }}
-          </div>
-        </div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon">🚫</div>
-        <div class="stat-content">
-          <div class="stat-value">{{ formatNumber(stats.blockedIPs) }}</div>
-          <div class="stat-label">封禁IP</div>
-          <div class="stat-trend" v-if="stats.todayBlocked">
-            今日: {{ formatNumber(stats.todayBlocked) }}
-          </div>
-        </div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon">✅</div>
-        <div class="stat-content">
-          <div class="stat-value">{{ stats.successRate }}%</div>
-          <div class="stat-label">成功率</div>
-          <div class="stat-trend">
-            {{ stats.successRate >= 95 ? '优秀' : stats.successRate >= 80 ? '良好' : '需改进' }}
-          </div>
-        </div>
-      </div>
-    </div>
+    <div v-if="loading" class="loading">加载中...</div>
+    <div v-else-if="error" class="error-box">{{ error }}</div>
 
-    <!-- 图表区域 -->
-    <div class="charts-grid">
-      <!-- 请求趋势图 -->
-      <div class="chart-card full-width">
-        <div class="card-header">
-          <h3>📈 请求趋势</h3>
-          <span class="card-subtitle">最近24小时</span>
+    <template v-else>
+      <!-- Worker 状态卡片 -->
+      <div class="cards">
+        <div class="card" :class="data.worker.connected ? 'card-ok' : 'card-warn'">
+          <div class="card-label">Worker 连接</div>
+          <div class="card-value">{{ data.worker.connected ? '在线' : '离线' }}</div>
+          <div class="card-sub">节点: {{ data.worker.node_id || '—' }}</div>
+          <div class="card-sub">延迟: {{ data.worker.latency_ms }} ms</div>
         </div>
-        <div class="card-body">
-          <div ref="requestTrendChart" class="chart-container"></div>
+        <div class="card" @click="goto('/cache')">
+          <div class="card-label">缓存总数</div>
+          <div class="card-value">{{ data.totals.cache_count }}</div>
+        </div>
+        <div class="card" @click="goto('/episodes')">
+          <div class="card-label">集数链接</div>
+          <div class="card-value">{{ data.totals.episode_links }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">待刷新任务</div>
+          <div class="card-value">{{ data.totals.refresh_pending }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">今日缓存命中</div>
+          <div class="card-value">{{ data.today.cache_hits }}</div>
+          <div class="card-sub">429 兜底 {{ data.today.fallback_hits }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">今日 429 兜底</div>
+          <div class="card-value">{{ data.today.fallback_hits }}</div>
+          <div class="card-sub">缓存命中 {{ data.today.cache_hits }}</div>
+        </div>
+        <div class="card card-accent" @click="goto('/key-pool')">
+          <div class="card-label">密钥池</div>
+          <div class="card-value">{{ insightCards ? insightCards.keyTotal : '—' }}</div>
+          <div class="card-sub">限流中 {{ insightCards ? insightCards.keyLimited : 0 }} 项</div>
         </div>
       </div>
 
-      <!-- Worker状态 -->
-      <div class="chart-card">
-        <div class="card-header">
-          <h3>🔄 Worker状态</h3>
+      <!-- 本地端系统资源（CPU / 内存实时占用） -->
+      <h2 class="section-title">本地端系统资源</h2>
+      <div class="cards" v-if="sys && sys.available">
+        <div class="card" :class="sys.cpu.system_percent > 85 ? 'card-warn' : 'card-accent'">
+          <div class="card-label">系统 CPU</div>
+          <div class="card-value">{{ sys.cpu.system_percent }}%</div>
+          <div class="card-sub">{{ sys.cpu.cores }} 核</div>
         </div>
-        <div class="card-body">
-          <div ref="workerStatusChart" class="chart-container"></div>
+        <div class="card" :class="sys.cpu.process_percent > 60 ? 'card-warn' : ''">
+          <div class="card-label">本进程 CPU</div>
+          <div class="card-value">{{ sys.cpu.process_percent }}%</div>
+          <div class="card-sub">整机占比（已按核数归一）</div>
+        </div>
+        <div class="card" :class="sys.memory.system_percent > 90 ? 'card-warn' : 'card-accent'">
+          <div class="card-label">系统内存</div>
+          <div class="card-value">{{ sys.memory.system_percent }}%</div>
+          <div class="card-sub">{{ fmtBytes(sys.memory.system_used) }} / {{ fmtBytes(sys.memory.system_total) }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">本进程内存</div>
+          <div class="card-value">{{ fmtBytes(sys.memory.process_rss) }}</div>
+          <div class="card-sub">占系统 {{ sys.memory.process_percent }}%</div>
+        </div>
+        <div class="card" v-if="sys.cpu.load1 !== null && sys.cpu.load1 !== undefined">
+          <div class="card-label">系统负载</div>
+          <div class="card-value">{{ sys.cpu.load1 }}</div>
+          <div class="card-sub">5分钟 {{ sys.cpu.load5 }} / 15分钟 {{ sys.cpu.load15 }}</div>
+        </div>
+        <div class="card" v-if="sys.process" :class="loopLagClass">
+          <div class="card-label">事件循环延迟</div>
+          <div class="card-value">{{ sys.eventloop ? sys.eventloop.loop_lag_ms : '—' }} ms</div>
+          <div class="card-sub">运行任务 {{ sys.eventloop ? sys.eventloop.running_tasks : '—' }} / 线程 {{ sys.process.threads }}</div>
+        </div>
+        <div class="card" v-if="sys.db_pool && sys.db_pool.checkedout !== undefined" :class="poolClass">
+          <div class="card-label">DB 连接池</div>
+          <div class="card-value">{{ sys.db_pool.checkedout }}/{{ (sys.db_pool.size || 0) + (sys.db_pool.overflow || 0) }}</div>
+          <div class="card-sub">在用 {{ sys.db_pool.checkedout }} / 空闲 {{ sys.db_pool.checkedin }}</div>
+        </div>
+        <div class="card" v-if="sys.queues" :class="queueClass">
+          <div class="card-label">削峰队列深度</div>
+          <div class="card-value">{{ sys.queues.entity_ingest.depth }}</div>
+          <div class="card-sub">日志缓冲 {{ sys.queues.access_log.depth }} / 丢弃 {{ sys.queues.entity_ingest.dropped }}</div>
+        </div>
+      </div>
+      <div class="cards" v-else-if="sys && !sys.available">
+        <div class="card"><div class="card-sub">系统资源采集不可用（psutil 缺失或异常）</div></div>
+      </div>
+
+
+      <!-- Worker 今日运行指标（CF 侧真实流量） -->
+      <h2 class="section-title">Worker 今日流量（CF 侧）</h2>
+      <div class="cards" v-if="wm">
+        <div class="card card-accent">
+          <div class="card-label">请求数</div>
+          <div class="card-value">{{ wm.total_requests }}</div>
+          <div class="card-sub">响应 {{ wm.total_responses }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">缓存命中率</div>
+          <div class="card-value">{{ wm.hit_rate }}%</div>
+          <div class="card-sub">命中 {{ wm.cache_hits }} / 回源 {{ wm.cache_miss }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">命中明细</div>
+          <div class="card-value">{{ wm.cache_hits }}</div>
+          <div class="card-sub">内存 {{ wm.mem_cache_hits }} / R2 {{ wm.r2_cache_hits }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">出/入流量</div>
+          <div class="card-value">{{ fmtBytes(wm.bytes_out) }}</div>
+          <div class="card-sub">入 {{ fmtBytes(wm.bytes_in) }}</div>
+        </div>
+        <div class="card" :class="wm.blocked_total > 0 ? 'card-warn' : ''">
+          <div class="card-label">拦截总数</div>
+          <div class="card-value">{{ wm.blocked_total }}</div>
+          <div class="card-sub">IP {{ wm.blocked_ip }} / UA {{ wm.blocked_ua }} / 封禁 {{ wm.blocked_abuse }}</div>
+        </div>
+        <div class="card" :class="wm.invalid_route > 0 ? 'card-warn' : ''">
+          <div class="card-label">非法路由</div>
+          <div class="card-value">{{ wm.invalid_route }}</div>
+          <div class="card-sub">上游 429: {{ wm.upstream_429 }}</div>
         </div>
       </div>
 
-      <!-- UA使用分布 -->
-      <div class="chart-card">
-        <div class="card-header">
-          <h3>📱 UA使用分布</h3>
+      <!-- Worker 近 7 天趋势图 -->
+      <div class="panel" style="margin-bottom: 24px;">
+        <h2 class="panel-title">近 7 天 Worker 流量趋势</h2>
+        <div v-show="trendHasData" ref="trendChart" class="chart"></div>
+        <div v-show="!trendHasData" class="empty">暂无趋势数据（需 Worker 连接并上报指标后生成）</div>
+      </div>
+
+      <!-- 分布图表：状态码 / 拦截 / 命中 -->
+      <div class="chart-grid">
+        <div class="panel">
+          <h2 class="panel-title">状态码分布（今日）</h2>
+          <div v-show="hasDist" ref="statusChart" class="chart chart-sm"></div>
+          <div v-show="!hasDist" class="empty">暂无数据</div>
         </div>
-        <div class="card-body">
-          <div ref="uaDistributionChart" class="chart-container"></div>
+        <div class="panel">
+          <h2 class="panel-title">拦截类型分布（今日）</h2>
+          <div v-show="hasBlocked" ref="blockChart" class="chart chart-sm"></div>
+          <div v-show="!hasBlocked" class="empty">今日无拦截</div>
+        </div>
+        <div class="panel">
+          <h2 class="panel-title">缓存命中构成（今日）</h2>
+          <div v-show="hasHit" ref="hitChart" class="chart chart-sm"></div>
+          <div v-show="!hasHit" class="empty">暂无命中数据</div>
         </div>
       </div>
 
-      <!-- IP封禁趋势 -->
-      <div class="chart-card full-width">
-        <div class="card-header">
-          <h3>🚫 IP封禁趋势</h3>
-          <span class="card-subtitle">最近7天</span>
+      <!-- 运维洞察 -->
+      <h2 class="section-title">运维洞察（近 24h）</h2>
+      <div class="chart-grid">
+        <div class="panel">
+          <h2 class="panel-title">各接口上游限流（近 24h）</h2>
+          <div v-show="has429" ref="api429Chart" class="chart chart-sm"></div>
+          <div v-show="!has429" class="empty">近 24h 无上游限流</div>
         </div>
-        <div class="card-body">
-          <div ref="ipBlockChart" class="chart-container"></div>
+        <div class="panel">
+          <h2 class="panel-title">UA 来源 Top（近 24h）</h2>
+          <div v-show="hasUaTop" ref="uaTopChart" class="chart chart-sm"></div>
+          <div v-show="!hasUaTop" class="empty">暂无 UA 数据</div>
+        </div>
+        <div class="panel">
+          <h2 class="panel-title">缓存来源构成（近 24h）</h2>
+          <div v-show="hasCacheSrc" ref="cacheSrcChart" class="chart chart-sm"></div>
+          <div v-show="!hasCacheSrc" class="empty">暂无来源数据</div>
         </div>
       </div>
-    </div>
 
-    <!-- 加载提示 -->
-    <div v-if="loading" class="loading-overlay">
-      <div class="loading-spinner"></div>
-      <p>加载数据中...</p>
-    </div>
+      <!-- 请求来源地图 -->
+      <div class="panel" style="margin: 24px 0;">
+        <h2 class="panel-title">请求来源分布
+          <span class="map-sub" v-if="geo && geo.available">已解析 {{ geo.resolved }} / {{ geo.total_ips }} 个 IP</span>
+        </h2>
+        <div v-show="geoAvailable" ref="mapChart" class="chart chart-map"></div>
+        <div v-show="!geoAvailable" class="empty">
+          未配置 IP 地理库。请下载 GeoLite2-City.mmdb 放到 /app/config/ 后重启
+        </div>
+      </div>
+
+      <!-- 最近错误 -->
+      <div class="panel">
+        <h2 class="panel-title">最近错误事件</h2>
+        <table class="data-table" v-if="data.recent_errors.length">
+          <thead><tr><th>事件</th><th>消息</th><th>时间</th></tr></thead>
+          <tbody>
+            <tr v-for="(e, i) in data.recent_errors" :key="i">
+              <td>{{ e.event }}</td>
+              <td>{{ e.message }}</td>
+              <td>{{ fmt(e.created_at) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty">暂无错误事件</div>
+      </div>
+    </template>
   </div>
 </template>
 
 <script>
-import { ref, onMounted, onUnmounted } from 'vue'
-import { authFetch } from '../utils/api.js'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
+import { apiV2 } from '../utils/api.js'
 
 export default {
   name: 'Dashboard',
   setup() {
-    const loading = ref(false)
-    const stats = ref({
-      totalRequests: 0,
-      todayRequests: 0,
-      activeWorkers: 0,
-      totalWorkers: 0,
-      blockedIPs: 0,
-      todayBlocked: 0,
-      successRate: 0
+    const router = useRouter()
+    const loading = ref(true)
+    const error = ref('')
+    const data = ref(null)
+    const geo = ref(null)
+    // 图表 DOM 引用
+    const trendChart = ref(null)
+    const statusChart = ref(null)
+    const blockChart = ref(null)
+    const hitChart = ref(null)
+    const mapChart = ref(null)
+    // 运维洞察图表引用
+    const api429Chart = ref(null)
+    const uaTopChart = ref(null)
+    const cacheSrcChart = ref(null)
+    // 图表实例（统一管理便于 resize/dispose）
+    const charts = {}
+    // 数据有无标志（控制空态显示）
+    const trendHasData = ref(false)
+    const hasDist = ref(false)
+    const hasBlocked = ref(false)
+    const hasHit = ref(false)
+    const geoAvailable = ref(false)
+    // 运维洞察状态
+    const has429 = ref(false)
+    const hasUaTop = ref(false)
+    const hasCacheSrc = ref(false)
+    const insightCards = ref(null)
+    const cs = ref(null)  // 弹幕存储统计
+    const sys = ref(null)  // 本地端系统资源（CPU/内存）
+    let sysTimer = null    // 系统资源轮询定时器
+
+    const wm = computed(() => (data.value ? data.value.worker_metrics_today : null))
+
+    // 运行健康度告警色：超阈值标黄，便于肉眼发现瓶颈
+    const loopLagClass = computed(() => {
+      const lag = sys.value && sys.value.eventloop ? sys.value.eventloop.loop_lag_ms : 0
+      return lag > 100 ? 'card-warn' : ''  // >100ms 说明事件循环被阻塞
+    })
+    const poolClass = computed(() => {
+      const p = sys.value && sys.value.db_pool
+      if (!p || p.checkedout === undefined) return ''
+      const cap = (p.size || 0) + (p.overflow || 0)
+      return cap > 0 && p.checkedout / cap > 0.8 ? 'card-warn' : ''  // 连接池 >80%
+    })
+    const queueClass = computed(() => {
+      const q = sys.value && sys.value.queues
+      if (!q) return ''
+      const d = q.entity_ingest.depth + q.access_log.depth
+      return d > 3000 ? 'card-warn' : ''  // 队列积压
     })
 
-    const requestTrendChart = ref(null)
-    const workerStatusChart = ref(null)
-    const ipBlockChart = ref(null)
-    const uaDistributionChart = ref(null)
-
-    let requestTrendInstance = null
-    let workerStatusInstance = null
-    let ipBlockInstance = null
-    let uaDistributionInstance = null
-    let refreshTimer = null
-
-    // 格式化数字
-    const formatNumber = (num) => {
-      if (num >= 1000000) {
-        return (num / 1000000).toFixed(1) + 'M'
-      } else if (num >= 1000) {
-        return (num / 1000).toFixed(1) + 'K'
-      }
-      return num.toString()
-    }
-
-    // 加载统计数据（默认从数据库获取）
-    const loadStats = async () => {
-      try {
-        const response = await authFetch('/api/stats/summary')
-        if (response.ok) {
-          const data = await response.json()
-          stats.value = {
-            totalRequests: data.totalRequests || 0,
-            todayRequests: data.todayRequests || 0,
-            activeWorkers: data.onlineWorkers || 0,
-            totalWorkers: data.totalWorkers || 0,
-            blockedIPs: data.blockedIPs || 0,
-            todayBlocked: data.todayBlocked || 0,
-            successRate: data.successRate || 0
-          }
-        }
-      } catch (error) {
-        console.error('加载统计数据失败:', error)
-      }
-    }
-
-    // 加载Worker实时数据
-    const loadRealtimeStats = async () => {
-      try {
-        const response = await authFetch('/api/web-config/worker/realtime-stats')
-        if (response.ok) {
-          const data = await response.json()
-          if (data.success && data.stats) {
-            const workerStats = data.stats
-            stats.value = {
-              totalRequests: workerStats.requests_total || 0,
-              todayRequests: workerStats.requests_total || 0,
-              activeWorkers: 1,
-              totalWorkers: 1,
-              blockedIPs: workerStats.rate_limit_stats?.blocked_ips_count || 0,
-              todayBlocked: workerStats.rate_limit_stats?.blocked_ips_count || 0,
-              successRate: 100
-            }
-          }
-        }
-      } catch (error) {
-        console.warn('获取Worker实时数据失败:', error)
-      }
-    }
-
-    // 初始化请求趋势图
-    const initRequestTrendChart = () => {
-      if (!requestTrendChart.value) return
-
-      requestTrendInstance = echarts.init(requestTrendChart.value)
-      
-      const option = {
-        tooltip: {
-          trigger: 'axis'
-        },
-        grid: {
-          left: '3%',
-          right: '4%',
-          bottom: '3%',
-          containLabel: true
-        },
-        xAxis: {
-          type: 'category',
-          boundaryGap: false,
-          data: []
-        },
-        yAxis: {
-          type: 'value'
-        },
-        series: [
-          {
-            name: '请求数',
-            type: 'line',
-            smooth: true,
-            data: [],
-            areaStyle: {
-              color: {
-                type: 'linear',
-                x: 0,
-                y: 0,
-                x2: 0,
-                y2: 1,
-                colorStops: [{
-                  offset: 0, color: 'rgba(58, 77, 233, 0.3)'
-                }, {
-                  offset: 1, color: 'rgba(58, 77, 233, 0.05)'
-                }]
-              }
-            },
-            lineStyle: {
-              color: '#3a4de9'
-            },
-            itemStyle: {
-              color: '#3a4de9'
-            }
-          }
-        ]
-      }
-
-      requestTrendInstance.setOption(option)
-    }
-
-    // 初始化Worker状态图
-    const initWorkerStatusChart = () => {
-      if (!workerStatusChart.value) return
-
-      workerStatusInstance = echarts.init(workerStatusChart.value)
-
-      const option = {
-        tooltip: {
-          trigger: 'item',
-          formatter: '{b}: {c} ({d}%)'
-        },
-        legend: {
-          orient: 'vertical',
-          left: 'left'
-        },
-        series: [
-          {
-            name: 'Worker状态',
-            type: 'pie',
-            radius: ['40%', '70%'],
-            avoidLabelOverlap: false,
-            itemStyle: {
-              borderRadius: 10,
-              borderColor: '#fff',
-              borderWidth: 2
-            },
-            label: {
-              show: false,
-              position: 'center'
-            },
-            emphasis: {
-              label: {
-                show: true,
-                fontSize: 20,
-                fontWeight: 'bold'
-              }
-            },
-            labelLine: {
-              show: false
-            },
-            data: [
-              { value: stats.value.activeWorkers, name: '在线', itemStyle: { color: '#52c41a' } },
-              { value: Math.max(0, stats.value.totalWorkers - stats.value.activeWorkers), name: '离线', itemStyle: { color: '#ff4d4f' } }
-            ]
-          }
-        ]
-      }
-
-      workerStatusInstance.setOption(option)
-    }
-
-    // 初始化UA使用分布图
-    const initUADistributionChart = () => {
-      if (!uaDistributionChart.value) return
-
-      uaDistributionInstance = echarts.init(uaDistributionChart.value)
-
-      const option = {
-        tooltip: {
-          trigger: 'item',
-          formatter: '{b}: {c} ({d}%)'
-        },
-        legend: {
-          orient: 'vertical',
-          left: 'left'
-        },
-        series: [
-          {
-            name: 'UA类型',
-            type: 'pie',
-            radius: '60%',
-            data: [],  // 初始为空，由loadUADistributionData动态加载
-            emphasis: {
-              itemStyle: {
-                shadowBlur: 10,
-                shadowOffsetX: 0,
-                shadowColor: 'rgba(0, 0, 0, 0.5)'
-              }
-            }
-          }
-        ]
-      }
-
-      uaDistributionInstance.setOption(option)
-    }
-
-    // 初始化IP封禁趋势图
-    const initIPBlockChart = () => {
-      if (!ipBlockChart.value) return
-
-      ipBlockInstance = echarts.init(ipBlockChart.value)
-
-      const option = {
-        tooltip: {
-          trigger: 'axis',
-          axisPointer: {
-            type: 'shadow'
-          }
-        },
-        grid: {
-          left: '3%',
-          right: '4%',
-          bottom: '3%',
-          containLabel: true
-        },
-        xAxis: {
-          type: 'category',
-          data: []
-        },
-        yAxis: {
-          type: 'value'
-        },
-        series: [
-          {
-            name: '封禁IP数',
-            type: 'bar',
-            data: [],
-            itemStyle: {
-              color: {
-                type: 'linear',
-                x: 0,
-                y: 0,
-                x2: 0,
-                y2: 1,
-                colorStops: [{
-                  offset: 0, color: '#ff6b6b'
-                }, {
-                  offset: 1, color: '#ee5a52'
-                }]
-              }
-            }
-          }
-        ]
-      }
-
-      ipBlockInstance.setOption(option)
-    }
-
-    // 刷新数据（从Worker获取并整合到数据库）
-    const refreshData = async () => {
+    const load = async () => {
       loading.value = true
+      error.value = ''
       try {
-        // 1. 从Worker获取实时数据
-        const realtimeResponse = await authFetch('/api/web-config/worker/realtime-stats')
-        if (realtimeResponse.ok) {
-          const realtimeData = await realtimeResponse.json()
-
-          if (realtimeData.success && realtimeData.stats) {
-            // 2. 将Worker数据整合到数据库
-            // 调用后端API将Worker数据保存到数据库
-            const syncResponse = await authFetch('/api/stats/sync-worker-data', {
-              method: 'POST',
-              body: JSON.stringify({
-                worker_id: 'main-worker',
-                stats: realtimeData.stats
-              })
-            })
-
-            if (syncResponse.ok) {
-              console.log('Worker数据已同步到数据库')
-            }
-          }
-        }
-
-        // 3. 重新从数据库加载数据
-        await loadStats()
-
-        // 4. 更新图表数据
-        await updateCharts()
-      } catch (error) {
-        console.error('刷新数据失败:', error)
-      } finally {
+        const res = await apiV2('/dashboard/summary')
+        data.value = res.data
+        loading.value = false
+        await nextTick()
+        // 并行渲染各图表，互不阻塞
+        renderTodayCharts()
+        loadTrends()
+        loadGeoMap()
+        loadInsights()
+        loadSystem()
+      } catch (e) {
+        error.value = e.message
         loading.value = false
       }
     }
 
-    // 加载图表数据（并行加载，提升性能）
-    const loadChartData = async () => {
+    // 加载本地端系统资源（CPU/内存），失败静默
+    const loadSystem = async () => {
       try {
-        // 并行加载所有图表数据
-        await Promise.all([
-          loadRequestTrendData(),
-          loadUADistributionData(),
-          loadIPBlockTrendData()
-        ])
-
-        // 更新Worker状态图
-        updateWorkerStatusChart()
-      } catch (error) {
-        console.error('加载图表数据失败:', error)
-      }
+        const res = await apiV2('/dashboard/system')
+        sys.value = res.data
+      } catch (e) { /* 系统资源采集失败不阻塞页面 */ }
     }
 
-    // 加载请求趋势数据
-    const loadRequestTrendData = async () => {
-      try {
-        const response = await authFetch('/api/stats/requests?hours=24')
-        if (response.ok) {
-          const data = await response.json()
-
-          // 生成最近24小时的时间标签
-          const hours = []
-          const values = []
-          const now = new Date()
-
-          for (let i = 23; i >= 0; i--) {
-            const hour = new Date(now.getTime() - i * 3600000)
-            hours.push(hour.getHours() + ':00')
-
-            // 从数据中查找对应小时的请求数
-            const hourData = data.find(d => {
-              const dataHour = new Date(d.date_hour || d.created_at).getHours()
-              return dataHour === hour.getHours()
-            })
-
-            values.push(hourData ? (hourData.total_requests || 0) : 0)
-          }
-
-          if (requestTrendInstance) {
-            requestTrendInstance.setOption({
-              xAxis: { data: hours },
-              series: [{ data: values }]
-            })
-          }
-        }
-      } catch (error) {
-        console.warn('加载请求趋势数据失败:', error)
-      }
+    // 今日分布饼图（状态码/拦截/命中），数据来自 summary
+    const renderTodayCharts = () => {
+      const m = data.value && data.value.worker_metrics_today
+      if (!m) return
+      // 状态码分布
+      const statusData = [
+        { name: '2xx', value: m.status_2xx || 0, itemStyle: { color: '#52c41a' } },
+        { name: '4xx', value: m.status_4xx || 0, itemStyle: { color: '#faad14' } },
+        { name: '5xx', value: m.status_5xx || 0, itemStyle: { color: '#ff4d4f' } },
+      ].filter(x => x.value > 0)
+      hasDist.value = statusData.length > 0
+      if (hasDist.value) drawPie(statusChart, '状态码', statusData)
+      // 拦截类型分布
+      const blockData = [
+        { name: 'IP 拦截', value: m.blocked_ip || 0 },
+        { name: 'UA 拦截', value: m.blocked_ua || 0 },
+        { name: '滥用封禁', value: m.blocked_abuse || 0 },
+        { name: '非法路由', value: m.invalid_route || 0 },
+      ].filter(x => x.value > 0)
+      hasBlocked.value = blockData.length > 0
+      if (hasBlocked.value) drawPie(blockChart, '拦截', blockData)
+      // 命中构成
+      const hitData = [
+        { name: '内存命中', value: m.mem_cache_hits || 0, itemStyle: { color: '#1677ff' } },
+        { name: 'R2 命中', value: m.r2_cache_hits || 0, itemStyle: { color: '#13c2c2' } },
+        { name: '回源', value: m.cache_miss || 0, itemStyle: { color: '#faad14' } },
+      ].filter(x => x.value > 0)
+      hasHit.value = hitData.length > 0
+      if (hasHit.value) drawPie(hitChart, '命中', hitData)
     }
 
-    // 加载UA使用分布数据
-    const loadUADistributionData = async () => {
-      try {
-        // 优先从Worker实时数据获取UA类型统计
-        const realtimeResponse = await authFetch('/api/web-config/worker/realtime-stats')
-        if (realtimeResponse.ok) {
-          const realtimeData = await realtimeResponse.json()
-
-          if (realtimeData.success && realtimeData.stats && realtimeData.stats.ua_type_stats) {
-            const uaStats = realtimeData.stats.ua_type_stats
-            const chartData = Object.keys(uaStats).map(uaType => ({
-              value: uaStats[uaType].total_requests || 0,
-              name: uaType
-            }))
-
-            if (uaDistributionInstance && chartData.length > 0) {
-              uaDistributionInstance.setOption({
-                series: [{
-                  data: chartData
-                }]
-              })
-              return
-            }
-          }
-        }
-
-        // 如果Worker数据不可用，尝试从数据库获取
-        const dbResponse = await authFetch('/api/stats/ua-usage?hours=24')
-        if (dbResponse.ok) {
-          const data = await dbResponse.json()
-
-          if (uaDistributionInstance && data.length > 0) {
-            uaDistributionInstance.setOption({
-              series: [{
-                data: data.map(item => ({
-                  value: item.request_count || 0,
-                  name: item.ua_type || 'Unknown'
-                }))
-              }]
-            })
-          }
-        }
-      } catch (error) {
-        console.warn('加载UA使用分布数据失败:', error)
-      }
+    const drawPie = async (elRef, name, seriesData) => {
+      if (!elRef.value) return
+      // 先等 DOM 真正显示（v-show 刚置 true），否则 0 宽容器会画歪/图例重叠
+      await nextTick()
+      const c = echarts.getInstanceByDom(elRef.value) || echarts.init(elRef.value)
+      charts[name] = c
+      c.setOption({
+        tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+        // 图例右侧纵向滚动；用百分比宽度区分饼图区与图例区，避免重叠
+        legend: {
+          type: 'scroll', orient: 'vertical', right: '2%', top: 'middle',
+          itemWidth: 10, itemHeight: 10, itemGap: 8,
+          textStyle: { fontSize: 11 },
+          formatter: (v) => (v && v.length > 8 ? v.slice(0, 8) + '…' : v),
+        },
+        series: [{
+          // 饼图占左 60% 区域居中，右侧 40% 留给图例，杜绝重叠
+          name, type: 'pie', radius: ['35%', '58%'], center: ['30%', '50%'],
+          data: seriesData, label: { show: false }, emphasis: { label: { show: true } },
+        }],
+      }, true) // 第二参 true：清空旧 option，避免复用实例残留
+      c.resize() // 兜底：确保按当前真实容器尺寸渲染
     }
 
-    // 加载IP封禁趋势数据
-    const loadIPBlockTrendData = async () => {
-      try {
-        const response = await authFetch('/api/stats/violations?limit=7')
-        if (response.ok) {
-          const data = await response.json()
-
-          if (ipBlockInstance && data.length > 0) {
-            const dates = data.map(item => {
-              const date = new Date(item.last_violation || item.created_at)
-              return `${date.getMonth() + 1}/${date.getDate()}`
-            })
-            const counts = data.map(item => item.violation_count || 0)
-
-            ipBlockInstance.setOption({
-              xAxis: { data: dates },
-              series: [{ data: counts }]
-            })
-          }
-        }
-      } catch (error) {
-        console.warn('加载IP封禁趋势数据失败:', error)
-      }
+    // 横向柱状图（接口429 / UA Top）
+    const drawBar = async (elRef, name, categories, values, color) => {
+      if (!elRef.value) return
+      // 先等 DOM 显示，否则 0 宽容器会把整图压成一条竖条
+      await nextTick()
+      const c = echarts.getInstanceByDom(elRef.value) || echarts.init(elRef.value)
+      charts[name] = c
+      c.setOption({
+        // tooltip 显示完整类目名（Y 轴标签会被截断，靠 tooltip 看全名）
+        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+        grid: { left: 8, right: 16, top: 10, bottom: 8, containLabel: true },
+        xAxis: { type: 'value', minInterval: 1 },
+        yAxis: {
+          type: 'category', data: categories,
+          axisLabel: {
+            fontSize: 11,
+            width: 96, overflow: 'truncate', // 限宽并截断，避免长名重叠糊成一团
+            formatter: (v) => (v && v.length > 12 ? v.slice(0, 12) + '…' : v),
+          },
+        },
+        series: [{
+          name, type: 'bar', data: values, barMaxWidth: 22,
+          itemStyle: { color: color || '#1677ff', borderRadius: [0, 4, 4, 0] },
+        }],
+      }, true)
+      c.resize() // 兜底：按真实容器尺寸重绘，杜绝竖条
     }
 
-    // 更新Worker状态图
-    const updateWorkerStatusChart = () => {
-      if (workerStatusInstance) {
-        workerStatusInstance.setOption({
-          series: [{
-            data: [
-              { value: stats.value.activeWorkers, name: '在线', itemStyle: { color: '#52c41a' } },
-              { value: Math.max(0, stats.value.totalWorkers - stats.value.activeWorkers), name: '离线', itemStyle: { color: '#ff4d4f' } }
-            ]
-          }]
+    // 加载运维洞察：密钥池状态 + 弹幕水位 + 429/UA/缓存来源
+    const loadInsights = async () => {
+      // 密钥池状态卡 + 弹幕水位（独立 try，互不影响）
+      try {
+        const st = await apiV2('/key-pool/states')
+        const states = (st.data && st.data.items) || []
+        let total = 0, limited = 0
+        states.forEach(s => {
+          total = Math.max(total, s.key_count || 0)
+          const ks = s.key_state || {}
+          Object.values(ks).forEach(grp => {
+            Object.values(grp || {}).forEach(v => { if (v && v.limited) limited++ })
+          })
         })
-      }
+        insightCards.value = { keyTotal: total, keyLimited: limited }
+      } catch (e) { /* 忽略 */ }
+      try {
+        const r = await apiV2('/comment-store/stats')
+        cs.value = r.data
+      } catch (e) { /* 忽略 */ }
+      // 洞察图表（drawBar/drawPie 内部已等 nextTick 再渲染，避免 0 宽容器画歪）
+      try {
+        const res = await apiV2('/dashboard/insights?hours=24')
+        const d = res.data || {}
+        const a429 = (d.api_429 || []).filter(x => x.count > 0)
+        has429.value = a429.length > 0
+        if (has429.value) drawBar(api429Chart, '接口429', a429.map(x => x.api_group), a429.map(x => x.count), '#ff4d4f')
+        const uaTop = (d.ua_top || []).slice(0, 10).reverse()
+        hasUaTop.value = uaTop.length > 0
+        if (hasUaTop.value) drawBar(uaTopChart, 'UA Top', uaTop.map(x => x.ua_type), uaTop.map(x => x.count), '#1677ff')
+        const srcData = (d.cache_sources || []).filter(x => x.count > 0)
+          .map(x => ({ name: x.source, value: x.count }))
+        hasCacheSrc.value = srcData.length > 0
+        if (hasCacheSrc.value) drawPie(cacheSrcChart, '缓存来源', srcData)
+      } catch (e) { /* 忽略 */ }
     }
 
-    // 更新图表
-    const updateCharts = async () => {
-      await loadChartData()
+    // 加载并渲染 Worker 流量趋势图
+    const loadTrends = async () => {
+      try {
+        const res = await apiV2('/dashboard/metrics-trends?days=7')
+        const d = res.data
+        // 判断是否有非零数据点
+        const sum = (arr) => (arr || []).reduce((a, b) => a + (b || 0), 0)
+        trendHasData.value = sum(d.requests) + sum(d.hits) + sum(d.miss) + sum(d.blocked) > 0
+        if (!trendHasData.value) return
+        await nextTick()
+        if (!trendChart.value) return
+        const c = echarts.init(trendChart.value)
+        charts.trend = c
+        c.setOption({
+          tooltip: { trigger: 'axis' },
+          legend: { data: ['请求', '命中', '回源', '拦截'] },
+          grid: { left: 50, right: 20, top: 40, bottom: 30 },
+          xAxis: { type: 'category', data: d.labels },
+          yAxis: { type: 'value' },
+          series: [
+            { name: '请求', type: 'line', smooth: true, data: d.requests, itemStyle: { color: '#1677ff' } },
+            { name: '命中', type: 'line', smooth: true, data: d.hits, itemStyle: { color: '#52c41a' } },
+            { name: '回源', type: 'line', smooth: true, data: d.miss, itemStyle: { color: '#faad14' } },
+            { name: '拦截', type: 'line', smooth: true, data: d.blocked, itemStyle: { color: '#ff4d4f' } },
+          ],
+        })
+      } catch (e) { /* 趋势图失败不阻塞页面 */ }
     }
 
-    onMounted(async () => {
-      // 初始化所有图表（同步操作，不需要等待）
-      initRequestTrendChart()
-      initWorkerStatusChart()
-      initUADistributionChart()
-      initIPBlockChart()
+    // 加载并渲染请求来源地图（城市级散点）
+    const loadGeoMap = async () => {
+      try {
+        const res = await apiV2('/dashboard/ip-geo')
+        geo.value = res.data
+        geoAvailable.value = !!(res.data && res.data.available && res.data.points.length)
+        if (!geoAvailable.value) return
+        await nextTick()
+        if (!mapChart.value) return
+        // 运行时加载世界地图 GeoJSON（echarts5 不再内置；失败则降级为无底图散点）
+        let worldJson = null
+        if (!echarts.getMap('world')) {
+          worldJson = await fetch('https://fastly.jsdelivr.net/npm/echarts@4.9.0/map/json/world.json')
+            .then(r => r.ok ? r.json() : null).catch(() => null)
+          if (worldJson) echarts.registerMap('world', worldJson)
+        }
+        const hasMap = !!echarts.getMap('world')
+        await nextTick()
+        const c = echarts.getInstanceByDom(mapChart.value) || echarts.init(mapChart.value)
+        charts.map = c
+        const pts = geo.value.points
+        const maxV = Math.max(...pts.map(p => p.value[2]), 1)
+        c.setOption({
+          tooltip: { trigger: 'item', formatter: (p) => `${p.name}<br/>请求量: ${p.value ? p.value[2] : 0}` },
+          visualMap: { min: 0, max: maxV, calculable: true, left: 10, bottom: 10,
+            inRange: { color: ['#a3d2ff', '#1677ff', '#ff4d4f'] } },
+          geo: hasMap ? { map: 'world', roam: true, itemStyle: { areaColor: '#f0f2f5', borderColor: '#ccc' } } : undefined,
+          series: [{
+            type: 'scatter', coordinateSystem: hasMap ? 'geo' : undefined,
+            data: pts, symbolSize: (v) => 6 + (v[2] / maxV) * 24,
+            encode: { value: 2 },
+          }],
+        })
+        c.resize() // 兜底：确保按真实容器尺寸渲染（修复窄屏/显隐切换时地图偏小）
+      } catch (e) { /* 地图失败不阻塞 */ }
+    }
 
-      // 并行加载所有数据，大幅提升加载速度
-      await Promise.all([
-        loadStats(),
-        loadRequestTrendData(),
-        loadUADistributionData(),
-        loadIPBlockTrendData()
-      ])
+    const onResize = () => { Object.values(charts).forEach(c => c && c.resize()) }
 
-      // 统计数据加载完成后更新 Worker 状态图
-      updateWorkerStatusChart()
+    const goto = (path) => router.push(path)
+    const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
+    // 字节数人类可读
+    const fmtBytes = (n) => {
+      n = Number(n) || 0
+      if (n < 1024) return n + ' B'
+      if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'
+      if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB'
+      return (n / 1073741824).toFixed(2) + ' GB'
+    }
 
-      // 不设置自动刷新，只在手动点击刷新或Worker同步数据后更新
-      // refreshTimer = setInterval(refreshData, 30000)
+    onMounted(() => {
+      load()
+      window.addEventListener('resize', onResize)
+      // 系统资源每 5 秒轮询刷新（轻量接口，仅采集 CPU/内存）
+      sysTimer = setInterval(loadSystem, 5000)
     })
-
     onUnmounted(() => {
-      if (refreshTimer) {
-        clearInterval(refreshTimer)
-      }
-      if (requestTrendInstance) requestTrendInstance.dispose()
-      if (workerStatusInstance) workerStatusInstance.dispose()
-      if (ipBlockInstance) ipBlockInstance.dispose()
-      if (uaDistributionInstance) uaDistributionInstance.dispose()
+      window.removeEventListener('resize', onResize)
+      if (sysTimer) clearInterval(sysTimer)
+      Object.values(charts).forEach(c => c && c.dispose())
     })
-
     return {
-      loading,
-      stats,
-      requestTrendChart,
-      workerStatusChart,
-      ipBlockChart,
-      uaDistributionChart,
-      formatNumber,
-      refreshData
+      loading, error, data, wm, geo, goto, fmt, fmtBytes,
+      trendChart, statusChart, blockChart, hitChart, mapChart,
+      trendHasData, hasDist, hasBlocked, hasHit, geoAvailable,
+      api429Chart, uaTopChart, cacheSrcChart,
+      has429, hasUaTop, hasCacheSrc, insightCards, cs, sys,
+      loopLagClass, poolClass, queueClass,
     }
   }
 }
 </script>
 
 <style scoped>
-.dashboard {
-  padding: 24px;
-  max-width: 1400px;
-  margin: 0 auto;
-  background: #f5f5f5;
-  min-height: calc(100vh - 64px);
-}
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
-  padding: 24px;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-}
-
-.header-content h1 {
-  color: #333;
-  margin: 0 0 8px 0;
-  font-size: 28px;
-}
-
-.header-content p {
-  color: #666;
-  margin: 0;
-  font-size: 14px;
-}
-
-.header-actions .btn {
-  padding: 10px 20px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 14px;
-  transition: all 0.3s;
-}
-
-.btn-primary {
-  background: #3a4de9;
-  color: white;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: #2a3dd9;
-}
-
-.btn-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 20px;
-  margin-bottom: 24px;
-}
-
-.stat-card {
-  background: white;
-  padding: 24px;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  transition: transform 0.3s, box-shadow 0.3s;
-}
-
-.stat-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
-}
-
-.stat-icon {
-  font-size: 48px;
-  line-height: 1;
-}
-
-.stat-content {
-  flex: 1;
-}
-
-.stat-value {
-  font-size: 32px;
-  font-weight: bold;
-  color: #333;
-  margin-bottom: 4px;
-}
-
-.stat-label {
-  font-size: 14px;
-  color: #666;
-  margin-bottom: 4px;
-}
-
-.stat-trend {
-  font-size: 12px;
-  color: #999;
-}
-
-.charts-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 20px;
-}
-
-.chart-card {
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-  overflow: hidden;
-}
-
-.chart-card.full-width {
-  grid-column: 1 / -1;
-}
-
-.card-header {
-  padding: 16px 20px;
-  border-bottom: 1px solid #eee;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-header h3 {
-  margin: 0;
-  font-size: 16px;
-  color: #333;
-}
-
-.card-subtitle {
-  font-size: 12px;
-  color: #999;
-}
-
-.card-body {
-  padding: 20px;
-}
-
-.chart-container {
-  width: 100%;
-  height: 300px;
-}
-
-.loading-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0,0,0,0.5);
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  z-index: 9999;
-}
-
-.loading-spinner {
-  width: 50px;
-  height: 50px;
-  border: 4px solid #f3f3f3;
-  border-top: 4px solid #3a4de9;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-
-.loading-overlay p {
-  color: white;
-  margin-top: 16px;
-  font-size: 16px;
-}
-
-@media (max-width: 768px) {
-  .charts-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .chart-card.full-width {
-    grid-column: 1;
-  }
-}
+.page { padding: 24px; }
+.page-title { font-size: 22px; margin-bottom: 20px; color: #333; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.card { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); cursor: default; transition: transform .2s; }
+.card:hover { transform: translateY(-2px); }
+.card-ok { border-left: 4px solid #52c41a; }
+.card-warn { border-left: 4px solid #faad14; }
+.card-accent { border-left: 4px solid #1677ff; }
+.section-title { font-size: 16px; margin: 8px 0 14px; color: #555; }
+.chart { width: 100%; height: 320px; }
+.chart-sm { height: 260px; }
+.chart-map { height: 460px; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.map-sub { font-size: 12px; color: #999; font-weight: normal; margin-left: 10px; }
+.card-label { color: #888; font-size: 13px; margin-bottom: 8px; }
+.card-value { font-size: 26px; font-weight: 600; color: #333; }
+.card-sub { color: #999; font-size: 12px; margin-top: 4px; }
+.panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.panel-title { font-size: 16px; margin-bottom: 14px; color: #333; }
+.data-table { width: 100%; border-collapse: collapse; }
+.data-table th, .data-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+.data-table th { color: #888; font-weight: 500; }
+.loading, .error-box, .empty { padding: 40px; text-align: center; color: #999; }
+.error-box { color: #d4380d; }
 </style>
-

@@ -17,31 +17,103 @@ const routes = [
         path: '',
         name: 'Dashboard',
         component: () => import('../views/Dashboard.vue'),
-        meta: { title: '仪表板' }
+        meta: { title: '概览' }
       },
       {
-        path: 'config',
-        name: 'Config',
-        component: () => import('../views/Config.vue'),
-        meta: { title: '配置管理' }
+        path: 'control',
+        name: 'Control',
+        component: () => import('../views/Control.vue'),
+        meta: { title: 'Worker 控制' }
       },
       {
-        path: 'logs',
-        name: 'Logs',
-        component: () => import('../views/Logs.vue'),
-        meta: { title: '日志管理' }
+        path: 'cache',
+        name: 'ApiCache',
+        component: () => import('../views/ApiCache.vue'),
+        meta: { title: '响应缓存' }
       },
       {
-        path: 'workers',
-        name: 'WorkerManagement',
-        component: () => import('../views/WorkerManagement.vue'),
-        meta: { title: 'Worker管理' }
+        path: 'episodes',
+        name: 'Episodes',
+        component: () => import('../views/Episodes.vue'),
+        meta: { title: '集数链接' }
+      },
+      {
+        path: 'entities',
+        name: 'Entities',
+        component: () => import('../views/Entities.vue'),
+        meta: { title: '实体索引' }
+      },
+      {
+        path: 'media',
+        name: 'MediaLibrary',
+        component: () => import('../views/MediaLibrary.vue'),
+        meta: { title: '媒体库' }
+      },
+      {
+        path: 'ip-rules',
+        name: 'IpRules',
+        component: () => import('../views/IpRules.vue'),
+        meta: { title: 'IP 黑白名单' }
+      },
+      {
+        path: 'ip-stats',
+        name: 'IpStats',
+        component: () => import('../views/IpStats.vue'),
+        meta: { title: 'IP 请求统计' }
+      },
+      {
+        path: 'ua-rules',
+        name: 'UaRules',
+        component: () => import('../views/UaRules.vue'),
+        meta: { title: 'UA 限流' }
+      },
+      {
+        path: 'key-pool',
+        name: 'KeyPool',
+        component: () => import('../views/KeyPool.vue'),
+        meta: { title: '密钥池' }
+      },
+      {
+        path: 'worker-logs',
+        name: 'WorkerLogs',
+        component: () => import('../views/WorkerLogs.vue'),
+        meta: { title: 'Worker 日志' }
+      },
+      {
+        path: 'db-stats',
+        name: 'DbStats',
+        component: () => import('../views/DbStats.vue'),
+        meta: { title: '数据库状态' }
+      },
+      {
+        path: 'cleanup',
+        name: 'Cleanup',
+        component: () => import('../views/Cleanup.vue'),
+        meta: { title: '数据清理' }
+      },
+      {
+        path: 'comment-store',
+        name: 'CommentStore',
+        component: () => import('../views/CommentStore.vue'),
+        meta: { title: '弹幕存储' }
+      },
+      {
+        path: 'users',
+        name: 'Users',
+        component: () => import('../views/Users.vue'),
+        meta: { title: '用户管理' }
       },
       {
         path: 'settings',
         name: 'Settings',
         component: () => import('../views/Settings.vue'),
-        meta: { title: '设置' }
+        meta: { title: '系统设置' }
+      },
+      {
+        path: 'runtime-events',
+        name: 'RuntimeEvents',
+        component: () => import('../views/RuntimeEvents.vue'),
+        meta: { title: '运行日志' }
       }
     ]
   }

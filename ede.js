@@ -35,6 +35,99 @@
     // ------ 用户配置 end ------
     // note01: 部分 AndroidTV 仅支持最高 ES9 (支持 webview 内核版本 60 以上)
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
+
+
+    const ddSign = {
+        _instance: null,  
+        _loading: null,    
+        _failed: false,    
+
+        get _wasmUrl() {
+            try {
+                const origin = new URL(corsProxy).origin;
+                return origin + '/tools/sign.wasm';
+            } catch (_) {
+                return requireSparkMD5Path.replace(/\/tools\/.*$/, '/tools/sign.wasm');
+            }
+        },
+
+        async _ensure() {
+            if (this._instance) return this._instance;
+            if (this._failed) return null;
+            if (this._loading) return this._loading;
+            this._loading = (async () => {
+                const resp = await fetch(this._wasmUrl);
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const bytes = await resp.arrayBuffer();
+                const { instance } = await WebAssembly.instantiate(bytes, {
+                    env: { abort: () => { throw new Error('wasm abort'); } },
+                });
+                this._instance = instance.exports;
+                return this._instance;
+            })();
+            try {
+                return await this._loading;
+            } catch (e) {
+                this._failed = true;
+                try { logger.warn('[签名] wasm 加载失败,请求将不带签名', e && e.message); } catch (_) {}
+                return null;
+            } finally {
+                this._loading = null;
+            }
+        },
+
+        _writeStr(ex, str) {
+            const ptr = ex.__new(str.length << 1, 2); 
+            const mem = new Uint16Array(ex.memory.buffer, ptr, str.length);
+            for (let i = 0; i < str.length; i++) mem[i] = str.charCodeAt(i);
+            return ptr;
+        },
+        _readStr(ex, ptr) {
+            const len = new Uint32Array(ex.memory.buffer, ptr - 4, 1)[0] >>> 1;
+            const mem = new Uint16Array(ex.memory.buffer, ptr, len);
+            let s = '';
+            for (let i = 0; i < len; i++) s += String.fromCharCode(mem[i]);
+            return s;
+        },
+
+        async compute(userId, ts, path) {
+            const ex = await this._ensure();
+            if (!ex) return null;
+            try {
+                const raw = `${userId}:${ts}:${path}`;
+                const p = ex.__pin ? ex.__pin(this._writeStr(ex, raw)) : this._writeStr(ex, raw);
+                const rp = ex.sign(p);
+                const out = this._readStr(ex, rp);
+                if (ex.__unpin) ex.__unpin(p);
+                return out;
+            } catch (e) {
+                try { logger.warn('[签名] 计算异常,本次不带签名', e && e.message); } catch (_) {}
+                return null;
+            }
+        },
+
+        async buildHeaders(url) {
+            let userId = '';
+            try { userId = (typeof ApiClient !== 'undefined' && ApiClient.getCurrentUserId) ? (ApiClient.getCurrentUserId() || '') : ''; } catch (_) {}
+            const ts = Math.floor(Date.now() / 1000);
+            let path = '';
+            try {
+                const real = url.replace(corsProxy, '');
+                path = new URL(real).pathname;
+            } catch (_) {
+                const m = url.match(/\/api\/v2\/[^?]*/);
+                path = m ? m[0] : '';
+            }
+            const sig = await this.compute(userId, ts, path);
+            if (!sig) return {};
+            return { 'X-Ddd-User': String(userId), 'X-Ddd-Ts': String(ts), 'X-Ddd-Sign': sig };
+        },
+
+        isProxiedOfficial(url) {
+            return typeof url === 'string' && !!corsProxy && url.startsWith(corsProxy);
+        },
+    };
+
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
         self: { version: '1.2.5', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
@@ -94,7 +187,8 @@
         getMe: () => `${bangumiApi.prefix}/me`,
         getUserCollection: (userName, subjectId) => `${bangumiApi.prefix}/users/${userName}/collections/${subjectId}`,
         postUserCollection: (subjectId) => `${bangumiApi.prefix}/users/-/collections/${subjectId}`,
-        getUserSubjectEpisodeCollection: (subjectId) => `${bangumiApi.prefix}/users/-/collections/${subjectId}/episodes?offset=0&limit=100`,
+        patchUserCollection: (subjectId) => `${bangumiApi.prefix}/users/-/collections/${subjectId}`,
+        getUserSubjectEpisodeCollection: (subjectId) => `${bangumiApi.prefix}/users/-/collections/${subjectId}/episodes?offset=0&limit=1000`,
         putUserEpisodeCollection: (episodeId ) => `${bangumiApi.prefix}/users/-/collections/-/episodes/${episodeId}`,
     };
     const check_interval = 200;
@@ -1898,8 +1992,13 @@
     async function fetchMatchApi(payload, prefix) {
         const url = `${prefix}/match`;
         // [优化] 合并 5 条 debug 日志为 1 条，避免模板字符串无谓计算
+        // [脱敏] 官方源走 Worker 代理时不打印完整代理 URL/前缀,避免暴露代理端点;自定义源保留便于调试
         if (logLevel >= LOG_LEVEL.DEBUG) {
-            logger.debug(`[API请求] match - URL: ${url}, Prefix: ${prefix}, Payload:`, payload);
+            if (ddSign.isProxiedOfficial(url)) {
+                logger.debug(`[API请求] match - path: /match, Payload:`, payload);
+            } else {
+                logger.debug(`[API请求] match - URL: ${url}, Prefix: ${prefix}, Payload:`, payload);
+            }
         }
         try {
             // [修复] 判断是否为自定义 API（非弹弹play官方API）
@@ -1917,6 +2016,11 @@
                 requestHeaders['X-User-Agent'] = userAgent;
             } else if (logLevel >= LOG_LEVEL.DEBUG) {
                 logger.debug(`[API请求] match 跳过 X-User-Agent (自定义API)`);
+            }
+
+            // [签名] match 走 Worker 代理时同样附加签名头(是否校验由 Worker 按 UA 决定)
+            if (ddSign.isProxiedOfficial(url)) {
+                Object.assign(requestHeaders, await ddSign.buildHeaders(url));
             }
 
             const requestBody = JSON.stringify(payload);
@@ -2012,7 +2116,8 @@
             const episodeInfo = { ...currentEpisodeInfo };
             const backgroundFetchOpts = { abortOnDestroy: false };
             putBangumiEpStatus(bangumiToken, { episodeInfo, fetchOpts: backgroundFetchOpts }).then(res => {
-                embyToast({ text: `Bangumi收藏更新成功, 目标: ${targetName}, 结束播放百分比: ${pct}%, 大于需提交的设定百分比: ${bangumiPostPercent}%`});
+                const subjectDoneText = res?.subjectMarkedDone ? ', 条目已全部看完并标记为看过' : '';
+                embyToast({ text: `Bangumi收藏更新成功${subjectDoneText}, 目标: ${targetName}, 结束播放百分比: ${pct}%, 大于需提交的设定百分比: ${bangumiPostPercent}%`});
                 logger.info(`Bangumi收藏更新成功, 目标: ${targetName}`);
             }).catch(error => {
                 embyToast({ text: `Bangumi收藏更新失败, 目标: ${targetName}, ${error.message}` });
@@ -2027,6 +2132,10 @@
         }
         const num = Number(value);
         return Number.isInteger(num) && num >= 0;
+    }
+
+    function isHttpStatus(error, status) {
+        return new RegExp(`Status:\\s*${status}\\b`).test(String(error?.message || ''));
     }
 
     function deriveBgmEpisodeIndex(previousInfo, fallbackEpisodeIndex, delta) {
@@ -2103,6 +2212,33 @@
         }
     }
 
+    async function patchBangumiSubjectDoneIfAllEpisodesWatched(token, bangumiInfo, fetchOpts = {}) {
+        const bangumiEpsRes = bangumiInfo?.bangumiEpsRes;
+        const episodeCollections = bangumiEpsRes?.data;
+        if (!Array.isArray(episodeCollections)) {
+            logger.debug('Bangumi 章节收藏列表为空,跳过条目看过检查');
+            return false;
+        }
+        if (bangumiEpsRes.total && episodeCollections.length < bangumiEpsRes.total) {
+            logger.warn(`Bangumi 章节收藏列表未完整加载(${episodeCollections.length}/${bangumiEpsRes.total}),跳过条目看过检查`);
+            return false;
+        }
+        const mainEpisodeCollections = episodeCollections.filter(epColl => epColl?.episode?.type === 0);
+        if (mainEpisodeCollections.length === 0) {
+            logger.debug('Bangumi 未找到本篇章节,跳过条目看过检查');
+            return false;
+        }
+        const unfinished = mainEpisodeCollections.find(epColl => epColl.type !== 2);
+        if (unfinished) {
+            const ep = unfinished.episode || {};
+            logger.debug(`Bangumi 条目尚未全部看完,未完成章节: ${ep.name_cn || ep.name || ep.id || '未知章节'}`);
+            return false;
+        }
+        await fetchJson(bangumiApi.patchUserCollection(bangumiInfo.subjectId), { ...fetchOpts, token, body: { type: 2 }, method: 'PATCH' });
+        logger.info(`Bangumi 本篇章节已全部看过,条目收藏状态已更新为看过, subjectId: ${bangumiInfo.subjectId}`);
+        return true;
+    }
+
     async function putBangumiEpStatus(token, opts = {}) {
         const fetchOpts = opts.fetchOpts || {};
         const bangumiInfo = await getEpisodeBangumiRel(opts.episodeInfo, fetchOpts);
@@ -2119,8 +2255,16 @@
             bangumiMe = await fetchBangumiApiGetMe(token, fetchOpts);
         }
         let msg = '';
-        const bangumiUserColl = await fetchJson(bangumiApi.getUserCollection(bangumiMe.username, subjectId), { ...fetchOpts, token });
-        if (bangumiUserColl.type === 2) { // 看过状态
+        let bangumiUserColl = null;
+        try {
+            bangumiUserColl = await fetchJson(bangumiApi.getUserCollection(bangumiMe.username, subjectId), { ...fetchOpts, token });
+        } catch (error) {
+            if (!isHttpStatus(error, 404)) {
+                throw error;
+            }
+            logger.info(`Bangumi 条目收藏不存在，将创建在看状态, subjectId: ${subjectId}`);
+        }
+        if (bangumiUserColl?.type === 2) { // 看过状态
             msg = 'Bangumi 条目已为看过状态,跳过更新';
             logger.debug(msg, bangumiUserColl);
             throw new Error(msg);
@@ -2141,13 +2285,21 @@
         if (bangumiEpColl.type === 2) {
             msg = 'Bangumi 章节收藏已是看过状态,跳过更新';
             logger.debug(msg, bangumiEp);
+            const patchedSubject = await patchBangumiSubjectDoneIfAllEpisodesWatched(token, bangumiInfo, fetchOpts);
+            if (patchedSubject) {
+                bangumiInfo.subjectMarkedDone = true;
+                window.ede.bangumiInfo = bangumiInfo;
+                localStorage.setItem(bangumiInfo._bangumi_key, JSON.stringify(bangumiInfo));
+                return bangumiInfo;
+            }
             throw new Error(msg);
         }
         logger.debug('准备更新 Bangumi 章节收藏状态, 详情: ', bangumiEp);
         body.type = 2; // 看过状态
         await fetchJson(bangumiApi.putUserEpisodeCollection(bangumiEp.id), { ...fetchOpts, token, body, method: 'PUT' });
-        bangumiEp.type = body.type;
+        bangumiEpColl.type = body.type;
         logger.info(`成功更新 Bangumi 章节收藏状态, 在看 => 看过, 详情: `, bangumiEp);
+        bangumiInfo.subjectMarkedDone = await patchBangumiSubjectDoneIfAllEpisodesWatched(token, bangumiInfo, fetchOpts);
         window.ede.bangumiInfo = bangumiInfo;
         localStorage.setItem(bangumiInfo._bangumi_key, JSON.stringify(bangumiInfo));
         return bangumiInfo;
@@ -2177,6 +2329,11 @@
 
     if (token) requestHeaders.Authorization = `Bearer ${token}`;
     if (headers) Object.assign(requestHeaders, headers);
+
+    // [签名] 走本插件 Worker 代理的官方源请求,无条件附加签名头(是否校验由 Worker 按 UA 决定)
+    if (ddSign.isProxiedOfficial(url)) {
+        Object.assign(requestHeaders, await ddSign.buildHeaders(url));
+    }
 
     const requestBody = body ? JSON.stringify(body) : null;
 

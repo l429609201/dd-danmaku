@@ -1,0 +1,137 @@
+"""
+API v2 Pydantic Schema 集中定义（KISS：单文件，避免过度拆分）
+"""
+from datetime import datetime
+from typing import Any, List, Optional
+
+from pydantic import BaseModel
+
+
+# ---------- 通用 ----------
+class ApiResult(BaseModel):
+    success: bool = True
+    message: str = "ok"
+    data: Any | None = None
+
+
+class PageResult(BaseModel):
+    total: int
+    items: List[Any]
+
+
+# ---------- 认证 ----------
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResult(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: dict
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
+# ---------- 用户与 Token ----------
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    display_name: Optional[str] = None
+    role: str = "viewer"  # admin/operator/viewer
+
+
+class UserUpdate(BaseModel):
+    display_name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = None
+
+
+class ApiTokenCreate(BaseModel):
+    name: str
+    scopes: List[str] = []
+    expires_at: Optional[datetime] = None
+
+
+# ---------- 集数链接 ----------
+class EpisodeLinkCreate(BaseModel):
+    local_title: str
+    season_number: Optional[int] = None
+    episode_number: Optional[str] = None
+    episode_title: Optional[str] = None
+    dandan_anime_id: Optional[str] = None
+    dandan_bangumi_id: Optional[str] = None
+    dandan_episode_id: str
+    anime_title: Optional[str] = None
+    match_source: str = "manual"
+    confidence: int = 100
+    source_cache_key: str
+    bangumi_cache_key: Optional[str] = None
+    comment_api_path: Optional[str] = None
+    comment_cache_key: Optional[str] = None
+
+
+class EpisodeLinkUpdate(BaseModel):
+    dandan_episode_id: Optional[str] = None
+    episode_title: Optional[str] = None
+    confidence: Optional[int] = None
+    comment_cache_key: Optional[str] = None
+
+
+# ---------- 设置 ----------
+class SettingUpdate(BaseModel):
+    value: str
+
+
+# ---------- 控制 ----------
+class ConfigApplyRequest(BaseModel):
+    ua_configs: Optional[dict] = None
+    ip_blacklist: Optional[dict] = None
+    ip_whitelist: Optional[dict] = None
+    cache_policy: Optional[dict] = None
+
+
+# ---------- IP 黑白名单 ----------
+class IpRuleCreate(BaseModel):
+    ip_or_cidr: str
+    rule_type: str = "black"  # black / white
+    reason: Optional[str] = None
+    enabled: bool = True
+    expires_at: Optional[datetime] = None
+
+
+class IpRuleUpdate(BaseModel):
+    rule_type: Optional[str] = None
+    reason: Optional[str] = None
+    enabled: Optional[bool] = None
+    expires_at: Optional[datetime] = None
+
+
+# ---------- UA 限流规则 ----------
+class UaRuleCreate(BaseModel):
+    ua_key: str
+    user_agent: Optional[str] = None
+    max_requests: int = 0
+    window_ms: int = 60000
+    path_limits: Optional[List[dict]] = None  # [{"path": "...", "maxRequestsPerHour": 50}]
+    enabled: bool = True
+    sign_group_id: Optional[str] = None  # 绑定的签名密钥组 group_id，空=不启用
+
+
+class UaRuleUpdate(BaseModel):
+    user_agent: Optional[str] = None
+    max_requests: Optional[int] = None
+    window_ms: Optional[int] = None
+    path_limits: Optional[List[dict]] = None
+    enabled: Optional[bool] = None
+    sign_group_id: Optional[str] = None  # 绑定的签名密钥组 group_id，空=不启用
+
+
+class UaRuleImport(BaseModel):
+    """UA 规则 JSON 导入：data 为 Worker 对象格式 { key: {userAgent,...} } 或规则数组"""
+    data: Any
+    replace_all: bool = False

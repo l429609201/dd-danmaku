@@ -54,185 +54,140 @@ def get_db() -> Session:
         db.close()
 
 async def init_db():
-    """初始化数据库"""
+    """初始化数据库（新架构：仅创建 models_v2 新表，废弃旧表/旧迁移）"""
     try:
-        logger.info("🔧 正在初始化数据库...")
+        logger.info("🔧 正在初始化数据库（models_v2）...")
 
-        # 导入所有模型以确保表被创建
-        from src.models import config, stats, logs, web_config, auth
-        # 确保模型被加载
-        _ = web_config, auth
+        # 仅导入 models_v2，旧 models 包彻底废弃，不再创建旧表
+        import src.models_v2  # noqa: F401
 
-        # 创建所有表
+        # 创建所有 v2 表
         Base.metadata.create_all(bind=engine)
+        # 1) 结构补齐：基于 ORM 模型自动补缺失字段（只增不删）
+        await ensure_compatible_schema()
+        # 2) 特殊补丁：SchemaGuard 做不了的数据回填/索引/一次性修正等
+        await apply_db_patches()
+        logger.info("✅ 数据库表结构初始化完成")
 
-        logger.info("✅ 数据库初始化完成")
+        # 初始化系统默认设置
+        await init_app_settings()
 
-        # 执行数据库迁移（添加缺失的列）
-        await migrate_database()
-
-        # 初始化默认数据
-        await init_default_data()
-
-        # 初始化Web配置
-        await init_web_config()
-
-        # 初始化管理员用户
+        # 初始化默认管理员（LocalUser）
         await init_admin_user()
 
     except Exception as e:
         logger.error(f"❌ 数据库初始化失败: {e}")
         raise
 
-async def migrate_database():
-    """数据库迁移 - 添加缺失的列"""
+
+async def ensure_compatible_schema():
+    """表完整性检查：基于 ORM 模型自动补齐缺失字段（只增不删）。
+
+    替代过去逐个手写 ALTER 的方式——以后给模型加字段，重启即自动补列，
+    无需再在此处硬编码。删表/删列/改类型等敏感操作一律不执行。
+    """
     try:
+        from src.database_schema_guard import SchemaGuard
+        guard = SchemaGuard(engine, Base.metadata)
+        guard.run()
+    except Exception as e:
+        logger.error(f"❌ 表完整性检查失败: {e}")
+        raise
+
+
+async def apply_db_patches():
+    """执行数据库特殊补丁（数据回填/索引/一次性修正等）。
+
+    补丁逻辑集中在 database_patches.py，单补丁失败不中断启动。
+    """
+    try:
+        from src.database_patches import apply_patches
+        apply_patches(engine)
+    except Exception as e:
+        # 补丁入口本身异常也不阻断启动（补丁是兜底修正，非关键路径）
+        logger.error(f"❌ 数据库补丁入口执行异常（已跳过）: {e}")
+
+
+async def init_app_settings():
+    """初始化系统默认设置（app_settings）"""
+    try:
+        from src.models_v2 import AppSetting
+
+        # key -> (value, value_type, description, is_secret)
+        defaults = {
+            "control_worker_ws_url": (settings.CONTROL_WORKER_WS_URL or "", "string", "Worker ControlHub WebSocket 地址", False),
+            "control_token": (settings.CONTROL_TOKEN or "", "secret", "Worker 控制 token", True),
+            "node_id": (settings.CONTROL_NODE_ID, "string", "本地节点 ID", False),
+            "cache_refresh_interval_seconds": (str(settings.CACHE_REFRESH_INTERVAL_SECONDS), "int", "缓存刷新间隔（秒）", False),
+            "cache_stale_max_age_seconds": (str(settings.CACHE_STALE_MAX_AGE_SECONDS), "int", "缓存最大兜底时长（秒）", False),
+            "cache_get_timeout_ms": ("800", "int", "Worker cache.get 超时（毫秒）", False),
+            # 本地端 SQL 数据保留策略（第一版 asyncio 后台任务读取这些配置）
+            "cleanup_enabled": ("true", "bool", "是否启用本地端 SQL 数据保留清理", False),
+            "cleanup_interval_seconds": ("3600", "int", "数据保留清理任务执行间隔（秒）", False),
+            "cleanup_access_log_retention_days": ("30", "int", "缓存访问日志保留天数", False),
+            "cleanup_control_message_retention_days": ("30", "int", "长连接消息审计保留天数", False),
+            "cleanup_runtime_event_retention_days": ("30", "int", "运行事件保留天数", False),
+            "cleanup_expired_cache_enabled": ("false", "bool", "是否删除过期响应缓存空壳", False),
+            "cleanup_expired_cache_retention_days": ("90", "int", "过期响应缓存空壳额外保留天数", False),
+        }
+
         db = SessionLocal()
-
-        # 检查并添加缺失的列
-        migrations = [
-            # (表名, 列名, 列类型)
-            ("worker_configs", "ua_configs", "JSON"),
-            ("worker_configs", "ip_blacklist", "JSON"),
-            ("worker_configs", "secret_usage", "JSON"),
-            ("worker_configs", "last_update", "BIGINT"),
-            # RequestStats 表的新列
-            ("request_stats", "active_ips_count", "INTEGER DEFAULT 0"),
-        ]
-
-        # 需要修改列类型的迁移（MySQL 专用）
-        column_type_changes = [
-            # (表名, 列名, 新类型) - Telegram user_id 可能超过 INT 范围
-            ("telegram_logs", "user_id", "BIGINT"),
-        ]
-
-        # 需要修改列约束的迁移（MySQL 专用）
-        column_nullable_changes = [
-            # (表名, 列名, 列类型, 是否允许NULL)
-            ("worker_configs", "endpoint", "VARCHAR(500)", True),
-        ]
-
-        for table_name, column_name, column_type in migrations:
-            try:
-                # 检查列是否存在
-                if settings.database_url.startswith("sqlite"):
-                    # SQLite 检查列是否存在
-                    result = db.execute(text(f"PRAGMA table_info({table_name})"))
-                    columns = [row[1] for row in result.fetchall()]
-
-                    if column_name not in columns:
-                        # 添加列
-                        db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
-                        db.commit()
-                        logger.info(f"✅ 已添加列: {table_name}.{column_name}")
-                    else:
-                        logger.debug(f"ℹ️ 列已存在: {table_name}.{column_name}")
-                else:
-                    # PostgreSQL 检查列是否存在
-                    result = db.execute(text(f"""
-                        SELECT column_name FROM information_schema.columns
-                        WHERE table_name = '{table_name}' AND column_name = '{column_name}'
-                    """))
-                    if not result.fetchone():
-                        db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
-                        db.commit()
-                        logger.info(f"✅ 已添加列: {table_name}.{column_name}")
-                    else:
-                        logger.debug(f"ℹ️ 列已存在: {table_name}.{column_name}")
-
-            except Exception as e:
-                # 如果表不存在或其他错误，跳过
-                logger.debug(f"ℹ️ 迁移跳过 {table_name}.{column_name}: {e}")
-                db.rollback()
-                continue
-
-        # 处理列类型修改（MySQL/MariaDB 专用）
-        if not settings.database_url.startswith("sqlite"):
-            for table_name, column_name, new_type in column_type_changes:
-                try:
-                    # 检查当前列类型
-                    result = db.execute(text(f"""
-                        SELECT data_type FROM information_schema.columns
-                        WHERE table_name = '{table_name}' AND column_name = '{column_name}'
-                    """))
-                    row = result.fetchone()
-                    if row:
-                        current_type = row[0].upper()
-                        if current_type != new_type.upper():
-                            # 修改列类型
-                            db.execute(text(f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {new_type}"))
-                            db.commit()
-                            logger.info(f"✅ 已修改列类型: {table_name}.{column_name} -> {new_type}")
-                        else:
-                            logger.debug(f"ℹ️ 列类型已正确: {table_name}.{column_name} = {new_type}")
-                except Exception as e:
-                    logger.debug(f"ℹ️ 列类型修改跳过 {table_name}.{column_name}: {e}")
-                    db.rollback()
-                    continue
-
-            # 处理列约束修改（允许 NULL）
-            for table_name, column_name, column_type, nullable in column_nullable_changes:
-                try:
-                    null_str = "NULL" if nullable else "NOT NULL"
-                    db.execute(text(f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {column_type} {null_str}"))
-                    db.commit()
-                    logger.info(f"✅ 已修改列约束: {table_name}.{column_name} -> {null_str}")
-                except Exception as e:
-                    logger.debug(f"ℹ️ 列约束修改跳过 {table_name}.{column_name}: {e}")
-                    db.rollback()
-                    continue
-
-        db.close()
-        logger.info("✅ 数据库迁移检查完成")
-
+        try:
+            for key, (value, vtype, desc, is_secret) in defaults.items():
+                exists = db.query(AppSetting).filter(AppSetting.key == key).first()
+                if not exists:
+                    db.add(AppSetting(
+                        key=key, value=value, value_type=vtype,
+                        description=desc, is_secret=is_secret,
+                    ))
+            db.commit()
+            logger.info("✅ 系统默认设置初始化完成")
+        finally:
+            db.close()
     except Exception as e:
-        logger.error(f"❌ 数据库迁移失败: {e}")
+        logger.error(f"❌ 初始化系统默认设置失败: {e}")
 
-async def init_default_data():
-    """初始化默认数据"""
-    try:
-        # 不再创建默认UA配置，让用户自己配置
-        logger.info("ℹ️ 跳过默认数据初始化，用户需要自行配置UA")
-        pass
-
-    except Exception as e:
-        logger.error(f"❌ 初始化默认数据失败: {e}")
-
-async def init_web_config():
-    """初始化Web配置"""
-    try:
-        from src.services.web_config_service import WebConfigService
-
-        web_config_service = WebConfigService()
-        await web_config_service.init_default_configs()
-
-        logger.info("✅ Web配置初始化完成")
-
-    except Exception as e:
-        logger.error(f"❌ 初始化Web配置失败: {e}")
 
 async def init_admin_user():
-    """初始化管理员用户"""
+    """初始化默认管理员用户（LocalUser）"""
     try:
-        from src.services.auth_service import AuthService
-        from src.models.auth import User
+        import os
+        import secrets
+        import string
+        from src.models_v2 import LocalUser
 
-        # 检查是否已存在管理员
         db = SessionLocal()
-        admin_exists = db.query(User).filter(User.is_admin == True).first()
-        db.close()
+        try:
+            admin_exists = db.query(LocalUser).filter(
+                LocalUser.role == "admin"
+            ).first()
+            if admin_exists:
+                logger.info("✅ 管理员用户已存在，跳过初始化")
+                return
 
-        if not admin_exists:
-            auth_service = AuthService()
-            admin_user, password = await auth_service.create_admin_user()
+            username = os.getenv("ADMIN_USERNAME", "admin")
+            password = os.getenv("ADMIN_PASSWORD")
+            if not password:
+                alphabet = string.ascii_letters + string.digits
+                password = "".join(secrets.choice(alphabet) for _ in range(12))
 
-            logger.info("✅ 管理员用户初始化完成")
-            logger.info(f"🔑 管理员账户: {admin_user.username}")
+            admin = LocalUser(
+                username=username,
+                display_name="管理员",
+                role="admin",
+                is_active=True,
+                is_superuser=True,
+            )
+            admin.set_password(password)
+            db.add(admin)
+            db.commit()
+
+            logger.info("✅ 默认管理员用户创建完成")
+            logger.info(f"🔑 管理员账户: {username}")
             logger.info(f"🔑 初始密码: {password}")
             logger.info("⚠️ 请妥善保存密码，首次登录后建议立即修改")
-        else:
-            logger.info("✅ 管理员用户已存在，跳过初始化")
-
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"❌ 初始化管理员用户失败: {e}")
 

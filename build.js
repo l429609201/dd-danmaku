@@ -9,13 +9,13 @@ try {
     console.log('\n🔑 关键变量状态:');
     console.log('- USER_AGENT_LIMITS_CONFIG:', process.env.USER_AGENT_LIMITS_CONFIG ? '已设置 (已隐藏)' : '未设置，使用默认值');
     console.log('- IP_BLACKLIST_CONFIG:', process.env.IP_BLACKLIST_CONFIG ? '已设置 (已隐藏)' : '未设置，使用默认值');
-    console.log('- DATA_CENTER_URL:', process.env.DATA_CENTER_URL ? '已设置 (已隐藏)' : '未设置，数据中心集成将不可用');
-    console.log('- DATA_CENTER_API_KEY:', process.env.DATA_CENTER_API_KEY ? '已设置 (已隐藏)' : '未设置，数据中心集成将不可用');
     console.log('- WORKER_ID:', process.env.WORKER_ID ? '已设置 (已隐藏)' : '未设置，使用默认值');
+    console.log('- CONTROL_TOKEN:', process.env.CONTROL_TOKEN ? '已设置 (已隐藏)' : '未设置，本地端长连接控制将不可用');
     console.log('- ENABLE_ASYMMETRIC_AUTH_ENV:', process.env.ENABLE_ASYMMETRIC_AUTH_ENV ? '已设置 (已隐藏)' : '未设置，使用默认值');
     console.log('- ENABLE_DETAILED_LOGGING:', process.env.ENABLE_DETAILED_LOGGING ? '已设置 (已隐藏)' : '未设置，使用默认值');
     console.log('- PRIVATE_KEY_HEX:', process.env.PRIVATE_KEY_HEX ? '已设置 (已隐藏)' : '未设置，非对称认证将不可用');
     console.log('- OAUTH_CONFIG:', process.env.OAUTH_CONFIG ? '已设置 (已隐藏)' : '未设置，OAuth认证将不可用');
+
 
     // 读取 wrangler.toml 文件
     console.log('\n📝 读取 wrangler.toml...');
@@ -37,13 +37,13 @@ try {
 
     config = safeReplace(config, '{{USER_AGENT_LIMITS_CONFIG}}', process.env.USER_AGENT_LIMITS_CONFIG);
     config = safeReplace(config, '{{IP_BLACKLIST_CONFIG}}', process.env.IP_BLACKLIST_CONFIG);
-    config = safeReplace(config, '{{DATA_CENTER_URL}}', process.env.DATA_CENTER_URL);
-    config = safeReplace(config, '{{DATA_CENTER_API_KEY}}', process.env.DATA_CENTER_API_KEY);
     config = safeReplace(config, '{{WORKER_ID}}', process.env.WORKER_ID || 'worker-1');
+    config = safeReplace(config, '{{CONTROL_TOKEN}}', process.env.CONTROL_TOKEN);
     config = safeReplace(config, '{{ENABLE_ASYMMETRIC_AUTH_ENV}}', process.env.ENABLE_ASYMMETRIC_AUTH_ENV || 'false');
     config = safeReplace(config, '{{ENABLE_DETAILED_LOGGING}}', process.env.ENABLE_DETAILED_LOGGING || 'true');
     config = safeReplace(config, '{{PRIVATE_KEY_HEX}}', process.env.PRIVATE_KEY_HEX);
     config = safeReplace(config, '{{OAUTH_CONFIG}}', process.env.OAUTH_CONFIG);
+
 
     // 写回文件
     console.log('💾 写入配置文件...');

@@ -27,7 +27,7 @@ def reset_password(username: str, new_password: str = None):
     try:
         # 导入必要的模块
         from src.database import get_db_sync
-        from src.models.auth import User
+        from src.models_v2 import LocalUser as User
         
         # 如果没有提供密码，生成随机密码
         if not new_password:
