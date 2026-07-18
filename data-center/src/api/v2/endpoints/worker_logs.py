@@ -27,10 +27,11 @@ def list_logs(
     worker_id: Optional[str] = None,
     level: Optional[str] = None,
     keyword: Optional[str] = None,
+    ip: Optional[str] = None,
     page: int = 1, page_size: int = Query(50, le=200),
     _: LocalUser = Depends(get_current_user),
 ):
-    """Worker 请求日志分页查询"""
+    """Worker 请求日志分页查询（支持按 path 关键词、client_ip 过滤）"""
     db = get_db_sync()
     try:
         q = db.query(WorkerRequestLog)
@@ -40,6 +41,9 @@ def list_logs(
             q = q.filter(WorkerRequestLog.level == level.upper())
         if keyword:
             q = q.filter(WorkerRequestLog.path.like(f"%{keyword}%"))
+        # 按客户端 IP 模糊搜索，支持部分匹配（如网段前缀）
+        if ip:
+            q = q.filter(WorkerRequestLog.client_ip.like(f"%{ip}%"))
         total = q.count()
         rows = q.order_by(WorkerRequestLog.created_at.desc()) \
                 .offset((page - 1) * page_size).limit(page_size).all()
@@ -49,6 +53,9 @@ def list_logs(
             "ua_type": r.ua_type, "level": r.level, "message": r.message,
             "cache_source": r.cache_source, "upstream_status": r.upstream_status,
             "key_id": r.key_id, "duration_ms": r.duration_ms,
+            # 补齐请求/响应体与字节数，供前端展开行展示历史日志
+            "response_bytes": r.response_bytes,
+            "request_body": r.request_body, "response_body": r.response_body,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         } for r in rows]
         return PageResult(total=total, items=items)

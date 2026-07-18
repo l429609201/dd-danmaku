@@ -8,15 +8,17 @@
         <el-option label="WARN" value="WARN" />
         <el-option label="ERROR" value="ERROR" />
       </el-select>
-      <el-input v-model="keyword" placeholder="搜索 path" clearable style="width: 200px" @keyup.enter="reload" />
+      <el-input v-model="keyword" placeholder="搜索 path" clearable style="width: 180px" @keyup.enter="reload" @clear="reload" />
+      <el-input v-model="ipSearch" placeholder="搜索 IP" clearable style="width: 160px" @keyup.enter="reload" @clear="reload" />
       <el-button type="primary" :icon="Search" @click="reload">查询</el-button>
+      <el-switch v-model="prettyJson" active-text="JSON格式化" style="margin-right: 16px" />
       <div class="app-toolbar__spacer" />
       <el-switch v-model="streaming" active-text="实时" @change="toggleStream" />
     </div>
 
     <el-card shadow="never">
-      <el-table :data="items" size="small" v-loading="loading" empty-text="暂无日志"
-                :row-class-name="rowClass" max-height="600"
+      <el-table ref="tableRef" :data="items" size="small" v-loading="loading" empty-text="暂无日志"
+                :row-class-name="rowClass"
                 row-key="_uid">
         <!-- 展开行：显示请求体 & 响应体，只在有内容时才渲染 -->
         <el-table-column type="expand">
@@ -24,11 +26,11 @@
             <div v-if="row.request_body || row.response_body" class="body-expand">
               <div v-if="row.request_body" class="body-block">
                 <span class="body-label">请求体</span>
-                <pre class="body-pre">{{ fmtJson(row.request_body) }}</pre>
+                <pre class="body-pre">{{ renderBody(row.request_body) }}</pre>
               </div>
               <div v-if="row.response_body" class="body-block">
                 <span class="body-label">响应体</span>
-                <pre class="body-pre">{{ fmtJson(row.response_body) }}</pre>
+                <pre class="body-pre">{{ renderBody(row.response_body) }}</pre>
               </div>
             </div>
             <div v-else class="body-empty">该条日志无请求/响应体（拦截类早退路径）</div>
@@ -76,12 +78,18 @@
           <template #default="{ row }">{{ row.message || '—' }}</template>
         </el-table-column>
       </el-table>
+      <!-- 无限滚动状态提示：实时模式下不显示（实时流自动追加） -->
+      <div v-if="!streaming && items.length" class="load-more-hint">
+        <span v-if="loadingMore">加载中…</span>
+        <span v-else-if="!hasMore">— 没有更多了 —</span>
+        <span v-else class="load-more-tip">下滑加载更多</span>
+      </div>
     </el-card>
   </div>
 </template>
 
 <script>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import { apiV2, getAuthHeaders } from '../utils/api.js'
@@ -89,26 +97,54 @@ import { apiV2, getAuthHeaders } from '../utils/api.js'
 export default {
   name: 'WorkerLogs',
   setup() {
+    const tableRef = ref(null)     // el-table 组件引用
     const items = ref([])
     const level = ref('')
     const keyword = ref('')
+    const ipSearch = ref('')       // 按客户端 IP 搜索
     const loading = ref(false)
+    const loadingMore = ref(false) // 无限滚动加载中标记，防止重复触发
     const streaming = ref(false)
     const expandedRows = ref([])
+    const prettyJson = ref(true)  // JSON 格式化开关，默认开启
+    const PAGE_SIZE = 50
+    const page = ref(1)            // 当前已加载页码
+    const hasMore = ref(true)      // 是否还有下一页
     let abortCtrl = null
 
+    // 统一拉取某一页，append=false 时替换（首次/查询），true 时追加（滚动加载）
+    const fetchPage = async (targetPage, append) => {
+      const q = new URLSearchParams({ page: targetPage, page_size: PAGE_SIZE })
+      if (level.value) q.set('level', level.value)
+      if (keyword.value) q.set('keyword', keyword.value)
+      if (ipSearch.value) q.set('ip', ipSearch.value)
+      const res = await apiV2(`/worker-logs?${q.toString()}`)
+      // 每条加唯一 _uid，防止 el-table row-key 因 id 缺失把全部行当同一行
+      const mapped = (res.items || []).map(item => ({
+        ...item, _uid: item.id ? `db-${item.id}` : `r-${Math.random().toString(36).slice(2)}`
+      }))
+      items.value = append ? items.value.concat(mapped) : mapped
+      page.value = targetPage
+      // 本页数量不足 PAGE_SIZE 说明已到末页
+      hasMore.value = mapped.length >= PAGE_SIZE
+    }
+
+    // 查询/刷新：重置到第一页
     const reload = async () => {
       loading.value = true
-      try {
-        const q = new URLSearchParams({ page: 1, page_size: 100 })
-        if (level.value) q.set('level', level.value)
-        if (keyword.value) q.set('keyword', keyword.value)
-        const res = await apiV2(`/worker-logs?${q.toString()}`)
-        // 每条加唯一 _uid，防止 el-table row-key 因 id 缺失把全部行当同一行
-        items.value = (res.items || []).map(item => ({
-          ...item, _uid: item.id ? `db-${item.id}` : `r-${Math.random().toString(36).slice(2)}`
-        }))
-      } catch (e) { ElMessage.error(e.message) } finally { loading.value = false }
+      hasMore.value = true
+      try { await fetchPage(1, false) }
+      catch (e) { ElMessage.error(e.message) }
+      finally { loading.value = false }
+    }
+
+    // 无限滚动：加载下一页并追加
+    const loadMore = async () => {
+      if (loadingMore.value || loading.value || !hasMore.value || streaming.value) return
+      loadingMore.value = true
+      try { await fetchPage(page.value + 1, true) }
+      catch (e) { ElMessage.error(e.message) }
+      finally { loadingMore.value = false }
     }
 
     // fetch 流式读取 SSE（可携带 Authorization 头，EventSource 不支持自定义头）
@@ -162,6 +198,11 @@ export default {
       if (!text) return ''
       try { return JSON.stringify(JSON.parse(text), null, 2) } catch { return text }
     }
+    // 展开区渲染：开关开启且为合法 JSON 则格式化，否则原样返回
+    const renderBody = (text) => {
+      if (!text) return ''
+      return prettyJson.value ? fmtJson(text) : text
+    }
     const fmtBytes = (b) => {
       if (b == null) return '—'
       if (b < 1024) return b + 'B'
@@ -171,10 +212,37 @@ export default {
     const rowClass = ({ row }) => (row._live ? 'live-row' : '')
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
 
-    onMounted(reload)
-    onUnmounted(() => { streaming.value = false; if (abortCtrl) abortCtrl.abort() })
-    return { items, level, keyword, loading, streaming, expandedRows, Search,
-      reload, toggleStream, levelType, sourceType, rowClass, fmtBytes, fmtJson, fmt }
+    // 表格已取消高度限制，改为监听整个页面滚动：接近页面底部（剩余 <120px）时加载下一页
+    const onScroll = () => {
+      const doc = document.documentElement
+      if (doc.scrollHeight - window.scrollY - window.innerHeight < 120) loadMore()
+    }
+
+    onMounted(async () => {
+      await reload()
+      await nextTick()
+      window.addEventListener('scroll', onScroll, { passive: true })
+      // 首屏内容不足以撑出滚动条时，自动补加载直到出现滚动条或无更多数据
+      await ensureScrollable()
+    })
+
+    // 页面无滚动条则继续加载，避免用户无法触发下滑加载
+    const ensureScrollable = async () => {
+      let guard = 0  // 防御性上限，避免异常时无限循环
+      while (hasMore.value && !streaming.value && guard < 20 &&
+             document.documentElement.scrollHeight <= window.innerHeight + 10) {
+        await loadMore()
+        await nextTick()
+        guard++
+      }
+    }
+    onUnmounted(() => {
+      streaming.value = false
+      if (abortCtrl) abortCtrl.abort()
+      window.removeEventListener('scroll', onScroll)
+    })
+    return { items, tableRef, level, keyword, ipSearch, loading, loadingMore, hasMore, streaming, prettyJson, expandedRows, Search,
+      reload, loadMore, toggleStream, levelType, sourceType, rowClass, fmtBytes, fmtJson, renderBody, fmt }
   }
 }
 </script>
@@ -191,4 +259,6 @@ export default {
   background: #fff; border: 1px solid #e8e8e8; border-radius: 6px;
   padding: 10px 14px; max-height: 360px; overflow-y: auto; color: #333; }
 .body-empty { padding: 8px 0; color: #aaa; font-size: 13px; }
+.load-more-hint { text-align: center; padding: 12px 0; color: #999; font-size: 13px; }
+.load-more-tip { color: #bbb; }
 </style>

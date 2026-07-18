@@ -1764,6 +1764,14 @@ async function handleRequest(request, env, ctx) {
         return handleOAuthRequest(request, env, urlObj);
     }
 
+    // 统一预读请求体（GET/HEAD 无 body 跳过）：供日志记录 + 后续转发复用。
+    // 流只能读一次，这里读成文本后，match/其他 POST 转发时用文本重建 body。
+    // 放在 tools/control/oauth 早退路由之后，这些路由不需要 body。
+    let reqBodyText = null;
+    if (request.method !== 'GET' && request.method !== 'HEAD' && request.body) {
+        try { reqBodyText = await request.text(); } catch (_) { /* 读取失败留 null */ }
+    }
+
     // IP 访问控制：白名单优先，命中则跳过黑名单与限流
     // clientIP已在函数开头声明
     const ipWhitelisted = isIpWhitelisted(clientIP);
@@ -1777,6 +1785,12 @@ async function handleRequest(request, env, ctx) {
         const retryAfterSec = Math.ceil(remainMs / 1000);
         console.log(`🚫 [${clientIP}] IP临时封禁中，剩余 ${remainMin} 分钟`);
         bumpMetric('blockedAbuse'); bumpMetric('status4xx');
+        const banBody = JSON.stringify({
+            status: 403,
+            type: 'IP临时封禁',
+            message: `IP ${clientIP} 因频繁请求非法路由已被临时封禁，请于约 ${remainMin} 分钟后再试`,
+            retryAfterSeconds: retryAfterSec
+        });
         addMemoryLog('warn', 'IP临时封禁拦截', {
             ip: clientIP,
             method: request.method,
@@ -1785,13 +1799,11 @@ async function handleRequest(request, env, ctx) {
             userAgent: request.headers.get('X-User-Agent') || '',
             remainMinutes: remainMin,
             durationMs: Date.now() - reqStartMs,
+            responseBytes: banBody.length,
+            requestBody: truncateBody(reqBodyText),
+            responseBody: truncateBody(banBody),
         });
-        return new Response(JSON.stringify({
-            status: 403,
-            type: 'IP临时封禁',
-            message: `IP ${clientIP} 因频繁请求非法路由已被临时封禁，请于约 ${remainMin} 分钟后再试`,
-            retryAfterSeconds: retryAfterSec
-        }), {
+        return new Response(banBody, {
             status: 403,
             headers: {
                 'Content-Type': 'application/json',
@@ -1807,7 +1819,12 @@ async function handleRequest(request, env, ctx) {
         console.log(`🚫 [${clientIP}] IP在黑名单中，拒绝访问`);
         bumpMetric('blockedIp'); bumpMetric('status4xx');
 
-        // 记录到内存日志（补全 method/path/status，便于日志页展示）
+        const blBody = JSON.stringify({
+            status: 403,
+            type: "IP黑名单",
+            message: `IP ${clientIP} 已被列入黑名单`
+        });
+        // 记录到内存日志（补全 method/path/status/body，便于日志页展示）
         addMemoryLog('warn', 'IP黑名单拦截', {
             ip: clientIP,
             method: request.method,
@@ -1815,13 +1832,12 @@ async function handleRequest(request, env, ctx) {
             responseStatus: 403,
             userAgent: request.headers.get('X-User-Agent') || '',
             durationMs: Date.now() - reqStartMs,
+            responseBytes: blBody.length,
+            requestBody: truncateBody(reqBodyText),
+            responseBody: truncateBody(blBody),
         });
 
-        return new Response(JSON.stringify({
-            status: 403,
-            type: "IP黑名单",
-            message: `IP ${clientIP} 已被列入黑名单`
-        }), {
+        return new Response(blBody, {
             status: 403,
             headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
@@ -1848,6 +1864,12 @@ async function handleRequest(request, env, ctx) {
             const banMin = Math.ceil(ABUSE_CONFIG.BAN_DURATION_MS / 60000);
             console.log(`🚫 [${clientIP}] 非法路由超阈值，已临时封禁 ${banMin} 分钟`);
             bumpMetric('blockedAbuse'); bumpMetric('status4xx');
+            const banBody2 = JSON.stringify({
+                status: 403,
+                type: 'IP临时封禁',
+                message: `IP ${clientIP} 因频繁请求非法路由已被临时封禁，请于约 ${banMin} 分钟后再试`,
+                retryAfterSeconds: Math.ceil(ABUSE_CONFIG.BAN_DURATION_MS / 1000)
+            });
             addMemoryLog('warn', '非法路由滥用封禁', {
                 ip: clientIP,
                 method: request.method,
@@ -1856,13 +1878,11 @@ async function handleRequest(request, env, ctx) {
                 userAgent: request.headers.get('X-User-Agent') || '',
                 invalidUrl: url.substring(0, 100),
                 durationMs: Date.now() - reqStartMs,
+                responseBytes: banBody2.length,
+                requestBody: truncateBody(reqBodyText),
+                responseBody: truncateBody(banBody2),
             });
-            return new Response(JSON.stringify({
-                status: 403,
-                type: 'IP临时封禁',
-                message: `IP ${clientIP} 因频繁请求非法路由已被临时封禁，请于约 ${banMin} 分钟后再试`,
-                retryAfterSeconds: Math.ceil(ABUSE_CONFIG.BAN_DURATION_MS / 1000)
-            }), {
+            return new Response(banBody2, {
                 status: 403,
                 headers: {
                     'Content-Type': 'application/json',
@@ -1873,6 +1893,11 @@ async function handleRequest(request, env, ctx) {
         }
         // 未达封禁阈值：记录一次非法路由（INFO 级），便于日志页观察滥用趋势
         bumpMetric('status4xx');
+        const invalidBody = JSON.stringify({
+            status: 400,
+            type: 'CORS代理',
+            message: `无效的代理目标URL: 缺少协议和域名。收到: "${url.substring(0, 100)}"`
+        });
         addMemoryLog('info', '非法路由请求', {
             ip: clientIP,
             method: request.method,
@@ -1880,12 +1905,11 @@ async function handleRequest(request, env, ctx) {
             responseStatus: 400,
             invalidUrl: url.substring(0, 100),
             durationMs: Date.now() - reqStartMs,
+            responseBytes: invalidBody.length,
+            requestBody: truncateBody(reqBodyText),
+            responseBody: truncateBody(invalidBody),
         });
-        return new Response(JSON.stringify({
-            status: 400,
-            type: 'CORS代理',
-            message: `无效的代理目标URL: 缺少协议和域名。收到: "${url.substring(0, 100)}"`
-        }), {
+        return new Response(invalidBody, {
             status: 400,
             headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
@@ -1914,13 +1938,18 @@ async function handleRequest(request, env, ctx) {
 
     const accessCheck = ipWhitelisted
         ? { allowed: true, reason: 'ip_whitelisted' }
-        : await checkAccess(request, tUrlObj.pathname, reqStartMs);
+        : await checkAccess(request, tUrlObj.pathname, reqStartMs, reqBodyText);
     if (!accessCheck.allowed) {
         const userAgent = request.headers.get('X-User-Agent') || '';
         const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
 
         console.log(`🚫 [${clientIP}] 访问被拒绝: ${errorMessage}, 路径=${tUrlObj.pathname}`);
         bumpMetric('blockedUa'); bumpMetric('status4xx');
+        const acBody = JSON.stringify({
+            status: accessCheck.status,
+            type: "访问控制",
+            message: errorMessage
+        });
         // 记录访问控制拦截日志，便于日志页排查（此前仅 console，未落库）
         addMemoryLog('warn', '访问控制拦截', {
             ip: clientIP,
@@ -1930,13 +1959,12 @@ async function handleRequest(request, env, ctx) {
             userAgent,
             reason: accessCheck.reason,
             durationMs: Date.now() - reqStartMs,
+            responseBytes: acBody.length,
+            requestBody: truncateBody(reqBodyText),
+            responseBody: truncateBody(acBody),
         });
 
-        return new Response(JSON.stringify({
-            status: accessCheck.status,
-            type: "访问控制",
-            message: errorMessage
-        }), {
+        return new Response(acBody, {
             status: accessCheck.status,
             headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
@@ -1956,6 +1984,11 @@ async function handleRequest(request, env, ctx) {
         const sigCheck = await verifyClientSignature(request, tUrlObj.pathname, accessCheck.uaConfig.signGroupId);
         if (!sigCheck.ok) {
             bumpMetric('blockedUa'); bumpMetric('status4xx');
+            const sigBody = JSON.stringify({
+                status: 401,
+                type: '签名校验',
+                message: `签名校验失败: ${sigCheck.reason}`,
+            });
             addMemoryLog('warn', '签名校验失败', {
                 ip: clientIP,
                 method: request.method,
@@ -1965,13 +1998,12 @@ async function handleRequest(request, env, ctx) {
                 uaType: accessCheck.uaConfig.type || '',
                 reason: sigCheck.reason,
                 durationMs: Date.now() - reqStartMs,
+                responseBytes: sigBody.length,
+                requestBody: truncateBody(reqBodyText),
+                responseBody: truncateBody(sigBody),
             });
             console.log(`🚫 [${clientIP}] 签名校验失败: ${sigCheck.reason}, 路径=${tUrlObj.pathname}`);
-            return new Response(JSON.stringify({
-                status: 401,
-                type: '签名校验',
-                message: `签名校验失败: ${sigCheck.reason}`,
-            }), {
+            return new Response(sigBody, {
                 status: 401,
                 headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
             });
@@ -1988,24 +2020,19 @@ async function handleRequest(request, env, ctx) {
     // match 是 POST，参数在 body 里。转发前先把 body 读成文本（流只能读一次），
     // 解析出 fileName 作为缓存键的唯一依据（fileHash/fileSize 多变，不纳入键）。
     // matchBodyText 同时用于重建转发 body，避免流被消费后无法转发。
+    // matchBodyText 复用入口预读的 reqBodyText（流已在入口消费，不能再读）
     let matchBodyText = null;
     let matchFileName = '';
     let matchPayloadObj = null;  // 完整 match 请求参数（fileName/fileHash/fileSize/videoDuration/matchMode），随缓存一并保存
-    if (isMatchApi && request.method === 'POST') {
+    if (isMatchApi && request.method === 'POST' && reqBodyText !== null) {
         try {
-            matchBodyText = await request.text();
+            matchBodyText = reqBodyText;
             const mp = JSON.parse(matchBodyText);
             matchPayloadObj = (mp && typeof mp === 'object') ? mp : null;
             matchFileName = (mp && typeof mp.fileName === 'string') ? mp.fileName.trim() : '';
         } catch (_) { /* body 非 JSON 或读取失败：matchFileName 留空，不缓存 */ }
     }
 
-    // 非 match 的 POST/PUT/PATCH body：同样提前读成文本，供日志记录和转发重用
-    // （流只能读一次，读完后 fetchInit.body 改用文本重建）
-    let reqBodyText = null;
-    if (!isMatchApi && request.method !== 'GET' && request.method !== 'HEAD' && request.body) {
-        try { reqBodyText = await request.text(); } catch (_) { /* 忽略，body 留 null */ }
-    }
     // match 专用缓存键：仅用 fileName，同一集视频缓存键恒定，429 必命中兜底
     const matchCacheKeyOf = () => matchFileName
         ? `POST:/api/v2/match?fileName=${encodeURIComponent(matchFileName)}`
@@ -2149,12 +2176,13 @@ async function handleRequest(request, env, ctx) {
     if (!selectedKey) {
         // 全部密钥该接口已限流：缓存已在前面查过，直接返回流控
         console.log(`🚫 [${clientIP}] 接口 ${apiGroup} 所有密钥已限流，返回流控`);
-        addMemoryLog('warn', '密钥全限流', { ip: clientIP, path: apiPath, apiGroup, uaKey, durationMs: Date.now() - reqStartMs });
-        bumpMetric('upstream429'); bumpMetric('status4xx');
-        return new Response(JSON.stringify({
+        const exhaustBody = JSON.stringify({
             errorCode: 429, success: false,
             errorMessage: '当前接口所有密钥已达调用配额上限，请稍后再试',
-        }), {
+        });
+        addMemoryLog('warn', '密钥全限流', { ip: clientIP, path: apiPath, apiGroup, uaKey, durationMs: Date.now() - reqStartMs, responseBytes: exhaustBody.length, requestBody: truncateBody(reqBodyText), responseBody: truncateBody(exhaustBody) });
+        bumpMetric('upstream429'); bumpMetric('status4xx');
+        return new Response(exhaustBody, {
             status: 200,
             headers: {
                 'Content-Type': 'application/json',
@@ -2726,7 +2754,8 @@ async function verifyClientSignature(request, apiPath, signGroupId) {
 
 // 新增：访问控制检查函数
 // reqStartMs 由 handleRequest 传入（用于日志耗时统计），缺省则以当前时间兜底
-async function checkAccess(request, targetApiPath, reqStartMs = Date.now()) {
+// reqBodyText 为预读的请求体文本（用于限流日志记录请求体）
+async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqBodyText = null) {
     // 内部函数：识别User-Agent类型
     function identifyUserAgent(userAgent, ACCESS_CONFIG) {
         for (const [key, config] of Object.entries(ACCESS_CONFIG.userAgentLimits)) {
@@ -2779,6 +2808,7 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now()) {
             reason: rateLimitCheck.reason,
             path: apiPath,
             durationMs: Date.now() - reqStartMs,
+            requestBody: truncateBody(reqBodyText),
         });
 
         return { allowed: false, reason: rateLimitCheck.reason, status: 429 };
@@ -2816,6 +2846,7 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now()) {
                         pathLimit: pathLimit.maxRequestsPerHour,
                         currentCount: pathRateLimitCheck.count,
                         durationMs: Date.now() - reqStartMs,
+                        requestBody: truncateBody(reqBodyText),
                     });
 
                     return {
