@@ -6,9 +6,13 @@
 const hostlist = { 'api.dandanplay.net': null };
 
 // 弹弹play 接口分组（密钥限流状态按分组独立维护）
+// 注意：resolveApiGroup 按顺序前缀匹配，更具体的前缀必须放在更宽泛的前面。
+// bangumi_bgmtv(/api/v2/bangumi/bgmtv/) 必须在 bangumi(/api/v2/bangumi/) 之前，
+// 否则会被 bangumi 前缀先命中，无法独立限流。
 const DDP_API_GROUPS = {
     'search_anime': '/api/v2/search/anime',
     'search_episodes': '/api/v2/search/episodes',
+    'bangumi_bgmtv': '/api/v2/bangumi/bgmtv/',
     'bangumi': '/api/v2/bangumi/',
     'comment': '/api/v2/comment/',
     'match': '/api/v2/match',
@@ -1712,6 +1716,8 @@ async function handleRequest(request, env, ctx) {
 
     // 在 handleRequest 入口记录起始时间，所有路径共享
     const reqStartMs = Date.now();
+    // 客户端用户标识（ede.js 无条件签名，每次请求都带 X-Ddd-User）；供所有日志记录，方便按用户标识
+    const clientUserId = request.headers.get('X-Ddd-User') || '';
     const cl = parseInt(request.headers.get('Content-Length') || '0', 10);
     if (cl > 0) bumpMetric('bytesIn', cl);
 
@@ -1797,6 +1803,7 @@ async function handleRequest(request, env, ctx) {
             path: urlObj.pathname,
             responseStatus: 403,
             userAgent: request.headers.get('X-User-Agent') || '',
+            userId: clientUserId,
             remainMinutes: remainMin,
             durationMs: Date.now() - reqStartMs,
             responseBytes: banBody.length,
@@ -1831,6 +1838,7 @@ async function handleRequest(request, env, ctx) {
             path: urlObj.pathname,
             responseStatus: 403,
             userAgent: request.headers.get('X-User-Agent') || '',
+            userId: clientUserId,
             durationMs: Date.now() - reqStartMs,
             responseBytes: blBody.length,
             requestBody: truncateBody(reqBodyText),
@@ -1876,6 +1884,7 @@ async function handleRequest(request, env, ctx) {
                 path: urlObj.pathname,
                 responseStatus: 403,
                 userAgent: request.headers.get('X-User-Agent') || '',
+                userId: clientUserId,
                 invalidUrl: url.substring(0, 100),
                 durationMs: Date.now() - reqStartMs,
                 responseBytes: banBody2.length,
@@ -1903,6 +1912,7 @@ async function handleRequest(request, env, ctx) {
             method: request.method,
             path: urlObj.pathname,
             responseStatus: 400,
+            userId: clientUserId,
             invalidUrl: url.substring(0, 100),
             durationMs: Date.now() - reqStartMs,
             responseBytes: invalidBody.length,
@@ -1938,7 +1948,7 @@ async function handleRequest(request, env, ctx) {
 
     const accessCheck = ipWhitelisted
         ? { allowed: true, reason: 'ip_whitelisted' }
-        : await checkAccess(request, tUrlObj.pathname, reqStartMs, reqBodyText);
+        : await checkAccess(request, tUrlObj.pathname, reqStartMs, reqBodyText, clientUserId);
     if (!accessCheck.allowed) {
         const userAgent = request.headers.get('X-User-Agent') || '';
         const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
@@ -1957,6 +1967,7 @@ async function handleRequest(request, env, ctx) {
             path: tUrlObj.pathname,
             responseStatus: accessCheck.status,
             userAgent,
+            userId: clientUserId,
             reason: accessCheck.reason,
             durationMs: Date.now() - reqStartMs,
             responseBytes: acBody.length,
@@ -1997,6 +2008,7 @@ async function handleRequest(request, env, ctx) {
                 path: tUrlObj.pathname,
                 responseStatus: 401,
                 userAgent: request.headers.get('X-User-Agent') || '',
+                userId: clientUserId,
                 uaType: accessCheck.uaConfig.type || '',
                 reason: sigCheck.reason,
                 durationMs: Date.now() - reqStartMs,
@@ -2067,6 +2079,8 @@ async function handleRequest(request, env, ctx) {
                 ip: clientIP,
                 path: apiPath,
                 method: request.method,
+                userAgent: request.headers.get('X-User-Agent') || '',
+                userId: clientUserId,
                 responseStatus: 200,
                 cacheSource: 'MEM',
                 cacheAge: Math.round((Date.now() - cached.timestamp) / 1000) + 's',
@@ -2105,7 +2119,7 @@ async function handleRequest(request, env, ctx) {
                 bumpMetric('bytesOut', local.body.length || 0);
                 // 命中即回填本实例内存，降低后续同 key 的 DO RPC
                 memoryCache.apiCache.set(cacheKey, { data: local.body, timestamp: Date.now() });
-                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: local.status || 200, cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL', stale: !!local.stale, durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0, responseBody: truncateBody(local.body) });
+                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: local.status || 200, cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL', stale: !!local.stale, durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0, responseBody: truncateBody(local.body) });
                 return new Response(local.body, {
                     status: local.status || 200,
                     headers: {
@@ -2130,7 +2144,7 @@ async function handleRequest(request, env, ctx) {
             bumpMetric('r2CacheHits'); bumpMetric('totalResponses');
             bumpMetric('status2xx');
             bumpMetric('bytesOut', (cachedData && cachedData.length) ? cachedData.length : 0);
-            addMemoryLog('INFO', 'R2弹幕缓存命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: 200, cacheSource: 'R2', durationMs: Date.now() - reqStartMs, responseBytes: cachedData ? cachedData.length : 0, responseBody: truncateBody(cachedData) });
+            addMemoryLog('INFO', 'R2弹幕缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: 200, cacheSource: 'R2', durationMs: Date.now() - reqStartMs, responseBytes: cachedData ? cachedData.length : 0, responseBody: truncateBody(cachedData) });
             return new Response(cachedData, {
                 status: 200,
                 headers: {
@@ -2148,7 +2162,7 @@ async function handleRequest(request, env, ctx) {
                 console.log(`📦 [${clientIP}] 本地端弹幕兜底命中: ${episodeId} (${local.comment_count}条)`);
                 bumpMetric('r2CacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
                 bumpMetric('bytesOut', local.body.length || 0);
-                addMemoryLog('INFO', '本地端弹幕兜底命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: 200, cacheSource: 'LOCAL-COMMENT', durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0, responseBody: truncateBody(local.body) });
+                addMemoryLog('INFO', '本地端弹幕兜底命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: 200, cacheSource: 'LOCAL-COMMENT', durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0, responseBody: truncateBody(local.body) });
                 // 回填 R2 一级缓存，下次走边缘
                 const r2Promise = r2PutComment(env, r2Key, local.body).catch(() => {});
                 if (ctx && ctx.waitUntil) ctx.waitUntil(r2Promise);
@@ -2182,7 +2196,7 @@ async function handleRequest(request, env, ctx) {
             errorCode: 429, success: false,
             errorMessage: '当前接口所有密钥已达调用配额上限，请稍后再试',
         });
-        addMemoryLog('warn', '密钥全限流', { ip: clientIP, path: apiPath, apiGroup, uaKey, durationMs: Date.now() - reqStartMs, responseBytes: exhaustBody.length, requestBody: truncateBody(reqBodyText), responseBody: truncateBody(exhaustBody) });
+        addMemoryLog('warn', '密钥全限流', { ip: clientIP, path: apiPath, apiGroup, uaKey, userId: clientUserId, durationMs: Date.now() - reqStartMs, responseBytes: exhaustBody.length, requestBody: truncateBody(reqBodyText), responseBody: truncateBody(exhaustBody) });
         bumpMetric('upstream429'); bumpMetric('status4xx');
         return new Response(exhaustBody, {
             status: 200,
@@ -2303,6 +2317,7 @@ async function handleRequest(request, env, ctx) {
         method: request.method,
         path: apiPath,
         userAgent: request.headers.get('X-User-Agent') || '',
+        userId: clientUserId,
         responseStatus: response.status,
         cacheSource: isUpstreamRateLimited ? 'UPSTREAM-429' : 'MISS',
         upstreamStatus: upstreamErrorCode || response.status,
@@ -2757,7 +2772,8 @@ async function verifyClientSignature(request, apiPath, signGroupId) {
 // 新增：访问控制检查函数
 // reqStartMs 由 handleRequest 传入（用于日志耗时统计），缺省则以当前时间兜底
 // reqBodyText 为预读的请求体文本（用于限流日志记录请求体）
-async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqBodyText = null) {
+// clientUserId 为客户端 X-Ddd-User（用于限流日志记录用户标识）
+async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqBodyText = null, clientUserId = '') {
     // 内部函数：识别User-Agent类型
     function identifyUserAgent(userAgent, ACCESS_CONFIG) {
         for (const [key, config] of Object.entries(ACCESS_CONFIG.userAgentLimits)) {
@@ -2806,6 +2822,7 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
         addMemoryLog('warn', '频率限制触发', {
             ip: clientIP,
             userAgent,
+            userId: clientUserId,
             uaType: uaConfig.type,
             reason: rateLimitCheck.reason,
             path: apiPath,
@@ -2841,6 +2858,7 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
                     addMemoryLog('warn', '路径特定频率限制触发', {
                         ip: clientIP,
                         userAgent,
+                        userId: clientUserId,
                         uaType: uaConfig.type,
                         path: apiPath,
                         pathPattern: pathPattern,

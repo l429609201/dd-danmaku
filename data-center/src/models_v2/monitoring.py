@@ -98,6 +98,8 @@ class WorkerRequestLog(Base):
     upstream_status = Column(Integer, nullable=True)
     # 本次请求使用的密钥 id（密钥池调度排查）
     key_id = Column(String(64), nullable=True)
+    # 客户端用户标识（X-Ddd-User，来自 ede.js 签名头，用于按用户标识/过滤）
+    client_user_id = Column(String(64), index=True, nullable=True)
     # 请求处理耗时（毫秒）
     duration_ms = Column(Integer, nullable=True)
     # 响应体字节数（缓存命中/回源均记录，拦截类为 None）

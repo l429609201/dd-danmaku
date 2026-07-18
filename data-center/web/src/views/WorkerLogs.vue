@@ -10,6 +10,8 @@
       </el-select>
       <el-input v-model="keyword" placeholder="搜索 path" clearable style="width: 180px" @keyup.enter="reload" @clear="reload" />
       <el-input v-model="ipSearch" placeholder="搜索 IP" clearable style="width: 160px" @keyup.enter="reload" @clear="reload" />
+      <el-input v-model="uaSearch" placeholder="搜索 X-UA" clearable style="width: 170px" @keyup.enter="reload" @clear="reload" />
+      <el-input v-model="userIdSearch" placeholder="搜索 用户ID" clearable style="width: 150px" @keyup.enter="reload" @clear="reload" />
       <el-button type="primary" :icon="Search" @click="reload">查询</el-button>
       <el-switch v-model="prettyJson" active-text="JSON格式化" style="margin-right: 16px" />
       <div class="app-toolbar__spacer" />
@@ -49,6 +51,12 @@
         </el-table-column>
         <el-table-column label="IP" width="130">
           <template #default="{ row }"><span class="app-mono">{{ row.client_ip || '—' }}</span></template>
+        </el-table-column>
+        <el-table-column label="X-UA" width="140" show-overflow-tooltip>
+          <template #default="{ row }"><span class="app-mono">{{ row.ua_type || '—' }}</span></template>
+        </el-table-column>
+        <el-table-column label="用户ID" width="120" show-overflow-tooltip>
+          <template #default="{ row }"><span class="app-mono">{{ row.client_user_id || '—' }}</span></template>
         </el-table-column>
         <el-table-column prop="method" label="方法" width="80">
           <template #default="{ row }">{{ row.method || '—' }}</template>
@@ -102,6 +110,8 @@ export default {
     const level = ref('')
     const keyword = ref('')
     const ipSearch = ref('')       // 按客户端 IP 搜索
+    const uaSearch = ref('')       // 按 X-UA（X-User-Agent）搜索
+    const userIdSearch = ref('')   // 按客户端用户标识（X-Ddd-User）搜索
     const loading = ref(false)
     const loadingMore = ref(false) // 无限滚动加载中标记，防止重复触发
     const streaming = ref(false)
@@ -118,6 +128,8 @@ export default {
       if (level.value) q.set('level', level.value)
       if (keyword.value) q.set('keyword', keyword.value)
       if (ipSearch.value) q.set('ip', ipSearch.value)
+      if (uaSearch.value) q.set('ua', uaSearch.value)
+      if (userIdSearch.value) q.set('user_id', userIdSearch.value)
       const res = await apiV2(`/worker-logs?${q.toString()}`)
       // 每条加唯一 _uid，防止 el-table row-key 因 id 缺失把全部行当同一行
       const mapped = (res.items || []).map(item => ({
@@ -251,7 +263,7 @@ export default {
       if (abortCtrl) abortCtrl.abort()
       window.removeEventListener('scroll', onScroll)
     })
-    return { items, tableRef, level, keyword, ipSearch, loading, loadingMore, hasMore, streaming, prettyJson, expandedRows, Search,
+    return { items, tableRef, level, keyword, ipSearch, uaSearch, userIdSearch, loading, loadingMore, hasMore, streaming, prettyJson, expandedRows, Search,
       reload, loadMore, toggleStream, levelType, sourceType, sourceLabel, rowClass, fmtBytes, fmtJson, renderBody, fmt }
   }
 }
