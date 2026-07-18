@@ -112,6 +112,7 @@ let memoryCache = {
         uaConfigs: {},
         ipBlacklist: [],
         ipWhitelist: [],
+        signSecret: '',   // 客户端签名校验密钥(本地端下发,回退 env.SIGN_SECRET)
         lastUpdate: 0
     },
     // env 兜底基线（启动时加载，永不被下发覆盖；下发只在其之上做增量合并）
@@ -550,6 +551,12 @@ function applyRuntimeConfig(cfg) {
     if ('key_pool' in cfg) {
         const pool = Array.isArray(cfg.key_pool) ? cfg.key_pool : [];
         mergeKeyPool(null, pool);
+    }
+
+    // 客户端签名校验密钥：本地端下发覆盖(字段存在才更新;缺失则保持,由 env 兜底)
+    // 与 wasm 内置值一致。走 ControlHub(TLS+CONTROL_TOKEN)下发,无新增泄露面。
+    if ('sign_secret' in cfg) {
+        memoryCache.configCache.signSecret = typeof cfg.sign_secret === 'string' ? cfg.sign_secret : '';
     }
 
     memoryCache.configCache.lastUpdate = Date.now();
@@ -1703,7 +1710,7 @@ async function handleRequest(request, env, ctx) {
             headers: {
                 'Access-Control-Allow-Origin': '*',
                 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Agent, X-User-Agent, X-Challenge-Response',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Agent, X-User-Agent, X-Challenge-Response, X-Ddd-User, X-Ddd-Ts, X-Ddd-Sign',
             },
         });
     }
@@ -1920,6 +1927,37 @@ async function handleRequest(request, env, ctx) {
     console.log(`   - 目标路径: ${tUrlObj.pathname}`);
 
     // ========================================
+    // 🔏 客户端签名校验(按 UA 开关 signRequired 决定是否校验)
+    // ========================================
+    // 客户端(ede.js)无条件签名,此处仅当该 UA 配置开启 signRequired 时才强制校验。
+    // 白名单 IP 与未命中 UA 配置(uaConfig 缺失)不校验,保证灰度与兜底安全。
+    if (accessCheck.uaConfig && accessCheck.uaConfig.signRequired === true) {
+        const sigCheck = await verifyClientSignature(request, tUrlObj.pathname, env);
+        if (!sigCheck.ok) {
+            bumpMetric('blockedUa'); bumpMetric('status4xx');
+            addMemoryLog('warn', '签名校验失败', {
+                ip: clientIP,
+                method: request.method,
+                path: tUrlObj.pathname,
+                responseStatus: 401,
+                userAgent: request.headers.get('X-User-Agent') || '',
+                uaType: accessCheck.uaConfig.type || '',
+                reason: sigCheck.reason,
+            });
+            console.log(`🚫 [${clientIP}] 签名校验失败: ${sigCheck.reason}, 路径=${tUrlObj.pathname}`);
+            return new Response(JSON.stringify({
+                status: 401,
+                type: '签名校验',
+                message: `签名校验失败: ${sigCheck.reason}`,
+            }), {
+                status: 401,
+                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+            });
+        }
+        console.log(`✅ [${clientIP}] 签名校验通过 (UA: ${accessCheck.uaConfig.type})`);
+    }
+
+    // ========================================
     // 📦 缓存策略判断
     // ========================================
     const apiPath = tUrlObj.pathname;
@@ -2113,8 +2151,10 @@ async function handleRequest(request, env, ctx) {
     // 构建转发请求的头部，排除自定义头
     const forwardHeaders = {};
     for (const [key, value] of request.headers.entries()) {
-        // 排除自定义头，只转发标准头
-        if (key !== 'X-User-Agent' && key !== 'X-Challenge-Response') {
+        // 排除自定义头，只转发标准头(含本插件签名头 X-Ddd-*,不污染上游请求)
+        const lk = key.toLowerCase();
+        if (key !== 'X-User-Agent' && key !== 'X-Challenge-Response'
+            && lk !== 'x-ddd-user' && lk !== 'x-ddd-ts' && lk !== 'x-ddd-sign') {
             forwardHeaders[key] = value;
         }
     }
@@ -2556,6 +2596,84 @@ async function generateSignature(appId, timestamp, path, appSecret) {
     const hashBase64 = btoa(hashArray.map(byte => String.fromCharCode(byte)).join(''));
     return hashBase64;
 }
+
+// ========================================
+// 🔏 客户端请求签名校验（防代理端点被盗刷）
+// ========================================
+// 与 ede.js + sign.wasm 对齐:signature = Base64(HMAC-SHA256(SIGN_SECRET, userId+":"+ts+":"+path))
+// 客户端「无条件」签名,是否校验由本函数按 UA 的 signRequired 开关决定。
+// SECRET 从 env.SIGN_SECRET 读取(与 wasm 内置值保持一致;改动需同步重编译 wasm)。
+const SIGN_TIMESTAMP_TOLERANCE = 300; // 时间戳容差(秒),防重放
+let _signKeyCache = null;             // 导入后的 CryptoKey 缓存(避免每次 importKey)
+let _signKeyCacheSecret = '';         // 缓存对应的 secret,secret 变更时失效
+
+// 获取(并缓存)HMAC 密钥
+async function getSignKey(secret) {
+    if (_signKeyCache && _signKeyCacheSecret === secret) return _signKeyCache;
+    _signKeyCache = await crypto.subtle.importKey(
+        'raw', new TextEncoder().encode(secret),
+        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    );
+    _signKeyCacheSecret = secret;
+    return _signKeyCache;
+}
+
+// 计算客户端签名(Base64),供比对
+async function computeClientSignature(secret, userId, ts, path) {
+    const key = await getSignKey(secret);
+    const raw = `${userId}:${ts}:${path}`;
+    const sigBuf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(raw));
+    const bytes = new Uint8Array(sigBuf);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+}
+
+// 恒定时间字符串比较(防时序攻击):长度不同也走完整循环
+function timingSafeEqual(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    const len = Math.max(a.length, b.length);
+    let diff = a.length ^ b.length;
+    for (let i = 0; i < len; i++) {
+        diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+    }
+    return diff === 0;
+}
+
+/**
+ * 校验客户端签名请求头。
+ * @returns {{ok:boolean, reason?:string}} ok=true 通过;false 附拒绝原因
+ */
+async function verifyClientSignature(request, apiPath, env) {
+    // 验证密钥优先用本地端下发值(signSecret),回退 env.SIGN_SECRET;两者须与 wasm 内置一致
+    const downlink = memoryCache.configCache.signSecret;
+    const secret = (downlink && String(downlink)) || (env && env.SIGN_SECRET ? String(env.SIGN_SECRET) : '');
+    if (!secret) {
+        // 未配置 SECRET 无法校验:视为放行(避免误伤),但打日志提醒
+        console.log('⚠️ [签名校验] 未配置 SIGN_SECRET,跳过校验并放行');
+        return { ok: true, reason: 'no_secret' };
+    }
+    const userId = request.headers.get('X-Ddd-User') || '';
+    const tsStr = request.headers.get('X-Ddd-Ts') || '';
+    const sign = request.headers.get('X-Ddd-Sign') || '';
+    if (!userId || !tsStr || !sign) {
+        return { ok: false, reason: '缺少签名头(X-Ddd-User/Ts/Sign)' };
+    }
+    // 1. 时间戳校验(防重放)
+    const ts = parseInt(tsStr, 10);
+    if (!Number.isFinite(ts)) return { ok: false, reason: '时间戳非法' };
+    const now = Math.floor(Date.now() / 1000);
+    if (Math.abs(now - ts) > SIGN_TIMESTAMP_TOLERANCE) {
+        return { ok: false, reason: `时间戳超出容差(${SIGN_TIMESTAMP_TOLERANCE}s)` };
+    }
+    // 2. 重算签名并恒定时间比对(防伪造/时序攻击)
+    const expect = await computeClientSignature(secret, userId, ts, apiPath);
+    if (!timingSafeEqual(expect, sign)) {
+        return { ok: false, reason: '签名不匹配' };
+    }
+    return { ok: true };
+}
+
 // 新增：访问控制检查函数
 async function checkAccess(request, targetApiPath) {
     // 内部函数：识别User-Agent类型

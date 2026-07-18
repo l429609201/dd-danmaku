@@ -16,7 +16,7 @@
       <table class="data-table">
         <thead><tr>
           <th>ua_key</th><th>UA 匹配</th><th>最大请求</th><th>窗口(ms)</th>
-          <th>路径限流</th><th>启用</th><th>操作</th>
+          <th>路径限流</th><th>签名验证</th><th>启用</th><th>操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="r in items" :key="r.id">
@@ -25,6 +25,7 @@
             <td>{{ r.max_requests || '无限制' }}</td>
             <td>{{ r.window_ms }}</td>
             <td>{{ (r.path_limits && r.path_limits.length) || 0 }} 条</td>
+            <td>{{ r.sign_required ? '开' : '关' }}</td>
             <td>{{ r.enabled ? '是' : '否' }}</td>
             <td class="actions">
               <button class="link" @click="openEdit(r)">编辑</button>
@@ -53,6 +54,12 @@
             <button class="link danger" @click="removePathLimit(i)">删除</button>
           </div>
           <button class="btn" style="margin-top:8px" @click="addPathLimit">+ 添加路径限流</button>
+        </div>
+        <div class="form-item">
+          <label>
+            <input v-model="form.sign_required" type="checkbox" />
+            启用客户端签名验证（需在系统设置配置签名密钥，且客户端 ede.js 已更新）
+          </label>
         </div>
         <div class="modal-actions">
           <button class="btn" @click="showCreate=false">取消</button>
@@ -103,7 +110,7 @@ export default {
     const showCreate = ref(false)
     const creating = ref(false)
     const editId = ref(null)
-    const form = reactive({ ua_key: '', user_agent: '', max_requests: 0, window_ms: 60000, path_limits: [] })
+    const form = reactive({ ua_key: '', user_agent: '', max_requests: 0, window_ms: 60000, path_limits: [], sign_required: false })
     // JSON 导入相关
     const showImport = ref(false)
     const importText = ref('')
@@ -125,7 +132,7 @@ export default {
     // 重置表单
     const resetForm = () => {
       form.ua_key = ''; form.user_agent = ''; form.max_requests = 0
-      form.window_ms = 60000; form.path_limits = []
+      form.window_ms = 60000; form.path_limits = []; form.sign_required = false
     }
     const openCreate = () => { editId.value = null; resetForm(); showCreate.value = true }
     const openEdit = (r) => {
@@ -138,6 +145,7 @@ export default {
       form.path_limits = (r.path_limits || []).map(p => ({
         path: p.path || '', maxRequestsPerHour: p.maxRequestsPerHour || 0,
       }))
+      form.sign_required = !!r.sign_required
       showCreate.value = true
     }
     const addPathLimit = () => { form.path_limits.push({ path: '', maxRequestsPerHour: 0 }) }
@@ -154,6 +162,7 @@ export default {
           const body = {
             user_agent: form.user_agent, max_requests: form.max_requests,
             window_ms: form.window_ms, path_limits: pathLimits,
+            sign_required: form.sign_required,
           }
           const res = await apiV2(`/ua-rules/${editId.value}`, { method: 'PUT', body })
           msg.value = res.message || '更新成功'

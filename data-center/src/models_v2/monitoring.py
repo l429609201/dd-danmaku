@@ -77,6 +77,8 @@ class UaLimitRule(Base, TimestampMixin):
     # 路径限流：[{"path": "...", "maxRequestsPerHour": 50}]
     path_limits_json = Column(JSON, nullable=True)
     enabled = Column(Boolean, default=True, index=True, nullable=False)
+    # 是否要求该 UA 的请求通过客户端签名校验（下发为 signRequired，Worker 侧据此选择性验签）
+    sign_required = Column(Boolean, default=False, nullable=False)
 
 
 class WorkerRequestLog(Base):

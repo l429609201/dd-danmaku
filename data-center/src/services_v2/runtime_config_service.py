@@ -8,9 +8,12 @@ import logging
 from typing import Any, Dict
 
 from src.database import get_db_sync
-from src.models_v2 import IpRule, UaLimitRule
+from src.models_v2 import IpRule, UaLimitRule, AppSetting
 from src.models_v2.base import now
 from src.services_v2.control_client import control_client
+
+# 签名校验密钥在 app_settings 中的 key
+SIGN_SECRET_SETTING_KEY = "sign_secret"
 
 logger = logging.getLogger(__name__)
 
@@ -50,17 +53,26 @@ class RuntimeConfigService:
                     cfg["maxRequestsPerDay"] = u.max_requests_per_day
                 if u.description:
                     cfg["description"] = u.description
+                # 签名校验开关：仅在开启时下发 signRequired=true，Worker 默认不校验（灰度安全）
+                if getattr(u, "sign_required", False):
+                    cfg["signRequired"] = True
                 ua_configs[u.ua_key] = cfg
 
             # 密钥池：本地端启用的密钥列表，下发给 Worker 合并
             from src.services_v2.key_pool_service import key_pool_service
             key_pool = key_pool_service.build_pool_payload()
 
+            # 客户端签名校验密钥：与 wasm 内置值一致，走长连接(TLS)下发给 Worker 验签
+            sign_row = db.query(AppSetting).filter(
+                AppSetting.key == SIGN_SECRET_SETTING_KEY).first()
+            sign_secret = (sign_row.value or "") if sign_row else ""
+
             return {
                 "ip_blacklist": blacklist,
                 "ip_whitelist": whitelist,
                 "ua_configs": ua_configs,
                 "key_pool": key_pool,
+                "sign_secret": sign_secret,
             }
         finally:
             db.close()

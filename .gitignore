@@ -8,6 +8,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Python 字节码缓存（data-center 后端）
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
 # 环境变量文件
 .env
 .env.local
@@ -33,12 +39,12 @@ yarn-error.log*
 Thumbs.db
 test_new_architecture.md
 .augment/rules/rules.md
-.cunzhi-memory/metadata.json
-.cunzhi-memory/patterns.md
-.cunzhi-memory/metadata.json
-.cunzhi-memory/metadata.json
-.cunzhi-memory/metadata.json
-.cunzhi-memory/metadata.json
-.cunzhi-memory/preferences.md
-.sanshu-memory/memories.json
-.sanshu-memory/memories.json
+
+# 本地记忆工具目录（自动生成，去重后统一忽略整目录）
+.cunzhi-memory/*
+.sanshu-memory/*
+
+# WASM 签名子项目：依赖与中间产物不入库（sign.wasm 产物是否入库见项目约定）
+wasm-sign/node_modules/
+wasm-sign/build/*.wat
+wasm-sign/*

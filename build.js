@@ -15,6 +15,7 @@ try {
     console.log('- ENABLE_DETAILED_LOGGING:', process.env.ENABLE_DETAILED_LOGGING ? '已设置 (已隐藏)' : '未设置，使用默认值');
     console.log('- PRIVATE_KEY_HEX:', process.env.PRIVATE_KEY_HEX ? '已设置 (已隐藏)' : '未设置，非对称认证将不可用');
     console.log('- OAUTH_CONFIG:', process.env.OAUTH_CONFIG ? '已设置 (已隐藏)' : '未设置，OAuth认证将不可用');
+    console.log('- SIGN_SECRET:', process.env.SIGN_SECRET ? '已设置 (已隐藏)' : '未设置，客户端签名校验将跳过（放行）');
 
     // 读取 wrangler.toml 文件
     console.log('\n📝 读取 wrangler.toml...');
@@ -42,6 +43,7 @@ try {
     config = safeReplace(config, '{{ENABLE_DETAILED_LOGGING}}', process.env.ENABLE_DETAILED_LOGGING || 'true');
     config = safeReplace(config, '{{PRIVATE_KEY_HEX}}', process.env.PRIVATE_KEY_HEX);
     config = safeReplace(config, '{{OAUTH_CONFIG}}', process.env.OAUTH_CONFIG);
+    config = safeReplace(config, '{{SIGN_SECRET}}', process.env.SIGN_SECRET);
 
     // 写回文件
     console.log('💾 写入配置文件...');

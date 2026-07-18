@@ -28,6 +28,7 @@ def _brief(r: UaLimitRule) -> dict:
         "max_requests_per_day": r.max_requests_per_day,
         "description": r.description,
         "path_limits": r.path_limits_json or [], "enabled": r.enabled,
+        "sign_required": bool(getattr(r, "sign_required", False)),
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
 
@@ -47,6 +48,8 @@ def _to_worker_object(rows) -> dict:
             cfg["maxRequestsPerDay"] = r.max_requests_per_day
         if r.description:
             cfg["description"] = r.description
+        if getattr(r, "sign_required", False):
+            cfg["signRequired"] = True
         # 同时保留 maxRequests/windowMs，兼容旧消费方
         cfg["maxRequests"] = r.max_requests
         cfg["windowMs"] = r.window_ms
@@ -99,6 +102,7 @@ async def create_rule(body: UaRuleCreate, _: LocalUser = Depends(require_operato
             ua_key=body.ua_key.strip(), user_agent=body.user_agent,
             max_requests=body.max_requests, window_ms=body.window_ms,
             path_limits_json=body.path_limits or [], enabled=body.enabled,
+            sign_required=bool(body.sign_required),
         )
         db.add(rule)
         db.commit()
@@ -129,6 +133,8 @@ async def update_rule(rule_id: int, body: UaRuleUpdate,
             rule.path_limits_json = body.path_limits
         if body.enabled is not None:
             rule.enabled = body.enabled
+        if body.sign_required is not None:
+            rule.sign_required = bool(body.sign_required)
         rule.updated_at = now()
         db.commit()
         db.refresh(rule)
@@ -238,6 +244,11 @@ async def import_rules(body: UaRuleImport, _: LocalUser = Depends(require_operat
                 row.description = description
                 row.path_limits_json = path_limits
                 row.enabled = bool(enabled)
+                # 签名校验开关（兼容 camelCase/snake_case）
+                _sign_req = it.get("signRequired")
+                if _sign_req is None:
+                    _sign_req = it.get("sign_required", False)
+                row.sign_required = bool(_sign_req)
                 row.updated_at = now()
             db.commit()
             return created, updated, errors
