@@ -2043,6 +2043,7 @@ async function handleRequest(request, env, ctx) {
                 cacheAge: Math.round((Date.now() - cached.timestamp) / 1000) + 's',
                 durationMs: Date.now() - reqStartMs,
                 responseBytes: (cached.data && cached.data.length) ? cached.data.length : 0,
+                responseBody: truncateBody(cached.data),
             });
             return new Response(cached.data, {
                 status: 200,
@@ -2075,7 +2076,7 @@ async function handleRequest(request, env, ctx) {
                 bumpMetric('bytesOut', local.body.length || 0);
                 // 命中即回填本实例内存，降低后续同 key 的 DO RPC
                 memoryCache.apiCache.set(cacheKey, { data: local.body, timestamp: Date.now() });
-                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: local.status || 200, cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL', stale: !!local.stale, durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0 });
+                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: local.status || 200, cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL', stale: !!local.stale, durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0, responseBody: truncateBody(local.body) });
                 return new Response(local.body, {
                     status: local.status || 200,
                     headers: {
@@ -2100,7 +2101,7 @@ async function handleRequest(request, env, ctx) {
             bumpMetric('r2CacheHits'); bumpMetric('totalResponses');
             bumpMetric('status2xx');
             bumpMetric('bytesOut', (cachedData && cachedData.length) ? cachedData.length : 0);
-            addMemoryLog('INFO', 'R2弹幕缓存命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: 200, cacheSource: 'R2', durationMs: Date.now() - reqStartMs, responseBytes: cachedData ? cachedData.length : 0 });
+            addMemoryLog('INFO', 'R2弹幕缓存命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: 200, cacheSource: 'R2', durationMs: Date.now() - reqStartMs, responseBytes: cachedData ? cachedData.length : 0, responseBody: truncateBody(cachedData) });
             return new Response(cachedData, {
                 status: 200,
                 headers: {
@@ -2118,7 +2119,7 @@ async function handleRequest(request, env, ctx) {
                 console.log(`📦 [${clientIP}] 本地端弹幕兜底命中: ${episodeId} (${local.comment_count}条)`);
                 bumpMetric('r2CacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
                 bumpMetric('bytesOut', local.body.length || 0);
-                addMemoryLog('INFO', '本地端弹幕兜底命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: 200, cacheSource: 'LOCAL-COMMENT', durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0 });
+                addMemoryLog('INFO', '本地端弹幕兜底命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: 200, cacheSource: 'LOCAL-COMMENT', durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0, responseBody: truncateBody(local.body) });
                 // 回填 R2 一级缓存，下次走边缘
                 const r2Promise = r2PutComment(env, r2Key, local.body).catch(() => {});
                 if (ctx && ctx.waitUntil) ctx.waitUntil(r2Promise);

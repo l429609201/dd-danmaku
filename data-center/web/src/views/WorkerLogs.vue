@@ -17,7 +17,7 @@
     <el-card shadow="never">
       <el-table :data="items" size="small" v-loading="loading" empty-text="暂无日志"
                 :row-class-name="rowClass" max-height="600"
-                :expand-row-keys="expandedRows" row-key="id">
+                row-key="_uid">
         <!-- 展开行：显示请求体 & 响应体，只在有内容时才渲染 -->
         <el-table-column type="expand">
           <template #default="{ row }">
@@ -104,7 +104,10 @@ export default {
         if (level.value) q.set('level', level.value)
         if (keyword.value) q.set('keyword', keyword.value)
         const res = await apiV2(`/worker-logs?${q.toString()}`)
-        items.value = res.items || []
+        // 每条加唯一 _uid，防止 el-table row-key 因 id 缺失把全部行当同一行
+        items.value = (res.items || []).map(item => ({
+          ...item, _uid: item.id ? `db-${item.id}` : `r-${Math.random().toString(36).slice(2)}`
+        }))
       } catch (e) { ElMessage.error(e.message) } finally { loading.value = false }
     }
 
@@ -129,6 +132,8 @@ export default {
             if (!line) continue
             try {
               const item = JSON.parse(line.slice(6))
+              // SSE 推送无数据库 id，客户端生成唯一 _uid 避免 el-table 全部行共用同一 key
+              item._uid = `sse-${Date.now()}-${Math.random().toString(36).slice(2)}`
               item._live = true
               items.value.unshift(item)
               if (items.value.length > 200) items.value.pop()
