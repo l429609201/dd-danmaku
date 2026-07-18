@@ -7,23 +7,20 @@
       </div>
     </div>
     <p class="hint">
-      客户端请求签名验证密钥，按 UA 分组。每组 secret 需与<strong>内置该密钥、独立编译的 ede.js/sign.wasm</strong> 一致。
-      空授权 UA=公共组（所有需验签 UA 通用）；指定 UA=专属组。留空则该 UA 不受此组约束。
+      客户端请求签名验证密钥。每组 secret 需与<strong>内置该密钥、独立编译的 ede.js/sign.wasm</strong> 一致。
+      在「UA 限流规则」编辑里为某个 UA 选择本组，即对该 UA 启用签名验证。
     </p>
     <p v-if="msg" class="msg">{{ msg }}</p>
 
     <table class="data-table">
       <thead><tr>
-        <th>组ID</th><th>密钥</th><th>授权UA</th><th>启用</th><th>操作</th>
+        <th>组ID</th><th>密钥</th><th>备注</th><th>启用</th><th>操作</th>
       </tr></thead>
       <tbody>
         <tr v-for="r in items" :key="r.id">
           <td class="key">{{ r.group_id }}</td>
           <td class="msg">{{ r.secret }}</td>
-          <td>
-            <span v-if="!r.auth_ua_keys || !r.auth_ua_keys.length" class="badge badge-pool">公共组</span>
-            <span v-else v-for="u in r.auth_ua_keys" :key="u" class="badge">{{ u }}</span>
-          </td>
+          <td>{{ r.remark || '—' }}</td>
           <td>{{ r.enabled ? '是' : '否' }}</td>
           <td class="actions">
             <button class="link" @click="openEdit(r)">编辑</button>
@@ -50,15 +47,6 @@
           </div>
           <p class="hint" v-if="form.secret">⚠️ 随机生成的密钥需<strong>填入对应 wasm-sign/config.ts 重新编译部署</strong>，两端一致才能验签成功。</p>
         </div>
-        <div class="form-item">
-          <label>授权 UA（勾选=专属组；全不选=公共组）</label>
-          <div class="ua-list">
-            <label v-for="u in uaKeys" :key="u.ua_key" class="ua-check">
-              <input type="checkbox" :value="u.ua_key" v-model="form.auth_ua_keys" />
-              {{ u.ua_key }} <span class="muted">{{ u.user_agent }}</span>
-            </label>
-          </div>
-        </div>
         <div class="form-item"><label>备注</label><input v-model="form.remark" class="input full" /></div>
         <label class="chk"><input type="checkbox" v-model="form.enabled" /> 启用</label>
         <div class="modal-actions">
@@ -78,22 +66,17 @@ export default {
   name: 'SignKeyPool',
   setup() {
     const items = ref([])
-    const uaKeys = ref([])
     const msg = ref('')
     const showEdit = ref(false)
     const saving = ref(false)
     const editId = ref(null)
     const secretShow = ref(false)
-    const form = reactive({ group_id: '', secret: '', auth_ua_keys: [], remark: '', enabled: true })
+    const form = reactive({ group_id: '', secret: '', remark: '', enabled: true })
 
     const load = async () => {
       try {
-        const [s, u] = await Promise.all([
-          apiV2('/sign-key-pool'),
-          apiV2('/key-pool/ua-keys'),
-        ])
+        const s = await apiV2('/sign-key-pool')
         items.value = (s.data && s.data.items) || []
-        uaKeys.value = (u.data && u.data.items) || []
       } catch (e) { msg.value = e.message }
     }
 
@@ -111,7 +94,7 @@ export default {
     }
 
     const resetForm = () => {
-      form.group_id = ''; form.secret = ''; form.auth_ua_keys = []
+      form.group_id = ''; form.secret = ''
       form.remark = ''; form.enabled = true; secretShow.value = false
     }
     const openCreate = () => { editId.value = null; resetForm(); showEdit.value = true }
@@ -119,7 +102,6 @@ export default {
       editId.value = r.id
       form.group_id = r.group_id
       form.secret = ''  // 留空表示不修改
-      form.auth_ua_keys = [...(r.auth_ua_keys || [])]
       form.remark = r.remark || ''
       form.enabled = r.enabled
       secretShow.value = false
@@ -132,7 +114,7 @@ export default {
       saving.value = true
       try {
         if (editId.value) {
-          const body = { auth_ua_keys: form.auth_ua_keys, remark: form.remark, enabled: form.enabled }
+          const body = { remark: form.remark, enabled: form.enabled }
           if (form.secret) body.secret = form.secret
           const res = await apiV2(`/sign-key-pool/${editId.value}`, { method: 'PUT', body })
           msg.value = res.message || '更新成功'
@@ -156,7 +138,7 @@ export default {
     }
 
     onMounted(load)
-    return { items, uaKeys, msg, showEdit, saving, editId, form, secretShow,
+    return { items, msg, showEdit, saving, editId, form, secretShow,
       openCreate, openEdit, submit, toggle, del, genSecret, copySecret }
   }
 }

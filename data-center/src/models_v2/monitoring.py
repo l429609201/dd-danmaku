@@ -77,8 +77,8 @@ class UaLimitRule(Base, TimestampMixin):
     # 路径限流：[{"path": "...", "maxRequestsPerHour": 50}]
     path_limits_json = Column(JSON, nullable=True)
     enabled = Column(Boolean, default=True, index=True, nullable=False)
-    # 是否要求该 UA 的请求通过客户端签名校验（下发为 signRequired，Worker 侧据此选择性验签）
-    sign_required = Column(Boolean, default=False, nullable=False)
+    # 绑定的签名密钥组 group_id（关联 SignKeyPool.group_id）；空=不启用签名验证
+    sign_group_id = Column(String(64), nullable=True)
 
 
 class WorkerRequestLog(Base):
@@ -216,12 +216,10 @@ class SignKeyPool(Base, TimestampMixin):
     __tablename__ = "sign_key_pool"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    # 逻辑标识（下发给 Worker 作为组 id，便于区分来源）
+    # 逻辑标识（下发给 Worker 作为组 id，UA 规则通过它绑定本组）
     group_id = Column(String(64), unique=True, index=True, nullable=False)
     # 该组签名密钥（与对应 wasm 内置 SIGN_SECRET 一致）
     secret = Column(String(200), nullable=False)
-    # 授权 ua_key 列表（关联 UaLimitRule.ua_key），空数组=公共组
-    auth_ua_keys = Column(JSON, default=list, nullable=False)
     enabled = Column(Boolean, default=True, index=True, nullable=False)
     remark = Column(String(500), nullable=True)
 

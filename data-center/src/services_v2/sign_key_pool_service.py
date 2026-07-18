@@ -31,7 +31,6 @@ class SignKeyPoolService:
             "id": r.id,
             "group_id": r.group_id,
             "secret": secret_show,
-            "auth_ua_keys": r.auth_ua_keys or [],
             "enabled": r.enabled,
             "remark": r.remark,
             "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -59,7 +58,6 @@ class SignKeyPoolService:
             row = SignKeyPool(
                 group_id=group_id,
                 secret=str(data.get("secret") or "").strip(),
-                auth_ua_keys=list(data.get("auth_ua_keys") or []),
                 enabled=bool(data.get("enabled", True)),
                 remark=data.get("remark"),
             )
@@ -78,8 +76,6 @@ class SignKeyPoolService:
                 raise ValueError("密钥组不存在")
             if "secret" in data and data["secret"]:
                 row.secret = str(data["secret"]).strip()
-            if "auth_ua_keys" in data and data["auth_ua_keys"] is not None:
-                row.auth_ua_keys = list(data["auth_ua_keys"])
             if "enabled" in data and data["enabled"] is not None:
                 row.enabled = bool(data["enabled"])
             if "remark" in data:
@@ -111,7 +107,6 @@ class SignKeyPoolService:
             return [{
                 "groupId": r.group_id,
                 "secret": r.secret,
-                "authUaKeys": r.auth_ua_keys or [],
             } for r in rows]
         finally:
             db.close()

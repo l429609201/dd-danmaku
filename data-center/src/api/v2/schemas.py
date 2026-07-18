@@ -119,7 +119,7 @@ class UaRuleCreate(BaseModel):
     window_ms: int = 60000
     path_limits: Optional[List[dict]] = None  # [{"path": "...", "maxRequestsPerHour": 50}]
     enabled: bool = True
-    sign_required: bool = False  # 是否要求该 UA 请求通过客户端签名校验
+    sign_group_id: Optional[str] = None  # 绑定的签名密钥组 group_id，空=不启用
 
 
 class UaRuleUpdate(BaseModel):
@@ -128,7 +128,7 @@ class UaRuleUpdate(BaseModel):
     window_ms: Optional[int] = None
     path_limits: Optional[List[dict]] = None
     enabled: Optional[bool] = None
-    sign_required: Optional[bool] = None  # 是否要求该 UA 请求通过客户端签名校验
+    sign_group_id: Optional[str] = None  # 绑定的签名密钥组 group_id，空=不启用
 
 
 class UaRuleImport(BaseModel):

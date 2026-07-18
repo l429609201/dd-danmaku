@@ -1932,10 +1932,10 @@ async function handleRequest(request, env, ctx) {
     // ========================================
     // 🔏 客户端签名校验(按 UA 开关 signRequired 决定是否校验)
     // ========================================
-    // 客户端(ede.js)无条件签名,此处仅当该 UA 配置开启 signRequired 时才强制校验。
-    // 白名单 IP 与未命中 UA 配置(uaConfig 缺失)不校验,保证灰度与兜底安全。
-    if (accessCheck.uaConfig && accessCheck.uaConfig.signRequired === true) {
-        const sigCheck = await verifyClientSignature(request, tUrlObj.pathname, accessCheck.uaConfig.type);
+    // 客户端(ede.js)无条件签名,此处仅当该 UA 规则绑定了签名组(signGroupId)时才强制校验。
+    // 白名单 IP 与未绑定签名组的 UA 不校验,保证灰度与兜底安全。
+    if (accessCheck.uaConfig && accessCheck.uaConfig.signGroupId) {
+        const sigCheck = await verifyClientSignature(request, tUrlObj.pathname, accessCheck.uaConfig.signGroupId);
         if (!sigCheck.ok) {
             bumpMetric('blockedUa'); bumpMetric('status4xx');
             addMemoryLog('warn', '签名校验失败', {
@@ -2644,43 +2644,29 @@ function timingSafeEqual(a, b) {
 }
 
 /**
- * 按 UA 收集候选验签密钥(去重),仅来自签名密钥池。
- * 优先级:专属组(authUaKeys 含该 uaKey) → 公共组(authUaKeys 空)。
- * 返回 secret 字符串数组;为空表示未配置任何密钥。
+ * 按 signGroupId 从签名池取该组 secret。
+ * @param {String} signGroupId UA 规则绑定的签名组 group_id
+ * @returns {String} 该组 secret;找不到返回空串
  */
-function collectSignSecrets(uaKey) {
-    const secrets = [];
+function getSignSecretByGroup(signGroupId) {
+    if (!signGroupId) return '';
     const pool = memoryCache.configCache.signKeyPool || [];
-    if (Array.isArray(pool) && pool.length > 0) {
-        // 专属组:authUaKeys 命中当前 uaKey
-        if (uaKey) {
-            for (const g of pool) {
-                if (Array.isArray(g.authUaKeys) && g.authUaKeys.includes(uaKey) && g.secret) {
-                    secrets.push(String(g.secret));
-                }
-            }
-        }
-        // 公共组:authUaKeys 为空
-        for (const g of pool) {
-            if ((!g.authUaKeys || g.authUaKeys.length === 0) && g.secret) {
-                secrets.push(String(g.secret));
-            }
-        }
+    for (const g of pool) {
+        if (g && g.groupId === signGroupId && g.secret) return String(g.secret);
     }
-    // 去重,保持顺序
-    return Array.from(new Set(secrets));
+    return '';
 }
 
 /**
- * 校验客户端签名请求头。按 UA 找候选密钥组,逐个 secret 尝试,任一通过即放行。
- * @param {String} uaKey 由 identifyUserAgent 得到的 ua_key,用于选择密钥组
+ * 校验客户端签名请求头。用 UA 规则绑定的签名组 secret 验证。
+ * @param {String} signGroupId 由 uaConfig.signGroupId 得到的签名组
  * @returns {{ok:boolean, reason?:string}} ok=true 通过;false 附拒绝原因
  */
-async function verifyClientSignature(request, apiPath, uaKey) {
-    const secrets = collectSignSecrets(uaKey);
-    if (secrets.length === 0) {
-        // 未配置任何密钥无法校验:视为放行(避免误伤),但打日志提醒
-        console.log('⚠️ [签名校验] 签名密钥池为空,跳过校验并放行');
+async function verifyClientSignature(request, apiPath, signGroupId) {
+    const secret = getSignSecretByGroup(signGroupId);
+    if (!secret) {
+        // 绑定的组不存在或无密钥:无法校验,放行(避免误伤)并打日志提醒
+        console.log(`⚠️ [签名校验] 签名组 ${signGroupId} 未找到或无密钥,跳过校验并放行`);
         return { ok: true, reason: 'no_secret' };
     }
     const userId = request.headers.get('X-Ddd-User') || '';
@@ -2696,14 +2682,12 @@ async function verifyClientSignature(request, apiPath, uaKey) {
     if (Math.abs(now - ts) > SIGN_TIMESTAMP_TOLERANCE) {
         return { ok: false, reason: `时间戳超出容差(${SIGN_TIMESTAMP_TOLERANCE}s)` };
     }
-    // 2. 逐个候选密钥重算签名并恒定时间比对,任一通过即放行(支持多组/轮换)
-    for (const secret of secrets) {
-        const expect = await computeClientSignature(secret, userId, ts, apiPath);
-        if (timingSafeEqual(expect, sign)) {
-            return { ok: true };
-        }
+    // 2. 重算签名并恒定时间比对(防伪造/时序攻击)
+    const expect = await computeClientSignature(secret, userId, ts, apiPath);
+    if (!timingSafeEqual(expect, sign)) {
+        return { ok: false, reason: '签名不匹配' };
     }
-    return { ok: false, reason: '签名不匹配' };
+    return { ok: true };
 }
 
 // 新增：访问控制检查函数
