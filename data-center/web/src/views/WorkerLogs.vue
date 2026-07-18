@@ -59,9 +59,9 @@
         <el-table-column prop="status" label="状态" width="80">
           <template #default="{ row }">{{ row.status || '—' }}</template>
         </el-table-column>
-        <el-table-column label="缓存来源" width="110">
+        <el-table-column label="缓存来源" width="130">
           <template #default="{ row }">
-            <el-tag v-if="row.cache_source" :type="sourceType(row.cache_source)" size="small">{{ row.cache_source }}</el-tag>
+            <el-tag v-if="row.cache_source" :type="sourceType(row.cache_source)" size="small">{{ sourceLabel(row.cache_source) }}</el-tag>
             <span v-else>—</span>
           </template>
         </el-table-column>
@@ -193,6 +193,16 @@ export default {
       if (s === 'MISS' || s === 'UPSTREAM-429') return s === 'MISS' ? 'info' : 'danger'
       return 'success'
     }
+    // 缓存来源英文值 → 中文展示（仅用于显示，颜色判断仍用原始英文值）
+    const sourceLabel = (s) => ({
+      'MEM': '内存缓存',
+      'LOCAL': '本地缓存',
+      'LOCAL-STALE': '本地缓存(过期)',
+      'LOCAL-COMMENT': '本地弹幕兜底',
+      'R2': 'R2缓存',
+      'MISS': '未命中(回源)',
+      'UPSTREAM-429': '上游限流',
+    }[s] || s)
     // JSON 美化格式化（截断提示原样保留，JSON 则缩进展示）
     const fmtJson = (text) => {
       if (!text) return ''
@@ -242,7 +252,7 @@ export default {
       window.removeEventListener('scroll', onScroll)
     })
     return { items, tableRef, level, keyword, ipSearch, loading, loadingMore, hasMore, streaming, prettyJson, expandedRows, Search,
-      reload, loadMore, toggleStream, levelType, sourceType, rowClass, fmtBytes, fmtJson, renderBody, fmt }
+      reload, loadMore, toggleStream, levelType, sourceType, sourceLabel, rowClass, fmtBytes, fmtJson, renderBody, fmt }
   }
 }
 </script>
