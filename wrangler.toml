@@ -24,10 +24,6 @@ CONTROL_TOKEN = "{{CONTROL_TOKEN}}"
 # APP_SECRET
 # APP_SECRET_2
 
-# 客户端请求签名校验密钥（HMAC-SHA256）。
-# 必须与 wasm-sign/assembly/config.ts 里编译进 sign.wasm 的 SIGN_SECRET 完全一致；
-# 修改后需重新 `npm run build` 生成 sign.wasm 并重新部署。留空则跳过校验（放行）。
-SIGN_SECRET = "{{SIGN_SECRET}}"
 
 
 # wrangler.toml (wrangler v3.88.0^)

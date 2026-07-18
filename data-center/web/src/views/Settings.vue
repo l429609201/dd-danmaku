@@ -41,34 +41,6 @@
       </div>
     </div>
 
-    <!-- 客户端签名校验密钥（与 wasm 内置值一致，用于 Worker 验签） -->
-    <div class="panel" style="margin-top: 20px;">
-      <div class="panel-head">
-        <h2 class="panel-title">客户端签名密钥</h2>
-        <div class="panel-actions">
-          <button class="btn" @click="genSignSecret">随机生成</button>
-          <button class="btn btn-primary" @click="saveSignSecret" :disabled="signSaving">
-            {{ signSaving ? '保存中...' : '保存并下发' }}
-          </button>
-        </div>
-      </div>
-      <p class="hint">
-        用于校验客户端（ede.js）请求签名，须与 <code>wasm-sign</code> 内置 <code>SIGN_SECRET</code>
-        <strong>完全一致</strong>。修改密钥需同步重新编译 sign.wasm 并部署，否则签名将失配。
-        当前状态：<strong>{{ signConfigured ? `已配置（${signLength} 位）` : '未配置' }}</strong>
-      </p>
-      <div class="token-row">
-        <input v-model="signSecret" class="input full" :type="signShow ? 'text' : 'password'"
-               placeholder="输入或随机生成签名密钥（留空保存则清除，等同关闭校验）" autocomplete="new-password" />
-        <button class="btn" @click="signShow = !signShow" :disabled="!signSecret">{{ signShow ? '隐藏' : '显示' }}</button>
-        <button class="btn" @click="copySignSecret" :disabled="!signSecret">复制</button>
-      </div>
-      <p class="hint" v-if="signSecret">
-        ⚠️ 随机生成的密钥请<strong>先复制并填入 wasm-sign/assembly/config.ts 重新编译部署</strong>，再点「保存并下发」，否则两端不一致会导致验签失败。
-      </p>
-    </div>
-
-
     <div v-if="showPasswordModal" class="modal-mask" @click.self="closePasswordModal">
       <div class="modal">
         <div class="modal-header">
@@ -107,53 +79,6 @@ export default {
   setup() {
     const items = ref([])
     const msg = ref('')
-
-    // 客户端签名密钥
-    const signSecret = ref('')
-    const signConfigured = ref(false)
-    const signLength = ref(0)
-    const signSaving = ref(false)
-    const signShow = ref(false)
-
-    // 随机生成 48 位 base64url 密钥(与 wasm-sign 生成规格一致,无特殊字符)
-    const genSignSecret = () => {
-      const bytes = new Uint8Array(36)
-      crypto.getRandomValues(bytes)
-      let bin = ''
-      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
-      signSecret.value = btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
-      signShow.value = true  // 生成后自动显示,便于复制到 config.ts
-      msg.value = '已生成随机密钥，请先复制填入 config.ts 重新编译，再保存下发'
-    }
-
-    const copySignSecret = async () => {
-      try {
-        await navigator.clipboard.writeText(signSecret.value)
-        msg.value = '已复制签名密钥'
-      } catch (e) { msg.value = '复制失败，请手动选择复制' }
-    }
-
-    const loadSignSecret = async () => {
-      try {
-        const res = await apiV2('/settings/sign-secret')
-        signConfigured.value = !!(res.data && res.data.configured)
-        signLength.value = (res.data && res.data.length) || 0
-      } catch (e) { /* 忽略:未配置时不报错 */ }
-    }
-
-    const saveSignSecret = async () => {
-      signSaving.value = true
-      msg.value = ''
-      try {
-        const res = await apiV2('/settings/sign-secret', {
-          method: 'PUT', body: { value: signSecret.value },
-        })
-        msg.value = res.message || '已保存'
-        signSecret.value = ''  // 保存后清空输入框,不回显
-        await loadSignSecret()
-      } catch (e) { msg.value = e.message }
-      finally { signSaving.value = false }
-    }
 
     // 外部控制密钥
     const extToken = ref('')
@@ -286,7 +211,6 @@ export default {
 
     onMounted(() => {
       load()
-      loadSignSecret()
       window.addEventListener('show-password-modal', openPasswordModal)
     })
     onUnmounted(() => {
@@ -295,8 +219,6 @@ export default {
 
     return {
       items, msg, save,
-      signSecret, signConfigured, signLength, signSaving, saveSignSecret,
-      signShow, genSignSecret, copySignSecret,
       extToken, extShow, extLoading, loadExtToken, rotateExtToken, copyExtToken,
       showPasswordModal, passwordForm, passwordLoading,
       closePasswordModal, submitPassword

@@ -206,6 +206,26 @@ class AppKeyPool(Base, TimestampMixin):
     remark = Column(String(500), nullable=True)
 
 
+class SignKeyPool(Base, TimestampMixin):
+    """客户端签名密钥池：本地端维护并下发给 Worker 用于验签
+
+    每组 secret 需与某个内置该密钥、独立编译的 ede.js/sign.wasm 发布版一致。
+    auth_ua_keys 为空 => 公共组（所有需验签 UA 通用）；非空 => 仅这些 ua_key 用该组验证。
+    Worker 按 UA 找对应组，逐个 secret 尝试验证，任一通过即放行。
+    """
+    __tablename__ = "sign_key_pool"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 逻辑标识（下发给 Worker 作为组 id，便于区分来源）
+    group_id = Column(String(64), unique=True, index=True, nullable=False)
+    # 该组签名密钥（与对应 wasm 内置 SIGN_SECRET 一致）
+    secret = Column(String(200), nullable=False)
+    # 授权 ua_key 列表（关联 UaLimitRule.ua_key），空数组=公共组
+    auth_ua_keys = Column(JSON, default=list, nullable=False)
+    enabled = Column(Boolean, default=True, index=True, nullable=False)
+    remark = Column(String(500), nullable=True)
+
+
 class WorkerKeyState(Base):
     """Worker 上报的密钥限流状态快照（每 worker 一条，覆盖更新）
 

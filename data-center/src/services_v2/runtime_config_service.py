@@ -8,12 +8,9 @@ import logging
 from typing import Any, Dict
 
 from src.database import get_db_sync
-from src.models_v2 import IpRule, UaLimitRule, AppSetting
+from src.models_v2 import IpRule, UaLimitRule
 from src.models_v2.base import now
 from src.services_v2.control_client import control_client
-
-# 签名校验密钥在 app_settings 中的 key
-SIGN_SECRET_SETTING_KEY = "sign_secret"
 
 logger = logging.getLogger(__name__)
 
@@ -62,17 +59,16 @@ class RuntimeConfigService:
             from src.services_v2.key_pool_service import key_pool_service
             key_pool = key_pool_service.build_pool_payload()
 
-            # 客户端签名校验密钥：与 wasm 内置值一致，走长连接(TLS)下发给 Worker 验签
-            sign_row = db.query(AppSetting).filter(
-                AppSetting.key == SIGN_SECRET_SETTING_KEY).first()
-            sign_secret = (sign_row.value or "") if sign_row else ""
+            # 客户端签名密钥池：按 UA 分组，与对应 wasm 内置值一致，走长连接(TLS)下发给 Worker 验签
+            from src.services_v2.sign_key_pool_service import sign_key_pool_service
+            sign_key_pool = sign_key_pool_service.build_pool_payload()
 
             return {
                 "ip_blacklist": blacklist,
                 "ip_whitelist": whitelist,
                 "ua_configs": ua_configs,
                 "key_pool": key_pool,
-                "sign_secret": sign_secret,
+                "sign_key_pool": sign_key_pool,
             }
         finally:
             db.close()

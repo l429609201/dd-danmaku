@@ -113,15 +113,20 @@
         </div>
       </div>
     </div>
+
+    <!-- 签名密钥池（客户端请求验签，按 UA 分组） -->
+    <SignKeyPool />
   </div>
 </template>
 
 <script>
 import { reactive, ref, onMounted } from 'vue'
 import { apiV2 } from '../utils/api.js'
+import SignKeyPool from './SignKeyPool.vue'
 
 export default {
   name: 'KeyPool',
+  components: { SignKeyPool },
   setup() {
     const items = ref([])
     const states = ref([])
