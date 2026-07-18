@@ -45,6 +45,9 @@ const ABUSE_CONFIG = {
     MAX_TRACKED_IPS: 50000,          // 最多跟踪的 IP 数（防内存泄漏）
 };
 
+// 日志请求/响应体截断上限（字节）：超出部分追加省略提示，防止 log.report payload 过大
+const LOG_BODY_MAX_BYTES = 4096;
+
 // R2 弹幕缓存配置
 const R2_CACHE_CONFIG = {
     TTL: 12 * 60 * 60 * 1000,              // 12小时过期
@@ -183,6 +186,16 @@ const DATA_RETENTION_HOURS = 24; // 内存日志只保留1天
 // ========================================
 // 📝 内存日志管理
 // ========================================
+
+/**
+ * 截断 body 文本到 LOG_BODY_MAX_BYTES，超出追加省略提示。
+ * 避免大响应体（如弹幕列表）撑爆 log.report payload。
+ */
+function truncateBody(text) {
+    if (!text) return null;
+    if (text.length <= LOG_BODY_MAX_BYTES) return text;
+    return text.slice(0, LOG_BODY_MAX_BYTES) + `…[已截断，原始${text.length}字节]`;
+}
 
 // 添加日志到内存
 function addMemoryLog(level, message, data = {}) {
@@ -1697,8 +1710,8 @@ async function handleRequest(request, env, ctx) {
                      request.headers.get('X-Real-IP') ||
                      'unknown';
 
-    // 指标：请求计数 + 入流量估算（请求头长度近似）
-    bumpMetric('totalRequests');
+    // 在 handleRequest 入口记录起始时间，所有路径共享
+    const reqStartMs = Date.now();
     const cl = parseInt(request.headers.get('Content-Length') || '0', 10);
     if (cl > 0) bumpMetric('bytesIn', cl);
 
@@ -1771,6 +1784,7 @@ async function handleRequest(request, env, ctx) {
             responseStatus: 403,
             userAgent: request.headers.get('X-User-Agent') || '',
             remainMinutes: remainMin,
+            durationMs: Date.now() - reqStartMs,
         });
         return new Response(JSON.stringify({
             status: 403,
@@ -1799,7 +1813,8 @@ async function handleRequest(request, env, ctx) {
             method: request.method,
             path: urlObj.pathname,
             responseStatus: 403,
-            userAgent: request.headers.get('X-User-Agent') || ''
+            userAgent: request.headers.get('X-User-Agent') || '',
+            durationMs: Date.now() - reqStartMs,
         });
 
         return new Response(JSON.stringify({
@@ -1840,6 +1855,7 @@ async function handleRequest(request, env, ctx) {
                 responseStatus: 403,
                 userAgent: request.headers.get('X-User-Agent') || '',
                 invalidUrl: url.substring(0, 100),
+                durationMs: Date.now() - reqStartMs,
             });
             return new Response(JSON.stringify({
                 status: 403,
@@ -1863,6 +1879,7 @@ async function handleRequest(request, env, ctx) {
             path: urlObj.pathname,
             responseStatus: 400,
             invalidUrl: url.substring(0, 100),
+            durationMs: Date.now() - reqStartMs,
         });
         return new Response(JSON.stringify({
             status: 400,
@@ -1912,6 +1929,7 @@ async function handleRequest(request, env, ctx) {
             responseStatus: accessCheck.status,
             userAgent,
             reason: accessCheck.reason,
+            durationMs: Date.now() - reqStartMs,
         });
 
         return new Response(JSON.stringify({
@@ -1946,6 +1964,7 @@ async function handleRequest(request, env, ctx) {
                 userAgent: request.headers.get('X-User-Agent') || '',
                 uaType: accessCheck.uaConfig.type || '',
                 reason: sigCheck.reason,
+                durationMs: Date.now() - reqStartMs,
             });
             console.log(`🚫 [${clientIP}] 签名校验失败: ${sigCheck.reason}, 路径=${tUrlObj.pathname}`);
             return new Response(JSON.stringify({
@@ -1979,6 +1998,13 @@ async function handleRequest(request, env, ctx) {
             matchPayloadObj = (mp && typeof mp === 'object') ? mp : null;
             matchFileName = (mp && typeof mp.fileName === 'string') ? mp.fileName.trim() : '';
         } catch (_) { /* body 非 JSON 或读取失败：matchFileName 留空，不缓存 */ }
+    }
+
+    // 非 match 的 POST/PUT/PATCH body：同样提前读成文本，供日志记录和转发重用
+    // （流只能读一次，读完后 fetchInit.body 改用文本重建）
+    let reqBodyText = null;
+    if (!isMatchApi && request.method !== 'GET' && request.method !== 'HEAD' && request.body) {
+        try { reqBodyText = await request.text(); } catch (_) { /* 忽略，body 留 null */ }
     }
     // match 专用缓存键：仅用 fileName，同一集视频缓存键恒定，429 必命中兜底
     const matchCacheKeyOf = () => matchFileName
@@ -2014,7 +2040,9 @@ async function handleRequest(request, env, ctx) {
                 method: request.method,
                 responseStatus: 200,
                 cacheSource: 'MEM',
-                cacheAge: Math.round((Date.now() - cached.timestamp) / 1000) + 's'
+                cacheAge: Math.round((Date.now() - cached.timestamp) / 1000) + 's',
+                durationMs: Date.now() - reqStartMs,
+                responseBytes: (cached.data && cached.data.length) ? cached.data.length : 0,
             });
             return new Response(cached.data, {
                 status: 200,
@@ -2047,7 +2075,7 @@ async function handleRequest(request, env, ctx) {
                 bumpMetric('bytesOut', local.body.length || 0);
                 // 命中即回填本实例内存，降低后续同 key 的 DO RPC
                 memoryCache.apiCache.set(cacheKey, { data: local.body, timestamp: Date.now() });
-                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: local.status || 200, cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL', stale: !!local.stale });
+                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: local.status || 200, cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL', stale: !!local.stale, durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0 });
                 return new Response(local.body, {
                     status: local.status || 200,
                     headers: {
@@ -2072,7 +2100,7 @@ async function handleRequest(request, env, ctx) {
             bumpMetric('r2CacheHits'); bumpMetric('totalResponses');
             bumpMetric('status2xx');
             bumpMetric('bytesOut', (cachedData && cachedData.length) ? cachedData.length : 0);
-            addMemoryLog('INFO', 'R2弹幕缓存命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: 200, cacheSource: 'R2' });
+            addMemoryLog('INFO', 'R2弹幕缓存命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: 200, cacheSource: 'R2', durationMs: Date.now() - reqStartMs, responseBytes: cachedData ? cachedData.length : 0 });
             return new Response(cachedData, {
                 status: 200,
                 headers: {
@@ -2090,7 +2118,7 @@ async function handleRequest(request, env, ctx) {
                 console.log(`📦 [${clientIP}] 本地端弹幕兜底命中: ${episodeId} (${local.comment_count}条)`);
                 bumpMetric('r2CacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
                 bumpMetric('bytesOut', local.body.length || 0);
-                addMemoryLog('INFO', '本地端弹幕兜底命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: 200, cacheSource: 'LOCAL-COMMENT' });
+                addMemoryLog('INFO', '本地端弹幕兜底命中', { ip: clientIP, path: apiPath, method: request.method, responseStatus: 200, cacheSource: 'LOCAL-COMMENT', durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0 });
                 // 回填 R2 一级缓存，下次走边缘
                 const r2Promise = r2PutComment(env, r2Key, local.body).catch(() => {});
                 if (ctx && ctx.waitUntil) ctx.waitUntil(r2Promise);
@@ -2120,7 +2148,7 @@ async function handleRequest(request, env, ctx) {
     if (!selectedKey) {
         // 全部密钥该接口已限流：缓存已在前面查过，直接返回流控
         console.log(`🚫 [${clientIP}] 接口 ${apiGroup} 所有密钥已限流，返回流控`);
-        addMemoryLog('warn', '密钥全限流', { ip: clientIP, path: apiPath, apiGroup, uaKey });
+        addMemoryLog('warn', '密钥全限流', { ip: clientIP, path: apiPath, apiGroup, uaKey, durationMs: Date.now() - reqStartMs });
         bumpMetric('upstream429'); bumpMetric('status4xx');
         return new Response(JSON.stringify({
             errorCode: 429, success: false,
@@ -2185,9 +2213,9 @@ async function handleRequest(request, env, ctx) {
         // GET/HEAD 不能带 body，否则 fetch 抛 TypeError（Worker 1101）
         const fetchInit = { headers, method: request.method };
         if (request.method !== 'GET' && request.method !== 'HEAD') {
-            // match 的 body 流已被提前读取用于解析 fileName，用文本重建转发
-            // （流只能读一次，且可支持限流切换密钥时的重试）；其他 POST 沿用原始流
-            fetchInit.body = (matchBodyText !== null) ? matchBodyText : request.body;
+            // match body 已预读为 matchBodyText；其他 POST 用 reqBodyText（已提前读取），
+            // 两者都是文本，支持限流切换密钥时的安全重试
+            fetchInit.body = (matchBodyText !== null) ? matchBodyText : (reqBodyText !== null ? reqBodyText : request.body);
         }
         const resp = await fetch(url, fetchInit);
         const text = await resp.text();
@@ -2238,7 +2266,7 @@ async function handleRequest(request, env, ctx) {
     else if (response.status >= 400 && response.status < 500) bumpMetric('status4xx');
     else if (response.status >= 500) bumpMetric('status5xx');
 
-    // 记录API请求到内存日志（含缓存来源/密钥/上游状态/耗时，便于排查）
+    // 记录API请求到内存日志（含缓存来源/密钥/上游状态/耗时/响应字节/请求响应体，便于排查）
     addMemoryLog(isUpstreamRateLimited ? 'WARN' : 'INFO', 'API请求处理', {
         ip: clientIP,
         method: request.method,
@@ -2248,7 +2276,12 @@ async function handleRequest(request, env, ctx) {
         cacheSource: isUpstreamRateLimited ? 'UPSTREAM-429' : 'MISS',
         upstreamStatus: upstreamErrorCode || response.status,
         keyId: selectedKey ? selectedKey.id : '',
-        durationMs: Date.now() - upstreamStart,
+        durationMs: Date.now() - reqStartMs,
+        responseBytes: responseText ? responseText.length : 0,
+        // 请求体：match 用 matchBodyText，其他 POST 用 reqBodyText，截断到 4 KB
+        requestBody: truncateBody(matchBodyText !== null ? matchBodyText : reqBodyText),
+        // 响应体：截断到 4 KB（弹幕响应可达数百 KB，全量会撑爆 log.report）
+        responseBody: truncateBody(responseText),
         timestamp: Date.now()
     });
 
@@ -2742,7 +2775,8 @@ async function checkAccess(request, targetApiPath) {
             userAgent,
             uaType: uaConfig.type,
             reason: rateLimitCheck.reason,
-            path: apiPath
+            path: apiPath,
+            durationMs: Date.now() - reqStartMs,
         });
 
         return { allowed: false, reason: rateLimitCheck.reason, status: 429 };
@@ -2778,7 +2812,8 @@ async function checkAccess(request, targetApiPath) {
                         pathPattern: pathPattern,
                         reason: pathRateLimitCheck.reason,
                         pathLimit: pathLimit.maxRequestsPerHour,
-                        currentCount: pathRateLimitCheck.count
+                        currentCount: pathRateLimitCheck.count,
+                        durationMs: Date.now() - reqStartMs,
                     });
 
                     return {

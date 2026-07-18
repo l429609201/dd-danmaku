@@ -100,6 +100,12 @@ class WorkerRequestLog(Base):
     key_id = Column(String(64), nullable=True)
     # 请求处理耗时（毫秒）
     duration_ms = Column(Integer, nullable=True)
+    # 响应体字节数（缓存命中/回源均记录，拦截类为 None）
+    response_bytes = Column(Integer, nullable=True)
+    # 请求体内容（POST/PUT 截断至 4 KB，GET 为 None）
+    request_body = Column(Text, nullable=True)
+    # 响应体内容（截断至 4 KB，拦截类早退路径为 None）
+    response_body = Column(Text, nullable=True)
     # INFO / WARN / ERROR
     level = Column(String(20), index=True, nullable=False, default="INFO")
     message = Column(Text, nullable=True)

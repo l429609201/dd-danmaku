@@ -16,7 +16,24 @@
 
     <el-card shadow="never">
       <el-table :data="items" size="small" v-loading="loading" empty-text="暂无日志"
-                :row-class-name="rowClass" max-height="600">
+                :row-class-name="rowClass" max-height="600"
+                :expand-row-keys="expandedRows" row-key="id">
+        <!-- 展开行：显示请求体 & 响应体，只在有内容时才渲染 -->
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <div v-if="row.request_body || row.response_body" class="body-expand">
+              <div v-if="row.request_body" class="body-block">
+                <span class="body-label">请求体</span>
+                <pre class="body-pre">{{ fmtJson(row.request_body) }}</pre>
+              </div>
+              <div v-if="row.response_body" class="body-block">
+                <span class="body-label">响应体</span>
+                <pre class="body-pre">{{ fmtJson(row.response_body) }}</pre>
+              </div>
+            </div>
+            <div v-else class="body-empty">该条日志无请求/响应体（拦截类早退路径）</div>
+          </template>
+        </el-table-column>
         <el-table-column label="时间" width="180">
           <template #default="{ row }">{{ fmt(row.created_at) }}</template>
         </el-table-column>
@@ -49,6 +66,9 @@
         <el-table-column label="耗时" width="80">
           <template #default="{ row }">{{ row.duration_ms != null ? row.duration_ms + 'ms' : '—' }}</template>
         </el-table-column>
+        <el-table-column label="字节" width="90">
+          <template #default="{ row }">{{ fmtBytes(row.response_bytes) }}</template>
+        </el-table-column>
         <el-table-column label="密钥" width="100">
           <template #default="{ row }"><span class="app-mono">{{ row.key_id || '—' }}</span></template>
         </el-table-column>
@@ -74,6 +94,7 @@ export default {
     const keyword = ref('')
     const loading = ref(false)
     const streaming = ref(false)
+    const expandedRows = ref([])
     let abortCtrl = null
 
     const reload = async () => {
@@ -131,17 +152,38 @@ export default {
       if (s === 'MISS' || s === 'UPSTREAM-429') return s === 'MISS' ? 'info' : 'danger'
       return 'success'
     }
+    // JSON 美化格式化（截断提示原样保留，JSON 则缩进展示）
+    const fmtJson = (text) => {
+      if (!text) return ''
+      try { return JSON.stringify(JSON.parse(text), null, 2) } catch { return text }
+    }
+    const fmtBytes = (b) => {
+      if (b == null) return '—'
+      if (b < 1024) return b + 'B'
+      if (b < 1024 * 1024) return (b / 1024).toFixed(1) + 'KB'
+      return (b / 1024 / 1024).toFixed(2) + 'MB'
+    }
     const rowClass = ({ row }) => (row._live ? 'live-row' : '')
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
 
     onMounted(reload)
     onUnmounted(() => { streaming.value = false; if (abortCtrl) abortCtrl.abort() })
-    return { items, level, keyword, loading, streaming, Search,
-      reload, toggleStream, levelType, sourceType, rowClass, fmt }
+    return { items, level, keyword, loading, streaming, expandedRows, Search,
+      reload, toggleStream, levelType, sourceType, rowClass, fmtBytes, fmtJson, fmt }
   }
 }
 </script>
 
 <style scoped>
 :deep(.live-row) { background: #f6ffed; }
+.body-expand { padding: 12px 20px; background: #fafafa; border-top: 1px solid #f0f0f0; }
+.body-block { margin-bottom: 14px; }
+.body-label { display: inline-block; font-size: 12px; font-weight: 600; color: #1677ff;
+  background: #e6f4ff; border: 1px solid #91caff; border-radius: 4px;
+  padding: 1px 8px; margin-bottom: 6px; }
+.body-pre { margin: 0; font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all;
+  background: #fff; border: 1px solid #e8e8e8; border-radius: 6px;
+  padding: 10px 14px; max-height: 360px; overflow-y: auto; color: #333; }
+.body-empty { padding: 8px 0; color: #aaa; font-size: 13px; }
 </style>

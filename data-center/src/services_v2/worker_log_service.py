@@ -58,6 +58,11 @@ class WorkerLogService:
                     upstream_status=data.get("upstreamStatus"),
                     key_id=data.get("keyId"),
                     duration_ms=data.get("durationMs"),
+                    # responseBytes 由 Worker 上报，单位字节
+                    response_bytes=data.get("responseBytes"),
+                    # 请求/响应体（Worker 侧已截断至 4 KB）
+                    request_body=data.get("requestBody"),
+                    response_body=data.get("responseBody"),
                     # 级别统一大写，兼容 Worker 端小写 warn/info，避免前端筛选失配
                     level=str(item.get("level", "INFO")).upper(),
                     message=item.get("message", ""),
@@ -71,7 +76,11 @@ class WorkerLogService:
                     "path": row.path, "status": row.status,
                     "cache_source": row.cache_source,
                     "upstream_status": row.upstream_status,
-                    "key_id": row.key_id, "duration_ms": row.duration_ms,
+                    "key_id": row.key_id,
+                    "duration_ms": row.duration_ms,
+                    "response_bytes": row.response_bytes,
+                    "request_body": row.request_body,
+                    "response_body": row.response_body,
                     "created_at": now().isoformat(),
                 })
             db.commit()
