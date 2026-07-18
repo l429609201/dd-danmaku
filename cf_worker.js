@@ -1984,10 +1984,12 @@ async function handleRequest(request, env, ctx) {
         const sigCheck = await verifyClientSignature(request, tUrlObj.pathname, accessCheck.uaConfig.signGroupId);
         if (!sigCheck.ok) {
             bumpMetric('blockedUa'); bumpMetric('status4xx');
+            // 对外只回笼统提示，不暴露具体失败原因（缺头/时间戳/签名不匹配等）；
+            // 具体 reason 仅记录到内部日志与 console，便于排查而不泄露给客户端
             const sigBody = JSON.stringify({
                 status: 401,
                 type: '签名校验',
-                message: `签名校验失败: ${sigCheck.reason}`,
+                message: '签名验证失败',
             });
             addMemoryLog('warn', '签名校验失败', {
                 ip: clientIP,
