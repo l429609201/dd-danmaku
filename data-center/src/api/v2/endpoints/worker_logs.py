@@ -28,10 +28,11 @@ def list_logs(
     level: Optional[str] = None,
     keyword: Optional[str] = None,
     ip: Optional[str] = None,
+    ua: Optional[str] = None,
     page: int = 1, page_size: int = Query(50, le=200),
     _: LocalUser = Depends(get_current_user),
 ):
-    """Worker 请求日志分页查询（支持按 path 关键词、client_ip 过滤）"""
+    """Worker 请求日志分页查询（支持按 path 关键词、client_ip、X-UA 过滤）"""
     db = get_db_sync()
     try:
         q = db.query(WorkerRequestLog)
@@ -44,6 +45,9 @@ def list_logs(
         # 按客户端 IP 模糊搜索，支持部分匹配（如网段前缀）
         if ip:
             q = q.filter(WorkerRequestLog.client_ip.like(f"%{ip}%"))
+        # 按 X-UA（客户端 X-User-Agent，存于 ua_type 列）模糊搜索
+        if ua:
+            q = q.filter(WorkerRequestLog.ua_type.like(f"%{ua}%"))
         total = q.count()
         rows = q.order_by(WorkerRequestLog.created_at.desc()) \
                 .offset((page - 1) * page_size).limit(page_size).all()

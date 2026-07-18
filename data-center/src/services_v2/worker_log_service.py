@@ -74,6 +74,7 @@ class WorkerLogService:
                     "level": row.level, "message": row.message,
                     "client_ip": row.client_ip, "method": row.method,
                     "path": row.path, "status": row.status,
+                    "ua_type": row.ua_type,
                     "cache_source": row.cache_source,
                     "upstream_status": row.upstream_status,
                     "key_id": row.key_id,
