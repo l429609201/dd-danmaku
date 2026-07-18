@@ -382,6 +382,18 @@ export default {
       c.resize() // 兜底：按真实容器尺寸重绘，杜绝竖条
     }
 
+    // 缓存来源英文值 → 中文展示（与 WorkerLogs 保持一致）
+    const cacheSourceLabel = (s) => ({
+      'MEM': '内存缓存',
+      'LOCAL': '本地缓存',
+      'LOCAL-STALE': '本地缓存(过期)',
+      'LOCAL-COMMENT': '本地弹幕兜底',
+      'LOCAL-EMPTY': '空结果负缓存',
+      'R2': 'R2缓存',
+      'MISS': '未命中(回源)',
+      'UPSTREAM-429': '上游限流',
+    }[s] || s || '未知')
+
     // 加载运维洞察：密钥池状态 + 弹幕水位 + 429/UA/缓存来源
     const loadInsights = async () => {
       // 密钥池状态卡 + 弹幕水位（独立 try，互不影响）
@@ -413,7 +425,7 @@ export default {
         hasUaTop.value = uaTop.length > 0
         if (hasUaTop.value) drawBar(uaTopChart, 'UA Top', uaTop.map(x => x.ua_type), uaTop.map(x => x.count), '#1677ff')
         const srcData = (d.cache_sources || []).filter(x => x.count > 0)
-          .map(x => ({ name: x.source, value: x.count }))
+          .map(x => ({ name: cacheSourceLabel(x.source), value: x.count }))
         hasCacheSrc.value = srcData.length > 0
         if (hasCacheSrc.value) drawPie(cacheSrcChart, '缓存来源', srcData)
       } catch (e) { /* 忽略 */ }

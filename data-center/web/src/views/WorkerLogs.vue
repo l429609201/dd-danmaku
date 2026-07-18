@@ -215,6 +215,7 @@ export default {
     // 缓存来源标签色：命中类绿色、MISS 灰、限流红
     const sourceType = (s) => {
       if (!s) return 'info'
+      if (s === 'LOCAL-EMPTY') return 'info'  // 空结果负缓存：中性灰
       if (s.indexOf('429') >= 0 || s.indexOf('STALE') >= 0) return 'warning'
       if (s === 'MISS' || s === 'UPSTREAM-429') return s === 'MISS' ? 'info' : 'danger'
       return 'success'
@@ -225,6 +226,7 @@ export default {
       'LOCAL': '本地缓存',
       'LOCAL-STALE': '本地缓存(过期)',
       'LOCAL-COMMENT': '本地弹幕兜底',
+      'LOCAL-EMPTY': '空结果负缓存',
       'R2': 'R2缓存',
       'MISS': '未命中(回源)',
       'UPSTREAM-429': '上游限流',
