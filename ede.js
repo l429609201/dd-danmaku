@@ -2134,6 +2134,10 @@
         return Number.isInteger(num) && num >= 0;
     }
 
+    function isHttpStatus(error, status) {
+        return new RegExp(`Status:\\s*${status}\\b`).test(String(error?.message || ''));
+    }
+
     function deriveBgmEpisodeIndex(previousInfo, fallbackEpisodeIndex, delta) {
         if (previousInfo && isValidEpisodeIndex(previousInfo.bgmEpisodeIndex)) {
             const derived = Number(previousInfo.bgmEpisodeIndex) + delta;
@@ -2251,8 +2255,16 @@
             bangumiMe = await fetchBangumiApiGetMe(token, fetchOpts);
         }
         let msg = '';
-        const bangumiUserColl = await fetchJson(bangumiApi.getUserCollection(bangumiMe.username, subjectId), { ...fetchOpts, token });
-        if (bangumiUserColl.type === 2) { // 看过状态
+        let bangumiUserColl = null;
+        try {
+            bangumiUserColl = await fetchJson(bangumiApi.getUserCollection(bangumiMe.username, subjectId), { ...fetchOpts, token });
+        } catch (error) {
+            if (!isHttpStatus(error, 404)) {
+                throw error;
+            }
+            logger.info(`Bangumi 条目收藏不存在，将创建在看状态, subjectId: ${subjectId}`);
+        }
+        if (bangumiUserColl?.type === 2) { // 看过状态
             msg = 'Bangumi 条目已为看过状态,跳过更新';
             logger.debug(msg, bangumiUserColl);
             throw new Error(msg);
