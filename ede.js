@@ -1283,11 +1283,17 @@
         return await ApiClient.getItem(ApiClient.getCurrentUserId(), id);
     }
 
-    async function fetchSearchEpisodes(anime, episode, prefix) {
+    async function fetchSearchEpisodes(anime, episode, prefix, searchOptions = {}) {
         if (!anime) { throw new Error('anime is required'); }
 
         // 步骤1: 使用 /api/v2/search/anime 搜索动画
-        const searchUrl = `${prefix}/search/anime?keyword=${encodeURIComponent(anime)}`;
+        let searchUrl = `${prefix}/search/anime?keyword=${encodeURIComponent(anime)}`;
+        if (searchOptions.season !== null && searchOptions.season !== undefined) {
+            searchUrl += `&season=${encodeURIComponent(searchOptions.season)}`;
+        }
+        if (searchOptions.episode !== null && searchOptions.episode !== undefined) {
+            searchUrl += `&episode=${encodeURIComponent(searchOptions.episode)}`;
+        }
         const searchResult = await fetchJson(searchUrl)
             .catch((error) => {
                 logger.error(`[API请求] /search/anime 查询失败: ${error.message}`);
@@ -7778,19 +7784,28 @@
             if (!config?.enabled || !config?.prefix) return [];
 
             let manualSearchTitle = searchName;
+            let manualSearchSeason = null;
             let manualSearchEpisode = null;
 
-            if (apiKey === 'official') {
-                const parsed = parseAnimeName(searchName);
-                if (parsed.season !== null) {
+            const parsed = parseAnimeName(searchName);
+            if (parsed.season !== null) {
+                manualSearchSeason = parsed.season;
+                manualSearchEpisode = parsed.episode;
+
+                if (apiKey === 'official') {
                     manualSearchTitle = parsed.season === 1 ? parsed.title : `${parsed.title} 第${parsed.season}季`;
-                    manualSearchEpisode = parsed.episode;
                     logger.info(`[手动匹配][弹弹play优化] 格式化搜索: 标题='${manualSearchTitle}', 集数=${manualSearchEpisode}`);
+                } else {
+                    manualSearchTitle = parsed.title;
+                    logger.info(`[手动匹配][自定义API优化] 格式化搜索: 标题='${manualSearchTitle}', 季数=${manualSearchSeason}, 集数=${manualSearchEpisode}`);
                 }
             }
 
             try {
-                const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix);
+                const customSearchOptions = apiKey === 'official'
+                    ? {}
+                    : { season: manualSearchSeason, episode: manualSearchEpisode };
+                const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix, customSearchOptions);
                 if (animaInfo && animaInfo.animes.length > 0) {
                     // [黑名单] 对搜索结果应用黑名单过滤
                     animaInfo.animes = applySearchBlacklist(animaInfo.animes, true, apiKey);
