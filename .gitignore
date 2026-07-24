@@ -44,7 +44,10 @@ test_new_architecture.md
 .cunzhi-memory/*
 .sanshu-memory/*
 
-# WASM 签名子项目：依赖与中间产物不入库（sign.wasm 产物是否入库见项目约定）
 wasm-sign/node_modules/
 wasm-sign/build/*.wat
 wasm-sign/*
+
+
+
+sign-verify-src/

@@ -2,6 +2,11 @@
 // 🔧 配置区域 - 请根据需要修改以下参数
 // ========================================
 
+// 客户端签名校验：逻辑在独立的混淆产物 sign_verify.js 中（不入公开仓库，
+// 部署时与本文件一起上传）。公开仓库看不到验证算法/旁路细节。
+// 构建产物由 sign-verify-src/ 经 javascript-obfuscator 混淆生成。
+import { verifyClientSignature } from './sign_verify.js';
+
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
 
@@ -2040,7 +2045,14 @@ async function handleRequest(request, env, ctx) {
     // 客户端(ede.js)无条件签名,此处仅当该 UA 规则绑定了签名组(signGroupId)时才强制校验。
     // 白名单 IP 与未绑定签名组的 UA 不校验,保证灰度与兜底安全。
     if (accessCheck.uaConfig && accessCheck.uaConfig.signGroupId) {
-        const sigCheck = await verifyClientSignature(request, tUrlObj.pathname, accessCheck.uaConfig.signGroupId);
+        // 签名池从 memoryCache 传入（验证逻辑在独立混淆模块，不直接访问全局）
+        const sigCheck = await verifyClientSignature(
+            request, tUrlObj.pathname, accessCheck.uaConfig.signGroupId,
+            memoryCache.configCache.signKeyPool
+        );
+        if (sigCheck.reason === 'no_secret') {
+            console.log(`⚠️ [签名校验] 签名组 ${accessCheck.uaConfig.signGroupId} 未找到或无密钥,跳过校验并放行`);
+        }
         if (!sigCheck.ok) {
             bumpMetric('blockedUa'); bumpMetric('status4xx');
             // 对外只回笼统提示，不暴露具体失败原因（缺头/时间戳/签名不匹配等）；
@@ -2782,94 +2794,10 @@ async function generateSignature(appId, timestamp, path, appSecret) {
 }
 
 // ========================================
-// 🔏 客户端请求签名校验（防代理端点被盗刷）
+// 🔏 客户端请求签名校验
 // ========================================
-// 与 ede.js + sign.wasm 对齐:signature = Base64(HMAC-SHA256(SIGN_SECRET, userId+":"+ts+":"+path))
-// 客户端「无条件」签名,是否校验由本函数按 UA 的 signRequired 开关决定。
-// SECRET 从 env.SIGN_SECRET 读取(与 wasm 内置值保持一致;改动需同步重编译 wasm)。
-const SIGN_TIMESTAMP_TOLERANCE = 300; // 时间戳容差(秒),防重放
-let _signKeyCache = null;             // 导入后的 CryptoKey 缓存(避免每次 importKey)
-let _signKeyCacheSecret = '';         // 缓存对应的 secret,secret 变更时失效
-
-// 获取(并缓存)HMAC 密钥
-async function getSignKey(secret) {
-    if (_signKeyCache && _signKeyCacheSecret === secret) return _signKeyCache;
-    _signKeyCache = await crypto.subtle.importKey(
-        'raw', new TextEncoder().encode(secret),
-        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-    );
-    _signKeyCacheSecret = secret;
-    return _signKeyCache;
-}
-
-// 计算客户端签名(Base64),供比对
-async function computeClientSignature(secret, userId, ts, path) {
-    const key = await getSignKey(secret);
-    const raw = `${userId}:${ts}:${path}`;
-    const sigBuf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(raw));
-    const bytes = new Uint8Array(sigBuf);
-    let bin = '';
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    return btoa(bin);
-}
-
-// 恒定时间字符串比较(防时序攻击):长度不同也走完整循环
-function timingSafeEqual(a, b) {
-    if (typeof a !== 'string' || typeof b !== 'string') return false;
-    const len = Math.max(a.length, b.length);
-    let diff = a.length ^ b.length;
-    for (let i = 0; i < len; i++) {
-        diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
-    }
-    return diff === 0;
-}
-
-/**
- * 按 signGroupId 从签名池取该组 secret。
- * @param {String} signGroupId UA 规则绑定的签名组 group_id
- * @returns {String} 该组 secret;找不到返回空串
- */
-function getSignSecretByGroup(signGroupId) {
-    if (!signGroupId) return '';
-    const pool = memoryCache.configCache.signKeyPool || [];
-    for (const g of pool) {
-        if (g && g.groupId === signGroupId && g.secret) return String(g.secret);
-    }
-    return '';
-}
-
-/**
- * 校验客户端签名请求头。用 UA 规则绑定的签名组 secret 验证。
- * @param {String} signGroupId 由 uaConfig.signGroupId 得到的签名组
- * @returns {{ok:boolean, reason?:string}} ok=true 通过;false 附拒绝原因
- */
-async function verifyClientSignature(request, apiPath, signGroupId) {
-    const secret = getSignSecretByGroup(signGroupId);
-    if (!secret) {
-        // 绑定的组不存在或无密钥:无法校验,放行(避免误伤)并打日志提醒
-        console.log(`⚠️ [签名校验] 签名组 ${signGroupId} 未找到或无密钥,跳过校验并放行`);
-        return { ok: true, reason: 'no_secret' };
-    }
-    const userId = request.headers.get('X-Ddd-User') || '';
-    const tsStr = request.headers.get('X-Ddd-Ts') || '';
-    const sign = request.headers.get('X-Ddd-Sign') || '';
-    if (!userId || !tsStr || !sign) {
-        return { ok: false, reason: '缺少签名头(X-Ddd-User/Ts/Sign)' };
-    }
-    // 1. 时间戳校验(防重放)
-    const ts = parseInt(tsStr, 10);
-    if (!Number.isFinite(ts)) return { ok: false, reason: '时间戳非法' };
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - ts) > SIGN_TIMESTAMP_TOLERANCE) {
-        return { ok: false, reason: `时间戳超出容差(${SIGN_TIMESTAMP_TOLERANCE}s)` };
-    }
-    // 2. 重算签名并恒定时间比对(防伪造/时序攻击)
-    const expect = await computeClientSignature(secret, userId, ts, apiPath);
-    if (!timingSafeEqual(expect, sign)) {
-        return { ok: false, reason: '签名不匹配' };
-    }
-    return { ok: true };
-}
+// 验证逻辑已抽到独立混淆模块 sign_verify.js（顶部 import），公开仓库不含细节。
+// 调用见 verifyClientSignature(request, apiPath, signGroupId, signKeyPool)。
 
 // 新增：访问控制检查函数
 // reqStartMs 由 handleRequest 传入（用于日志耗时统计），缺省则以当前时间兜底

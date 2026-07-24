@@ -1,5 +1,5 @@
 name = "danmu-api"
-main = "cf_worker.js"
+main = "worker/cf_worker.js"
 compatibility_date = "2024-09-21"
 
 # 静态资源配置 - 工具文件通过 /tools/ 路径访问
