@@ -138,6 +138,7 @@ let memoryCache = {
         ipBlacklist: [],
         ipWhitelist: [],
         signKeyPool: [],  // 签名密钥池 [{ groupId, secret, authUaKeys:[] }],按 UA 分组验签
+        signPoolLoaded: false,  // 签名池是否成功下发过（冷启动放行、运行期拒绝 no_secret 的依据）
         lastUpdate: 0
     },
     // env 兜底基线（启动时加载，永不被下发覆盖；下发只在其之上做增量合并）
@@ -630,6 +631,9 @@ function applyRuntimeConfig(cfg) {
         memoryCache.configCache.signKeyPool = Array.isArray(cfg.sign_key_pool)
             ? cfg.sign_key_pool.filter(g => g && g.secret)
             : [];
+        // 标记签名池已成功下发过至少一次：此后 no_secret 由「放行」转为「拒绝」，
+        // 堵住运行期绕过；冷启动(从未下发)时仍放行，避免误伤。
+        memoryCache.configCache.signPoolLoaded = true;
     }
 
     memoryCache.configCache.lastUpdate = Date.now();
@@ -2046,12 +2050,14 @@ async function handleRequest(request, env, ctx) {
     // 白名单 IP 与未绑定签名组的 UA 不校验,保证灰度与兜底安全。
     if (accessCheck.uaConfig && accessCheck.uaConfig.signGroupId) {
         // 签名池从 memoryCache 传入（验证逻辑在独立混淆模块，不直接访问全局）
+        // signPoolLoaded：签名池是否已下发过，决定 no_secret 放行(冷启动)还是拒绝(运行期)
         const sigCheck = await verifyClientSignature(
             request, tUrlObj.pathname, accessCheck.uaConfig.signGroupId,
-            memoryCache.configCache.signKeyPool
+            memoryCache.configCache.signKeyPool,
+            memoryCache.configCache.signPoolLoaded
         );
         if (sigCheck.reason === 'no_secret') {
-            console.log(`⚠️ [签名校验] 签名组 ${accessCheck.uaConfig.signGroupId} 未找到或无密钥,跳过校验并放行`);
+            console.log(`⚠️ [签名校验] 签名组 ${accessCheck.uaConfig.signGroupId} 未找到或无密钥,冷启动放行(签名池尚未下发)`);
         }
         if (!sigCheck.ok) {
             bumpMetric('blockedUa'); bumpMetric('status4xx');
