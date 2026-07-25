@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理（新架构：Redis 热缓存 + Worker 长连接客户端）"""
+    # 最先挂日志文件 handler，保证后续启动日志也能落盘、供 /ext/logs/app 回查
+    from src.config import settings as _settings
+    from src.services_v2 import log_file_service
+    log_file_service.install(_settings.CONFIG_PATH)
+
     logger.info("🚀 启动数据交互中心...")
 
     # 配置 asyncio 默认线程池容量：
@@ -38,7 +43,6 @@ async def lifespan(app: FastAPI):
     # 上限与 DB 连接池容量对齐（pool_size + max_overflow），避免线程拿不到连接空等。
     import asyncio as _aio
     from concurrent.futures import ThreadPoolExecutor
-    from src.config import settings as _settings
     _executor = ThreadPoolExecutor(
         max_workers=_settings.DB_THREAD_POOL_SIZE,
         thread_name_prefix="ddc-db",

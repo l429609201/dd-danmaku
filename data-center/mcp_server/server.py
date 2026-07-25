@@ -92,13 +92,16 @@ def _register(tool: dict) -> None:
             return content[0].get("text", "")
         return json.dumps(data.get("result", {}), ensure_ascii=False)
 
-    # FastMCP 从函数签名推断参数，故按远端 schema 动态生成同名关键字参数
+    # FastMCP 从函数签名推断入参与出参 schema，故按远端 schema 动态生成同名
+    # 关键字参数。两个分支都必须显式标注 `-> str`：缺标注时 FastMCP 按 Any
+    # 处理返回值，会对已是字符串的结果再做一次包装，客户端读到空响应。
     if props:
         sig_args = ", ".join(f"{p}=None" for p in props)
         call_args = ", ".join(f"{p}={p}" for p in props)
         ns: Dict[str, Any] = {"_proxy": _proxy}
         exec(  # noqa: S102 - 仅用远端 schema 里的合法标识符构造签名，无外部输入
-            f"async def _tool({sig_args}):\n    return await _proxy({call_args})",
+            f"async def _tool({sig_args}) -> str:\n"
+            f"    return await _proxy({call_args})",
             ns,
         )
         fn = ns["_tool"]

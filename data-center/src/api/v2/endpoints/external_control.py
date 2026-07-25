@@ -2,14 +2,20 @@
 外部控制 API（External Control API）
 
 统一供 MCP / 外部诊断工具调用，独立密钥鉴权（X-External-Token）。
-只读诊断为主，用于实时观测本地端运行健康度、定位高并发瓶颈。
+**全部为只读**：用于观测运行健康度、查数据、查日志、定位性能瓶颈，
+不提供任何写操作（配置下发 / 清理 / 缓存失效请走管理后台，避免误操作）。
 
 所有端点均依赖 verify_external_token，与用户登录 JWT 完全隔离。
+
+注意：各端点的 docstring 会被 mcp_http.py 自动提取为 MCP 工具说明（给 AI 看），
+函数签名会被反射成入参 schema。所以 docstring 要写清「怎么读、什么算异常」，
+新增端点后只需在 mcp_http.py 的 _TOOL_HANDLERS 登记一行。
 """
 import asyncio
 import logging
+from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from src.api.v2.deps import verify_external_token, require_admin
 from src.api.v2.schemas import ApiResult
@@ -174,3 +180,426 @@ async def diag_snapshot(_: bool = Depends(verify_external_token)):
         # 慢 SQL Top 5：快照里只带最关键的几条，明细看 /diag/slow-sql
         "slow_sql": slow_sql_service.get_stats(top=5),
     })
+
+
+# ==================== 数据查询（只读） ====================
+
+@router.get("/data/db-tables")
+async def data_db_tables(_: bool = Depends(verify_external_token)):
+    """各表行数 / 占用大小 / 占比 + 连接池状态，按占用大小倒序。
+
+    排查方向：
+    - row_count 异常膨胀的表通常是日志/缓存类表未清理，会拖慢该表的查询；
+    - size_bytes 占比高的表优先考虑加保留策略（见 cleanup 策略页）。
+    """
+    from src.services_v2.db_stats_service import collect_sql_stats
+    data = await asyncio.to_thread(collect_sql_stats)
+    return ApiResult(data=data)
+
+
+@router.get("/data/db-engine-perf")
+async def data_db_engine_perf(_: bool = Depends(verify_external_token)):
+    """数据库引擎性能指标（按方言自动分派 MySQL / PostgreSQL / SQLite）。
+
+    MySQL 重点看：InnoDB 缓冲池命中率(<95% 说明内存不足)、连接使用率
+    (>80% 有耗尽风险)、表锁等待(>0 说明有锁竞争)、慢查询计数。
+    每项带 warn 标记，为 true 即超出健康阈值。
+    """
+    from src.services_v2.db_stats_service import collect_engine_perf
+    data = await asyncio.to_thread(collect_engine_perf)
+    return ApiResult(data=data)
+
+
+@router.get("/data/redis-stats")
+async def data_redis_stats(_: bool = Depends(verify_external_token)):
+    """Redis 状态：命中率 / 内存 / 连接数 / QPS / 淘汰与过期 key 数。
+
+    hit_rate 偏低说明缓存键设计或 TTL 有问题；
+    evicted_keys 持续增长说明内存不足在淘汰数据（缓存会频繁回源）。
+    enabled=false 表示未启用或连接失败，此时响应体走 SQL 冷备。
+    """
+    from src.services_v2.db_stats_service import collect_redis_stats
+    data = await collect_redis_stats()
+    return ApiResult(data=data)
+
+
+@router.get("/data/db-query")
+async def data_db_query(
+    sql: str = Query(..., description="只读 SQL：SELECT/WITH/EXPLAIN/SHOW/DESC"),
+    max_rows: int = 200,
+    _: bool = Depends(verify_external_token),
+):
+    """执行只读 SQL 查询（表可查、密钥不可见）。
+
+    用途：查表行数、跑 EXPLAIN 确认索引是否生效、核对具体数据。
+    例：SELECT COUNT(*) FROM ip_rules
+        EXPLAIN SELECT * FROM ip_rules WHERE enabled = true
+
+    安全限制（违反即拒绝，不会执行）：
+    - 仅允许 SELECT / WITH / EXPLAIN / SHOW / DESC 开头的单条语句
+    - 禁止 INSERT/UPDATE/DELETE/DROP/ALTER 等写操作关键字与 SQL 注释
+    - 在事务内执行且始终 rollback，无法产生任何持久化变更
+    - 列名含 secret/token/password/app_secret 等的值一律返回 ***REDACTED***
+      （被脱敏的列名会列在 masked_columns 里）
+    - 结果最多 1000 行；超出 max_rows 时 truncated=true
+
+    参数：
+        sql      要执行的只读 SQL
+        max_rows 返回行数上限，默认 200，硬上限 1000
+    """
+    from src.services_v2 import readonly_sql_service
+    try:
+        data = await asyncio.to_thread(readonly_sql_service.run_query, sql, max_rows)
+    except ValueError as e:
+        # 校验不通过：明确告知原因，便于调用方改写语句
+        return ApiResult(success=False, message=f"SQL 被拒绝: {e}", data=None)
+    except Exception as e:
+        logger.warning(f"⚠️ 只读查询执行失败: {e}")
+        return ApiResult(success=False, message=f"执行失败: {e}", data=None)
+    return ApiResult(data=data)
+
+
+# ==================== 日志查询（只读） ====================
+
+@router.get("/logs/app")
+async def logs_app(
+    limit: int = 200,
+    pattern: Optional[str] = None,
+    level: Optional[str] = None,
+    _: bool = Depends(verify_external_token),
+):
+    """本地端应用日志尾部（含异常堆栈），来自轮转文件 config/logs/app.log。
+
+    这是查本地端自身报错的唯一途径（Worker 请求日志请用 /logs/worker）。
+    available=false 说明日志未落盘（目录不可写），此时只能看容器 stdout。
+
+    参数：
+        limit   返回行数，默认 200，上限 2000
+        pattern 正则过滤（忽略大小写）；非法正则退化为纯文本包含匹配
+        level   仅看该级别：ERROR / WARNING / INFO / DEBUG
+    """
+    from src.services_v2 import log_file_service
+    data = await asyncio.to_thread(
+        log_file_service.read_logs, limit, pattern, level
+    )
+    return ApiResult(data=data)
+
+
+@router.get("/logs/worker")
+async def logs_worker(
+    limit: int = 50,
+    level: Optional[str] = None,
+    keyword: Optional[str] = None,
+    ip: Optional[str] = None,
+    ua: Optional[str] = None,
+    user_id: Optional[str] = None,
+    _: bool = Depends(verify_external_token),
+):
+    """Worker 请求日志（worker_request_logs 表），按时间倒序。
+
+    每条含 path / status / cache_source / duration_ms / 请求体响应体等。
+    排查方向：cache_source 看命中来源分布，duration_ms 找慢请求，
+    status>=400 找失败请求。
+
+    参数：
+        limit   返回条数，默认 50，上限 200
+        level   INFO / WARN / ERROR
+        keyword 按 path 模糊匹配
+        ip      按客户端 IP 模糊匹配
+        ua      按 X-UA 模糊匹配
+        user_id 按客户端用户标识模糊匹配
+    """
+    from src.models_v2 import WorkerRequestLog
+    from src.database import get_db_sync
+
+    limit = max(1, min(int(limit or 50), 200))
+
+    def _query():
+        db = get_db_sync()
+        try:
+            q = db.query(WorkerRequestLog)
+            if level:
+                q = q.filter(WorkerRequestLog.level == level.upper())
+            if keyword:
+                q = q.filter(WorkerRequestLog.path.like(f"%{keyword}%"))
+            if ip:
+                q = q.filter(WorkerRequestLog.client_ip.like(f"%{ip}%"))
+            if ua:
+                q = q.filter(WorkerRequestLog.ua_type.like(f"%{ua}%"))
+            if user_id:
+                q = q.filter(WorkerRequestLog.client_user_id.like(f"%{user_id}%"))
+            rows = q.order_by(WorkerRequestLog.created_at.desc()).limit(limit).all()
+            return [{
+                "id": r.id, "created_at": r.created_at.isoformat() if r.created_at else None,
+                "level": r.level, "client_ip": r.client_ip, "ua_type": r.ua_type,
+                "client_user_id": r.client_user_id,
+                "method": r.method, "path": r.path, "status": r.status,
+                "cache_source": r.cache_source, "upstream_status": r.upstream_status,
+                "duration_ms": r.duration_ms, "response_bytes": r.response_bytes,
+                "message": r.message,
+            } for r in rows]
+        finally:
+            db.close()
+
+    items = await asyncio.to_thread(_query)
+    return ApiResult(data={"returned": len(items), "items": items})
+
+
+@router.get("/logs/runtime")
+async def logs_runtime(
+    limit: int = 50,
+    level: Optional[str] = None,
+    category: Optional[str] = None,
+    _: bool = Depends(verify_external_token),
+):
+    """本地端运行事件（runtime_events 表）：配置下发 / 封禁 / 异常等结构化事件。
+
+    与 /logs/app 的区别：这里是业务语义事件（带 category/event/details），
+    app 是原始日志文本。排查"配置有没有下发成功"优先看这里。
+
+    参数：
+        limit    返回条数，默认 50，上限 200
+        level    INFO / WARN / ERROR
+        category 事件分类
+    """
+    from src.services_v2.runtime_event_service import runtime_event_service
+    limit = max(1, min(int(limit or 50), 200))
+    # query 签名为 (level, category, event, limit)
+    items = await asyncio.to_thread(
+        runtime_event_service.query, level, category, None, limit
+    )
+    return ApiResult(data={"returned": len(items), "items": items})
+
+
+@router.get("/logs/cache-access")
+async def logs_cache_access(
+    limit: int = 50,
+    access_type: Optional[str] = None,
+    cache_key: Optional[str] = None,
+    _: bool = Depends(verify_external_token),
+):
+    """缓存访问日志（api_cache_access_logs 表）：命中 / 未命中 / 429 兜底记录。
+
+    access_type 取值：hit / miss / stale_hit / expired / upsert / 429。
+    统计各类型占比可判断缓存是否有效；429 记录多说明上游限流频繁。
+
+    参数：
+        limit       返回条数，默认 50，上限 200
+        access_type 按类型过滤
+        cache_key   按缓存键模糊匹配（键里的中文是 URL 编码形式）
+    """
+    from src.models_v2 import ApiCacheAccessLog
+    from src.database import get_db_sync
+
+    limit = max(1, min(int(limit or 50), 200))
+
+    def _query():
+        db = get_db_sync()
+        try:
+            q = db.query(ApiCacheAccessLog)
+            if access_type:
+                q = q.filter(ApiCacheAccessLog.access_type == access_type)
+            if cache_key:
+                q = q.filter(ApiCacheAccessLog.cache_key.like(f"%{cache_key}%"))
+            rows = q.order_by(ApiCacheAccessLog.created_at.desc()).limit(limit).all()
+            return [{
+                "id": r.id, "created_at": r.created_at.isoformat() if r.created_at else None,
+                "cache_key": r.cache_key, "api_path": r.api_path,
+                "access_type": r.access_type, "upstream_status": r.upstream_status,
+                "served_status": r.served_status, "client_ip": r.client_ip,
+            } for r in rows]
+        finally:
+            db.close()
+
+    items = await asyncio.to_thread(_query)
+    return ApiResult(data={"returned": len(items), "items": items})
+
+
+# ==================== 业务数据核查（只读） ====================
+
+@router.get("/biz/cache-search")
+async def biz_cache_search(
+    keyword: Optional[str] = None,
+    api_path: Optional[str] = None,
+    is_empty: Optional[bool] = None,
+    limit: int = 20,
+    _: bool = Depends(verify_external_token),
+):
+    """查响应缓存条目：命中次数 / TTL / 体积 / 是否空结果负缓存。
+
+    排查方向：hit_count 为 0 且量大说明缓存键设计有问题（key 每次都变）；
+    expire_at 已过期却还在说明清理没跑；is_empty=true 是空结果负缓存。
+    注意 cache_key 里的中文是 URL 编码形式，搜索时用编码后的串或用 api_path。
+
+    参数：
+        keyword  按 cache_key 模糊匹配
+        api_path 按接口路径模糊匹配
+        is_empty true=只看空结果负缓存
+        limit    返回条数，默认 20，上限 100
+    """
+    from src.models_v2 import ApiResponseCache
+    from src.database import get_db_sync
+
+    limit = max(1, min(int(limit or 20), 100))
+
+    def _query():
+        db = get_db_sync()
+        try:
+            q = db.query(ApiResponseCache)
+            if keyword:
+                q = q.filter(ApiResponseCache.cache_key.like(f"%{keyword}%"))
+            if api_path:
+                q = q.filter(ApiResponseCache.api_path.like(f"%{api_path}%"))
+            if is_empty is not None:
+                q = q.filter(ApiResponseCache.is_empty == is_empty)
+            rows = q.order_by(ApiResponseCache.fetched_at.desc()).limit(limit).all()
+            return [{
+                "id": r.id, "cache_key": r.cache_key, "api_path": r.api_path,
+                "method": r.method, "status_code": r.status_code,
+                "body_size": r.body_size, "storage_mode": r.storage_mode,
+                "hit_count": r.hit_count, "stale_hit_count": r.stale_hit_count,
+                "upstream_429_count": r.upstream_429_count,
+                "is_empty": r.is_empty, "refresh_pending": r.refresh_pending,
+                "fetched_at": r.fetched_at.isoformat() if r.fetched_at else None,
+                "expire_at": r.expire_at.isoformat() if r.expire_at else None,
+            } for r in rows]
+        finally:
+            db.close()
+
+    items = await asyncio.to_thread(_query)
+    return ApiResult(data={"returned": len(items), "items": items})
+
+
+@router.get("/biz/ip-rules")
+async def biz_ip_rules(
+    rule_type: Optional[str] = None,
+    only_expired: bool = False,
+    limit: int = 100,
+    _: bool = Depends(verify_external_token),
+):
+    """查 IP 黑白名单规则，含自动封禁记录与过期统计。
+
+    重点：summary.expired_count 是已过期但仍留在表里的规则数。
+    该表被配置下发链路全表扫描（build_full_payload），行数膨胀会直接
+    拖慢每次下发，过期记录多说明缺少清理。
+
+    参数：
+        rule_type    black / white
+        only_expired true=只看已过期的规则
+        limit        返回条数，默认 100，上限 500
+    """
+    from src.models_v2 import IpRule
+    from src.models_v2.base import now as _now
+    from src.database import get_db_sync
+    from src.services_v2.abuse_service import ABUSE_CREATED_BY
+    from sqlalchemy import func
+
+    limit = max(1, min(int(limit or 100), 500))
+
+    def _query():
+        db = get_db_sync()
+        try:
+            current = _now()
+            total = db.query(func.count(IpRule.id)).scalar() or 0
+            expired_count = db.query(func.count(IpRule.id)).filter(
+                IpRule.expires_at.isnot(None), IpRule.expires_at < current
+            ).scalar() or 0
+            auto_count = db.query(func.count(IpRule.id)).filter(
+                IpRule.created_by == ABUSE_CREATED_BY
+            ).scalar() or 0
+
+            q = db.query(IpRule)
+            if rule_type:
+                q = q.filter(IpRule.rule_type == rule_type)
+            if only_expired:
+                q = q.filter(IpRule.expires_at.isnot(None),
+                             IpRule.expires_at < current)
+            rows = q.order_by(IpRule.id.desc()).limit(limit).all()
+            return {
+                "summary": {
+                    "total": int(total),
+                    "expired_count": int(expired_count),
+                    "auto_banned_count": int(auto_count),
+                },
+                "returned": len(rows),
+                "items": [{
+                    "id": r.id, "ip_or_cidr": r.ip_or_cidr,
+                    "rule_type": r.rule_type, "reason": r.reason,
+                    "enabled": r.enabled, "created_by": r.created_by,
+                    "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+                    "expired": bool(r.expires_at and r.expires_at < current),
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                } for r in rows],
+            }
+        finally:
+            db.close()
+
+    data = await asyncio.to_thread(_query)
+    return ApiResult(data=data)
+
+
+@router.get("/biz/config-payload")
+async def biz_config_payload(_: bool = Depends(verify_external_token)):
+    """当前实际下发给 Worker 的完整运行配置（密钥字段已脱敏）。
+
+    排查"后台改了配置但 Worker 行为没变"时看这里：确认 ip_blacklist /
+    ua_configs / signGroupId 等是否真的进了下发内容。
+    注意：本接口只是重新组装一份 payload 供查看，**不会触发下发**。
+    密钥类字段（secret/token 等）值为 ***REDACTED***。
+    """
+    from src.services_v2.runtime_config_service import runtime_config_service
+    from src.services_v2 import readonly_sql_service
+
+    def _build():
+        payload = runtime_config_service.build_full_payload()
+        # 下发内容含签名密钥与上游 appSecret，必须脱敏后才能出网
+        return readonly_sql_service.mask_mapping(payload)
+
+    data = await asyncio.to_thread(_build)
+    return ApiResult(data=data)
+
+
+@router.get("/biz/dashboard-summary")
+async def biz_dashboard_summary(_: bool = Depends(verify_external_token)):
+    """业务总览：缓存/实体/集数/日志总量、命中率、今日请求量等汇总指标。
+
+    先看这里建立全局印象，再用细项接口深入。
+    """
+    from src.api.v2.endpoints.dashboard import _build_summary
+    data = await asyncio.to_thread(_build_summary)
+    return ApiResult(data=data)
+
+
+@router.get("/biz/cleanup-policies")
+async def biz_cleanup_policies(_: bool = Depends(verify_external_token)):
+    """数据保留清理策略：各表是否启用、保留天数、上次清理时间与删除量。
+
+    表行数持续膨胀时看这里：enabled=false 或 retention_days 过大即为原因。
+    只读查看，不执行清理。
+    """
+    from src.services_v2.cleanup_service import cleanup_service
+    from src.models_v2 import CleanupPolicy
+    from src.database import get_db_sync
+    from src.api.v2.endpoints.cleanup import _policy_dict, TABLE_REGISTRY
+
+    def _fetch():
+        # 复用 cleanup 端点的 _policy_dict / TABLE_REGISTRY，保持结构与后台一致
+        cleanup_service.ensure_default_policies()
+        db = get_db_sync()
+        try:
+            items = []
+            for p in db.query(CleanupPolicy).all():
+                d = _policy_dict(p)
+                reg = TABLE_REGISTRY.get(p.table_key)
+                if reg:
+                    try:
+                        d["row_count"] = db.query(reg[0]).count()
+                    except Exception:
+                        d["row_count"] = None
+                items.append(d)
+            return {"policies": items}
+        finally:
+            db.close()
+
+    data = await asyncio.to_thread(_fetch)
+    return ApiResult(data=data)

@@ -37,6 +37,9 @@ from src.api.v2.endpoints import external_control as ext
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# 哨兵：区分"对象没有 default 属性"与"default 值本身就是 None"
+_SENTINEL = object()
+
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "dd-danmaku-control"
 SERVER_VERSION = "1.0.0"
@@ -54,6 +57,22 @@ _TOOL_HANDLERS: Dict[str, Any] = {
     "diag_control": ext.diag_control,
     "diag_slow_sql": ext.diag_slow_sql,
     "diag_slow_sql_reset": ext.diag_slow_sql_reset,
+    # 数据查询
+    "db_tables": ext.data_db_tables,
+    "db_engine_perf": ext.data_db_engine_perf,
+    "redis_stats": ext.data_redis_stats,
+    "db_query": ext.data_db_query,
+    # 日志查询
+    "logs_app": ext.logs_app,
+    "logs_worker": ext.logs_worker,
+    "logs_runtime": ext.logs_runtime,
+    "logs_cache_access": ext.logs_cache_access,
+    # 业务数据核查
+    "cache_search": ext.biz_cache_search,
+    "ip_rules": ext.biz_ip_rules,
+    "config_payload": ext.biz_config_payload,
+    "dashboard_summary": ext.biz_dashboard_summary,
+    "cleanup_policies": ext.biz_cleanup_policies,
 }
 
 # 鉴权依赖参数的形参名约定（以下划线开头），反射时跳过：
@@ -62,6 +81,26 @@ _AUTH_PARAM_PREFIX = "_"
 
 # Python 类型 → JSON Schema 类型
 _TYPE_MAP = {int: "integer", float: "number", bool: "boolean", str: "string"}
+
+
+def _json_type(annotation) -> str:
+    """把类型注解映射为 JSON Schema 类型
+
+    需要解包 Optional[X]（等价于 Union[X, None]）：FastAPI 端点的可选查询
+    参数普遍写成 Optional[str] / Optional[bool]，直接查表会全部退化成
+    string，导致 bool 参数在 MCP 客户端被当字符串传。
+    """
+    if annotation in _TYPE_MAP:
+        return _TYPE_MAP[annotation]
+    # typing.Optional[X] / Union[X, None] → 取第一个非 None 的实参
+    args = getattr(annotation, "__args__", None)
+    if args:
+        for a in args:
+            if a is type(None):
+                continue
+            if a in _TYPE_MAP:
+                return _TYPE_MAP[a]
+    return "string"
 
 
 def _build_description(handler) -> str:
@@ -81,6 +120,30 @@ def _build_description(handler) -> str:
     return "\n".join(lines).strip()
 
 
+def _is_undefined(v) -> bool:
+    """判断是否为 Pydantic 的"未设置"哨兵（v2 用 PydanticUndefined）"""
+    return type(v).__name__ in ("PydanticUndefinedType", "UndefinedType")
+
+
+def _unwrap_default(default) -> tuple:
+    """解析形参默认值，返回 (实际默认值, 是否必填)
+
+    FastAPI 端点的可选参数常写成 `x: int = Query(20)`，此时 param.default
+    是 Query 对象而不是 20，直接用会把 Query 对象塞进 schema 的 default。
+    `Query(...)` 表示必填，其内部 default 是 Ellipsis。
+    """
+    if default is inspect.Parameter.empty:
+        return None, True
+    # FastAPI 的 Query/Path/Body 等参数对象带 .default 属性
+    inner = getattr(default, "default", _SENTINEL)
+    if inner is not _SENTINEL:
+        # Query(...) 表示必填：不同版本分别用 Ellipsis 或 PydanticUndefined 表示
+        if inner is Ellipsis or _is_undefined(inner):
+            return None, True
+        return inner, False
+    return default, False
+
+
 def _build_input_schema(handler) -> dict:
     """从端点函数签名反射生成 JSON Schema
 
@@ -93,13 +156,16 @@ def _build_input_schema(handler) -> dict:
     for name, param in inspect.signature(handler).parameters.items():
         if name.startswith(_AUTH_PARAM_PREFIX):
             continue
-        schema: Dict[str, Any] = {
-            "type": _TYPE_MAP.get(param.annotation, "string"),
-        }
-        if param.default is inspect.Parameter.empty:
+        schema: Dict[str, Any] = {"type": _json_type(param.annotation)}
+        default, is_required = _unwrap_default(param.default)
+        if is_required:
             required.append(name)
-        else:
-            schema["default"] = param.default
+        elif default is not None:
+            schema["default"] = default
+        # FastAPI 的 Query(description=...) 里已写了参数说明，取出来给 AI
+        desc = getattr(param.default, "description", None)
+        if desc:
+            schema["description"] = desc
         props[name] = schema
     out: Dict[str, Any] = {"type": "object", "properties": props}
     if required:
@@ -163,8 +229,11 @@ async def _call_tool(name: str, args: Dict[str, Any]) -> Any:
             continue
         if pname in args and args[pname] is not None:
             kwargs[pname] = args[pname]
-        elif param.default is inspect.Parameter.empty:
-            raise ValueError(f"工具 {name} 缺少必填参数: {pname}")
+        else:
+            # 未传值：必填参数直接报错，可选参数留给函数自身默认值
+            _, is_required = _unwrap_default(param.default)
+            if is_required:
+                raise ValueError(f"工具 {name} 缺少必填参数: {pname}")
 
     result = handler(**kwargs)
     if inspect.isawaitable(result):

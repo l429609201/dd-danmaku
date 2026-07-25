@@ -288,10 +288,16 @@ class ControlClient:
                     request_cache_key=payload.get("cache_key"))
 
     async def _handle_stats_report(self, msg_id, payload):
-        """Worker 主动上报 IP/限流统计：落库 current + snapshot"""
+        """Worker 主动上报 IP/限流统计：落库 current + snapshot
+
+        落库是同步 DB 操作（最多 200 个 IP 的 upsert），必须放线程池，
+        否则会长时间霸占事件循环（实测导致 loop_lag 达数百毫秒）。
+        """
         ip_stats = payload.get("ip_stats") or []
         worker_id = payload.get("worker_id", "worker-1")
-        saved = ip_stats_service.ingest_report(worker_id, ip_stats)
+        saved = await asyncio.to_thread(
+            ip_stats_service.ingest_report, worker_id, ip_stats
+        )
         await self._send({
             "id": msg_id, "type": "stats.report.result",
             "timestamp": _ts(), "payload": {"success": True, "saved": saved},
@@ -299,10 +305,15 @@ class ControlClient:
         self._audit("worker_to_local", "stats.report", "success")
 
     async def _handle_log_report(self, msg_id, payload):
-        """Worker 主动上报日志：落库 worker_request_logs + SSE 广播"""
+        """Worker 主动上报日志：落库 worker_request_logs + SSE 广播
+
+        批量落库（单次最多 100 条）是同步 DB 操作，放线程池避免阻塞事件循环。
+        """
         logs = payload.get("logs") or []
         worker_id = payload.get("worker_id", "worker-1")
-        saved = worker_log_service.ingest_report(worker_id, logs)
+        saved = await asyncio.to_thread(
+            worker_log_service.ingest_report, worker_id, logs
+        )
         await self._send({
             "id": msg_id, "type": "log.report.result",
             "timestamp": _ts(), "payload": {"success": True, "saved": saved},
@@ -341,13 +352,17 @@ class ControlClient:
         self._resync_task = asyncio.create_task(_run())
 
     async def _handle_metrics_report(self, msg_id, payload):
-        """Worker 上报运行指标快照：落库 worker_metrics_snapshot"""
+        """Worker 上报运行指标快照：落库 worker_metrics_snapshot
+
+        同步 DB 写入放线程池，避免阻塞事件循环。
+        """
         metrics = payload.get("metrics") or {}
         worker_id = payload.get("worker_id", "worker-1")
-        ok = metrics_service.ingest_report(
+        ok = await asyncio.to_thread(
+            metrics_service.ingest_report,
             worker_id, metrics,
-            total_lifetime=payload.get("total_requests_lifetime", 0),
-            api_cache_size=payload.get("api_cache_size", 0),
+            payload.get("total_requests_lifetime", 0),
+            payload.get("api_cache_size", 0),
         )
         await self._send({
             "id": msg_id, "type": "metrics.report.result",
