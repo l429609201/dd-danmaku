@@ -26,7 +26,12 @@ class IpStatsService:
         self._snapshot_top_n = 20
 
     def ingest_report(self, worker_id: str, ip_stats: List[Dict[str, Any]]) -> int:
-        """落库一次 stats.report；返回处理条数"""
+        """落库一次 stats.report；返回处理条数
+
+        性能要点：原实现在 for 循环里逐个 IP 做 SELECT（最多 200 次往返），
+        单次调用耗时随 IP 数线性增长。现改为一次 IN 查询预载全部已存在行，
+        循环内只做内存字典查找 + 属性赋值，DB 往返从 N 次降为 1 次。
+        """
         if not ip_stats:
             return 0
         db = get_db_sync()
@@ -42,6 +47,25 @@ class IpStatsService:
             snapshot_ips = {str(x.get("ip", "")).strip() for x in ranked[:self._snapshot_top_n]}
             self._last_snapshot_at[worker_id] = current
         try:
+            # 预载：本批涉及的 IP 一次性查出来，避免循环内逐条 SELECT
+            incoming_ips = {
+                str(item.get("ip", "")).strip() for item in ip_stats
+                if str(item.get("ip", "")).strip()
+            }
+            existing: Dict[str, IpRequestStatCurrent] = {}
+            if incoming_ips:
+                # MySQL 对超长 IN 列表不友好，分批查询（Worker 侧上报上限 200，
+                # 这里仍按 500 分批以防未来放宽上限）
+                ip_list = list(incoming_ips)
+                for i in range(0, len(ip_list), 500):
+                    chunk = ip_list[i:i + 500]
+                    for row in db.query(IpRequestStatCurrent).filter(
+                        IpRequestStatCurrent.worker_id == worker_id,
+                        IpRequestStatCurrent.ip.in_(chunk),
+                    ).all():
+                        existing[row.ip] = row
+
+            snapshots = []
             for item in ip_stats:
                 ip = str(item.get("ip", "")).strip()
                 if not ip:
@@ -50,13 +74,11 @@ class IpStatsService:
                 violations = int(item.get("violations", 0) or 0)
                 paths = item.get("paths") or {}
 
-                row = db.query(IpRequestStatCurrent).filter(
-                    IpRequestStatCurrent.ip == ip,
-                    IpRequestStatCurrent.worker_id == worker_id,
-                ).first()
-                if not row:
+                row = existing.get(ip)
+                if row is None:
                     row = IpRequestStatCurrent(ip=ip, worker_id=worker_id)
                     db.add(row)
+                    existing[ip] = row
                 row.total_count = total
                 row.violation_count = violations
                 row.path_stats_json = paths
@@ -68,12 +90,15 @@ class IpStatsService:
                     top_paths = dict(sorted(
                         paths.items(), key=lambda kv: kv[1], reverse=True
                     )[:10]) if isinstance(paths, dict) else {}
-                    db.add(IpRequestStatSnapshot(
-                        worker_id=worker_id, snapshot_at=current, ip=ip,
-                        total_count=total, violation_count=violations,
-                        top_paths_json=top_paths,
-                    ))
+                    snapshots.append({
+                        "worker_id": worker_id, "snapshot_at": current, "ip": ip,
+                        "total_count": total, "violation_count": violations,
+                        "top_paths_json": top_paths,
+                    })
                 count += 1
+            # 快照批量插入（无 TimestampMixin，字段已全部显式提供）
+            if snapshots:
+                db.bulk_insert_mappings(IpRequestStatSnapshot, snapshots)
             db.commit()
             return count
         except Exception as e:

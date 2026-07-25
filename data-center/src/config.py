@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     CONFIG_PATH: str = "/app/config"
     DATABASE_ECHO: bool = False
 
+    # 连接池与线程池（大量同步 DB 查询通过 asyncio.to_thread 卸载执行）
+    # 线程池上限应与 DB 连接池容量（DB_POOL_SIZE + DB_MAX_OVERFLOW）对齐，
+    # 否则线程拿不到连接只能空等，反而增加延迟。
+    DB_POOL_SIZE: int = 40
+    DB_MAX_OVERFLOW: int = 40
+    DB_THREAD_POOL_SIZE: int = 64
+    # 慢 SQL 阈值（毫秒）：超过则记录到慢查询环形缓冲，供 /ext/diag/slow-sql 查看
+    SLOW_SQL_MS: int = 200
+
     # Redis 热缓存配置（新架构：响应体走 Redis，元数据走 SQL）
     REDIS_ENABLED: bool = True
     REDIS_URL: str = "redis://redis:6379/0"

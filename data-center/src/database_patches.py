@@ -140,12 +140,109 @@ def _patch_drop_sign_zombie_columns(engine: Engine) -> bool:
     return changed
 
 
+# ============ 复合索引：按"过滤列 + 排序列"建，让分页查询能走索引 ============
+# 背景：列表接口普遍是「WHERE 某列 = ? ORDER BY 时间 DESC LIMIT n」。
+# 只有单列索引时，MySQL 用 A 列索引过滤后仍需额外排序（filesort），
+# 数据量大时排序开销占主导。加 (过滤列, 时间列) 复合索引后，
+# 索引本身已按时间有序，可直接边扫边取前 n 条，避免 filesort。
+#
+# 命名统一 ix_<表>_<列缩写>，便于识别与回滚。
+_COMPOSITE_INDEXES = {
+    "worker_request_logs": [
+        # 按级别筛选 + 时间倒序（日志页最常用组合）
+        ("ix_wrl_level_created", ["level", "created_at"]),
+        # 按 worker 筛选 + 时间倒序
+        ("ix_wrl_worker_created", ["worker_id", "created_at"]),
+        # 按状态码筛选 + 时间倒序（排查错误请求）
+        ("ix_wrl_status_created", ["status", "created_at"]),
+    ],
+    "api_cache_access_logs": [
+        # 按访问类型筛选 + 时间倒序（命中率统计与趋势聚合都走这个）
+        ("ix_acal_type_created", ["access_type", "created_at"]),
+    ],
+    "api_response_cache": [
+        # 待刷新筛选 + 获取时间倒序
+        ("ix_arc_pending_fetched", ["refresh_pending", "fetched_at"]),
+        # 空结果负缓存分页：is_empty 过滤 + 时间倒序
+        ("ix_arc_empty_fetched", ["is_empty", "fetched_at"]),
+    ],
+    "ip_request_stats_current": [
+        # IP 统计页：时间范围过滤 + 按请求量/违规数排序
+        ("ix_irsc_last_total", ["last_access_at", "total_count"]),
+    ],
+    "worker_metrics_snapshot": [
+        # 指标趋势：按 worker + 快照时间聚合
+        ("ix_wms_worker_snapshot", ["worker_id", "snapshot_at"]),
+    ],
+    "api_response_entities": [
+        # 实体列表：类型过滤 + 最近出现时间倒序
+        ("ix_are_type_lastseen", ["entity_type", "last_seen_at"]),
+    ],
+}
+
+
+def _patch_add_composite_indexes(engine: Engine) -> bool:
+    """为大表补「过滤列 + 时间列」复合索引，消除分页查询的 filesort。
+
+    幂等：
+    - 表不存在则跳过；
+    - 目标列不全存在则跳过（避免因模型演进导致建索引失败）；
+    - 已存在同名索引，或已存在「列序完全相同」的索引则跳过。
+    单个索引失败不影响其它索引与启动流程。
+    """
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    dialect = engine.dialect.name
+    changed = False
+
+    for table, specs in _COMPOSITE_INDEXES.items():
+        if table not in tables:
+            continue
+        try:
+            existing = inspector.get_indexes(table)
+            table_cols = {c["name"] for c in inspector.get_columns(table)}
+        except Exception as e:
+            logger.warning(f"⚠️ 读取 {table} 结构失败，跳过复合索引: {e}")
+            continue
+
+        existing_names = {idx.get("name") for idx in existing}
+        # 已有索引的列序集合，用于判断"等价索引已存在"
+        existing_colsets = {tuple(idx.get("column_names") or []) for idx in existing}
+
+        for name, cols in specs:
+            if name in existing_names:
+                continue
+            if tuple(cols) in existing_colsets:
+                continue
+            # 列不全（模型尚未升级/列已删）则跳过，不报错
+            if not set(cols).issubset(table_cols):
+                continue
+            try:
+                with engine.begin() as conn:
+                    if dialect == "mysql":
+                        col_sql = ", ".join(f"`{c}`" for c in cols)
+                        conn.exec_driver_sql(
+                            f"CREATE INDEX `{name}` ON `{table}` ({col_sql})"
+                        )
+                    else:
+                        col_sql = ", ".join(f'"{c}"' for c in cols)
+                        conn.exec_driver_sql(
+                            f'CREATE INDEX IF NOT EXISTS "{name}" ON "{table}" ({col_sql})'
+                        )
+                logger.info(f"📈 已创建复合索引 {table}.{name}（{', '.join(cols)}）")
+                changed = True
+            except Exception as e:
+                logger.warning(f"⚠️ 创建复合索引 {table}.{name} 失败（跳过）: {e}")
+    return changed
+
+
 # ============ 补丁注册表 ============
 # 按顺序执行；新增补丁在此登记即生效。
 _PATCHES: List[Callable[[Engine], bool]] = [
     _patch_example_noop,
     _patch_drop_unused_indexes,
     _patch_drop_sign_zombie_columns,
+    _patch_add_composite_indexes,
 ]
 
 

@@ -24,16 +24,18 @@ if settings.database_url.startswith("sqlite"):
         poolclass=StaticPool,
     )
 else:
-    # MySQL/PostgreSQL 连接池优化配置
-    # 参考 misaka_danmu_server 的配置
+    # MySQL/PostgreSQL 连接池配置
     engine = create_engine(
         settings.database_url,
         echo=settings.DATABASE_ECHO,
         pool_pre_ping=True,      # 连接前检查连接是否有效
-        pool_recycle=3600,       # 1小时回收连接（misaka_danmu_server 使用 3600）
-        pool_size=40,            # 连接池大小（misaka_danmu_server 使用 20）
-        max_overflow=40,         # 最大溢出连接数（misaka_danmu_server 使用 40）
-        pool_timeout=30,         # 获取连接超时时间（秒）（misaka_danmu_server 使用 30）
+        pool_recycle=3600,       # 1小时回收连接（避免 MySQL wait_timeout 断连）
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
+        pool_timeout=30,         # 获取连接超时时间（秒）
+        # LIFO 取连接：优先复用最近归还的热连接，让空闲连接自然超时回收，
+        # 低峰期不必维持全部 pool_size 个活跃连接，减少 MySQL 侧压力。
+        pool_use_lifo=True,
     )
 
 # 会话工厂

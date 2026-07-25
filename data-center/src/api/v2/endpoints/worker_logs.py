@@ -2,6 +2,7 @@
 Worker 请求日志接口（S7）
 
 - GET /worker-logs          历史日志分页
+- GET /worker-logs/{log_id} 单条详情（含请求/响应体）
 - GET /worker-logs/stream   SSE 实时日志（单进程 uvicorn 下有效）
 """
 import asyncio
@@ -9,11 +10,12 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from src.api.v2.deps import get_current_user
-from src.api.v2.schemas import PageResult
+from src.api.v2.pagination import build_cache_key, compute_total
+from src.api.v2.schemas import ApiResult, PageResult
 from src.database import get_db_sync
 from src.models_v2 import WorkerRequestLog, LocalUser
 from src.services_v2.worker_log_service import worker_log_service
@@ -23,17 +25,35 @@ router = APIRouter()
 
 
 @router.get("")
-def list_logs(
+async def list_logs(
     worker_id: Optional[str] = None,
     level: Optional[str] = None,
     keyword: Optional[str] = None,
     ip: Optional[str] = None,
     ua: Optional[str] = None,
     user_id: Optional[str] = None,
+    with_total: bool = True,
     page: int = 1, page_size: int = Query(50, le=200),
     _: LocalUser = Depends(get_current_user),
 ):
-    """Worker 请求日志分页查询（支持按 path 关键词、client_ip、X-UA、用户ID 过滤）"""
+    """Worker 请求日志分页查询（支持按 path 关键词、client_ip、X-UA、用户ID 过滤）
+
+    性能说明：
+    - total 走截断 COUNT + 短 TTL 缓存，翻页不再重复全表扫描；
+      前端翻页时可传 with_total=false 完全跳过。
+    - 列表不返回 request_body / response_body（Text 大字段），
+      展开行时调 GET /worker-logs/{id} 按需拉取。
+    - 同步 DB 查询整体放线程池，避免阻塞事件循环。
+    """
+    return await asyncio.to_thread(
+        _query_logs, worker_id, level, keyword, ip, ua, user_id,
+        with_total, page, page_size,
+    )
+
+
+def _query_logs(worker_id, level, keyword, ip, ua, user_id,
+                with_total, page, page_size) -> PageResult:
+    """日志分页查询（同步，供线程池调用）"""
     db = get_db_sync()
     try:
         q = db.query(WorkerRequestLog)
@@ -52,7 +72,10 @@ def list_logs(
         # 按客户端用户标识（X-Ddd-User）模糊搜索
         if user_id:
             q = q.filter(WorkerRequestLog.client_user_id.like(f"%{user_id}%"))
-        total = q.count()
+
+        ck = build_cache_key("worker_logs", worker_id, level, keyword, ip, ua, user_id)
+        total, estimated = compute_total(db, q, ck, with_total)
+
         rows = q.order_by(WorkerRequestLog.created_at.desc()) \
                 .offset((page - 1) * page_size).limit(page_size).all()
         items = [{
@@ -62,14 +85,44 @@ def list_logs(
             "cache_source": r.cache_source, "upstream_status": r.upstream_status,
             "key_id": r.key_id, "client_user_id": r.client_user_id,
             "duration_ms": r.duration_ms,
-            # 补齐请求/响应体与字节数，供前端展开行展示历史日志
             "response_bytes": r.response_bytes,
-            "request_body": r.request_body, "response_body": r.response_body,
+            # 是否有请求/响应体（前端据此决定展开行是否可点、要不要拉详情）；
+            # 体本身不在列表返回，避免单次响应几 MB 拖慢页面
+            "has_body": bool(r.request_body or r.response_body),
             "created_at": r.created_at.isoformat() if r.created_at else None,
         } for r in rows]
-        return PageResult(total=total, items=items)
+        return PageResult(total=total, items=items, total_estimated=estimated)
     finally:
         db.close()
+
+
+@router.get("/detail/{log_id}")
+async def get_log_detail(log_id: int, _: LocalUser = Depends(get_current_user)):
+    """单条日志详情：返回请求体与响应体（列表已剔除大字段，展开行时调用）
+
+    注意路径为 /detail/{id} 而非 /{id}，避免与 /stream 静态路径冲突。
+    """
+    def _fetch():
+        db = get_db_sync()
+        try:
+            r = db.query(WorkerRequestLog).filter(
+                WorkerRequestLog.id == log_id
+            ).first()
+            if not r:
+                return None
+            return {
+                "id": r.id,
+                "request_body": r.request_body,
+                "response_body": r.response_body,
+                "response_bytes": r.response_bytes,
+            }
+        finally:
+            db.close()
+
+    data = await asyncio.to_thread(_fetch)
+    if data is None:
+        raise HTTPException(status_code=404, detail="日志不存在")
+    return ApiResult(data=data)
 
 
 @router.get("/stream")

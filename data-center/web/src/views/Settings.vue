@@ -41,6 +41,52 @@
       </div>
     </div>
 
+    <!-- MCP 接入配置：生成可直接粘贴到 AI 客户端的 JSON 配置 -->
+    <div class="panel" style="margin-top: 20px;">
+      <div class="panel-head">
+        <h2 class="panel-title">MCP 接入配置</h2>
+        <div class="panel-actions">
+          <button class="btn" :class="{ 'btn-primary': mcpMode === 'http' }" @click="mcpMode = 'http'">HTTP（推荐）</button>
+          <button class="btn" :class="{ 'btn-primary': mcpMode === 'stdio' }" @click="mcpMode = 'stdio'">stdio</button>
+        </div>
+      </div>
+      <p class="hint">
+        把下面 JSON 粘贴进 AI 客户端的 MCP 配置文件即可接入诊断工具（
+        <code>diag_snapshot</code> / <code>diag_slow_sql</code> 等 8 个）。
+        <template v-if="mcpMode === 'http'">
+          HTTP 方式无需本地装 Python 依赖，直连本地端 <code>/api/v2/ext/mcp</code> 端点。
+        </template>
+        <template v-else>
+          stdio 方式需要本机有 <code>uv</code> 与项目源码，适合本地开发调试。
+        </template>
+      </p>
+
+      <div class="mcp-form">
+        <div class="mcp-field">
+          <label>本地端地址</label>
+          <input v-model="mcpBaseUrl" class="input" placeholder="http://192.168.1.10:7759" />
+        </div>
+        <div v-if="mcpMode === 'stdio'" class="mcp-field mcp-field--wide">
+          <label>server.py 绝对路径</label>
+          <input v-model="mcpScriptPath" class="input" placeholder="/opt/dd-danmaku/data-center/mcp_server/server.py" />
+        </div>
+      </div>
+
+      <div v-if="!extToken" class="tip tip--warn">
+        请先点上方「查看密钥」获取密钥，配置里的 token 才会填上真实值。
+      </div>
+
+      <div class="code-block">
+        <button class="btn code-copy" @click="copyMcpConfig">复制配置</button>
+        <pre class="code-pre">{{ mcpConfigText }}</pre>
+      </div>
+
+      <p class="hint">
+        配置文件位置参考：Claude Desktop 为 <code>claude_desktop_config.json</code>，
+        其它客户端见各自文档。保存后重启客户端生效。
+      </p>
+    </div>
+
     <div v-if="showPasswordModal" class="modal-mask" @click.self="closePasswordModal">
       <div class="modal">
         <div class="modal-header">
@@ -71,7 +117,7 @@
 </template>
 
 <script>
-import { reactive, ref, onMounted, onUnmounted } from 'vue'
+import { reactive, ref, computed, onMounted, onUnmounted } from 'vue'
 import { apiV2 } from '../utils/api.js'
 
 export default {
@@ -84,6 +130,50 @@ export default {
     const extToken = ref('')
     const extShow = ref(false)
     const extLoading = ref(false)
+
+    // MCP 接入配置：http（直连本地端端点）/ stdio（本地起 server.py）
+    const mcpMode = ref('http')
+    // 默认用当前浏览器访问地址，多数情况就是本地端地址，省得用户手填
+    const mcpBaseUrl = ref(window.location.origin)
+    const mcpScriptPath = ref('/opt/dd-danmaku/data-center/mcp_server/server.py')
+
+    // 生成可直接粘贴的 MCP 配置 JSON；密钥未获取时用占位符提示
+    const mcpConfigText = computed(() => {
+      const token = extToken.value || '<点上方「查看密钥」获取>'
+      const base = (mcpBaseUrl.value || '').replace(/\/+$/, '')
+      if (mcpMode.value === 'http') {
+        return JSON.stringify({
+          mcpServers: {
+            'dd-danmaku-control': {
+              type: 'http',
+              url: `${base}/api/v2/ext/mcp`,
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          },
+        }, null, 2)
+      }
+      return JSON.stringify({
+        mcpServers: {
+          'dd-danmaku-control': {
+            command: 'uv',
+            args: ['run', '--with', 'mcp[cli]', '--with', 'httpx',
+                   'python', mcpScriptPath.value],
+            env: { DDC_BASE_URL: base, DDC_EXT_TOKEN: token },
+          },
+        },
+      }, null, 2)
+    })
+
+    const copyMcpConfig = async () => {
+      try {
+        await navigator.clipboard.writeText(mcpConfigText.value)
+        msg.value = extToken.value
+          ? 'MCP 配置已复制到剪贴板'
+          : 'MCP 配置已复制，但密钥仍是占位符，请先「查看密钥」再复制'
+      } catch {
+        msg.value = '复制失败，请手动选中文本复制'
+      }
+    }
 
     const loadExtToken = async () => {
       extLoading.value = true
@@ -220,6 +310,7 @@ export default {
     return {
       items, msg, save,
       extToken, extShow, extLoading, loadExtToken, rotateExtToken, copyExtToken,
+      mcpMode, mcpBaseUrl, mcpScriptPath, mcpConfigText, copyMcpConfig,
       showPasswordModal, passwordForm, passwordLoading,
       closePasswordModal, submitPassword
     }
@@ -259,4 +350,16 @@ export default {
 .btn { padding: 8px 16px; border: 1px solid #d9d9d9; background: #fff; border-radius: 6px; cursor: pointer; }
 .btn:disabled { cursor: not-allowed; opacity: .65; }
 .btn-primary { background: #1677ff; color: #fff; border-color: #1677ff; }
+/* MCP 接入配置面板 */
+.tip--warn { background: #fffbe6; border-color: #ffe58f; color: #ad6800; }
+.mcp-form { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.mcp-field { display: flex; flex-direction: column; gap: 6px; }
+.mcp-field label { color: #555; font-size: 13px; }
+.mcp-field .input { min-width: 280px; }
+.mcp-field--wide .input { min-width: 420px; }
+.code-block { position: relative; }
+.code-copy { position: absolute; top: 10px; right: 10px; z-index: 1; font-size: 12px; padding: 5px 12px; }
+.code-pre { margin: 0; background: #1e1e1e; color: #d4d4d4; padding: 16px; padding-right: 100px;
+  border-radius: 8px; font-size: 12px; line-height: 1.7; overflow-x: auto;
+  font-family: 'Consolas', 'Monaco', monospace; white-space: pre; }
 </style>

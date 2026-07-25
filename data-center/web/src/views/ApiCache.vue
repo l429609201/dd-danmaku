@@ -50,6 +50,12 @@
     <el-card shadow="never">
       <el-table :data="items" size="small" v-loading="loading" empty-text="暂无缓存">
         <el-table-column prop="api_path" label="api_path" show-overflow-tooltip />
+        <!-- 缓存键：解码后展示，中文番剧名/搜索词才能看懂 -->
+        <el-table-column label="缓存键" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="app-mono">{{ decodeText(row.cache_key) }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="method" label="方法" width="70" />
         <el-table-column prop="status_code" label="状态" width="70" />
         <el-table-column label="客户端IP" width="140">
@@ -103,7 +109,9 @@
     <el-drawer v-model="drawerVisible" title="缓存详情" size="50%">
       <template v-if="detail">
         <el-descriptions :column="1" border size="small">
-          <el-descriptions-item label="cache_key"><span class="app-mono">{{ detail.cache_key }}</span></el-descriptions-item>
+          <el-descriptions-item label="cache_key">
+            <span class="app-mono">{{ decodeText(detail.cache_key) }}</span>
+          </el-descriptions-item>
           <el-descriptions-item label="api_path">{{ detail.method }} {{ detail.api_path }}</el-descriptions-item>
           <el-descriptions-item label="客户端IP"><span class="app-mono">{{ detail.client_ip || '—' }}</span></el-descriptions-item>
           <el-descriptions-item label="状态">{{ detail.status_code }} / 存储 {{ detail.storage_mode }}</el-descriptions-item>
@@ -187,6 +195,13 @@ export default {
 
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
     const fmtSize = (n) => (n > 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + 'MB' : n > 1024 ? (n / 1024).toFixed(1) + 'KB' : (n || 0) + 'B')
+    // 安全 URL 解码：cache_key 里的中文（番剧名/搜索词）由 Worker 侧
+    // encodeURIComponent 编码过，键本身是唯一索引不能改，只在展示时解码。
+    // 非法编码序列 decodeURIComponent 会抛异常，此时回退原值。
+    const decodeText = (s) => {
+      if (!s) return '—'
+      try { return decodeURIComponent(String(s)) } catch (_) { return String(s) }
+    }
     // 判断缓存是否已过期（过期时间早于当前）
     const isExpired = (s) => (s ? new Date(s).getTime() < Date.now() : false)
     const prettyBody = computed(() => {
@@ -214,7 +229,7 @@ export default {
 
     return { items, total, page, pageSize, keyword, apiPath, clientIp, onlyPending, activeTab, stats, loading,
       drawerVisible, detail, Search, reload, onPage, onTab, viewDetail, markRefresh, del, setTtl,
-      fmt, fmtSize, isExpired, prettyBody }
+      fmt, fmtSize, isExpired, prettyBody, decodeText }
   }
 }
 </script>

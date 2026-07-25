@@ -17,6 +17,8 @@ class ApiResult(BaseModel):
 class PageResult(BaseModel):
     total: int
     items: List[Any]
+    # total 是否为估算值（大表跳过精确 COUNT 时为 True，前端可显示"约 N 条"）
+    total_estimated: bool = False
 
 
 # ---------- 认证 ----------

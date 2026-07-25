@@ -1,12 +1,14 @@
 """
 缓存查询管理：响应缓存、访问日志、刷新任务
 """
+import asyncio
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from src.api.v2.deps import get_current_user, require_operator
+from src.api.v2.pagination import build_cache_key, compute_total, invalidate_total_cache
 from src.api.v2.schemas import ApiResult, PageResult
 from src.database import get_db_sync
 from src.models_v2 import (
@@ -65,15 +67,28 @@ def cache_stats(_: LocalUser = Depends(get_current_user)):
 
 
 @router.get("/responses")
-def list_responses(
+async def list_responses(
     api_path: Optional[str] = None, keyword: Optional[str] = None,
     client_ip: Optional[str] = None,
     refresh_pending: Optional[bool] = None,
     is_empty: Optional[bool] = None,
+    with_total: bool = True,
     page: int = 1, page_size: int = Query(20, le=100),
     _: LocalUser = Depends(get_current_user),
 ):
-    """响应缓存列表（is_empty=true 只看空结果负缓存）"""
+    """响应缓存列表（is_empty=true 只看空结果负缓存）
+
+    total 走截断 COUNT + 短 TTL 缓存；整体放线程池避免阻塞事件循环。
+    """
+    return await asyncio.to_thread(
+        _query_responses, api_path, keyword, client_ip,
+        refresh_pending, is_empty, with_total, page, page_size,
+    )
+
+
+def _query_responses(api_path, keyword, client_ip, refresh_pending,
+                     is_empty, with_total, page, page_size) -> PageResult:
+    """响应缓存分页查询（同步，供线程池调用）"""
     db = get_db_sync()
     try:
         q = db.query(ApiResponseCache)
@@ -88,10 +103,15 @@ def list_responses(
         # 空结果分页：is_empty 显式传 true/false 时过滤；不传则全部
         if is_empty is not None:
             q = q.filter(ApiResponseCache.is_empty == is_empty)
-        total = q.count()
+
+        ck = build_cache_key("api_cache", api_path, keyword, client_ip,
+                             refresh_pending, is_empty)
+        total, estimated = compute_total(db, q, ck, with_total)
+
         rows = q.order_by(ApiResponseCache.fetched_at.desc()) \
                 .offset((page - 1) * page_size).limit(page_size).all()
-        return PageResult(total=total, items=[_cache_brief(r) for r in rows])
+        return PageResult(total=total, items=[_cache_brief(r) for r in rows],
+                          total_estimated=estimated)
     finally:
         db.close()
 
@@ -129,6 +149,8 @@ async def delete_response(cache_id: int, _: LocalUser = Depends(require_operator
             await redis_cache.delete(row.redis_key)
         db.delete(row)
         db.commit()
+        # 删除后失效 total 缓存，避免列表总数长时间不变
+        invalidate_total_cache("total:api_cache:")
         return ApiResult(message="删除成功")
     finally:
         db.close()
@@ -179,12 +201,24 @@ def set_ttl(cache_id: int, body: dict = Body(...),
 
 
 @router.get("/access-logs")
-def list_access_logs(
+async def list_access_logs(
     cache_key: Optional[str] = None, access_type: Optional[str] = None,
+    with_total: bool = True,
     page: int = 1, page_size: int = Query(50, le=200),
     _: LocalUser = Depends(get_current_user),
 ):
-    """缓存访问日志（含 429 兜底记录）"""
+    """缓存访问日志（含 429 兜底记录）
+
+    该表增长最快，total 走截断 COUNT + 短 TTL 缓存；查询放线程池。
+    """
+    return await asyncio.to_thread(
+        _query_access_logs, cache_key, access_type, with_total, page, page_size,
+    )
+
+
+def _query_access_logs(cache_key, access_type, with_total,
+                       page, page_size) -> PageResult:
+    """访问日志分页查询（同步，供线程池调用）"""
     db = get_db_sync()
     try:
         q = db.query(ApiCacheAccessLog)
@@ -192,7 +226,10 @@ def list_access_logs(
             q = q.filter(ApiCacheAccessLog.cache_key.like(f"%{cache_key}%"))
         if access_type:
             q = q.filter(ApiCacheAccessLog.access_type == access_type)
-        total = q.count()
+
+        ck = build_cache_key("access_logs", cache_key, access_type)
+        total, estimated = compute_total(db, q, ck, with_total)
+
         rows = q.order_by(ApiCacheAccessLog.created_at.desc()) \
                 .offset((page - 1) * page_size).limit(page_size).all()
         return PageResult(total=total, items=[{
@@ -200,6 +237,6 @@ def list_access_logs(
             "access_type": r.access_type, "upstream_status": r.upstream_status,
             "served_status": r.served_status,
             "created_at": r.created_at.isoformat() if r.created_at else None,
-        } for r in rows])
+        } for r in rows], total_estimated=estimated)
     finally:
         db.close()

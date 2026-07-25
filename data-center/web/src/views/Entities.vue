@@ -66,7 +66,9 @@
           <el-descriptions-item label="标题">{{ detail.title || '—' }}</el-descriptions-item>
           <el-descriptions-item label="分集标题">{{ detail.episode_title || '—' }}</el-descriptions-item>
           <el-descriptions-item label="来源接口"><span class="app-mono">{{ detail.api_path }}</span></el-descriptions-item>
-          <el-descriptions-item label="cache_key"><span class="app-mono">{{ detail.cache_key }}</span></el-descriptions-item>
+          <el-descriptions-item label="cache_key">
+            <span class="app-mono">{{ decodeText(detail.cache_key) }}</span>
+          </el-descriptions-item>
           <el-descriptions-item label="首次 / 最近">{{ fmt(detail.first_seen_at) }} / {{ fmt(detail.last_seen_at) }}</el-descriptions-item>
         </el-descriptions>
         <div class="raw-head">
@@ -127,6 +129,11 @@ export default {
     const gotoCache = (key) => { router.push({ path: '/cache', query: { cache_key: key } }) }
 
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
+    // 安全 URL 解码：cache_key 含被 encodeURIComponent 编码的中文，仅展示时解码
+    const decodeText = (s) => {
+      if (!s) return '—'
+      try { return decodeURIComponent(String(s)) } catch (_) { return String(s) }
+    }
     const prettyRaw = computed(() => {
       if (!detail.value || !detail.value.raw_json) return '（无）'
       try { return JSON.stringify(detail.value.raw_json, null, 2) }
@@ -135,7 +142,7 @@ export default {
 
     onMounted(() => { load(); loadStats() })
     return { items, total, page, pageSize, type, keyword, stats, loading,
-      drawerVisible, detail, Search, reload, onPage, viewDetail, gotoCache, fmt, prettyRaw }
+      drawerVisible, detail, Search, reload, onPage, viewDetail, gotoCache, fmt, prettyRaw, decodeText }
   }
 }
 </script>

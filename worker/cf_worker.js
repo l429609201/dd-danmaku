@@ -1794,6 +1794,10 @@ async function handleRequest(request, env, ctx) {
         });
     }
 
+    // 窗口内请求计数：OPTIONS 预检不算业务请求，故放在预检分支之后。
+    // 此前漏调用导致上报的 metrics.totalRequests 恒为 0，仪表盘"流量趋势"请求线一直是空。
+    bumpMetric('totalRequests');
+
     const urlObj = new URL(request.url);
     const ACCESS_CONFIG = getAccessConfig();
 
