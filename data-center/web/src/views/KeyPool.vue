@@ -116,6 +116,9 @@
 
     <!-- 签名密钥池（客户端请求验签，按 UA 分组） -->
     <SignKeyPool />
+
+    <!-- 用户允许名单池（按 X-Ddd-User 过滤，UA 规则绑定） -->
+    <UserAllowPool />
   </div>
 </template>
 
@@ -123,10 +126,11 @@
 import { reactive, ref, onMounted } from 'vue'
 import { apiV2 } from '../utils/api.js'
 import SignKeyPool from './SignKeyPool.vue'
+import UserAllowPool from './UserAllowPool.vue'
 
 export default {
   name: 'KeyPool',
-  components: { SignKeyPool },
+  components: { SignKeyPool, UserAllowPool },
   setup() {
     const items = ref([])
     const states = ref([])

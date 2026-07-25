@@ -7,6 +7,8 @@
 import logging
 from typing import Any, Dict
 
+from sqlalchemy import or_
+
 from src.database import get_db_sync
 from src.models_v2 import IpRule, UaLimitRule
 from src.models_v2.base import now
@@ -25,9 +27,18 @@ class RuntimeConfigService:
             current = now()
             blacklist: Dict[str, str] = {}
             whitelist: Dict[str, str] = {}
-            for r in db.query(IpRule).filter(IpRule.enabled == True).all():  # noqa: E712
-                if r.expires_at and current > r.expires_at:
-                    continue
+            # 过期规则在 SQL 层就过滤掉：自动封禁会持续写入 ip_rules，
+            # 过期记录若不清理会累积到数万行，全部 load 进内存再逐条跳过
+            # 会让每次下发都退化成全表扫描（实测 7 万行时单次查询 2.4 秒，
+            # 而下发由 abuse 上报触发、5~15 秒一次，直接拖高事件循环延迟）。
+            # 只取需要的列，避免回表读 reason/created_at 等无关字段。
+            ip_rows = db.query(
+                IpRule.ip_or_cidr, IpRule.rule_type, IpRule.reason,
+            ).filter(
+                IpRule.enabled == True,  # noqa: E712
+                or_(IpRule.expires_at.is_(None), IpRule.expires_at > current),
+            ).all()
+            for r in ip_rows:
                 if r.rule_type == "white":
                     whitelist[r.ip_or_cidr] = r.reason or ""
                 else:
@@ -59,6 +70,16 @@ class RuntimeConfigService:
                 # 兼容保留：旧字段 signRequired（Worker 已不读，仅用于向后可观测）
                 if getattr(u, "sign_required", False):
                     cfg["signRequired"] = True
+                # 用户名过滤：绑定的用户允许名单组（空=不校验用户名）
+                _user_grp = getattr(u, "user_group_id", None)
+                if _user_grp:
+                    cfg["userGroupId"] = _user_grp
+                # 实例 ID 校验：品牌标记 + 混淆密钥（两者都配才启用）
+                _brand = getattr(u, "instance_brand_mark", None)
+                _obf = getattr(u, "instance_obf_key", None)
+                if _brand and _obf:
+                    cfg["instanceBrandMark"] = _brand
+                    cfg["instanceObfKey"] = _obf
                 ua_configs[u.ua_key] = cfg
 
             # 密钥池：本地端启用的密钥列表，下发给 Worker 合并
@@ -69,12 +90,17 @@ class RuntimeConfigService:
             from src.services_v2.sign_key_pool_service import sign_key_pool_service
             sign_key_pool = sign_key_pool_service.build_pool_payload()
 
+            # 用户允许名单池：UA 规则通过 userGroupId 绑定，Worker 据此过滤 X-Ddd-User
+            from src.services_v2.user_allow_pool_service import user_allow_pool_service
+            user_allow_pool = user_allow_pool_service.build_pool_payload()
+
             return {
                 "ip_blacklist": blacklist,
                 "ip_whitelist": whitelist,
                 "ua_configs": ua_configs,
                 "key_pool": key_pool,
                 "sign_key_pool": sign_key_pool,
+                "user_allow_pool": user_allow_pool,
             }
         finally:
             db.close()

@@ -174,6 +174,13 @@ _COMPOSITE_INDEXES = {
         # 指标趋势：按 worker + 快照时间聚合
         ("ix_wms_worker_snapshot", ["worker_id", "snapshot_at"]),
     ],
+    "ip_rules": [
+        # 配置下发按「启用 且 未过期」过滤，单列 enabled 索引区分度极低
+        # （几乎全部 enabled=true），复合索引才能真正缩小扫描范围
+        ("ix_ip_rules_enabled_expires", ["enabled", "expires_at"]),
+        # 清理任务按 created_by + expires_at 找过期的自动封禁记录
+        ("ix_ip_rules_createdby_expires", ["created_by", "expires_at"]),
+    ],
     "api_response_entities": [
         # 实体列表：类型过滤 + 最近出现时间倒序
         ("ix_are_type_lastseen", ["entity_type", "last_seen_at"]),

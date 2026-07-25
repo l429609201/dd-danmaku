@@ -16,6 +16,7 @@ from src.models_v2 import (
     ApiCacheAccessLog, ApiResponseCache, AppSetting,
     ControlMessage, RuntimeEvent, WorkerRequestLog, WorkerMetricsSnapshot,
     IpRequestStatSnapshot, IpRequestStatCurrent, ApiCacheRefreshTask,
+    IpRule,
     CleanupPolicy,
 )
 from src.models_v2.base import now
@@ -37,6 +38,10 @@ TABLE_REGISTRY = {
     # 敏感表：默认关闭
     "api_response_cache": (ApiResponseCache, "expire_at", "响应缓存(仅过期空壳)", False, True),
     "ip_request_stats_current": (IpRequestStatCurrent, "updated_at", "IP 当前累计统计", False, False),
+    # 过期的自动封禁 IP 规则：不按"创建时间早于 N 天"删，而是按 expires_at
+    # 已过期就删（走 _delete_expired_ip_rules 专用分支，见 cleanup_once）。
+    # 仅删 created_by=worker-abuse 的自动封禁，人工黑白名单一律不动。
+    "ip_rules": (IpRule, "expires_at", "过期的自动封禁IP", True, False),
 }
 
 # 默认策略：table_key -> (默认启用, 默认保留天数)
@@ -50,6 +55,9 @@ DEFAULT_POLICY = {
     "api_cache_refresh_task": (True, 14),
     "api_response_cache": (False, 90),
     "ip_request_stats_current": (False, 30),
+    # 过期封禁规则默认启用：不清理会持续累积并拖慢每次配置下发。
+    # retention_days 在此表语义为"过期后再保留几天"，1 天足够留出排查窗口。
+    "ip_rules": (True, 1),
 }
 
 
@@ -138,7 +146,12 @@ class CleanupService:
                 continue
             model, time_field, _name, _safe, expired_only = TABLE_REGISTRY[p.table_key]
             try:
-                if expired_only:
+                if p.table_key == "ip_rules":
+                    # 专用分支：按 expires_at 已过期删自动封禁规则，
+                    # 而不是按创建时间（封禁本身是短期的，创建时间无意义）
+                    deleted = await asyncio.to_thread(
+                        self._delete_expired_ip_rules, current, p.retention_days)
+                elif expired_only:
                     # 特殊模式：仅清过期空壳（如 api_response_cache）
                     deleted = await self._delete_expired_cache_shells(
                         current, p.retention_days)
@@ -199,6 +212,50 @@ class CleanupService:
                 raise
             finally:
                 db.close()
+        return total
+
+    def _delete_expired_ip_rules(self, current, retention_days: int) -> int:
+        """删除已过期的自动封禁 IP 规则（同步分批，供线程池调用）
+
+        与其他表按「创建时间早于 N 天」不同：封禁规则的价值只看 expires_at，
+        创建时间没有意义。这里删的是 expires_at 早于 (现在 - retention_days)
+        的记录，retention_days 相当于「过期后再留几天」的排查窗口。
+
+        安全约束：
+        - 只删 created_by = worker-abuse 的自动封禁记录；
+          人工创建的黑白名单（含长期规则 expires_at 为 NULL）绝不触碰
+        - expires_at 为 NULL 视为长期规则，不删
+        - 分批 5000 条提交，避免一次删数万行长时间持锁
+        """
+        if retention_days < 0:
+            return 0
+        from src.services_v2.abuse_service import ABUSE_CREATED_BY
+        cutoff = current - timedelta(days=retention_days)
+        total = 0
+        batch = 5000
+        while True:
+            db = get_db_sync()
+            try:
+                ids = [r[0] for r in db.query(IpRule.id).filter(
+                    IpRule.created_by == ABUSE_CREATED_BY,
+                    IpRule.expires_at.isnot(None),
+                    IpRule.expires_at < cutoff,
+                ).limit(batch).all()]
+                if not ids:
+                    break
+                deleted = db.query(IpRule).filter(IpRule.id.in_(ids)) \
+                    .delete(synchronize_session=False)
+                db.commit()
+                total += deleted
+                if deleted < batch:
+                    break
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
+        if total:
+            logger.info(f"🧹 已清理过期自动封禁 IP 规则 {total} 条")
         return total
 
     async def _delete_expired_cache_shells(self, current, retention_days: int) -> int:

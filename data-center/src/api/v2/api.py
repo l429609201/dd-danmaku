@@ -10,6 +10,7 @@ from src.api.v2.endpoints import (
     settings as settings_ep, runtime_events, dashboard,
     ip_rules, ip_stats, worker_logs, ua_rules, cleanup, comment_store,
     key_pool, media, external_control, sign_key_pool, mcp_http,
+    user_allow_pool,
 )
 
 api_v2_router = APIRouter()
@@ -30,6 +31,7 @@ api_v2_router.include_router(cleanup.router, prefix="/cleanup", tags=["数据清
 api_v2_router.include_router(comment_store.router, prefix="/comment-store", tags=["弹幕存储"])
 api_v2_router.include_router(key_pool.router, prefix="/key-pool", tags=["密钥池"])
 api_v2_router.include_router(sign_key_pool.router, prefix="/sign-key-pool", tags=["签名密钥池"])
+api_v2_router.include_router(user_allow_pool.router, prefix="/user-allow-pool", tags=["用户允许名单池"])
 api_v2_router.include_router(media.router, prefix="/media", tags=["媒体库"])
 api_v2_router.include_router(external_control.router, prefix="/ext", tags=["外部控制"])
 api_v2_router.include_router(mcp_http.router, prefix="/ext", tags=["MCP"])

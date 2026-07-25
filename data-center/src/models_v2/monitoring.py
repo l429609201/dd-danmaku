@@ -79,6 +79,14 @@ class UaLimitRule(Base, TimestampMixin):
     enabled = Column(Boolean, default=True, index=True, nullable=False)
     # 绑定的签名密钥组 group_id（关联 SignKeyPool.group_id）；空=不启用签名验证
     sign_group_id = Column(String(64), nullable=True)
+    # 绑定的用户允许组 group_id（关联 UserAllowPool.group_id）；空=不启用用户名过滤
+    # 校验顺序：实例校验 → 用户名过滤 → 签名验证
+    user_group_id = Column(String(64), nullable=True)
+    # 实例 ID 归属校验参数：配置后对 X-Ddd-User 做 XOR 反解并比对前缀
+    # instance_brand_mark: 期望的归属标记前缀（如 misaka10876），空=不校验实例 ID
+    instance_brand_mark = Column(String(100), nullable=True)
+    # instance_obf_key: XOR 混淆密钥（sha256(obf_key) 循环 XOR），空时沿用 brand_mark 默认密钥
+    instance_obf_key = Column(String(200), nullable=True)
 
 
 class WorkerRequestLog(Base):
@@ -228,6 +236,26 @@ class SignKeyPool(Base, TimestampMixin):
     group_id = Column(String(64), unique=True, index=True, nullable=False)
     # 该组签名密钥（与对应 wasm 内置 SIGN_SECRET 一致）
     secret = Column(String(200), nullable=False)
+    enabled = Column(Boolean, default=True, index=True, nullable=False)
+    remark = Column(String(500), nullable=True)
+
+
+class UserAllowPool(Base, TimestampMixin):
+    """用户允许名单池：本地端维护并下发给 Worker 用于用户名过滤
+
+    每组维护一批允许访问的客户端用户名（X-Ddd-User 头的值）。
+    UA 规则通过 user_group_id 绑定本组；空组（users_json 为空列表）等同于「允许所有用户」，
+    不应与「不配置 user_group_id（不校验）」混淆。
+
+    校验顺序（Worker 主流程）：实例 ID 校验 → 本组用户名校验 → 签名校验
+    """
+    __tablename__ = "user_allow_pool"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 逻辑标识（下发给 Worker 作为组 id，UA 规则通过 user_group_id 绑定）
+    group_id = Column(String(64), unique=True, index=True, nullable=False)
+    # 允许的用户名列表（精确匹配 X-Ddd-User 值）；空列表 = 拒绝所有用户
+    users_json = Column(JSON, default=list, nullable=False)
     enabled = Column(Boolean, default=True, index=True, nullable=False)
     remark = Column(String(500), nullable=True)
 

@@ -5,7 +5,7 @@
 // 客户端签名校验：逻辑在独立的混淆产物 sign_verify.js 中（不入公开仓库，
 // 部署时与本文件一起上传）。公开仓库看不到验证算法/旁路细节。
 // 构建产物由 sign-verify-src/ 经 javascript-obfuscator 混淆生成。
-import { verifyClientSignature } from './sign_verify.js';
+import { verifyClientSignature, verifyInstanceId, verifyUserAllow } from './sign_verify.js';
 
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
@@ -139,6 +139,8 @@ let memoryCache = {
         ipWhitelist: [],
         signKeyPool: [],  // 签名密钥池 [{ groupId, secret, authUaKeys:[] }],按 UA 分组验签
         signPoolLoaded: false,  // 签名池是否成功下发过（冷启动放行、运行期拒绝 no_secret 的依据）
+    userAllowPool: [],  // 用户允许名单池 [{ groupId, users:[] }]，按 UA 绑定的 userGroupId 过滤
+    userPoolLoaded: false,  // 名单池是否成功下发过（同签名池：冷启动放行、运行期拒绝）
         lastUpdate: 0
     },
     // env 兜底基线（启动时加载，永不被下发覆盖；下发只在其之上做增量合并）
@@ -634,6 +636,15 @@ function applyRuntimeConfig(cfg) {
         // 标记签名池已成功下发过至少一次：此后 no_secret 由「放行」转为「拒绝」，
         // 堵住运行期绕过；冷启动(从未下发)时仍放行，避免误伤。
         memoryCache.configCache.signPoolLoaded = true;
+    }
+
+    // 用户允许名单池：按 UA 绑定的 userGroupId 做用户名过滤（字段存在才更新，含空数组=清空）
+    if ('user_allow_pool' in cfg) {
+        memoryCache.configCache.userAllowPool = Array.isArray(cfg.user_allow_pool)
+            ? cfg.user_allow_pool.filter(g => g && g.groupId)
+            : [];
+        // 同签名池策略：下发过至少一次后，组缺失由「放行」转为「拒绝」
+        memoryCache.configCache.userPoolLoaded = true;
     }
 
     memoryCache.configCache.lastUpdate = Date.now();
@@ -2046,6 +2057,72 @@ async function handleRequest(request, env, ctx) {
     console.log(`✅ [${clientIP}] 访问控制检查通过，继续处理请求`);
     console.log(`   - UA类型: ${accessCheck.uaConfig?.type || 'unknown'}`);
     console.log(`   - 目标路径: ${tUrlObj.pathname}`);
+
+    // ========================================
+    // 🧬 实例 ID 归属校验 + 👤 用户名过滤（均在签名校验之前）
+    // ========================================
+    // 顺序：实例ID(客户端身份) → 用户名(用户身份) → 签名(请求完整性)。
+    // 三者都「UA 规则配了才启用」，未配置的 UA 完全不受影响，可逐个灰度。
+    // 失败统一返回 401 + 「签名验证失败」，对外不区分具体拦截层，避免探测；
+    // 真实 reason 只进内部日志。
+    if (accessCheck.uaConfig) {
+        const _uaCfg = accessCheck.uaConfig;
+        // 拦截统一出口：与签名失败保持完全一致的响应体与状态码
+        const denyAsSign = (logName, reason) => {
+            bumpMetric('blockedUa'); bumpMetric('status4xx');
+            const body = JSON.stringify({
+                status: 401,
+                type: '签名校验',
+                message: '签名验证失败',
+            });
+            addMemoryLog('warn', logName, {
+                ip: clientIP,
+                method: request.method,
+                path: tUrlObj.pathname,
+                responseStatus: 401,
+                userAgent: request.headers.get('X-User-Agent') || '',
+                userId: clientUserId,
+                uaType: _uaCfg.type || '',
+                reason,
+                durationMs: Date.now() - reqStartMs,
+                responseBytes: body.length,
+                requestBody: truncateBody(reqBodyText),
+                responseBody: truncateBody(body),
+            });
+            console.log(`🚫 [${clientIP}] ${logName}: ${reason}, 路径=${tUrlObj.pathname}`);
+            return new Response(body, {
+                status: 401,
+                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+            });
+        };
+
+        // 实例 ID 校验：对 X-Ddd-User 做 XOR 反解，确认由指定弹幕库生成
+        if (_uaCfg.instanceBrandMark && _uaCfg.instanceObfKey) {
+            const instCheck = await verifyInstanceId(
+                clientUserId, _uaCfg.instanceBrandMark, _uaCfg.instanceObfKey
+            );
+            if (!instCheck.ok) {
+                return denyAsSign('实例ID校验失败', instCheck.reason);
+            }
+            console.log(`✅ [${clientIP}] 实例ID校验通过 (UA: ${_uaCfg.type})`);
+        }
+
+        // 用户名过滤：X-Ddd-User 必须在绑定的允许名单组内
+        if (_uaCfg.userGroupId) {
+            const userCheck = verifyUserAllow(
+                clientUserId, _uaCfg.userGroupId,
+                memoryCache.configCache.userAllowPool,
+                memoryCache.configCache.userPoolLoaded
+            );
+            if (userCheck.reason === 'user_group_missing') {
+                console.log(`⚠️ [用户名过滤] 用户组 ${_uaCfg.userGroupId} 未找到,冷启动放行(名单池尚未下发)`);
+            }
+            if (!userCheck.ok) {
+                return denyAsSign('用户名校验失败', userCheck.reason);
+            }
+            console.log(`✅ [${clientIP}] 用户名校验通过 (UA: ${_uaCfg.type})`);
+        }
+    }
 
     // ========================================
     // 🔏 客户端签名校验(按 UA 开关 signRequired 决定是否校验)
