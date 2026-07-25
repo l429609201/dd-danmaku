@@ -5,8 +5,13 @@
 - UA 规则通过 user_group_id 绑定某一组；不绑定则该 UA 不做用户名校验
 - 名单值为客户端 X-Ddd-User 头的原值，精确匹配（不做大小写归一，避免误放行）
 
+注意：客户端（ede.js + sign.wasm）送出的 X-Ddd-User 是**混淆后的值**，
+不是 Emby 原生用户 ID。因此名单里要填混淆值，可用 obfuscate_user()
+由原生 ID 换算（后台"生成"按钮走的就是这个函数）。
+
 与签名密钥池的区别：用户名不是密钥，不做脱敏——排查时需要直接看到具体名单。
 """
+import hashlib
 import logging
 from typing import Any, Dict, List
 
@@ -14,6 +19,24 @@ from src.database import get_db_sync
 from src.models_v2 import UserAllowPool
 
 logger = logging.getLogger(__name__)
+
+
+def obfuscate_user(user_id: str, brand_mark: str, obf_key: str) -> str:
+    """
+    把 Emby 原生用户 ID 混淆成客户端实际上报的标识值。
+
+    算法必须与 wasm-sign/assembly/index.ts 的 obfuscateUser 完全一致：
+        payload   = f"{brand_mark}:{user_id}" 的 UTF-8 字节
+        keystream = sha256(obf_key) 循环拼接至 payload 等长
+        结果      = hex(payload XOR keystream)
+
+    :return: 小写 hex 串；任一参数为空时返回空串
+    """
+    if not user_id or not brand_mark or not obf_key:
+        return ""
+    payload = f"{brand_mark}:{user_id}".encode("utf-8")
+    seed = hashlib.sha256(obf_key.encode("utf-8")).digest()
+    return bytes(b ^ seed[i % len(seed)] for i, b in enumerate(payload)).hex()
 
 
 def _norm_users(value: Any) -> List[str]:

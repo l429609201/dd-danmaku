@@ -5,15 +5,16 @@
       <button class="btn btn-primary" @click="openCreate">新增用户组</button>
     </div>
     <p class="hint">
-      按客户端用户名（请求头 <code>X-Ddd-User</code> 的值）过滤访问。
-      在「UA 限流规则」编辑里为某个 UA 选择本组，即对该 UA 启用用户名校验；<strong>不选则不校验</strong>。
-      校验顺序：实例 ID 校验 → 用户名校验 → 签名校验。
+      按客户端用户标识（请求头 <code>X-Ddd-User</code> 的值）过滤访问。
+      在「UA 限流规则」编辑里为某个 UA 选择本组，即对该 UA 启用校验；<strong>不选则不校验</strong>。
+      校验顺序：用户标识归属 → 实例 ID 归属 → 用户名单 → 签名。
+      认证类校验连续失败 5 次，将按「IP + 用户标识 + UA」拉黑 1 小时。
     </p>
     <div v-if="msg" class="tip">{{ msg }}</div>
 
     <table class="data-table">
       <thead><tr>
-        <th>组ID</th><th>用户数</th><th>用户名（前若干个）</th><th>实例校验</th><th>备注</th><th>启用</th><th>操作</th>
+        <th>组ID</th><th>用户数</th><th>用户标识（前若干个）</th><th>归属校验</th><th>备注</th><th>启用</th><th>操作</th>
       </tr></thead>
       <tbody>
         <tr v-for="r in items" :key="r.id">
@@ -45,20 +46,45 @@
           <input v-model="form.group_id" class="input full" :disabled="!!editId" />
         </div>
         <div class="form-item">
-          <label>允许的用户名（每行一个，也可用逗号分隔）</label>
+          <label>允许的用户标识（每行一个，也可用逗号分隔）</label>
           <textarea v-model="form.usersText" class="input full" rows="8"
-                    placeholder="user-a&#10;user-b&#10;user-c"></textarea>
+                    placeholder="a165fec177ff6c8dacad5a9379dd47f9..."></textarea>
           <p class="hint">
             当前 {{ parsedCount }} 个。<strong>精确匹配</strong>，区分大小写。
             留空表示该组不允许任何用户通过（等于封禁绑定此组的 UA）。
           </p>
+          <p class="hint">
+            ⚠️ 客户端上报的是 <strong>混淆后的值</strong>（非 Emby 原生用户 ID）。
+            填 Emby 原生 ID 无法匹配，请用下方工具换算。
+          </p>
         </div>
         <div class="form-item">
-          <label>实例 ID 校验（两项均填才启用；对 X-Ddd-Instance 做 XOR 反解归属识别）</label>
+          <label>混淆值换算工具（把 Emby 原生用户 ID 转成客户端实际上报的值）</label>
+          <textarea v-model="obfInput" class="input full" rows="3"
+                    placeholder="粘贴 Emby 原生用户 ID，每行一个"></textarea>
+          <div style="margin-top:8px; display:flex; gap:8px; align-items:center">
+            <button class="btn" :disabled="obfBusy || !obfInput.trim()" @click="doObfuscate">
+              {{ obfBusy ? '换算中...' : '换算' }}
+            </button>
+            <button class="btn" :disabled="!obfResult.length" @click="appendObfToUsers">
+              追加到上方名单
+            </button>
+          </div>
+          <p class="hint" v-if="obfError" style="color:#e5534b">{{ obfError }}</p>
+          <p class="hint" v-if="obfResult.length">
+            已换算 {{ obfResult.length }} 个（需先填好本组的品牌标记与混淆密钥）
+          </p>
+        </div>
+        <div class="form-item">
+          <label>归属校验（两项均填才启用；对用户标识与 X-Ddd-Instance 做 XOR 反解识别）</label>
           <input v-model="form.brand_mark" class="input full" placeholder="品牌标记，如 misaka10876" />
           <input v-model="form.obf_key" class="input full" style="margin-top:8px"
-                 placeholder="混淆密钥，如 misaka_danmu_server" />
-          <p class="hint">仅作归属识别，密钥随弹幕库源码公开，<strong>不能替代签名验证</strong>。留空则不校验实例。</p>
+                 placeholder="混淆密钥，如 dd-danmaku" />
+          <p class="hint">
+            必须与 <code>wasm-sign/assembly/config.ts</code> 里编译进 sign.wasm 的
+            <code>BRAND_MARK</code> / <code>OBF_KEY</code> <strong>完全一致</strong>，否则反解失败、请求全被拒。
+            仅作归属识别，<strong>不能替代签名验证</strong>。留空则不校验归属。
+          </p>
         </div>
         <div class="form-item"><label>备注</label><input v-model="form.remark" class="input full" /></div>
         <label class="chk"><input type="checkbox" v-model="form.enabled" /> 启用</label>
@@ -101,6 +127,47 @@ export default {
     }
     const parsedCount = computed(() => parseUsers(form.usersText).length)
 
+    // ===== 混淆值换算：客户端上报的是 wasm 混淆值，手工算不现实，走后端换算 =====
+    const obfInput = ref('')
+    const obfResult = ref([])
+    const obfError = ref('')
+    const obfBusy = ref(false)
+
+    const doObfuscate = async () => {
+      obfError.value = ''
+      obfResult.value = []
+      if (!form.brand_mark || !form.obf_key) {
+        obfError.value = '请先填写下方的品牌标记与混淆密钥（两者都必填）'
+        return
+      }
+      obfBusy.value = true
+      try {
+        const s = await apiV2('/user-allow-pool/obfuscate', {
+          method: 'POST',
+          body: {
+            user_ids: parseUsers(obfInput.value),
+            brand_mark: form.brand_mark,
+            obf_key: form.obf_key,
+          },
+        })
+        obfResult.value = (s.data && s.data.items) || []
+      } catch (e) {
+        obfError.value = e.message
+      } finally {
+        obfBusy.value = false
+      }
+    }
+
+    // 把换算结果并入名单文本域（parseUsers 会去重，重复追加无副作用）
+    const appendObfToUsers = () => {
+      const add = obfResult.value.map(x => x.obfuscated).filter(Boolean)
+      if (!add.length) return
+      const merged = parseUsers(form.usersText + '\n' + add.join('\n'))
+      form.usersText = merged.join('\n')
+      obfInput.value = ''
+      obfResult.value = []
+    }
+
     // 列表里只展示前 5 个，避免长名单撑破表格
     const previewUsers = (users) => {
       const arr = Array.isArray(users) ? users : []
@@ -120,6 +187,8 @@ export default {
       form.group_id = ''; form.usersText = ''
       form.brand_mark = ''; form.obf_key = ''
       form.remark = ''; form.enabled = true
+      // 换算工具的临时状态一并清空，避免串到下一次编辑
+      obfInput.value = ''; obfResult.value = []; obfError.value = ''
     }
     const openCreate = () => { editId.value = null; resetForm(); showEdit.value = true }
     const openEdit = (r) => {
@@ -170,6 +239,7 @@ export default {
 
     onMounted(load)
     return { items, msg, showEdit, saving, editId, form, parsedCount,
+      obfInput, obfResult, obfError, obfBusy, doObfuscate, appendObfToUsers,
       previewUsers, openCreate, openEdit, submit, toggle, del }
   }
 }
