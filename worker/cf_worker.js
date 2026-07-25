@@ -5,10 +5,21 @@
 // 客户端签名校验：逻辑在独立的混淆产物 sign_verify.js 中（不入公开仓库，
 // 部署时与本文件一起上传）。公开仓库看不到验证算法/旁路细节。
 // 构建产物由 sign-verify-src/ 经 javascript-obfuscator 混淆生成。
-import { verifyClientSignature, verifyInstanceId, verifyUserAllow } from './sign_verify.js';
+import { verifyClientSignature, verifyInstanceId, verifyUserAllow, verifyUserIdMark } from './sign_verify.js';
 
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
+
+// ========================================
+// ⏱️ 封禁策略配置（改这里即可）
+// ========================================
+// 非法路由滥用：累计超阈值后的封禁时长（小时）
+const BAN_HOURS_INVALID_ROUTE = 1;
+// 认证类校验失败（用户标识归属不符 / 不在名单 / 实例ID不符）达阈值后的拉黑时长（小时）
+const BAN_HOURS_AUTH_FAIL = 1;
+// 认证类失败容错次数：同一「IP + 用户标识 + 来源UA」三元组在窗口内累计到该次数即拉黑。
+// 不做一次即封，是因为配置下发延迟等会造成偶发失败。
+const AUTH_FAIL_MAX_ATTEMPTS = 5;
 
 // 弹弹play 接口分组（密钥限流状态按分组独立维护）
 // 注意：resolveApiGroup 按顺序前缀匹配，更具体的前缀必须放在更宽泛的前面。
@@ -50,7 +61,11 @@ const MEMORY_LIMITS = {
 const ABUSE_CONFIG = {
     MAX_INVALID_REQUESTS: 10,        // 1 小时内允许的非法路由次数
     WINDOW_MS: 60 * 60 * 1000,       // 统计窗口：1 小时
-    BAN_DURATION_MS: 60 * 60 * 1000, // 封禁时长：1 小时
+    // 封禁时长由顶部 BAN_HOURS_* 常量换算而来（小时 → 毫秒）
+    BAN_DURATION_MS: BAN_HOURS_INVALID_ROUTE * 60 * 60 * 1000,
+    AUTH_FAIL_BAN_MS: BAN_HOURS_AUTH_FAIL * 60 * 60 * 1000,
+    AUTH_FAIL_MAX_ATTEMPTS,          // 认证失败容错次数（见顶部常量）
+    AUTH_FAIL_WINDOW_MS: 60 * 60 * 1000, // 认证失败计数窗口：1 小时
     MAX_TRACKED_IPS: 50000,          // 最多跟踪的 IP 数（防内存泄漏）
 };
 
@@ -171,6 +186,10 @@ let memoryCache = {
     lastLogReport: 0,
     // 非法路由滥用追踪：记录每个 IP 的非法请求计数与临时封禁到期时间
     abuseTracker: new Map(), // 格式: { ip: { count, windowStart, bannedUntil } }
+    // 认证类校验失败追踪：按「IP|用户标识|UA」三元组独立计数，达阈值拉黑该三元组
+    authFailTracker: new Map(), // 格式: { 'ip|userId|ua': { count, windowStart } }
+    // 三元组黑名单：认证失败达阈值后拉黑「IP+用户标识+UA」组合（不封整个 IP，避免 NAT 误伤）
+    authBanTracker: new Map(), // 格式: { 'ip|userId|ua': bannedUntil }
     lastAbuseReport: 0,
     lastKeyStateReport: 0,  // 上次上报密钥限流状态时间
     // 运行指标聚合（周期上报本地端，上报后增量清零，累计趋势由本地端落库）
@@ -911,6 +930,7 @@ function periodicCleanup(env) {
     if (env?.CONTROL_HUB && now - memoryCache.lastAbuseReport > 60000) {
         memoryCache.lastAbuseReport = now;
         cleanupAbuseTracker(now);
+        cleanupAuthFailTracker(now);
         const payload = buildAbuseReportPayload();
         if (payload.banned.length > 0) {
             tasks.push(controlHubRpc(env, 'abuse.report', payload, 3000));
@@ -1132,6 +1152,79 @@ function recordInvalidRoute(clientIp) {
     }
     memoryCache.abuseTracker.set(clientIp, rec);
     return false;
+}
+
+function buildAuthKey(clientIp, userId, uaType) {
+    return `${clientIp}\x1f${userId || ''}\x1f${uaType || ''}`;
+}
+
+function isAuthBanned(clientIp, userId, uaType) {
+    const key = buildAuthKey(clientIp, userId, uaType);
+    const until = memoryCache.authBanTracker.get(key);
+    if (!until) return false;
+    if (until > Date.now()) return true;
+    memoryCache.authBanTracker.delete(key);
+    return false;
+}
+
+/**
+ * 记录一次认证类校验失败（用户标识归属不符 / 不在名单 / 实例ID不符）。
+ * 按「IP + 用户标识 + 来源UA」三元组独立计数并独立拉黑：
+ * 同一出口 IP（NAT）下不同用户、同一用户的不同客户端都互不牵连，误伤面最小。
+ * 累计到 AUTH_FAIL_MAX_ATTEMPTS 次才拉黑，容忍配置下发延迟等偶发失败。
+ * @param {String} clientIp 客户端 IP
+ * @param {String} userId   客户端 X-Ddd-User（可能为空）
+ * @param {String} uaType   命中的 UA 类型标识
+ * @returns {{banned:Boolean, count:Number}} banned=本次是否触发拉黑，count=当前累计次数
+ */
+function recordAuthFail(clientIp, userId, uaType) {
+    if (!clientIp || clientIp === 'unknown') return { banned: false, count: 0 };
+    // 白名单 IP 不计数、不拉黑，避免误伤自己的服务器
+    if (isIpWhitelisted(clientIp)) return { banned: false, count: 0 };
+
+    const now = Date.now();
+    const key = buildAuthKey(clientIp, userId, uaType);
+    let rec = memoryCache.authFailTracker.get(key);
+
+    // 容量保护：达上限先清理过期项，仍满则丢弃最旧项，防内存泄漏
+    if (!rec && memoryCache.authFailTracker.size >= ABUSE_CONFIG.MAX_TRACKED_IPS) {
+        cleanupAuthFailTracker(now);
+        if (memoryCache.authFailTracker.size >= ABUSE_CONFIG.MAX_TRACKED_IPS) {
+            const oldestKey = memoryCache.authFailTracker.keys().next().value;
+            if (oldestKey !== undefined) memoryCache.authFailTracker.delete(oldestKey);
+        }
+    }
+
+    // 窗口过期或首次：重置计数窗口
+    if (!rec || (now - rec.windowStart) > ABUSE_CONFIG.AUTH_FAIL_WINDOW_MS) {
+        rec = { count: 0, windowStart: now };
+    }
+    rec.count += 1;
+
+    if (rec.count < ABUSE_CONFIG.AUTH_FAIL_MAX_ATTEMPTS) {
+        memoryCache.authFailTracker.set(key, rec);
+        return { banned: false, count: rec.count };
+    }
+
+    // 达阈值 → 拉黑该三元组，并清掉计数（拉黑期内不必再累计）
+    memoryCache.authFailTracker.delete(key);
+    // 取较晚的到期时间，避免已有更长拉黑被本次缩短
+    const prevUntil = memoryCache.authBanTracker.get(key) || 0;
+    memoryCache.authBanTracker.set(key, Math.max(prevUntil, now + ABUSE_CONFIG.AUTH_FAIL_BAN_MS));
+    return { banned: true, count: rec.count };
+}
+
+// 清理 authFailTracker / authBanTracker 中已过期的项（防内存泄漏）
+function cleanupAuthFailTracker(now) {
+    now = now || Date.now();
+    for (const [key, rec] of memoryCache.authFailTracker) {
+        if ((now - rec.windowStart) > ABUSE_CONFIG.AUTH_FAIL_WINDOW_MS) {
+            memoryCache.authFailTracker.delete(key);
+        }
+    }
+    for (const [key, until] of memoryCache.authBanTracker) {
+        if (until <= now) memoryCache.authBanTracker.delete(key);
+    }
 }
 
 // 清理 abuseTracker 中已过期的封禁与计数窗口（防内存泄漏）
@@ -1800,7 +1893,9 @@ async function handleRequest(request, env, ctx) {
             headers: {
                 'Access-Control-Allow-Origin': '*',
                 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Agent, X-User-Agent, X-Challenge-Response, X-Ddd-User, X-Ddd-Ts, X-Ddd-Sign',
+                // 注意：新增 X-Ddd-* 头必须同步加进这里，否则浏览器预检不放行、
+                // 请求根本发不出该头，服务端校验必然失败（X-Ddd-Instance 曾踩过此坑）
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Agent, X-User-Agent, X-Challenge-Response, X-Ddd-User, X-Ddd-Ts, X-Ddd-Sign, X-Ddd-Instance',
             },
         });
     }
@@ -2058,18 +2153,25 @@ async function handleRequest(request, env, ctx) {
     console.log(`   - UA类型: ${accessCheck.uaConfig?.type || 'unknown'}`);
     console.log(`   - 目标路径: ${tUrlObj.pathname}`);
 
-    // ========================================
-    // 🧬 实例 ID 归属校验 + 👤 用户名过滤（均在签名校验之前）
-    // ========================================
-    // 顺序：实例ID(客户端身份) → 用户名(用户身份) → 签名(请求完整性)。
-    // 三者都「UA 规则配了才启用」，未配置的 UA 完全不受影响，可逐个灰度。
-    // 失败统一返回 401 + 「签名验证失败」，对外不区分具体拦截层，避免探测；
-    // 真实 reason 只进内部日志。
     if (accessCheck.uaConfig) {
         const _uaCfg = accessCheck.uaConfig;
-        // 拦截统一出口：与签名失败保持完全一致的响应体与状态码
-        const denyAsSign = (logName, reason) => {
+        const denyAsSign = (logName, reason, ban = false) => {
             bumpMetric('blockedUa'); bumpMetric('status4xx');
+            let banned = false;
+            let failCount = 0;
+            if (ban) {
+                // 三元组计数：IP + 用户标识 + 来源UA
+                const r = recordAuthFail(clientIP, clientUserId, _uaCfg.type);
+                banned = r.banned;
+                failCount = r.count;
+                const who = `用户: ${clientUserId || '空'}, UA: ${_uaCfg.type || '空'}`;
+                if (banned) {
+                    bumpMetric('blockedAbuse');
+                    console.log(`⛔ [${clientIP}] ${logName} 累计 ${failCount} 次，已拉黑 ${BAN_HOURS_AUTH_FAIL} 小时 (${who})`);
+                } else if (failCount > 0) {
+                    console.log(`⚠️ [${clientIP}] ${logName} 第 ${failCount}/${ABUSE_CONFIG.AUTH_FAIL_MAX_ATTEMPTS} 次 (${who})`);
+                }
+            }
             const body = JSON.stringify({
                 status: 401,
                 type: '签名校验',
@@ -2084,6 +2186,9 @@ async function handleRequest(request, env, ctx) {
                 userId: clientUserId,
                 uaType: _uaCfg.type || '',
                 reason,
+                banned,
+                failCount,
+                banHours: banned ? BAN_HOURS_AUTH_FAIL : 0,
                 durationMs: Date.now() - reqStartMs,
                 responseBytes: body.length,
                 requestBody: truncateBody(reqBodyText),
@@ -2096,20 +2201,34 @@ async function handleRequest(request, env, ctx) {
             });
         };
 
+
         if (_uaCfg.userGroupId) {
-            // 先从名单池查出该组（用于取实例校验参数）
+            if (isAuthBanned(clientIP, clientUserId, _uaCfg.type)) {
+                return denyAsSign('认证失败拉黑期内', 'auth_banned', false);
+            }
+
             const _pool = memoryCache.configCache.userAllowPool || [];
             const _grp = _pool.find(g => g && g.groupId === _uaCfg.userGroupId);
+
+            const markCheck = await verifyUserIdMark(
+                clientUserId, _uaCfg.userGroupId,
+                memoryCache.configCache.userAllowPool,
+                memoryCache.configCache.userPoolLoaded
+            );
+            if (!markCheck.ok) {
+                return denyAsSign('用户标识校验失败', markCheck.reason, true);
+            }
 
             if (_grp && _grp.brandMark && _grp.obfKey) {
                 const instanceId = request.headers.get('X-Ddd-Instance') || '';
                 const instCheck = await verifyInstanceId(instanceId, _grp.brandMark, _grp.obfKey);
                 if (!instCheck.ok) {
-                    return denyAsSign('实例ID校验失败', instCheck.reason);
+                    return denyAsSign('实例ID校验失败', instCheck.reason, true);
                 }
                 console.log(`✅ [${clientIP}] 实例ID校验通过 (UA: ${_uaCfg.type})`);
             }
 
+            // ③ 用户名单精确匹配
             const userCheck = verifyUserAllow(
                 clientUserId, _uaCfg.userGroupId,
                 memoryCache.configCache.userAllowPool,
@@ -2119,7 +2238,7 @@ async function handleRequest(request, env, ctx) {
                 console.log(`⚠️ [用户名过滤] 用户组 ${_uaCfg.userGroupId} 未找到,冷启动放行(名单池尚未下发)`);
             }
             if (!userCheck.ok) {
-                return denyAsSign('用户名校验失败', userCheck.reason);
+                return denyAsSign('用户名校验失败', userCheck.reason, true);
             }
             console.log(`✅ [${clientIP}] 用户名校验通过 (UA: ${_uaCfg.type})`);
         }
@@ -2399,10 +2518,10 @@ async function handleRequest(request, env, ctx) {
     // 构建转发请求的头部，排除自定义头
     const forwardHeaders = {};
     for (const [key, value] of request.headers.entries()) {
-        // 排除自定义头，只转发标准头(含本插件签名头 X-Ddd-*,不污染上游请求)
+        // 排除自定义头，只转发标准头(含本插件签名/身份头 X-Ddd-*,不污染上游请求)
         const lk = key.toLowerCase();
         if (key !== 'X-User-Agent' && key !== 'X-Challenge-Response'
-            && lk !== 'x-ddd-user' && lk !== 'x-ddd-ts' && lk !== 'x-ddd-sign') {
+            && !lk.startsWith('x-ddd-')) {
             forwardHeaders[key] = value;
         }
     }
