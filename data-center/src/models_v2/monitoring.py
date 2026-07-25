@@ -82,11 +82,8 @@ class UaLimitRule(Base, TimestampMixin):
     # 绑定的用户允许组 group_id（关联 UserAllowPool.group_id）；空=不启用用户名过滤
     # 校验顺序：实例校验 → 用户名过滤 → 签名验证
     user_group_id = Column(String(64), nullable=True)
-    # 实例 ID 归属校验参数：配置后对 X-Ddd-User 做 XOR 反解并比对前缀
-    # instance_brand_mark: 期望的归属标记前缀（如 misaka10876），空=不校验实例 ID
-    instance_brand_mark = Column(String(100), nullable=True)
-    # instance_obf_key: XOR 混淆密钥（sha256(obf_key) 循环 XOR），空时沿用 brand_mark 默认密钥
-    instance_obf_key = Column(String(200), nullable=True)
+    # 实例 ID 校验参数已移入 UserAllowPool（通过 user_group_id 引用）
+    # 删除本表的 instance_brand_mark / instance_obf_key，保持与签名组对称
 
 
 class WorkerRequestLog(Base):
@@ -247,7 +244,7 @@ class UserAllowPool(Base, TimestampMixin):
     UA 规则通过 user_group_id 绑定本组；空组（users_json 为空列表）等同于「允许所有用户」，
     不应与「不配置 user_group_id（不校验）」混淆。
 
-    校验顺序（Worker 主流程）：实例 ID 校验 → 本组用户名校验 → 签名校验
+    校验顺序（Worker 主流程）：[本组实例 ID 校验（brand_mark+obf_key 均配置时）] → 本组用户名校验 → 签名校验
     """
     __tablename__ = "user_allow_pool"
 
@@ -256,6 +253,11 @@ class UserAllowPool(Base, TimestampMixin):
     group_id = Column(String(64), unique=True, index=True, nullable=False)
     # 允许的用户名列表（精确匹配 X-Ddd-User 值）；空列表 = 拒绝所有用户
     users_json = Column(JSON, default=list, nullable=False)
+    # 实例 ID 归属校验：两者均配置时对 X-Ddd-Instance 做 XOR 反解并比对前缀
+    # brand_mark: 期望的品牌标记（如 misaka10876），空=不做实例校验
+    brand_mark = Column(String(100), nullable=True)
+    # obf_key: XOR 混淆密钥（sha256(obf_key) 循环扩展），与弹幕库 OBF_KEY 保持一致
+    obf_key = Column(String(200), nullable=True)
     enabled = Column(Boolean, default=True, index=True, nullable=False)
     remark = Column(String(500), nullable=True)
 

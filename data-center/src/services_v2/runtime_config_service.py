@@ -75,11 +75,7 @@ class RuntimeConfigService:
                 if _user_grp:
                     cfg["userGroupId"] = _user_grp
                 # 实例 ID 校验：品牌标记 + 混淆密钥（两者都配才启用）
-                _brand = getattr(u, "instance_brand_mark", None)
-                _obf = getattr(u, "instance_obf_key", None)
-                if _brand and _obf:
-                    cfg["instanceBrandMark"] = _brand
-                    cfg["instanceObfKey"] = _obf
+                # 实例校验参数已移入 user_allow_pool 组（brandMark/obfKey），Worker 按 userGroupId 查组取值
                 ua_configs[u.ua_key] = cfg
 
             # 密钥池：本地端启用的密钥列表，下发给 Worker 合并

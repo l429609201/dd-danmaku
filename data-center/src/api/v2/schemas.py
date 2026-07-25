@@ -123,8 +123,7 @@ class UaRuleCreate(BaseModel):
     enabled: bool = True
     sign_group_id: Optional[str] = None  # 绑定的签名密钥组 group_id，空=不启用
     user_group_id: Optional[str] = None  # 绑定的用户允许名单组 group_id，空=不校验用户名
-    instance_brand_mark: Optional[str] = None  # 实例 ID 归属标记，空=不校验实例
-    instance_obf_key: Optional[str] = None  # 实例 ID 混淆密钥，留空用默认值
+    # 实例校验参数已移入 UserAllowPool（brand_mark/obf_key），UA 只需绑定 user_group_id
 
 
 class UaRuleUpdate(BaseModel):
@@ -134,9 +133,7 @@ class UaRuleUpdate(BaseModel):
     path_limits: Optional[List[dict]] = None
     enabled: Optional[bool] = None
     sign_group_id: Optional[str] = None  # 绑定的签名密钥组 group_id，空=不启用
-    user_group_id: Optional[str] = None  # 绑定的用户允许名单组 group_id，空=不校验用户名
-    instance_brand_mark: Optional[str] = None  # 实例 ID 归属标记，空=不校验实例
-    instance_obf_key: Optional[str] = None  # 实例 ID 混淆密钥，留空用默认值
+    user_group_id: Optional[str] = None  # 绑定的用户允许名单组 group_id，空=不校验
 
 
 class UaRuleImport(BaseModel):

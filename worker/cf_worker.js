@@ -2096,19 +2096,20 @@ async function handleRequest(request, env, ctx) {
             });
         };
 
-        // 实例 ID 校验：对 X-Ddd-User 做 XOR 反解，确认由指定弹幕库生成
-        if (_uaCfg.instanceBrandMark && _uaCfg.instanceObfKey) {
-            const instCheck = await verifyInstanceId(
-                clientUserId, _uaCfg.instanceBrandMark, _uaCfg.instanceObfKey
-            );
-            if (!instCheck.ok) {
-                return denyAsSign('实例ID校验失败', instCheck.reason);
-            }
-            console.log(`✅ [${clientIP}] 实例ID校验通过 (UA: ${_uaCfg.type})`);
-        }
-
-        // 用户名过滤：X-Ddd-User 必须在绑定的允许名单组内
         if (_uaCfg.userGroupId) {
+            // 先从名单池查出该组（用于取实例校验参数）
+            const _pool = memoryCache.configCache.userAllowPool || [];
+            const _grp = _pool.find(g => g && g.groupId === _uaCfg.userGroupId);
+
+            if (_grp && _grp.brandMark && _grp.obfKey) {
+                const instanceId = request.headers.get('X-Ddd-Instance') || '';
+                const instCheck = await verifyInstanceId(instanceId, _grp.brandMark, _grp.obfKey);
+                if (!instCheck.ok) {
+                    return denyAsSign('实例ID校验失败', instCheck.reason);
+                }
+                console.log(`✅ [${clientIP}] 实例ID校验通过 (UA: ${_uaCfg.type})`);
+            }
+
             const userCheck = verifyUserAllow(
                 clientUserId, _uaCfg.userGroupId,
                 memoryCache.configCache.userAllowPool,

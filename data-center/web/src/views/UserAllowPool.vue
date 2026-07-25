@@ -13,13 +13,14 @@
 
     <table class="data-table">
       <thead><tr>
-        <th>组ID</th><th>用户数</th><th>用户名（前若干个）</th><th>备注</th><th>启用</th><th>操作</th>
+        <th>组ID</th><th>用户数</th><th>用户名（前若干个）</th><th>实例校验</th><th>备注</th><th>启用</th><th>操作</th>
       </tr></thead>
       <tbody>
         <tr v-for="r in items" :key="r.id">
           <td class="key">{{ r.group_id }}</td>
           <td>{{ r.user_count }}</td>
           <td class="msg">{{ previewUsers(r.users) }}</td>
+          <td>{{ r.brand_mark ? '✅ ' + r.brand_mark : '—' }}</td>
           <td>{{ r.remark || '—' }}</td>
           <td>{{ r.enabled ? '是' : '否' }}</td>
           <td class="actions">
@@ -28,7 +29,7 @@
             <button class="link danger" @click="del(r.id)">删除</button>
           </td>
         </tr>
-        <tr v-if="!items.length"><td colspan="6" class="empty">暂无用户组</td></tr>
+        <tr v-if="!items.length"><td colspan="7" class="empty">暂无用户组</td></tr>
       </tbody>
     </table>
 
@@ -51,6 +52,13 @@
             当前 {{ parsedCount }} 个。<strong>精确匹配</strong>，区分大小写。
             留空表示该组不允许任何用户通过（等于封禁绑定此组的 UA）。
           </p>
+        </div>
+        <div class="form-item">
+          <label>实例 ID 校验（两项均填才启用；对 X-Ddd-Instance 做 XOR 反解归属识别）</label>
+          <input v-model="form.brand_mark" class="input full" placeholder="品牌标记，如 misaka10876" />
+          <input v-model="form.obf_key" class="input full" style="margin-top:8px"
+                 placeholder="混淆密钥，如 misaka_danmu_server" />
+          <p class="hint">仅作归属识别，密钥随弹幕库源码公开，<strong>不能替代签名验证</strong>。留空则不校验实例。</p>
         </div>
         <div class="form-item"><label>备注</label><input v-model="form.remark" class="input full" /></div>
         <label class="chk"><input type="checkbox" v-model="form.enabled" /> 启用</label>
@@ -76,7 +84,7 @@ export default {
     const saving = ref(false)
     const editId = ref(null)
     // usersText 为文本域原文，提交时切分为数组（后端也会再规范化一次）
-    const form = reactive({ group_id: '', usersText: '', remark: '', enabled: true })
+    const form = reactive({ group_id: '', usersText: '', brand_mark: '', obf_key: '', remark: '', enabled: true })
 
     // 把文本域内容切成用户名数组：支持换行与逗号混用，去空去重
     const parseUsers = (text) => {
@@ -110,6 +118,7 @@ export default {
 
     const resetForm = () => {
       form.group_id = ''; form.usersText = ''
+      form.brand_mark = ''; form.obf_key = ''
       form.remark = ''; form.enabled = true
     }
     const openCreate = () => { editId.value = null; resetForm(); showEdit.value = true }
@@ -117,6 +126,8 @@ export default {
       editId.value = r.id
       form.group_id = r.group_id
       form.usersText = (Array.isArray(r.users) ? r.users : []).join('\n')
+      form.brand_mark = r.brand_mark || ''
+      form.obf_key = r.obf_key || ''
       form.remark = r.remark || ''
       form.enabled = r.enabled
       showEdit.value = true
@@ -128,11 +139,17 @@ export default {
       try {
         const users = parseUsers(form.usersText)
         if (editId.value) {
-          const body = { users, remark: form.remark, enabled: form.enabled }
+          const body = { users,
+            brand_mark: form.brand_mark || undefined,
+            obf_key: form.obf_key || undefined,
+            remark: form.remark, enabled: form.enabled }
           const res = await apiV2(`/user-allow-pool/${editId.value}`, { method: 'PUT', body })
           msg.value = res.message || '更新成功'
         } else {
-          const body = { group_id: form.group_id, users, remark: form.remark, enabled: form.enabled }
+          const body = { group_id: form.group_id, users,
+            brand_mark: form.brand_mark || undefined,
+            obf_key: form.obf_key || undefined,
+            remark: form.remark, enabled: form.enabled }
           const res = await apiV2('/user-allow-pool', { method: 'POST', body })
           msg.value = res.message || '创建成功'
         }

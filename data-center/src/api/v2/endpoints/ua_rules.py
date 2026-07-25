@@ -31,8 +31,6 @@ def _brief(r: UaLimitRule) -> dict:
         "sign_group_id": getattr(r, "sign_group_id", None) or "",
         # 用户名过滤与实例 ID 校验（空=不启用对应校验）
         "user_group_id": getattr(r, "user_group_id", None) or "",
-        "instance_brand_mark": getattr(r, "instance_brand_mark", None) or "",
-        "instance_obf_key": getattr(r, "instance_obf_key", None) or "",
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
 
@@ -57,10 +55,6 @@ def _to_worker_object(rows) -> dict:
         # 用户允许名单组 / 实例 ID 校验参数（导出时保留，便于整体迁移）
         if getattr(r, "user_group_id", None):
             cfg["userGroupId"] = r.user_group_id
-        if getattr(r, "instance_brand_mark", None):
-            cfg["instanceBrandMark"] = r.instance_brand_mark
-        if getattr(r, "instance_obf_key", None):
-            cfg["instanceObfKey"] = r.instance_obf_key
         # 同时保留 maxRequests/windowMs，兼容旧消费方
         cfg["maxRequests"] = r.max_requests
         cfg["windowMs"] = r.window_ms
@@ -115,8 +109,6 @@ async def create_rule(body: UaRuleCreate, _: LocalUser = Depends(require_operato
             path_limits_json=body.path_limits or [], enabled=body.enabled,
             sign_group_id=(body.sign_group_id.strip() or None) if body.sign_group_id else None,
             user_group_id=(body.user_group_id.strip() or None) if body.user_group_id else None,
-            instance_brand_mark=(body.instance_brand_mark.strip() or None) if body.instance_brand_mark else None,
-            instance_obf_key=(body.instance_obf_key.strip() or None) if body.instance_obf_key else None,
         )
         db.add(rule)
         db.commit()
@@ -153,10 +145,6 @@ async def update_rule(rule_id: int, body: UaRuleUpdate,
         # 以下三项同样以「空串 => None => 不启用该校验」的语义处理
         if body.user_group_id is not None:
             rule.user_group_id = body.user_group_id.strip() or None
-        if body.instance_brand_mark is not None:
-            rule.instance_brand_mark = body.instance_brand_mark.strip() or None
-        if body.instance_obf_key is not None:
-            rule.instance_obf_key = body.instance_obf_key.strip() or None
         rule.updated_at = now()
         db.commit()
         db.refresh(rule)
@@ -281,8 +269,6 @@ async def import_rules(body: UaRuleImport, _: LocalUser = Depends(require_operat
                     return None
 
                 row.user_group_id = _pick("userGroupId", "user_group_id")
-                row.instance_brand_mark = _pick("instanceBrandMark", "instance_brand_mark")
-                row.instance_obf_key = _pick("instanceObfKey", "instance_obf_key")
                 row.updated_at = now()
             db.commit()
             return created, updated, errors

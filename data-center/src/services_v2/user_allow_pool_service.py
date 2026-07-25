@@ -48,6 +48,8 @@ class UserAllowPoolService:
             "group_id": r.group_id,
             "users": users,
             "user_count": len(users),
+            "brand_mark": r.brand_mark or "",
+            "obf_key": r.obf_key or "",
             "enabled": r.enabled,
             "remark": r.remark,
             "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -74,6 +76,8 @@ class UserAllowPoolService:
             row = UserAllowPool(
                 group_id=group_id,
                 users_json=_norm_users(data.get("users")),
+                brand_mark=(str(data.get("brand_mark") or "").strip() or None),
+                obf_key=(str(data.get("obf_key") or "").strip() or None),
                 enabled=bool(data.get("enabled", True)),
                 remark=data.get("remark"),
             )
@@ -100,6 +104,11 @@ class UserAllowPoolService:
             # users 显式传入才更新（允许传空列表来清空名单）
             if "users" in data:
                 row.users_json = _norm_users(data.get("users"))
+            # 空串归一为 None，表示不启用实例校验（两者必须同时有值才生效）
+            if "brand_mark" in data:
+                row.brand_mark = (str(data.get("brand_mark") or "").strip() or None)
+            if "obf_key" in data:
+                row.obf_key = (str(data.get("obf_key") or "").strip() or None)
             if "enabled" in data and data["enabled"] is not None:
                 row.enabled = bool(data["enabled"])
             if "remark" in data:
@@ -131,10 +140,18 @@ class UserAllowPoolService:
         try:
             rows = db.query(UserAllowPool).filter(
                 UserAllowPool.enabled == True).all()  # noqa: E712
-            return [{
-                "groupId": r.group_id,
-                "users": r.users_json if isinstance(r.users_json, list) else [],
-            } for r in rows]
+            result = []
+            for r in rows:
+                item = {
+                    "groupId": r.group_id,
+                    "users": r.users_json if isinstance(r.users_json, list) else [],
+                }
+                # 实例校验参数：两者都有才下发（Worker 侧同样要求两者均存在才启用）
+                if r.brand_mark and r.obf_key:
+                    item["brandMark"] = r.brand_mark
+                    item["obfKey"] = r.obf_key
+                result.append(item)
+            return result
         finally:
             db.close()
 
