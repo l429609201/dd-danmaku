@@ -53,7 +53,9 @@ binding = "DANMAKU_CACHE"
 bucket_name = "danmu-api-cache"
 
 # Cron 定时触发：每30分钟清理一次 R2 弹幕缓存（过期清理 + 9GB阈值清理）
+# wrangler v4 起字段名为 crons（旧版 crontab 会报 "Unexpected fields" 告警并被忽略，
+# 导致定时任务实际不生效）
 [triggers]
-crontab = ["*/30 * * * *"]
+crons = ["*/30 * * * *"]
 
 
