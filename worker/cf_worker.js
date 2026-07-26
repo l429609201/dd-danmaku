@@ -2209,9 +2209,12 @@ async function handleRequest(request, env, ctx) {
     // 访问控制检查，传递正确的API路径
     console.log(`🔍 [${clientIP}] 开始访问控制检查，目标路径: ${tUrlObj.pathname}`);
 
-    const accessCheck = ipWhitelisted
-        ? { allowed: true, reason: 'ip_whitelisted' }
-        : await checkAccess(request, tUrlObj.pathname, reqStartMs, reqBodyText, clientUserId);
+    // 白名单 IP 传 skipRateLimit=true：免限流但仍走 UA 识别。
+    // 此前白名单直接短路返回不带 uaConfig 的对象，导致后续
+    // 用户标识/签名校验（条件都是 accessCheck.uaConfig）被整体绕过。
+    const accessCheck = await checkAccess(
+        request, tUrlObj.pathname, reqStartMs, reqBodyText, clientUserId, ipWhitelisted
+    );
     if (!accessCheck.allowed) {
         const userAgent = request.headers.get('X-User-Agent') || '';
         const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
@@ -2301,7 +2304,7 @@ async function handleRequest(request, env, ctx) {
             if (isAuthBanned(clientIP, clientUserId, _uaCfg.type)) {
                 return denyAsSign('认证失败拉黑期内', 'auth_banned', false);
             }
-
+ 
 
             const markCheck = await verifyUserIdMark(
                 clientUserId, _uaCfg.userGroupId,
@@ -3094,7 +3097,8 @@ async function generateSignature(appId, timestamp, path, appSecret) {
 // reqStartMs 由 handleRequest 传入（用于日志耗时统计），缺省则以当前时间兜底
 // reqBodyText 为预读的请求体文本（用于限流日志记录请求体）
 // clientUserId 为客户端 X-Ddd-User（用于限流日志记录用户标识）
-async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqBodyText = null, clientUserId = '') {
+// skipRateLimit：白名单 IP 免限流，但仍需识别 UA 以便后续身份校验（签名/用户标识）生效
+async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqBodyText = null, clientUserId = '', skipRateLimit = false) {
     // 内部函数：识别User-Agent类型
     function identifyUserAgent(userAgent, ACCESS_CONFIG) {
         for (const [key, config] of Object.entries(ACCESS_CONFIG.userAgentLimits)) {
@@ -3125,6 +3129,12 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
         Object.entries(ACCESS_CONFIG.userAgentLimits).forEach(([key, config]) => {
             console.log(`     * ${key}: ${config.userAgent || 'N/A'}`);
         });
+        // 白名单 IP 保留原有豁免：UA 不在配置里也放行（自有服务器可能用任意 UA）。
+        // 无 uaConfig 意味着没有绑定任何组，身份校验本就不适用。
+        if (skipRateLimit) {
+            console.log(`⏭️ [${clientIP}] 白名单 IP，UA 未匹配也放行`);
+            return { allowed: true, reason: 'ip_whitelisted_ua_unmatched' };
+        }
         return { allowed: false, reason: '禁止访问的UA', status: 403 };
     }
 
@@ -3134,6 +3144,12 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
     console.log(`   - 时间窗口: ${uaConfig.windowMs || 'N/A'}ms`);
 
     // 2. 基于内存的频率限制（全局限制）
+    // 白名单 IP 跳过限流，但前面的 UA 识别照常执行——身份校验(签名/用户标识)
+    // 依赖返回的 uaConfig，不能因为免限流就把身份校验一起绕过。
+    if (skipRateLimit) {
+        console.log(`⏭️ [${clientIP}] 白名单 IP，跳过频率限制（身份校验仍生效）`);
+        return { allowed: true, uaConfig, reason: 'ip_whitelisted' };
+    }
     console.log(`🔄 [${clientIP}] 开始频率限制检查 (UA类型: ${uaConfig.type})`);
     const rateLimitCheck = checkMemoryRateLimit(clientIP, uaConfig.type, uaConfig);
 
