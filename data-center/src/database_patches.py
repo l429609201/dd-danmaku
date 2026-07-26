@@ -140,6 +140,53 @@ def _patch_drop_sign_zombie_columns(engine: Engine) -> bool:
     return changed
 
 
+def _patch_widen_client_user_id(engine: Engine) -> bool:
+    """扩宽 worker_request_logs.client_user_id 到 255。
+
+    背景：该列原为 varchar(64)，够存 Emby 原生用户 ID（32/36 字符）。
+    但客户端改为上报**混淆后**的用户标识后长度翻倍——
+    `misaka10876:` + 36 位 GUID = 48 字节，hex 编码后 96 字符，超出 64。
+    结果整批日志落库失败（DataError 1406 Data too long），
+    连校验失败的日志也写不进去，直接导致排查时"看不到任何校验记录"。
+
+    仅当现有长度 < 255 时才 ALTER（幂等）。SQLite 无需处理：
+    它的 VARCHAR 不强制长度，本身不会报此错。
+    """
+    inspector = inspect(engine)
+    if "worker_request_logs" not in set(inspector.get_table_names()):
+        return False
+    dialect = engine.dialect.name
+    if dialect == "sqlite":
+        return False  # SQLite 不限制 varchar 长度，无需变更
+
+    col = next((c for c in inspector.get_columns("worker_request_logs")
+                if c["name"] == "client_user_id"), None)
+    if col is None:
+        return False
+    # 取现有长度；拿不到长度信息时保守跳过，避免无谓 ALTER
+    length = getattr(col.get("type"), "length", None)
+    if length is None or length >= 255:
+        return False
+
+    try:
+        with engine.begin() as conn:
+            if dialect == "mysql":
+                conn.exec_driver_sql(
+                    "ALTER TABLE `worker_request_logs` "
+                    "MODIFY COLUMN `client_user_id` VARCHAR(255) NULL"
+                )
+            else:  # PostgreSQL
+                conn.exec_driver_sql(
+                    'ALTER TABLE "worker_request_logs" '
+                    'ALTER COLUMN "client_user_id" TYPE VARCHAR(255)'
+                )
+        logger.info(f"📏 已扩宽 worker_request_logs.client_user_id: {length} → 255")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ 扩宽 client_user_id 失败（跳过，不影响启动）: {e}")
+        return False
+
+
 # ============ 复合索引：按"过滤列 + 排序列"建，让分页查询能走索引 ============
 # 背景：列表接口普遍是「WHERE 某列 = ? ORDER BY 时间 DESC LIMIT n」。
 # 只有单列索引时，MySQL 用 A 列索引过滤后仍需额外排序（filesort），
@@ -249,6 +296,7 @@ _PATCHES: List[Callable[[Engine], bool]] = [
     _patch_example_noop,
     _patch_drop_unused_indexes,
     _patch_drop_sign_zombie_columns,
+    _patch_widen_client_user_id,
     _patch_add_composite_indexes,
 ]
 

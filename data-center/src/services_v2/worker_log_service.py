@@ -38,6 +38,18 @@ class WorkerLogService:
             except asyncio.QueueFull:
                 pass
 
+    @staticmethod
+    def _clip(value: Any, limit: int) -> Any:
+        """按列宽截断字符串，防止单条超长值触发 DataError 连坐整批日志丢失。
+
+        曾发生：client_user_id 从原生 GUID 改为上报混淆标识后长度翻倍，
+        超出 varchar(64) 导致每批 log.report 全量落库失败。
+        """
+        if value is None:
+            return None
+        s = str(value)
+        return s[:limit] if len(s) > limit else s
+
     def ingest_report(self, worker_id: str, logs: List[Dict[str, Any]]) -> int:
         """落库一次 log.report；返回处理条数"""
         if not logs:
@@ -49,16 +61,16 @@ class WorkerLogService:
                 data = item.get("data") or {}
                 row = WorkerRequestLog(
                     worker_id=worker_id,
-                    client_ip=data.get("ip") or item.get("ip"),
-                    method=data.get("method"),
-                    path=data.get("path"),
+                    client_ip=self._clip(data.get("ip") or item.get("ip"), 64),
+                    method=self._clip(data.get("method"), 10),
+                    path=self._clip(data.get("path"), 500),
                     status=data.get("responseStatus") or data.get("status"),
-                    ua_type=data.get("userAgent") or data.get("ua_type"),
-                    # 客户端用户标识（X-Ddd-User）
-                    client_user_id=data.get("userId"),
-                    cache_source=data.get("cacheSource"),
+                    ua_type=self._clip(data.get("userAgent") or data.get("ua_type"), 100),
+                    # 客户端用户标识（X-Ddd-User，混淆值约 96 字符）
+                    client_user_id=self._clip(data.get("userId"), 255),
+                    cache_source=self._clip(data.get("cacheSource"), 20),
                     upstream_status=data.get("upstreamStatus"),
-                    key_id=data.get("keyId"),
+                    key_id=self._clip(data.get("keyId"), 64),
                     duration_ms=data.get("durationMs"),
                     # responseBytes 由 Worker 上报，单位字节
                     response_bytes=data.get("responseBytes"),
@@ -66,7 +78,7 @@ class WorkerLogService:
                     request_body=data.get("requestBody"),
                     response_body=data.get("responseBody"),
                     # 级别统一大写，兼容 Worker 端小写 warn/info，避免前端筛选失配
-                    level=str(item.get("level", "INFO")).upper(),
+                    level=self._clip(str(item.get("level", "INFO")).upper(), 20),
                     message=item.get("message", ""),
                 )
                 db.add(row)
@@ -91,8 +103,37 @@ class WorkerLogService:
             return count
         except Exception as e:
             db.rollback()
-            logger.error(f"❌ Worker 日志落库失败: {e}")
-            return 0
+            # 整批失败时降级为逐条提交：坏数据只丢自己，不连坐同批其他日志。
+            # 排查场景强依赖日志，宁可慢一次也不能整批丢失。
+            logger.warning(f"⚠️ Worker 日志批量落库失败，降级逐条提交: {e}")
+            saved = 0
+            for item in logs[-200:]:
+                try:
+                    data = item.get("data") or {}
+                    db.add(WorkerRequestLog(
+                        worker_id=worker_id,
+                        client_ip=self._clip(data.get("ip") or item.get("ip"), 64),
+                        method=self._clip(data.get("method"), 10),
+                        path=self._clip(data.get("path"), 500),
+                        status=data.get("responseStatus") or data.get("status"),
+                        ua_type=self._clip(data.get("userAgent") or data.get("ua_type"), 100),
+                        client_user_id=self._clip(data.get("userId"), 255),
+                        cache_source=self._clip(data.get("cacheSource"), 20),
+                        upstream_status=data.get("upstreamStatus"),
+                        key_id=self._clip(data.get("keyId"), 64),
+                        duration_ms=data.get("durationMs"),
+                        response_bytes=data.get("responseBytes"),
+                        request_body=data.get("requestBody"),
+                        response_body=data.get("responseBody"),
+                        level=self._clip(str(item.get("level", "INFO")).upper(), 20),
+                        message=item.get("message", ""),
+                    ))
+                    db.commit()
+                    saved += 1
+                except Exception as inner:
+                    db.rollback()
+                    logger.error(f"❌ 单条日志落库失败（丢弃）: {inner}")
+            return saved
         finally:
             db.close()
 
