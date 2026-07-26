@@ -51,3 +51,4 @@ wasm-sign/*
 # sign verify: keep obfuscated artifact (worker/sign_verify.js) in repo,
 # only hide the plaintext source project.
 sign-verify-src/
+sign-verify-wasm/*
