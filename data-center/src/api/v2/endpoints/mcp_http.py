@@ -55,6 +55,7 @@ _TOOL_HANDLERS: Dict[str, Any] = {
     "diag_queues": ext.diag_queues,
     "diag_db_pool": ext.diag_db_pool,
     "diag_control": ext.diag_control,
+    "diag_config": ext.diag_config,
     "diag_slow_sql": ext.diag_slow_sql,
     "diag_slow_sql_reset": ext.diag_slow_sql_reset,
     # 数据查询

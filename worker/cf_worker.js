@@ -691,6 +691,47 @@ function buildLogReportPayload(now) {
     return { worker_id: DATA_CENTER_CONFIG.workerId, timestamp: now, logs };
 }
 
+/**
+ * 组装本实例内存里的配置状态摘要（诊断用，密钥脱敏）。
+ * 反映的是 env 基线与下发合并后的**最终生效值**，即校验分支实际读到的内容。
+ */
+function buildConfigStatePayload() {
+    const cc = memoryCache.configCache;
+    const mask = (s) => {
+        const v = String(s || '');
+        return v ? `${v.slice(0, 4)}***${v.slice(-4)}(len=${v.length})` : '';
+    };
+    const uaBrief = {};
+    for (const [k, v] of Object.entries(cc.uaConfigs || {})) {
+        uaBrief[k] = {
+            userAgent: (v && v.userAgent) || '',
+            enabled: !!(v && v.enabled),
+            signGroupId: (v && v.signGroupId) || null,
+            userGroupId: (v && v.userGroupId) || null,
+        };
+    }
+    return {
+        lastUpdate: cc.lastUpdate || 0,
+        // 这两个标志决定「组缺失」是放行还是拒绝，排查冷启动放行必看
+        signPoolLoaded: !!cc.signPoolLoaded,
+        userPoolLoaded: !!cc.userPoolLoaded,
+        uaConfigs: uaBrief,
+        userAllowPool: (cc.userAllowPool || []).map(g => ({
+            groupId: g && g.groupId,
+            userCount: Array.isArray(g && g.users) ? g.users.length : 0,
+            usersSample: Array.isArray(g && g.users) ? g.users.slice(0, 3) : [],
+            brandMark: (g && g.brandMark) || null,
+            obfKey: g && g.obfKey ? mask(g.obfKey) : null,
+        })),
+        signKeyPool: (cc.signKeyPool || []).map(g => ({
+            groupId: g && g.groupId,
+            secret: g && g.secret ? mask(g.secret) : null,
+        })),
+        ipBlacklistCount: (cc.ipBlacklist || []).length,
+        ipWhitelistCount: (cc.ipWhitelist || []).length,
+    };
+}
+
 // 组装运行指标快照；上报后清零累计型字段（窗口内增量），便于本地端按窗口落库
 function buildMetricsReportPayload(now) {
     const m = memoryCache.metrics;
@@ -701,6 +742,11 @@ function buildMetricsReportPayload(now) {
         // 附带瞬时态：当前总请求数（不清零）与缓存规模，便于展示
         total_requests_lifetime: memoryCache.totalRequests,
         api_cache_size: memoryCache.apiCache.size,
+        // 附带本实例内存里合并后的配置摘要（诊断用）。
+        // 与 DO storage 的 config.dump 互补：DO 是「下发存成了什么」，
+        // 这里是「本实例实际在用什么」——env 基线与下发合并后的最终值。
+        // 排查「后台配了但没生效」时，两边对比即可定位是下发丢了还是合并覆盖了。
+        config_state: buildConfigStatePayload(),
     };
     // 清零窗口累计指标
     memoryCache.metrics = {
@@ -1809,7 +1855,59 @@ export class ControlHub {
       return;
     }
 
-    // 3. 本地端主动发起 R2 代读（长连接不能直读 R2，由 Worker 代读后回传）
+    // 3. 本地端诊断：回传 DO storage 里 runtime_config 的实际内容。
+    // 用途：排查「后台配了但 Worker 没生效」——直接看下发究竟落成了什么。
+    // 注意 config.apply 用的是浅合并({...existing,...incoming})，旧键不会被删，
+    // 所以这里可能看到已从后台删除的陈旧字段，那本身就是需要发现的问题。
+    if (msg.type === 'config.dump') {
+      const cfg = await this.ctx.storage.get('runtime_config') || {};
+      // 密钥类字段脱敏：只回长度与前缀，避免明文经日志/MCP 外泄
+      const maskSecret = (s) => {
+        const v = String(s || '');
+        if (!v) return '';
+        return `${v.slice(0, 4)}***${v.slice(-4)}(len=${v.length})`;
+      };
+      const uaConfigs = cfg.ua_configs || {};
+      // UA 配置只回诊断相关字段，避免 payload 过大
+      const uaBrief = {};
+      for (const [k, v] of Object.entries(uaConfigs)) {
+        uaBrief[k] = {
+          userAgent: v && v.userAgent || '',
+          enabled: !!(v && v.enabled),
+          signGroupId: (v && v.signGroupId) || null,
+          userGroupId: (v && v.userGroupId) || null,
+        };
+      }
+      const payload = {
+        has_runtime_config: Object.keys(cfg).length > 0,
+        keys: Object.keys(cfg),
+        ua_configs: uaBrief,
+        // 名单池：脱敏 obfKey，users 只回数量与前若干项
+        user_allow_pool: (cfg.user_allow_pool || []).map(g => ({
+          groupId: g && g.groupId,
+          userCount: Array.isArray(g && g.users) ? g.users.length : 0,
+          usersSample: Array.isArray(g && g.users) ? g.users.slice(0, 3) : [],
+          brandMark: (g && g.brandMark) || null,
+          obfKey: g && g.obfKey ? maskSecret(g.obfKey) : null,
+        })),
+        sign_key_pool: (cfg.sign_key_pool || []).map(g => ({
+          groupId: g && g.groupId,
+          secret: g && g.secret ? maskSecret(g.secret) : null,
+        })),
+        ip_blacklist_count: Array.isArray(cfg.ip_blacklist) ? cfg.ip_blacklist.length : 0,
+        ip_whitelist_count: Array.isArray(cfg.ip_whitelist) ? cfg.ip_whitelist.length : 0,
+        key_pool_count: Array.isArray(cfg.key_pool) ? cfg.key_pool.length : 0,
+      };
+      try {
+        ws.send(JSON.stringify({
+          id: msg.id, type: 'config.dump.result',
+          timestamp: Date.now(), payload,
+        }));
+      } catch (e) { /* 忽略发送失败 */ }
+      return;
+    }
+
+    // 4. 本地端主动发起 R2 代读（长连接不能直读 R2，由 Worker 代读后回传）
     if (msg.type === 'r2.comment.get' || msg.type === 'r2.comment.list') {
       const result = await handleR2Rpc(this.env, msg.type, msg.payload || {});
       try {

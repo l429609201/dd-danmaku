@@ -109,6 +109,99 @@ async def diag_control(_: bool = Depends(verify_external_token)):
     return ApiResult(data=control_client.stats())
 
 
+@router.get("/diag/config")
+async def diag_config(_: bool = Depends(verify_external_token)):
+    """配置下发全链路诊断：本地端应下发的 → DO 实际存的 → Worker 实际用的，三方对比。
+
+    排查「后台配了但 Worker 没生效」的首选工具。返回三段：
+    - local: 本地端此刻按 DB 组装出的下发内容（应该是什么）
+    - do_storage: DO storage 里 runtime_config 的实际内容（下发存成了什么）
+    - worker_runtime: 各 Worker 实例内存里合并后的最终值（实际在用什么）
+    - diff: 自动比对结果，直接指出每个 UA 的 userGroupId/signGroupId 在哪一环丢了
+
+    密钥类字段（obfKey/secret）已脱敏为 前4***后4(len=N)。
+    do_storage 为 null 说明长连接不通或 DO 无响应；
+    worker_runtime 为空说明 Worker 尚未上报（metrics 每 60s 一次，需等一个周期）。
+    """
+    from src.services_v2.control_client import control_client
+    from src.services_v2.runtime_config_service import runtime_config_service
+
+    def _mask(s):
+        v = str(s or "")
+        return f"{v[:4]}***{v[-4:]}(len={len(v)})" if v else ""
+
+    # 1. 本地端此刻应下发的内容（按 DB 现状组装）
+    local_payload = await asyncio.to_thread(runtime_config_service.build_full_payload)
+    local_ua = {
+        k: {
+            "userAgent": v.get("userAgent", ""),
+            "enabled": v.get("enabled", False),
+            "signGroupId": v.get("signGroupId"),
+            "userGroupId": v.get("userGroupId"),
+        }
+        for k, v in (local_payload.get("ua_configs") or {}).items()
+    }
+    local = {
+        "ua_configs": local_ua,
+        "user_allow_pool": [
+            {
+                "groupId": g.get("groupId"),
+                "userCount": len(g.get("users") or []),
+                "usersSample": (g.get("users") or [])[:3],
+                "brandMark": g.get("brandMark"),
+                "obfKey": _mask(g.get("obfKey")) or None,
+            }
+            for g in (local_payload.get("user_allow_pool") or [])
+        ],
+        "sign_key_pool": [
+            {"groupId": g.get("groupId"), "secret": _mask(g.get("secret")) or None}
+            for g in (local_payload.get("sign_key_pool") or [])
+        ],
+    }
+
+    # 2. DO storage 实际内容（经长连接 RPC 索取）
+    do_storage = await control_client.dump_do_config()
+
+    # 3. 各 Worker 实例内存里的最终值（metrics 上报时带回）
+    worker_runtime = control_client.get_worker_config_state()
+
+    # 4. 自动比对：逐 UA 检查 userGroupId/signGroupId 在哪一环丢失
+    diff = []
+    do_ua = (do_storage or {}).get("ua_configs") or {}
+    # 取任一 Worker 实例的内存态做对比（多实例配置应一致）
+    wk_state = next(iter(worker_runtime.values()), {}).get("state") or {}
+    wk_ua = wk_state.get("uaConfigs") or {}
+    for ua_key, lv in local_ua.items():
+        for field in ("userGroupId", "signGroupId"):
+            lval, dval = lv.get(field), (do_ua.get(ua_key) or {}).get(field)
+            wval = (wk_ua.get(ua_key) or {}).get(field)
+            if lval == dval == wval:
+                continue
+            # 定位丢失环节：本地有但 DO 没 → 下发未生效；DO 有但 Worker 没 → 实例未拉取
+            if lval and not dval:
+                stage = "下发未生效(本地有,DO无)：需在后台重新保存触发下发"
+            elif dval and not wval:
+                stage = "实例未拉取(DO有,Worker无)：等周期拉取或重新部署 Worker"
+            elif not lval and (dval or wval):
+                stage = "残留(本地已删,DO/Worker仍有)：DO 浅合并不删旧键"
+            else:
+                stage = "值不一致"
+            diff.append({
+                "ua_key": ua_key, "field": field,
+                "local": lval, "do_storage": dval, "worker_runtime": wval,
+                "stage": stage,
+            })
+
+    return ApiResult(data={
+        "local": local,
+        "do_storage": do_storage,
+        "worker_runtime": worker_runtime,
+        "diff": diff,
+        "hint": ("diff 为空表示三方一致。do_storage 为 null 说明长连接不通；"
+                 "worker_runtime 为空说明 Worker 尚未上报(metrics 周期 60s)"),
+    })
+
+
 @router.get("/diag/eventloop")
 async def diag_eventloop(_: bool = Depends(verify_external_token)):
     """事件循环延迟(loop_lag_ms)与运行中任务数。

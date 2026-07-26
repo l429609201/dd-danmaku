@@ -70,6 +70,8 @@ class ControlClient:
         self._AUDIT_BUF_MAX = 5000       # 缓冲上限，超出丢弃保护内存
         self._AUDIT_FLUSH_BATCH = 200    # 单批落库条数
         self._AUDIT_FLUSH_INTERVAL = 2.0  # 落库间隔（秒）
+        # Worker 实例上报的内存配置状态（诊断用瞬时态，不落库）：worker_id -> {reported_at, state}
+        self._worker_config_state: Dict[str, Any] = {}
 
     def stats(self) -> dict:
         """运行时可观测指标（供外部诊断 API）"""
@@ -358,6 +360,14 @@ class ControlClient:
         """
         metrics = payload.get("metrics") or {}
         worker_id = payload.get("worker_id", "worker-1")
+        # 顺带缓存 Worker 实例内存里的配置状态（诊断用，密钥已在 Worker 侧脱敏）。
+        # 只留最近一次，不落库——它是瞬时态，用于排查「后台配了但没生效」。
+        cfg_state = payload.get("config_state")
+        if cfg_state:
+            self._worker_config_state[worker_id] = {
+                "reported_at": _ts(),
+                "state": cfg_state,
+            }
         ok = await asyncio.to_thread(
             metrics_service.ingest_report,
             worker_id, metrics,
@@ -369,6 +379,22 @@ class ControlClient:
             "timestamp": _ts(), "payload": {"success": ok},
         })
         self._audit("worker_to_local", "metrics.report", "success" if ok else "failed")
+
+    # ---------- 配置诊断 ----------
+    def get_worker_config_state(self) -> Dict[str, Any]:
+        """取各 Worker 实例上报的内存配置状态（最近一次 metrics 上报时带回）"""
+        return dict(self._worker_config_state)
+
+    async def dump_do_config(self, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
+        """
+        主动向 DO 索取 runtime_config 的实际存储内容（密钥已脱敏）。
+
+        与 get_worker_config_state 的区别：
+        - 本方法 = DO storage 里「下发存成了什么」
+        - get_worker_config_state = Worker 实例「实际在用什么」（env 基线合并后）
+        两者对比可定位问题出在下发环节还是合并环节。
+        """
+        return await self.request("config.dump", {}, timeout=timeout)
 
     async def _handle_keypool_report(self, msg_id, payload):
         """Worker 上报密钥限流状态快照：按 worker_id upsert worker_key_state"""
