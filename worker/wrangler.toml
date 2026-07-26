@@ -3,6 +3,10 @@ name = "danmu-api"
 main = "cf_worker.js"
 compatibility_date = "2024-09-21"
 
+# 关闭 wrangler 匿名遥测：CI 环境里上报接口常被限流（Too Many Requests）并反复重试，
+# 拖慢甚至挂住构建；关闭后不影响部署功能。
+send_metrics = false
+
 # 静态资源配置 - 工具文件通过 /tools/ 路径访问
 # 注意：访问路径由文件名决定，与本地目录位置无关，故仍是 /tools/xxx
 [assets]
