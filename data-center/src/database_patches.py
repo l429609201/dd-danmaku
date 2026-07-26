@@ -187,6 +187,43 @@ def _patch_widen_client_user_id(engine: Engine) -> bool:
         return False
 
 
+def _patch_widen_cache_response_body(engine: Engine) -> bool:
+    """把 api_response_cache.response_body 从 TEXT 扩到 MEDIUMTEXT。
+
+    背景：TEXT 上限 64 KB，而搜索类接口（如 /api/v2/search/episodes 返回
+    大量剧集）的响应体常常超过，导致
+      cache.upsert 失败: (1406) Data too long for column 'response_body'
+    该列是 Redis 的 SQL 冷备，写失败虽不影响当次响应，但 Redis 淘汰/重启后
+    缓存会变成空壳，等于该接口永久无法命中缓存、每次都回源。
+    MEDIUMTEXT 上限 16 MB，足够覆盖。SQLite 无长度限制，跳过。
+    """
+    inspector = inspect(engine)
+    if "api_response_cache" not in set(inspector.get_table_names()):
+        return False
+    dialect = engine.dialect.name
+    if dialect != "mysql":
+        # PostgreSQL 的 text 本身无长度上限；SQLite 同理，均无需变更
+        return False
+    try:
+        with engine.begin() as conn:
+            cur = conn.exec_driver_sql(
+                "SELECT DATA_TYPE FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'api_response_cache' "
+                "AND COLUMN_NAME = 'response_body'"
+            ).fetchone()
+            if not cur or str(cur[0]).lower() != "text":
+                return False  # 已是 mediumtext/longtext，无需处理
+            conn.exec_driver_sql(
+                "ALTER TABLE `api_response_cache` "
+                "MODIFY COLUMN `response_body` MEDIUMTEXT NULL"
+            )
+        logger.info("📏 已扩宽 api_response_cache.response_body: TEXT → MEDIUMTEXT")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ 扩宽 response_body 失败（跳过，不影响启动）: {e}")
+        return False
+
+
 # ============ 复合索引：按"过滤列 + 排序列"建，让分页查询能走索引 ============
 # 背景：列表接口普遍是「WHERE 某列 = ? ORDER BY 时间 DESC LIMIT n」。
 # 只有单列索引时，MySQL 用 A 列索引过滤后仍需额外排序（filesort），
@@ -297,6 +334,7 @@ _PATCHES: List[Callable[[Engine], bool]] = [
     _patch_drop_unused_indexes,
     _patch_drop_sign_zombie_columns,
     _patch_widen_client_user_id,
+    _patch_widen_cache_response_body,
     _patch_add_composite_indexes,
 ]
 
