@@ -7,7 +7,7 @@
     <p class="hint">
       按客户端用户标识（请求头 <code>X-Ddd-User</code> 的值）过滤访问。
       在「UA 限流规则」编辑里为某个 UA 选择本组，即对该 UA 启用校验；<strong>不选则不校验</strong>。
-      校验顺序：用户标识归属 → 实例 ID 归属 → 用户名单 → 签名。
+      校验顺序：用户标识归属反解 → 用户名单 → 签名。
       认证类校验连续失败 5 次，将按「IP + 用户标识 + UA」拉黑 1 小时。
     </p>
     <div v-if="msg" class="tip">{{ msg }}</div>
@@ -51,7 +51,8 @@
                     placeholder="a165fec177ff6c8dacad5a9379dd47f9..."></textarea>
           <p class="hint">
             当前 {{ parsedCount }} 个。<strong>精确匹配</strong>，区分大小写。
-            留空表示该组不允许任何用户通过（等于封禁绑定此组的 UA）。
+            <strong>留空 = 不限制具体用户</strong>，放行所有通过归属校验的请求；
+            只在需要精确到人时才填。
           </p>
           <p class="hint">
             ⚠️ 客户端上报的是 <strong>混淆后的值</strong>（非 Emby 原生用户 ID）。
@@ -76,13 +77,14 @@
           </p>
         </div>
         <div class="form-item">
-          <label>归属校验（两项均填才启用；对用户标识与 X-Ddd-Instance 做 XOR 反解识别）</label>
+          <label>归属校验（两项均填才启用；对 <code>X-Ddd-User</code> 做 XOR 反解识别）</label>
           <input v-model="form.brand_mark" class="input full" placeholder="品牌标记，如 misaka10876" />
           <input v-model="form.obf_key" class="input full" style="margin-top:8px"
-                 placeholder="混淆密钥，如 dd-danmaku" />
+                 placeholder="混淆密钥，如 misaka_danmu_server" />
           <p class="hint">
-            必须与 <code>wasm-sign/assembly/config.ts</code> 里编译进 sign.wasm 的
-            <code>BRAND_MARK</code> / <code>OBF_KEY</code> <strong>完全一致</strong>，否则反解失败、请求全被拒。
+            客户端上报的 <code>X-Ddd-User</code> 即弹幕库生成的实例 ID，反解出品牌标记前缀才放行。
+            两项必须与<strong>生成方</strong>（弹幕库配置 / <code>wasm-sign/assembly/config.ts</code>）
+            <strong>完全一致</strong>，否则反解失败、请求全被拒。
             仅作归属识别，<strong>不能替代签名验证</strong>。留空则不校验归属。
           </p>
         </div>

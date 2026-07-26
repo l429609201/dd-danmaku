@@ -5,7 +5,7 @@
 // 客户端签名校验：逻辑在独立的混淆产物 sign_verify.js 中（不入公开仓库，
 // 部署时与本文件一起上传）。公开仓库看不到验证算法/旁路细节。
 // 构建产物由 sign-verify-src/ 经 javascript-obfuscator 混淆生成。
-import { verifyClientSignature, verifyInstanceId, verifyUserAllow, verifyUserIdMark } from './sign_verify.js';
+import { verifyClientSignature, verifyUserAllow, verifyUserIdMark } from './sign_verify.js';
 
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
@@ -1893,9 +1893,7 @@ async function handleRequest(request, env, ctx) {
             headers: {
                 'Access-Control-Allow-Origin': '*',
                 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-                // 注意：新增 X-Ddd-* 头必须同步加进这里，否则浏览器预检不放行、
-                // 请求根本发不出该头，服务端校验必然失败（X-Ddd-Instance 曾踩过此坑）
-                'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Agent, X-User-Agent, X-Challenge-Response, X-Ddd-User, X-Ddd-Ts, X-Ddd-Sign, X-Ddd-Instance',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Agent, X-User-Agent, X-Challenge-Response, X-Ddd-User, X-Ddd-Ts, X-Ddd-Sign',
             },
         });
     }
@@ -2201,14 +2199,11 @@ async function handleRequest(request, env, ctx) {
             });
         };
 
-
         if (_uaCfg.userGroupId) {
             if (isAuthBanned(clientIP, clientUserId, _uaCfg.type)) {
                 return denyAsSign('认证失败拉黑期内', 'auth_banned', false);
             }
 
-            const _pool = memoryCache.configCache.userAllowPool || [];
-            const _grp = _pool.find(g => g && g.groupId === _uaCfg.userGroupId);
 
             const markCheck = await verifyUserIdMark(
                 clientUserId, _uaCfg.userGroupId,
@@ -2219,16 +2214,7 @@ async function handleRequest(request, env, ctx) {
                 return denyAsSign('用户标识校验失败', markCheck.reason, true);
             }
 
-            if (_grp && _grp.brandMark && _grp.obfKey) {
-                const instanceId = request.headers.get('X-Ddd-Instance') || '';
-                const instCheck = await verifyInstanceId(instanceId, _grp.brandMark, _grp.obfKey);
-                if (!instCheck.ok) {
-                    return denyAsSign('实例ID校验失败', instCheck.reason, true);
-                }
-                console.log(`✅ [${clientIP}] 实例ID校验通过 (UA: ${_uaCfg.type})`);
-            }
-
-            // ③ 用户名单精确匹配
+            // ② 用户名单精确匹配（名单留空 = 不限制具体用户，只靠上面的归属校验把关）
             const userCheck = verifyUserAllow(
                 clientUserId, _uaCfg.userGroupId,
                 memoryCache.configCache.userAllowPool,
