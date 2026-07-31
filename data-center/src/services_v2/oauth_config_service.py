@@ -15,6 +15,23 @@ logger = logging.getLogger(__name__)
 _REDACTED = "***REDACTED***"
 
 
+def _normalize_allowed_users(value: Any) -> Dict[str, bool]:
+    """把 allowedUsers 归一化为 {"用户名": true}。
+
+    Worker 侧 getOAuthAllowedUsers 按 dict 取值，但配置来源多样：
+    - 前端编辑框 / 导出格式给的是数组 ["alice", "bob"]
+    - CF 环境变量 OAUTH_CONFIG 里通常是 {"alice": true}
+    统一在入库前转成 dict，避免 Worker 拿到数组后判断恒为 false。
+    """
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return {str(k): bool(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return {str(u): True for u in value if str(u).strip()}
+    return {}
+
+
 class OAuthConfigService:
 
     def get_active(self) -> Optional[OAuthConfig]:
@@ -56,29 +73,46 @@ class OAuthConfigService:
             "providers": row.providers_json or {},
         }
 
+    # provider 生效所需的必填项（缺任一项 Worker 侧 getProviderConfig 即返回 null）
+    _PROVIDER_REQUIRED = ("clientId", "clientSecret", "authorizeUrl", "tokenUrl", "userInfoUrl")
+
     def to_brief(self, row: OAuthConfig) -> Dict[str, Any]:
-        """脱敏摘要（用于列表/详情接口）"""
-        providers_brief = {}
+        """脱敏摘要（用于列表/详情接口）
+
+        字段命名与返回结构对齐前端：providers 输出为**数组**（含 name/complete），
+        便于表格直接 v-for；allowed_users 输出为**字符串数组**，与编辑框的多行输入一致。
+        """
+        providers_list = []
         for name, cfg in (row.providers_json or {}).items():
-            providers_brief[name] = {
+            cfg = cfg or {}
+            providers_list.append({
+                "name": name,
                 "clientId": cfg.get("clientId", ""),
-                # clientSecret 脱敏
+                # clientSecret 脱敏：仅告知「已配置」，不回明文
                 "clientSecret": _REDACTED if cfg.get("clientSecret") else "",
                 "authorizeUrl": cfg.get("authorizeUrl", ""),
                 "tokenUrl": cfg.get("tokenUrl", ""),
                 "userInfoUrl": cfg.get("userInfoUrl", ""),
                 "scope": cfg.get("scope", ""),
-            }
+                # 五项必填是否齐全；缺项时前端标注「不完整」，提示该 provider 不会生效
+                "complete": all(cfg.get(k) for k in self._PROVIDER_REQUIRED),
+            })
+
+        # allowedUsers 库里是 {"alice": true} 形式，对前端拍平成 ["alice"]
+        allowed = row.allowed_users_json or {}
+        allowed_users = list(allowed.keys()) if isinstance(allowed, dict) else list(allowed)
+
         return {
             "id": row.id,
             "enabled": row.enabled,
-            "jwtSecret": _REDACTED if row.jwt_secret else "",
-            "jwtExpireHours": row.jwt_expire_hours,
-            "allowedUsers": row.allowed_users_json or {},
-            "providers": providers_brief,
+            # 下划线命名：与前端模板读取的字段保持一致
+            "jwt_secret": _REDACTED if row.jwt_secret else "",
+            "jwt_expire_hours": row.jwt_expire_hours or 720,
+            "allowed_users": allowed_users,
+            "providers": providers_list,
             "remark": row.remark,
-            "createdAt": row.created_at.isoformat() if row.created_at else None,
-            "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
 
     def create(self, data: Dict[str, Any]) -> OAuthConfig:
@@ -88,7 +122,7 @@ class OAuthConfigService:
                 enabled=bool(data.get("enabled", False)),
                 jwt_secret=data.get("jwtSecret", ""),
                 jwt_expire_hours=int(data.get("jwtExpireHours", 720)),
-                allowed_users_json=data.get("allowedUsers") or {},
+                allowed_users_json=_normalize_allowed_users(data.get("allowedUsers")),
                 providers_json=data.get("providers") or {},
                 remark=data.get("remark"),
             )
@@ -112,7 +146,7 @@ class OAuthConfigService:
             if "jwtExpireHours" in data:
                 row.jwt_expire_hours = int(data["jwtExpireHours"])
             if "allowedUsers" in data:
-                row.allowed_users_json = data["allowedUsers"] or {}
+                row.allowed_users_json = _normalize_allowed_users(data["allowedUsers"])
             if "providers" in data:
                 # 逐 provider 合并，clientSecret=REDACTED 时保留旧值
                 old = dict(row.providers_json or {})
@@ -203,8 +237,13 @@ class OAuthConfigService:
                         jwt_secret=item.get("jwtSecret") or item.get("jwt_secret") or "",
                         jwt_expire_hours=int(item.get("jwtExpireHours") or
                                              item.get("jwt_expire_hours") or 720),
-                        allowed_users_json=item.get("allowedUsers") or
-                                           item.get("allowed_users_json") or {},
+                        # 统一存成 {"用户名": true}：导入源可能是数组
+                        # （前端导出格式 / 手写 JSON），入库前归一化
+                        allowed_users_json=_normalize_allowed_users(
+                            item.get("allowedUsers")
+                            if item.get("allowedUsers") is not None
+                            else item.get("allowed_users")
+                        ),
                         providers_json=item.get("providers") or
                                        item.get("providers_json") or {},
                         remark=item.get("remark"),
