@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.2.6
+// @version      1.2.7
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -106,9 +106,32 @@
             }
         },
 
+        _obfUser: null,
+        _obfUserSrc: '',
+        async userMark() {
+            let uid = '';
+            try { uid = (typeof ApiClient !== 'undefined' && ApiClient.getCurrentUserId) ? (ApiClient.getCurrentUserId() || '') : ''; } catch (_) {}
+            if (!uid) return '';
+            if (this._obfUser && this._obfUserSrc === uid) return this._obfUser;
+
+            const ex = await this._ensure();
+            if (!ex || !ex.obfuscateUser) return uid;
+            try {
+                const p = ex.__pin ? ex.__pin(this._writeStr(ex, uid)) : this._writeStr(ex, uid);
+                const out = this._readStr(ex, ex.obfuscateUser(p));
+                if (ex.__unpin) ex.__unpin(p);
+                if (!out) return uid;
+                this._obfUserSrc = uid;
+                this._obfUser = out;
+                return out;
+            } catch (e) {
+                try { logger.warn('[签名] 异常,回退原始ID', e && e.message); } catch (_) {}
+                return uid;
+            }
+        },
+
         async buildHeaders(url) {
-            let userId = '';
-            try { userId = (typeof ApiClient !== 'undefined' && ApiClient.getCurrentUserId) ? (ApiClient.getCurrentUserId() || '') : ''; } catch (_) {}
+            const userId = await this.userMark();
             const ts = Math.floor(Date.now() / 1000);
             let path = '';
             try {
@@ -130,7 +153,7 @@
 
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.2.6', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.2.7', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -4967,7 +4990,7 @@
         );
         // 弹幕时间轴偏移秒数
         const btnContainer = getById(eleIds.timelineOffsetDiv, container);
-        const timelineOffsetOpts = { lsKey: lsKeys.timelineOffset };
+        const timelineOffsetOpts = { key: lsKeys.timelineOffset.id };
         onSliderChangeLabel(lsGetItem(lsKeys.timelineOffset.id), timelineOffsetOpts);
         timeOffsetBtns.forEach(btn => {
             btnContainer.append(embyButton(btn, (e) => {
