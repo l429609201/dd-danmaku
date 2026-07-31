@@ -4,6 +4,8 @@
       <div class="panel-head">
         <h2 class="panel-title">OAuth 配置</h2>
         <div class="head-actions">
+          <button class="btn" @click="openImport">JSON 导入</button>
+          <button class="btn" @click="exportJson">导出 JSON</button>
           <button class="btn" :disabled="pushing" @click="push">{{ pushing ? '下发中...' : '手动下发' }}</button>
           <button class="btn btn-primary" @click="openCreate">新增配置</button>
         </div>
@@ -106,6 +108,31 @@
           <button class="btn" @click="showEdit=false">取消</button>
           <button class="btn btn-primary" :disabled="saving" @click="submit">
             {{ saving ? '提交中...' : '保存并下发' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- JSON 导入弹窗 -->
+    <div v-if="showImport" class="modal-mask" @click.self="showImport=false">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>JSON 导入 OAuth 配置</h2>
+          <button class="modal-close" @click="showImport=false">×</button>
+        </div>
+        <p class="hint">
+          直接粘贴 CF 环境变量 <code>OAUTH_CONFIG</code> 的内容即可（同构格式）。
+          导入后会<strong>新建一条配置并下发</strong>。
+        </p>
+        <textarea v-model="importText" class="json-area" :placeholder="importPlaceholder"></textarea>
+        <label class="chk">
+          <input type="checkbox" v-model="importReplace" /> 替换已有配置（删除现有全部配置后导入）
+        </label>
+        <p v-if="importError" class="err">{{ importError }}</p>
+        <div class="modal-actions">
+          <button class="btn" @click="showImport=false">取消</button>
+          <button class="btn btn-primary" :disabled="importing" @click="doImport">
+            {{ importing ? '导入中...' : '确认导入' }}
           </button>
         </div>
       </div>
@@ -247,10 +274,60 @@ export default {
       finally { pushing.value = false }
     }
 
+    // ---- 导出 ----
+    const exportJson = async () => {
+      try {
+        const res = await apiV2('/oauth-config/export')
+        const items = res.data && res.data.items || []
+        const blob = new Blob([JSON.stringify(items.length === 1 ? items[0] : items, null, 2)],
+          { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url; a.download = 'oauth_config.json'; a.click()
+        URL.revokeObjectURL(url)
+        msg.value = `已导出 ${items.length} 条配置`
+      } catch (e) { msg.value = e.message }
+    }
+
+    // ---- 导入 ----
+    const showImport = ref(false)
+    const importText = ref('')
+    const importReplace = ref(false)
+    const importing = ref(false)
+    const importError = ref('')
+    const importPlaceholder = `粘贴 JSON，支持：
+• 单对象：{ "enabled": true, "jwtSecret": "...", "providers": { "github": {...} } }
+• 数组：[{ ... }, { ... }]
+• CF 环境变量 OAUTH_CONFIG 的原始值均可直接粘贴`
+
+    const openImport = () => {
+      importText.value = ''; importError.value = ''; importReplace.value = false
+      showImport.value = true
+    }
+    const doImport = async () => {
+      importError.value = ''
+      let parsed
+      try { parsed = JSON.parse(importText.value) }
+      catch (e) { importError.value = 'JSON 解析失败：' + e.message; return }
+      importing.value = true
+      try {
+        const res = await apiV2('/oauth-config/import', {
+          method: 'POST',
+          body: { data: parsed, replace_all: importReplace.value },
+        })
+        msg.value = res.message || '导入成功'
+        showImport.value = false
+        load()
+      } catch (e) { importError.value = e.message }
+      finally { importing.value = false }
+    }
+
     onMounted(load)
     return { items, msg, showEdit, saving, pushing, editId, form, secretShow,
       allowedUsersText, openCreate, openEdit, submit, toggle, del, push,
-      genSecret, addProvider }
+      genSecret, addProvider,
+      exportJson, showImport, importText, importReplace, importing, importError,
+      importPlaceholder, openImport, doImport }
   }
 }
 </script>
@@ -299,4 +376,14 @@ export default {
 .provider-head { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
 .provider-head .input { flex: 1; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.json-area { width: 100%; min-height: 160px; font-family: monospace; font-size: 12px; padding: 10px; border: 1px solid #d9d9d9; border-radius: 6px; box-sizing: border-box; resize: vertical; }
+.err { color: #cf1322; font-size: 13px; margin-top: 8px; }
+.mt6 { margin-top: 6px; }
+.flex1 { flex: 1; }
+.w160 { width: 160px; flex-shrink: 0; }
+.form-row { display: flex; gap: 10px; align-items: flex-start; }
+.sub-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.badge.ok { background: #f6ffed; color: #389e0d; }
+.badge.warn { background: #fff7e6; color: #d46b08; }
+.badge.off { background: #f5f5f5; color: #999; }
 </style>

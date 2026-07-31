@@ -142,5 +142,84 @@ class OAuthConfigService:
         finally:
             db.close()
 
+    # ------------------------------------------------------------------ #
+    # 导入 / 导出                                                          #
+    # ------------------------------------------------------------------ #
+
+    def export_all(self) -> list:
+        """导出全部配置为 JSON 列表（jwtSecret/clientSecret 明文导出，用于备份/迁移）。
+
+        与 to_brief 不同，此处不脱敏——导出文件本身就是凭据备份，
+        应由调用者保管，接口层做 admin 鉴权。
+        """
+        db = get_db_sync()
+        try:
+            rows = db.query(OAuthConfig).order_by(OAuthConfig.id.asc()).all()
+            result = []
+            for r in rows:
+                result.append({
+                    "enabled": r.enabled,
+                    "jwtSecret": r.jwt_secret or "",
+                    "jwtExpireHours": r.jwt_expire_hours or 720,
+                    "allowedUsers": r.allowed_users_json or {},
+                    "providers": r.providers_json or {},
+                    "remark": r.remark or "",
+                })
+            return result
+        finally:
+            db.close()
+
+    def import_from_json(self, data: Any, replace_all: bool = False) -> Dict[str, int]:
+        """从 JSON 导入配置。
+
+        支持两种格式（与 Worker 侧 env.OAUTH_CONFIG 兼容）：
+        - 单对象：{ enabled, jwtSecret, providers, ... }
+        - 列表：[{ enabled, jwtSecret, ... }, ...]
+
+        replace_all=True 时先清空表再导入；False 时仅追加（不更新已有记录）。
+        返回 {"created": n, "skipped": n, "errors": n}
+        """
+        if isinstance(data, dict):
+            items = [data]
+        elif isinstance(data, list):
+            items = data
+        else:
+            raise ValueError("JSON 格式错误：需为对象或数组")
+
+        db = get_db_sync()
+        created = skipped = errors = 0
+        try:
+            if replace_all:
+                db.query(OAuthConfig).delete()
+                db.commit()
+
+            for item in items:
+                if not isinstance(item, dict):
+                    errors += 1
+                    continue
+                try:
+                    row = OAuthConfig(
+                        enabled=bool(item.get("enabled", False)),
+                        jwt_secret=item.get("jwtSecret") or item.get("jwt_secret") or "",
+                        jwt_expire_hours=int(item.get("jwtExpireHours") or
+                                             item.get("jwt_expire_hours") or 720),
+                        allowed_users_json=item.get("allowedUsers") or
+                                           item.get("allowed_users_json") or {},
+                        providers_json=item.get("providers") or
+                                       item.get("providers_json") or {},
+                        remark=item.get("remark"),
+                    )
+                    db.add(row)
+                    db.commit()
+                    created += 1
+                except Exception as e:
+                    db.rollback()
+                    logger.warning(f"⚠️ OAuth 配置导入单条失败（跳过）: {e}")
+                    errors += 1
+
+            return {"created": created, "skipped": skipped, "errors": errors}
+        finally:
+            db.close()
+
 
 oauth_config_service = OAuthConfigService()

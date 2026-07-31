@@ -75,3 +75,45 @@ async def push_oauth_config(_: LocalUser = Depends(require_admin)):
         message="下发成功" if ok else "下发失败（Worker 未连接）",
         data={"pushed": ok}
     )
+
+
+@router.get("/export")
+async def export_oauth_config(_: LocalUser = Depends(require_admin)):
+    """导出全部 OAuth 配置（明文，含 jwtSecret/clientSecret，请妥善保管）"""
+    from src.services_v2.oauth_config_service import oauth_config_service
+    items = await asyncio.to_thread(oauth_config_service.export_all)
+    return ApiResult(data={"items": items, "count": len(items)})
+
+
+@router.post("/import")
+async def import_oauth_config(
+    body: dict = Body(...),
+    _: LocalUser = Depends(require_admin),
+):
+    """JSON 导入 OAuth 配置。
+
+    支持单对象（单条）或数组（批量）。格式与 Worker 侧 env.OAUTH_CONFIG 兼容，
+    也接受本接口导出的格式，方便跨实例迁移。
+
+    body:
+      - data: 配置对象或数组
+      - replace_all: true 时先清空表再导入（默认 false）
+    """
+    from src.services_v2.oauth_config_service import oauth_config_service
+    from src.services_v2.runtime_config_service import runtime_config_service
+    data = body.get("data")
+    if data is None:
+        raise HTTPException(status_code=400, detail="缺少 data 字段")
+    replace_all = bool(body.get("replace_all", False))
+    try:
+        stat = await asyncio.to_thread(
+            oauth_config_service.import_from_json, data, replace_all)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"导入失败: {e}")
+    # 导入后顺手下发，与 key_pool 行为一致
+    pushed = await runtime_config_service.push_to_worker()
+    msg = f"导入完成：新增 {stat['created']}，跳过 {stat['skipped']}，失败 {stat['errors']}"
+    msg += "，已下发" if pushed else "（Worker 未连接，稍后自动同步）"
+    return ApiResult(message=msg, data=stat)
