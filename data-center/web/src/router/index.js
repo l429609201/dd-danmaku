@@ -110,6 +110,12 @@ const routes = [
         meta: { title: '系统设置' }
       },
       {
+        path: 'oauth-config',
+        name: 'OAuthConfig',
+        component: () => import('../views/OAuthConfig.vue'),
+        meta: { title: 'OAuth 配置' }
+      },
+      {
         path: 'runtime-events',
         name: 'RuntimeEvents',
         component: () => import('../views/RuntimeEvents.vue'),

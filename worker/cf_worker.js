@@ -154,8 +154,10 @@ let memoryCache = {
         ipWhitelist: [],
         signKeyPool: [],  // 签名密钥池 [{ groupId, secret, authUaKeys:[] }],按 UA 分组验签
         signPoolLoaded: false,  // 签名池是否成功下发过（冷启动放行、运行期拒绝 no_secret 的依据）
-    userAllowPool: [],  // 用户允许名单池 [{ groupId, users:[] }]，按 UA 绑定的 userGroupId 过滤
-    userPoolLoaded: false,  // 名单池是否成功下发过（同签名池：冷启动放行、运行期拒绝）
+        userAllowPool: [],  // 用户允许名单池 [{ groupId, users:[] }]，按 UA 绑定的 userGroupId 过滤
+        userPoolLoaded: false,  // 名单池是否成功下发过（同签名池：冷启动放行、运行期拒绝）
+        // 下发的 OAuth 配置（null = 使用 env.OAUTH_CONFIG 兜底；下发后立即覆盖）
+        oauthConfig: null,
         lastUpdate: 0
     },
     // env 兜底基线（启动时加载，永不被下发覆盖；下发只在其之上做增量合并）
@@ -664,6 +666,18 @@ function applyRuntimeConfig(cfg) {
             : [];
         // 同签名池策略：下发过至少一次后，组缺失由「放行」转为「拒绝」
         memoryCache.configCache.userPoolLoaded = true;
+    }
+
+    // OAuth 配置：整体替换（非合并）。OAuth 的 providers/allowedUsers 是强关联整体，
+    // 逐键合并会产生「新 provider 用了旧 clientSecret」这类危险的中间态。
+    // 字段缺失 => 保持现状（旧版本本地端不下发 OAuth，不能把已有配置抹掉）；
+    // 字段存在但为空对象 => 视为「未配置」，回落 env 兜底，便于后台清空。
+    if ('oauth_config' in cfg) {
+        const oc = cfg.oauth_config;
+        const valid = oc && typeof oc === 'object' && Object.keys(oc).length > 0;
+        memoryCache.configCache.oauthConfig = valid ? oc : null;
+        // 下发即失效 getOAuthConfig 的进程级缓存，否则本实例会继续用旧值
+        _oauthConfigCache = null;
     }
 
     memoryCache.configCache.lastUpdate = Date.now();
@@ -1462,10 +1476,19 @@ async function quickHash(str) {
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
 }
 
-// --- OAuth 配置读取（从环境变量 OAUTH_CONFIG 解析） ---
+// --- OAuth 配置读取 ---
+// 优先级：本地端下发(DO storage) > 环境变量 OAUTH_CONFIG(兜底基线)。
+// 与 UA/IP 的「并集合并」不同，OAuth 走整体覆盖——见 applyRuntimeConfig 内说明。
+// 缓存置 null 由 applyRuntimeConfig 触发，保证下发后本实例立即生效。
 let _oauthConfigCache = null;
 function getOAuthConfig(env) {
     if (_oauthConfigCache) return _oauthConfigCache;
+    // 下发配置存在则直接采用，不与 env 混合，避免半新半旧的凭据组合
+    const pushed = memoryCache.configCache.oauthConfig;
+    if (pushed && typeof pushed === 'object' && Object.keys(pushed).length > 0) {
+        _oauthConfigCache = pushed;
+        return _oauthConfigCache;
+    }
     try {
         _oauthConfigCache = JSON.parse(env.OAUTH_CONFIG || '{}');
     } catch {

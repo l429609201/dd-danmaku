@@ -90,7 +90,7 @@ class RuntimeConfigService:
             from src.services_v2.user_allow_pool_service import user_allow_pool_service
             user_allow_pool = user_allow_pool_service.build_pool_payload()
 
-            return {
+            payload = {
                 "ip_blacklist": blacklist,
                 "ip_whitelist": whitelist,
                 "ua_configs": ua_configs,
@@ -98,6 +98,19 @@ class RuntimeConfigService:
                 "sign_key_pool": sign_key_pool,
                 "user_allow_pool": user_allow_pool,
             }
+
+            # OAuth 配置：结构与 Worker 侧 env.OAUTH_CONFIG 一致。
+            # 关键：仅在本地端有生效记录时才放入 payload。
+            # 因为 Worker 的 applyRuntimeConfig 用「'oauth_config' in cfg」判断，
+            # 字段缺失=本地端未表态（保持 env 兜底），字段存在=按下发值覆盖。
+            # 若无条件下发 None/{}，会把未配置误当成「显式禁用」，导致
+            # 已在 CF 环境变量里配好 OAuth 的用户升级后登录直接失效。
+            from src.services_v2.oauth_config_service import oauth_config_service
+            oauth_cfg = oauth_config_service.build_payload()
+            if oauth_cfg is not None:
+                payload["oauth_config"] = oauth_cfg
+
+            return payload
         finally:
             db.close()
 

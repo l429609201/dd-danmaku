@@ -20,7 +20,7 @@ from src.models_v2.monitoring import (
     IpRule, IpRequestStatCurrent, IpRequestStatSnapshot,
     UaLimitRule, WorkerRequestLog, WorkerMetricsSnapshot, LocalCommentStore,
     CleanupPolicy, AppKeyPool, WorkerKeyState, IpGeoCache, SignKeyPool,
-    UserAllowPool,
+    UserAllowPool, OAuthConfig,
 )
 
 __all__ = [
@@ -56,5 +56,6 @@ __all__ = [
     "WorkerKeyState",
     "SignKeyPool",
     "UserAllowPool",
+    "OAuthConfig",
     "IpGeoCache",
 ]

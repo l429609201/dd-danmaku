@@ -281,6 +281,35 @@ class WorkerKeyState(Base):
     updated_at = Column(DateTime, default=now, onupdate=now, index=True, nullable=False)
 
 
+class OAuthConfig(Base, TimestampMixin):
+    """OAuth 配置：本地端维护并通过长连接下发给 Worker
+
+    与 env.OAUTH_CONFIG 的关系：
+    - 本表是「可编辑的配置源」，改动经 config.apply 存入 DO storage；
+    - Worker 侧 getOAuthConfig 优先读下发值，env 仅作冷启动兜底，
+      因此本表留空/未下发时行为与改造前完全一致（灰度安全）。
+
+    字段与 Worker 侧 OAUTH_CONFIG 的 JSON 结构一一对应，下发时不做结构转换。
+    同一时刻只取一条 enabled=True 记录生效（多条时按 id 最小者，避免歧义）。
+    """
+    __tablename__ = "oauth_config"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 是否启用 OAuth（对应 JSON enabled）；false 时 Worker 走「OAuth 未启用」分支
+    enabled = Column(Boolean, default=False, index=True, nullable=False)
+    # JWT 签名密钥（对应 jwtSecret）——敏感，接口返回时需脱敏
+    jwt_secret = Column(String(500), nullable=False, default="")
+    # JWT 有效期（小时，对应 jwtExpireHours；Worker 默认 720=30天）
+    jwt_expire_hours = Column(Integer, default=720, nullable=False)
+    # 允许登录的用户（对应 allowedUsers），格式 {"用户名": true}
+    allowed_users_json = Column(JSON, default=dict, nullable=False)
+    # 各 provider 配置（对应 providers），格式
+    # {"github": {clientId, clientSecret, authorizeUrl, tokenUrl, userInfoUrl, scope}}
+    # 其中 clientSecret 敏感，接口返回时需脱敏
+    providers_json = Column(JSON, default=dict, nullable=False)
+    remark = Column(String(500), nullable=True)
+
+
 class IpGeoCache(Base):
     """IP 地理解析结果持久化缓存（ip 唯一）
 
