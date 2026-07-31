@@ -61,6 +61,17 @@ class ControlClient:
         # 消息并发处理上限（防突发击穿事件循环 / DB 连接池）；
         # 延迟到 start() 内创建，确保绑定运行中的事件循环
         self._dispatch_sem: Optional[asyncio.Semaphore] = None
+        # 审计日志内存缓冲：_audit 原为同步 DB 写入且每条消息都调一次
+        # （cache.get 每请求一次），是事件循环阻塞的主要来源。
+        # 改为攒批后台落库，主流程只做 list.append（纯内存，零阻塞）。
+        self._audit_buf: list = []
+        self._audit_task: Optional[asyncio.Task] = None
+        self._audit_dropped = 0
+        self._AUDIT_BUF_MAX = 5000       # 缓冲上限，超出丢弃保护内存
+        self._AUDIT_FLUSH_BATCH = 200    # 单批落库条数
+        self._AUDIT_FLUSH_INTERVAL = 2.0  # 落库间隔（秒）
+        # Worker 实例上报的内存配置状态（诊断用瞬时态，不落库）：worker_id -> {reported_at, state}
+        self._worker_config_state: Dict[str, Any] = {}
 
     def stats(self) -> dict:
         """运行时可观测指标（供外部诊断 API）"""
@@ -72,6 +83,9 @@ class ControlClient:
             "msg_received": self._msg_received,
             "msg_handled": self._msg_handled,
             "msg_backlog": max(0, self._msg_received - self._msg_handled),
+            # 审计缓冲水位：depth 持续走高或 dropped 增长说明落库跟不上
+            "audit_buf_depth": len(self._audit_buf),
+            "audit_dropped": self._audit_dropped,
         }
 
     @property
@@ -90,6 +104,8 @@ class ControlClient:
         self._running = True
         self._dispatch_sem = asyncio.Semaphore(100)
         self._task = asyncio.create_task(self._run_loop())
+        # 启动审计日志批量落库消费者
+        self._audit_task = asyncio.create_task(self._audit_flush_loop())
         logger.info("✅ 本地端 WebSocket 控制客户端已启动")
 
     async def stop(self):
@@ -105,6 +121,19 @@ class ControlClient:
             try:
                 await self._task
             except asyncio.CancelledError:
+                pass
+        # 停审计消费者，并把缓冲里剩余的审计记录落库，避免丢数据
+        if self._audit_task and not self._audit_task.done():
+            self._audit_task.cancel()
+            try:
+                await self._audit_task
+            except asyncio.CancelledError:
+                pass
+        if self._audit_buf:
+            rows, self._audit_buf = self._audit_buf, []
+            try:
+                await asyncio.to_thread(self._audit_flush_db, rows)
+            except Exception:
                 pass
         self._connected = False
 
@@ -261,10 +290,16 @@ class ControlClient:
                     request_cache_key=payload.get("cache_key"))
 
     async def _handle_stats_report(self, msg_id, payload):
-        """Worker 主动上报 IP/限流统计：落库 current + snapshot"""
+        """Worker 主动上报 IP/限流统计：落库 current + snapshot
+
+        落库是同步 DB 操作（最多 200 个 IP 的 upsert），必须放线程池，
+        否则会长时间霸占事件循环（实测导致 loop_lag 达数百毫秒）。
+        """
         ip_stats = payload.get("ip_stats") or []
         worker_id = payload.get("worker_id", "worker-1")
-        saved = ip_stats_service.ingest_report(worker_id, ip_stats)
+        saved = await asyncio.to_thread(
+            ip_stats_service.ingest_report, worker_id, ip_stats
+        )
         await self._send({
             "id": msg_id, "type": "stats.report.result",
             "timestamp": _ts(), "payload": {"success": True, "saved": saved},
@@ -272,10 +307,15 @@ class ControlClient:
         self._audit("worker_to_local", "stats.report", "success")
 
     async def _handle_log_report(self, msg_id, payload):
-        """Worker 主动上报日志：落库 worker_request_logs + SSE 广播"""
+        """Worker 主动上报日志：落库 worker_request_logs + SSE 广播
+
+        批量落库（单次最多 100 条）是同步 DB 操作，放线程池避免阻塞事件循环。
+        """
         logs = payload.get("logs") or []
         worker_id = payload.get("worker_id", "worker-1")
-        saved = worker_log_service.ingest_report(worker_id, logs)
+        saved = await asyncio.to_thread(
+            worker_log_service.ingest_report, worker_id, logs
+        )
         await self._send({
             "id": msg_id, "type": "log.report.result",
             "timestamp": _ts(), "payload": {"success": True, "saved": saved},
@@ -314,19 +354,47 @@ class ControlClient:
         self._resync_task = asyncio.create_task(_run())
 
     async def _handle_metrics_report(self, msg_id, payload):
-        """Worker 上报运行指标快照：落库 worker_metrics_snapshot"""
+        """Worker 上报运行指标快照：落库 worker_metrics_snapshot
+
+        同步 DB 写入放线程池，避免阻塞事件循环。
+        """
         metrics = payload.get("metrics") or {}
         worker_id = payload.get("worker_id", "worker-1")
-        ok = metrics_service.ingest_report(
+        # 顺带缓存 Worker 实例内存里的配置状态（诊断用，密钥已在 Worker 侧脱敏）。
+        # 只留最近一次，不落库——它是瞬时态，用于排查「后台配了但没生效」。
+        cfg_state = payload.get("config_state")
+        if cfg_state:
+            self._worker_config_state[worker_id] = {
+                "reported_at": _ts(),
+                "state": cfg_state,
+            }
+        ok = await asyncio.to_thread(
+            metrics_service.ingest_report,
             worker_id, metrics,
-            total_lifetime=payload.get("total_requests_lifetime", 0),
-            api_cache_size=payload.get("api_cache_size", 0),
+            payload.get("total_requests_lifetime", 0),
+            payload.get("api_cache_size", 0),
         )
         await self._send({
             "id": msg_id, "type": "metrics.report.result",
             "timestamp": _ts(), "payload": {"success": ok},
         })
         self._audit("worker_to_local", "metrics.report", "success" if ok else "failed")
+
+    # ---------- 配置诊断 ----------
+    def get_worker_config_state(self) -> Dict[str, Any]:
+        """取各 Worker 实例上报的内存配置状态（最近一次 metrics 上报时带回）"""
+        return dict(self._worker_config_state)
+
+    async def dump_do_config(self, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
+        """
+        主动向 DO 索取 runtime_config 的实际存储内容（密钥已脱敏）。
+
+        与 get_worker_config_state 的区别：
+        - 本方法 = DO storage 里「下发存成了什么」
+        - get_worker_config_state = Worker 实例「实际在用什么」（env 基线合并后）
+        两者对比可定位问题出在下发环节还是合并环节。
+        """
+        return await self.request("config.dump", {}, timeout=timeout)
 
     async def _handle_keypool_report(self, msg_id, payload):
         """Worker 上报密钥限流状态快照：按 worker_id upsert worker_key_state"""
@@ -428,23 +496,60 @@ class ControlClient:
 
     def _audit(self, direction: str, message_type: str, status: str,
                request_cache_key: Optional[str] = None):
-        """写消息审计，失败不影响主流程"""
+        """写消息审计：仅入内存缓冲（纯 append，零阻塞），由后台消费者攒批落库。
+
+        原实现是同步 DB 写入，而本方法每条 Worker 消息都会调用一次
+        （cache.get 每个请求一次），高频下直接把事件循环拖到数百毫秒延迟。
+        """
+        if len(self._audit_buf) >= self._AUDIT_BUF_MAX:
+            self._audit_dropped += 1
+            return
+        # bulk_insert_mappings 不触发 ORM 列默认值，created_at/updated_at
+        # 是 NOT NULL，必须在此显式补齐
+        ts = now()
+        self._audit_buf.append({
+            "message_id": str(uuid.uuid4()),
+            "node_id": self._node_id,
+            "direction": direction,
+            "message_type": message_type,
+            "status": status,
+            "request_cache_key": request_cache_key,
+            "created_at": ts,
+            "updated_at": ts,
+        })
+
+    def _audit_flush_db(self, rows: list) -> int:
+        """把一批审计记录批量落库（同步，供线程池调用）"""
+        if not rows:
+            return 0
+        db = get_db_sync()
         try:
-            db = get_db_sync()
+            db.bulk_insert_mappings(ControlMessage, rows)
+            db.commit()
+            return len(rows)
+        except Exception as e:
+            db.rollback()
+            logger.debug(f"ℹ️ 审计日志批量落库失败({len(rows)}条): {e}")
+            return 0
+        finally:
+            db.close()
+
+    async def _audit_flush_loop(self):
+        """后台消费者：定时把审计缓冲攒批写入 DB（DB 操作走线程池）"""
+        while True:
             try:
-                db.add(ControlMessage(
-                    message_id=str(uuid.uuid4()),
-                    node_id=self._node_id,
-                    direction=direction,
-                    message_type=message_type,
-                    status=status,
-                    request_cache_key=request_cache_key,
-                ))
-                db.commit()
-            finally:
-                db.close()
-        except Exception:
-            pass
+                await asyncio.sleep(self._AUDIT_FLUSH_INTERVAL)
+            except asyncio.CancelledError:
+                break
+            if not self._audit_buf:
+                continue
+            # 取出一批（切片后重置，避免持锁；单线程事件循环下无竞态）
+            batch = self._audit_buf[:self._AUDIT_FLUSH_BATCH]
+            self._audit_buf = self._audit_buf[len(batch):]
+            try:
+                await asyncio.to_thread(self._audit_flush_db, batch)
+            except Exception as e:
+                logger.debug(f"ℹ️ 审计落库线程异常: {e}")
 
 
 def _ts() -> int:

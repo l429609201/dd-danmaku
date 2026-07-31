@@ -79,6 +79,11 @@ class UaLimitRule(Base, TimestampMixin):
     enabled = Column(Boolean, default=True, index=True, nullable=False)
     # 绑定的签名密钥组 group_id（关联 SignKeyPool.group_id）；空=不启用签名验证
     sign_group_id = Column(String(64), nullable=True)
+    # 绑定的用户允许组 group_id（关联 UserAllowPool.group_id）；空=不启用用户名过滤
+    # 校验顺序：实例校验 → 用户名过滤 → 签名验证
+    user_group_id = Column(String(64), nullable=True)
+    # 实例 ID 校验参数已移入 UserAllowPool（通过 user_group_id 引用）
+    # 删除本表的 instance_brand_mark / instance_obf_key，保持与签名组对称
 
 
 class WorkerRequestLog(Base):
@@ -98,8 +103,10 @@ class WorkerRequestLog(Base):
     upstream_status = Column(Integer, nullable=True)
     # 本次请求使用的密钥 id（密钥池调度排查）
     key_id = Column(String(64), nullable=True)
-    # 客户端用户标识（X-Ddd-User，来自 ede.js 签名头，用于按用户标识/过滤）
-    client_user_id = Column(String(64), index=True, nullable=True)
+    # 客户端用户标识（X-Ddd-User，来自客户端签名头，用于按用户标识/过滤）
+    # 长度 255：上报的是**混淆后**的标识（`品牌:GUID` 经 hex 编码后约 96 字符），
+    # 原 64 会溢出导致整批日志落库失败（见 database_patches._patch_widen_client_user_id）
+    client_user_id = Column(String(255), index=True, nullable=True)
     # 请求处理耗时（毫秒）
     duration_ms = Column(Integer, nullable=True)
     # 响应体字节数（缓存命中/回源均记录，拦截类为 None）
@@ -232,6 +239,31 @@ class SignKeyPool(Base, TimestampMixin):
     remark = Column(String(500), nullable=True)
 
 
+class UserAllowPool(Base, TimestampMixin):
+    """用户允许名单池：本地端维护并下发给 Worker 用于用户名过滤
+
+    每组维护一批允许访问的客户端用户名（X-Ddd-User 头的值）。
+    UA 规则通过 user_group_id 绑定本组；空组（users_json 为空列表）等同于「允许所有用户」，
+    不应与「不配置 user_group_id（不校验）」混淆。
+
+    校验顺序（Worker 主流程）：[本组实例 ID 校验（brand_mark+obf_key 均配置时）] → 本组用户名校验 → 签名校验
+    """
+    __tablename__ = "user_allow_pool"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 逻辑标识（下发给 Worker 作为组 id，UA 规则通过 user_group_id 绑定）
+    group_id = Column(String(64), unique=True, index=True, nullable=False)
+    # 允许的用户名列表（精确匹配 X-Ddd-User 值）；空列表 = 拒绝所有用户
+    users_json = Column(JSON, default=list, nullable=False)
+    # 实例 ID 归属校验：两者均配置时对 X-Ddd-Instance 做 XOR 反解并比对前缀
+    # brand_mark: 期望的品牌标记（如 misaka10876），空=不做实例校验
+    brand_mark = Column(String(100), nullable=True)
+    # obf_key: XOR 混淆密钥（sha256(obf_key) 循环扩展），与弹幕库 OBF_KEY 保持一致
+    obf_key = Column(String(200), nullable=True)
+    enabled = Column(Boolean, default=True, index=True, nullable=False)
+    remark = Column(String(500), nullable=True)
+
+
 class WorkerKeyState(Base):
     """Worker 上报的密钥限流状态快照（每 worker 一条，覆盖更新）
 
@@ -247,6 +279,35 @@ class WorkerKeyState(Base):
     key_count = Column(Integer, default=0, nullable=False)
     key_state = Column(JSON, default=dict, nullable=False)
     updated_at = Column(DateTime, default=now, onupdate=now, index=True, nullable=False)
+
+
+class OAuthConfig(Base, TimestampMixin):
+    """OAuth 配置：本地端维护并通过长连接下发给 Worker
+
+    与 env.OAUTH_CONFIG 的关系：
+    - 本表是「可编辑的配置源」，改动经 config.apply 存入 DO storage；
+    - Worker 侧 getOAuthConfig 优先读下发值，env 仅作冷启动兜底，
+      因此本表留空/未下发时行为与改造前完全一致（灰度安全）。
+
+    字段与 Worker 侧 OAUTH_CONFIG 的 JSON 结构一一对应，下发时不做结构转换。
+    同一时刻只取一条 enabled=True 记录生效（多条时按 id 最小者，避免歧义）。
+    """
+    __tablename__ = "oauth_config"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 是否启用 OAuth（对应 JSON enabled）；false 时 Worker 走「OAuth 未启用」分支
+    enabled = Column(Boolean, default=False, index=True, nullable=False)
+    # JWT 签名密钥（对应 jwtSecret）——敏感，接口返回时需脱敏
+    jwt_secret = Column(String(500), nullable=False, default="")
+    # JWT 有效期（小时，对应 jwtExpireHours；Worker 默认 720=30天）
+    jwt_expire_hours = Column(Integer, default=720, nullable=False)
+    # 允许登录的用户（对应 allowedUsers），格式 {"用户名": true}
+    allowed_users_json = Column(JSON, default=dict, nullable=False)
+    # 各 provider 配置（对应 providers），格式
+    # {"github": {clientId, clientSecret, authorizeUrl, tokenUrl, userInfoUrl, scope}}
+    # 其中 clientSecret 敏感，接口返回时需脱敏
+    providers_json = Column(JSON, default=dict, nullable=False)
+    remark = Column(String(500), nullable=True)
 
 
 class IpGeoCache(Base):

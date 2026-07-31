@@ -29,7 +29,31 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理（新架构：Redis 热缓存 + Worker 长连接客户端）"""
+    # 最先挂日志文件 handler，保证后续启动日志也能落盘、供 /ext/logs/app 回查
+    from src.config import settings as _settings
+    from src.services_v2 import log_file_service
+    log_file_service.install(_settings.CONFIG_PATH)
+
     logger.info("🚀 启动数据交互中心...")
+
+    # 配置 asyncio 默认线程池容量：
+    # 大量同步 DB 查询通过 asyncio.to_thread 卸载到线程池执行，
+    # Python 默认上限 min(32, cpu+4) 在 CPU 核数少的机器上过小（如 2 核只有 6），
+    # 会让并发请求排队等线程，表现为接口变慢。
+    # 上限与 DB 连接池容量对齐（pool_size + max_overflow），避免线程拿不到连接空等。
+    import asyncio as _aio
+    from concurrent.futures import ThreadPoolExecutor
+    _executor = ThreadPoolExecutor(
+        max_workers=_settings.DB_THREAD_POOL_SIZE,
+        thread_name_prefix="ddc-db",
+    )
+    _aio.get_running_loop().set_default_executor(_executor)
+    logger.info(f"🧵 DB 线程池已配置：max_workers={_settings.DB_THREAD_POOL_SIZE}")
+
+    # 安装慢 SQL 监控钩子（只记录超阈值的语句，供 /ext/diag/slow-sql 查看）
+    from src.database import engine as _engine
+    from src.services_v2 import slow_sql_service
+    slow_sql_service.install(_engine, _settings.SLOW_SQL_MS)
 
     # 初始化数据库（仅创建 models_v2 新表）
     logger.info("📊 初始化数据库...")

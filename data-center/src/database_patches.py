@@ -140,12 +140,202 @@ def _patch_drop_sign_zombie_columns(engine: Engine) -> bool:
     return changed
 
 
+def _patch_widen_client_user_id(engine: Engine) -> bool:
+    """扩宽 worker_request_logs.client_user_id 到 255。
+
+    背景：该列原为 varchar(64)，够存 Emby 原生用户 ID（32/36 字符）。
+    但客户端改为上报**混淆后**的用户标识后长度翻倍——
+    `misaka10876:` + 36 位 GUID = 48 字节，hex 编码后 96 字符，超出 64。
+    结果整批日志落库失败（DataError 1406 Data too long），
+    连校验失败的日志也写不进去，直接导致排查时"看不到任何校验记录"。
+
+    仅当现有长度 < 255 时才 ALTER（幂等）。SQLite 无需处理：
+    它的 VARCHAR 不强制长度，本身不会报此错。
+    """
+    inspector = inspect(engine)
+    if "worker_request_logs" not in set(inspector.get_table_names()):
+        return False
+    dialect = engine.dialect.name
+    if dialect == "sqlite":
+        return False  # SQLite 不限制 varchar 长度，无需变更
+
+    col = next((c for c in inspector.get_columns("worker_request_logs")
+                if c["name"] == "client_user_id"), None)
+    if col is None:
+        return False
+    # 取现有长度；拿不到长度信息时保守跳过，避免无谓 ALTER
+    length = getattr(col.get("type"), "length", None)
+    if length is None or length >= 255:
+        return False
+
+    try:
+        with engine.begin() as conn:
+            if dialect == "mysql":
+                conn.exec_driver_sql(
+                    "ALTER TABLE `worker_request_logs` "
+                    "MODIFY COLUMN `client_user_id` VARCHAR(255) NULL"
+                )
+            else:  # PostgreSQL
+                conn.exec_driver_sql(
+                    'ALTER TABLE "worker_request_logs" '
+                    'ALTER COLUMN "client_user_id" TYPE VARCHAR(255)'
+                )
+        logger.info(f"📏 已扩宽 worker_request_logs.client_user_id: {length} → 255")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ 扩宽 client_user_id 失败（跳过，不影响启动）: {e}")
+        return False
+
+
+def _patch_widen_cache_response_body(engine: Engine) -> bool:
+    """把 api_response_cache.response_body 从 TEXT 扩到 MEDIUMTEXT。
+
+    背景：TEXT 上限 64 KB，而搜索类接口（如 /api/v2/search/episodes 返回
+    大量剧集）的响应体常常超过，导致
+      cache.upsert 失败: (1406) Data too long for column 'response_body'
+    该列是 Redis 的 SQL 冷备，写失败虽不影响当次响应，但 Redis 淘汰/重启后
+    缓存会变成空壳，等于该接口永久无法命中缓存、每次都回源。
+    MEDIUMTEXT 上限 16 MB，足够覆盖。SQLite 无长度限制，跳过。
+    """
+    inspector = inspect(engine)
+    if "api_response_cache" not in set(inspector.get_table_names()):
+        return False
+    dialect = engine.dialect.name
+    if dialect != "mysql":
+        # PostgreSQL 的 text 本身无长度上限；SQLite 同理，均无需变更
+        return False
+    try:
+        with engine.begin() as conn:
+            cur = conn.exec_driver_sql(
+                "SELECT DATA_TYPE FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'api_response_cache' "
+                "AND COLUMN_NAME = 'response_body'"
+            ).fetchone()
+            if not cur or str(cur[0]).lower() != "text":
+                return False  # 已是 mediumtext/longtext，无需处理
+            conn.exec_driver_sql(
+                "ALTER TABLE `api_response_cache` "
+                "MODIFY COLUMN `response_body` MEDIUMTEXT NULL"
+            )
+        logger.info("📏 已扩宽 api_response_cache.response_body: TEXT → MEDIUMTEXT")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ 扩宽 response_body 失败（跳过，不影响启动）: {e}")
+        return False
+
+
+# ============ 复合索引：按"过滤列 + 排序列"建，让分页查询能走索引 ============
+# 背景：列表接口普遍是「WHERE 某列 = ? ORDER BY 时间 DESC LIMIT n」。
+# 只有单列索引时，MySQL 用 A 列索引过滤后仍需额外排序（filesort），
+# 数据量大时排序开销占主导。加 (过滤列, 时间列) 复合索引后，
+# 索引本身已按时间有序，可直接边扫边取前 n 条，避免 filesort。
+#
+# 命名统一 ix_<表>_<列缩写>，便于识别与回滚。
+_COMPOSITE_INDEXES = {
+    "worker_request_logs": [
+        # 按级别筛选 + 时间倒序（日志页最常用组合）
+        ("ix_wrl_level_created", ["level", "created_at"]),
+        # 按 worker 筛选 + 时间倒序
+        ("ix_wrl_worker_created", ["worker_id", "created_at"]),
+        # 按状态码筛选 + 时间倒序（排查错误请求）
+        ("ix_wrl_status_created", ["status", "created_at"]),
+    ],
+    "api_cache_access_logs": [
+        # 按访问类型筛选 + 时间倒序（命中率统计与趋势聚合都走这个）
+        ("ix_acal_type_created", ["access_type", "created_at"]),
+    ],
+    "api_response_cache": [
+        # 待刷新筛选 + 获取时间倒序
+        ("ix_arc_pending_fetched", ["refresh_pending", "fetched_at"]),
+        # 空结果负缓存分页：is_empty 过滤 + 时间倒序
+        ("ix_arc_empty_fetched", ["is_empty", "fetched_at"]),
+    ],
+    "ip_request_stats_current": [
+        # IP 统计页：时间范围过滤 + 按请求量/违规数排序
+        ("ix_irsc_last_total", ["last_access_at", "total_count"]),
+    ],
+    "worker_metrics_snapshot": [
+        # 指标趋势：按 worker + 快照时间聚合
+        ("ix_wms_worker_snapshot", ["worker_id", "snapshot_at"]),
+    ],
+    "ip_rules": [
+        # 配置下发按「启用 且 未过期」过滤，单列 enabled 索引区分度极低
+        # （几乎全部 enabled=true），复合索引才能真正缩小扫描范围
+        ("ix_ip_rules_enabled_expires", ["enabled", "expires_at"]),
+        # 清理任务按 created_by + expires_at 找过期的自动封禁记录
+        ("ix_ip_rules_createdby_expires", ["created_by", "expires_at"]),
+    ],
+    "api_response_entities": [
+        # 实体列表：类型过滤 + 最近出现时间倒序
+        ("ix_are_type_lastseen", ["entity_type", "last_seen_at"]),
+    ],
+}
+
+
+def _patch_add_composite_indexes(engine: Engine) -> bool:
+    """为大表补「过滤列 + 时间列」复合索引，消除分页查询的 filesort。
+
+    幂等：
+    - 表不存在则跳过；
+    - 目标列不全存在则跳过（避免因模型演进导致建索引失败）；
+    - 已存在同名索引，或已存在「列序完全相同」的索引则跳过。
+    单个索引失败不影响其它索引与启动流程。
+    """
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    dialect = engine.dialect.name
+    changed = False
+
+    for table, specs in _COMPOSITE_INDEXES.items():
+        if table not in tables:
+            continue
+        try:
+            existing = inspector.get_indexes(table)
+            table_cols = {c["name"] for c in inspector.get_columns(table)}
+        except Exception as e:
+            logger.warning(f"⚠️ 读取 {table} 结构失败，跳过复合索引: {e}")
+            continue
+
+        existing_names = {idx.get("name") for idx in existing}
+        # 已有索引的列序集合，用于判断"等价索引已存在"
+        existing_colsets = {tuple(idx.get("column_names") or []) for idx in existing}
+
+        for name, cols in specs:
+            if name in existing_names:
+                continue
+            if tuple(cols) in existing_colsets:
+                continue
+            # 列不全（模型尚未升级/列已删）则跳过，不报错
+            if not set(cols).issubset(table_cols):
+                continue
+            try:
+                with engine.begin() as conn:
+                    if dialect == "mysql":
+                        col_sql = ", ".join(f"`{c}`" for c in cols)
+                        conn.exec_driver_sql(
+                            f"CREATE INDEX `{name}` ON `{table}` ({col_sql})"
+                        )
+                    else:
+                        col_sql = ", ".join(f'"{c}"' for c in cols)
+                        conn.exec_driver_sql(
+                            f'CREATE INDEX IF NOT EXISTS "{name}" ON "{table}" ({col_sql})'
+                        )
+                logger.info(f"📈 已创建复合索引 {table}.{name}（{', '.join(cols)}）")
+                changed = True
+            except Exception as e:
+                logger.warning(f"⚠️ 创建复合索引 {table}.{name} 失败（跳过）: {e}")
+    return changed
+
+
 # ============ 补丁注册表 ============
 # 按顺序执行；新增补丁在此登记即生效。
 _PATCHES: List[Callable[[Engine], bool]] = [
     _patch_example_noop,
     _patch_drop_unused_indexes,
     _patch_drop_sign_zombie_columns,
+    _patch_widen_client_user_id,
+    _patch_widen_cache_response_body,
+    _patch_add_composite_indexes,
 ]
 
 

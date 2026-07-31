@@ -1,5 +1,10 @@
 // 构建脚本：读取环境变量并替换 wrangler.toml 中的占位符
 const fs = require('fs');
+const path = require('path');
+
+// 配置文件与本脚本同目录（worker/）。用 __dirname 而非相对 cwd 的路径，
+// 这样从仓库根执行 `node worker/build.js` 或在 worker/ 内执行都能正确定位。
+const CONFIG_PATH = path.join(__dirname, 'wrangler.toml');
 
 try {
     console.log('🚀 开始构建过程...');
@@ -19,7 +24,7 @@ try {
 
     // 读取 wrangler.toml 文件
     console.log('\n📝 读取 wrangler.toml...');
-    let config = fs.readFileSync('wrangler.toml', 'utf8');
+    let config = fs.readFileSync(CONFIG_PATH, 'utf8');
 
     // 替换占位符
     console.log('🔄 替换占位符...');
@@ -47,7 +52,7 @@ try {
 
     // 写回文件
     console.log('💾 写入配置文件...');
-    fs.writeFileSync('wrangler.toml', config);
+    fs.writeFileSync(CONFIG_PATH, config);
 
     // 验证生成的配置文件
     console.log('🔍 验证生成的配置文件...');

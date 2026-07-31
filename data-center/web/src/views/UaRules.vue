@@ -16,7 +16,7 @@
       <table class="data-table">
         <thead><tr>
           <th>ua_key</th><th>UA 匹配</th><th>最大请求</th><th>窗口(ms)</th>
-          <th>路径限流</th><th>签名组</th><th>启用</th><th>操作</th>
+          <th>路径限流</th><th>签名组</th><th>用户组</th><th>启用</th><th>操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="r in items" :key="r.id">
@@ -26,6 +26,7 @@
             <td>{{ r.window_ms }}</td>
             <td>{{ (r.path_limits && r.path_limits.length) || 0 }} 条</td>
             <td>{{ r.sign_group_id || '关' }}</td>
+          <td>{{ r.user_group_id || '关' }}</td>
             <td>{{ r.enabled ? '是' : '否' }}</td>
             <td class="actions">
               <button class="link" @click="openEdit(r)">编辑</button>
@@ -64,6 +65,16 @@
             </option>
           </select>
         </div>
+        <div class="form-item">
+          <label>用户允许名单组（选择即校验 X-Ddd-User；不选=不校验）</label>
+          <select v-model="form.user_group_id" class="input full">
+            <option value="">不启用</option>
+            <option v-for="g in userGroups" :key="g.group_id" :value="g.group_id">
+              {{ g.group_id }}（{{ g.user_count }} 人{{ g.remark ? '，' + g.remark : '' }}）
+            </option>
+          </select>
+        </div>
+
         <div class="modal-actions">
           <button class="btn" @click="showCreate=false">取消</button>
           <button class="btn btn-primary" :disabled="creating" @click="submit">{{ creating ? '提交中...' : '确认' }}</button>
@@ -113,8 +124,10 @@ export default {
     const showCreate = ref(false)
     const creating = ref(false)
     const editId = ref(null)
-    const form = reactive({ ua_key: '', user_agent: '', max_requests: 0, window_ms: 60000, path_limits: [], sign_group_id: '' })
+    const form = reactive({ ua_key: '', user_agent: '', max_requests: 0, window_ms: 60000, path_limits: [],
+      sign_group_id: '', user_group_id: '' })
     const signGroups = ref([])
+    const userGroups = ref([])
     // JSON 导入相关
     const showImport = ref(false)
     const importText = ref('')
@@ -140,11 +153,19 @@ export default {
         signGroups.value = (res.data && res.data.items) || []
       } catch (e) { /* 忽略:签名池为空不影响 UA 编辑 */ }
     }
+    // 拉取用户允许名单组，供下拉选择
+    const loadUserGroups = async () => {
+      try {
+        const res = await apiV2('/user-allow-pool')
+        userGroups.value = (res.data && res.data.items) || []
+      } catch (e) { /* 忽略:名单池为空不影响 UA 编辑 */ }
+    }
 
     // 重置表单
     const resetForm = () => {
       form.ua_key = ''; form.user_agent = ''; form.max_requests = 0
       form.window_ms = 60000; form.path_limits = []; form.sign_group_id = ''
+      form.user_group_id = ''
     }
     const openCreate = () => { editId.value = null; resetForm(); showCreate.value = true }
     const openEdit = (r) => {
@@ -158,6 +179,7 @@ export default {
         path: p.path || '', maxRequestsPerHour: p.maxRequestsPerHour || 0,
       }))
       form.sign_group_id = r.sign_group_id || ''
+      form.user_group_id = r.user_group_id || ''
       showCreate.value = true
     }
     const addPathLimit = () => { form.path_limits.push({ path: '', maxRequestsPerHour: 0 }) }
@@ -175,6 +197,7 @@ export default {
             user_agent: form.user_agent, max_requests: form.max_requests,
             window_ms: form.window_ms, path_limits: pathLimits,
             sign_group_id: form.sign_group_id,
+          user_group_id: form.user_group_id,
           }
           const res = await apiV2(`/ua-rules/${editId.value}`, { method: 'PUT', body })
           msg.value = res.message || '更新成功'
@@ -240,8 +263,8 @@ export default {
     // 跳转到指定页（含上下页/输入跳转）
     const goPage = (p) => { page.value = p; load() }
 
-    onMounted(() => { load(); loadSignGroups() })
-    return { items, total, page, pageSize, keyword, msg, showCreate, creating, editId, form, signGroups,
+    onMounted(() => { load(); loadSignGroups(); loadUserGroups() })
+    return { items, total, page, pageSize, keyword, msg, showCreate, creating, editId, form, signGroups, userGroups,
       showImport, importText, replaceAll, importing, importError,
       load, openCreate, openEdit, addPathLimit, removePathLimit, submit, toggle, del, resync, goPage,
       openImport, doImport, exportJson }

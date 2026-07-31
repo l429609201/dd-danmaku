@@ -176,10 +176,15 @@
       <!-- 请求来源地图 -->
       <div class="panel" style="margin: 24px 0;">
         <h2 class="panel-title">请求来源分布
+          <!-- 库文件状态灯：绿=已加载，红=缺库（hover 提示放置路径） -->
+          <span class="geo-dot" :class="geoLibReady ? 'geo-dot--ok' : 'geo-dot--err'"
+                :title="geoLibReady ? 'GeoLite2 地理库已加载' : '未找到 GeoLite2-City.mmdb，请放到 /app/config/ 后重启后端'"></span>
           <span class="map-sub" v-if="geo && geo.available">已解析 {{ geo.resolved }} / {{ geo.total_ips }} 个 IP</span>
+          <span class="map-sub map-sub--err" v-else-if="geo && !geo.available">未配置地理库</span>
         </h2>
-        <div v-show="geoAvailable" ref="mapChart" class="chart chart-map"></div>
-        <div v-show="!geoAvailable" class="empty">
+        <!-- 世界底图常驻：库可用即渲染，散点逐个动画铺上；库不可用仍显示底图+提示 -->
+        <div ref="mapChart" class="chart chart-map"></div>
+        <div v-if="!geoLibReady" class="geo-tip">
           未配置 IP 地理库。请下载 GeoLite2-City.mmdb 放到 /app/config/ 后重启
         </div>
       </div>
@@ -235,6 +240,8 @@ export default {
     const hasBlocked = ref(false)
     const hasHit = ref(false)
     const geoAvailable = ref(false)
+    const geoLibReady = ref(false)  // 地理库文件是否加载成功（状态灯用）
+    let geoRenderTimer = null       // 渐进渲染定时器
     // 运维洞察状态
     const has429 = ref(false)
     const hasUaTop = ref(false)
@@ -375,6 +382,18 @@ export default {
       c.resize() // 兜底：按真实容器尺寸重绘，杜绝竖条
     }
 
+    // 缓存来源英文值 → 中文展示（与 WorkerLogs 保持一致）
+    const cacheSourceLabel = (s) => ({
+      'MEM': '内存缓存',
+      'LOCAL': '本地缓存',
+      'LOCAL-STALE': '本地缓存(过期)',
+      'LOCAL-COMMENT': '本地弹幕兜底',
+      'LOCAL-EMPTY': '空结果负缓存',
+      'R2': 'R2缓存',
+      'MISS': '未命中(回源)',
+      'UPSTREAM-429': '上游限流',
+    }[s] || s || '未知')
+
     // 加载运维洞察：密钥池状态 + 弹幕水位 + 429/UA/缓存来源
     const loadInsights = async () => {
       // 密钥池状态卡 + 弹幕水位（独立 try，互不影响）
@@ -406,7 +425,7 @@ export default {
         hasUaTop.value = uaTop.length > 0
         if (hasUaTop.value) drawBar(uaTopChart, 'UA Top', uaTop.map(x => x.ua_type), uaTop.map(x => x.count), '#1677ff')
         const srcData = (d.cache_sources || []).filter(x => x.count > 0)
-          .map(x => ({ name: x.source, value: x.count }))
+          .map(x => ({ name: cacheSourceLabel(x.source), value: x.count }))
         hasCacheSrc.value = srcData.length > 0
         if (hasCacheSrc.value) drawPie(cacheSrcChart, '缓存来源', srcData)
       } catch (e) { /* 忽略 */ }
@@ -441,40 +460,74 @@ export default {
       } catch (e) { /* 趋势图失败不阻塞页面 */ }
     }
 
-    // 加载并渲染请求来源地图（城市级散点）
+    // 确保世界底图 GeoJSON 已注册：优先本地 /world.json，失败回退 CDN
+    const ensureWorldMap = async () => {
+      if (echarts.getMap('world')) return true
+      // 1. 本地静态资源（把 world.json 放 public/ 即走本地，无外网依赖）
+      let json = await fetch('/world.json').then(r => r.ok ? r.json() : null).catch(() => null)
+      // 2. 回退 CDN（本地未放置时兜底）
+      if (!json) {
+        json = await fetch('https://fastly.jsdelivr.net/npm/echarts@4.9.0/map/json/world.json')
+          .then(r => r.ok ? r.json() : null).catch(() => null)
+      }
+      if (json) { echarts.registerMap('world', json); return true }
+      return false
+    }
+
+    // 渲染世界底图（常驻，即使 0 个点）
+    const renderBaseMap = (hasMap) => {
+      if (!mapChart.value) return null
+      const c = echarts.getInstanceByDom(mapChart.value) || echarts.init(mapChart.value)
+      charts.map = c
+      c.setOption({
+        tooltip: { trigger: 'item', formatter: (p) => `${p.name}<br/>请求量: ${p.value ? p.value[2] : 0}` },
+        visualMap: { min: 0, max: 1, calculable: true, left: 10, bottom: 10,
+          inRange: { color: ['#a3d2ff', '#1677ff', '#ff4d4f'] } },
+        geo: hasMap ? { map: 'world', roam: true, itemStyle: { areaColor: '#f0f2f5', borderColor: '#ccc' } } : undefined,
+        series: [{ type: 'scatter', coordinateSystem: hasMap ? 'geo' : undefined,
+          data: [], symbolSize: 6, encode: { value: 2 } }],
+      })
+      c.resize()
+      return c
+    }
+
+    // C1 渐进渲染：点按请求量降序，用定时器逐个铺到地图上，视觉上一个个冒出
+    const progressiveRender = (c, pts, hasMap) => {
+      if (geoRenderTimer) { clearInterval(geoRenderTimer); geoRenderTimer = null }
+      const maxV = Math.max(...pts.map(p => p.value[2]), 1)
+      // 点多时每帧多铺几个，控制总时长在 ~4 秒内
+      const step = Math.max(1, Math.ceil(pts.length / 120))
+      let i = 0
+      const shown = []
+      geoRenderTimer = setInterval(() => {
+        if (i >= pts.length) { clearInterval(geoRenderTimer); geoRenderTimer = null; return }
+        for (let k = 0; k < step && i < pts.length; k++, i++) shown.push(pts[i])
+        c.setOption({
+          visualMap: { min: 0, max: maxV },
+          series: [{ type: 'scatter', coordinateSystem: hasMap ? 'geo' : undefined,
+            data: shown.slice(), symbolSize: (v) => 6 + (v[2] / maxV) * 24, encode: { value: 2 } }],
+        })
+      }, 30)
+    }
+
+    // 加载并渲染请求来源地图（城市级散点，底图常驻 + 渐进动画）
     const loadGeoMap = async () => {
       try {
         const res = await apiV2('/dashboard/ip-geo')
         geo.value = res.data
+        // 库是否就绪：available 反映 mmdb 是否加载成功（状态灯 + 提示）
+        geoLibReady.value = !!(res.data && res.data.available)
         geoAvailable.value = !!(res.data && res.data.available && res.data.points.length)
-        if (!geoAvailable.value) return
         await nextTick()
         if (!mapChart.value) return
-        // 运行时加载世界地图 GeoJSON（echarts5 不再内置；失败则降级为无底图散点）
-        let worldJson = null
-        if (!echarts.getMap('world')) {
-          worldJson = await fetch('https://fastly.jsdelivr.net/npm/echarts@4.9.0/map/json/world.json')
-            .then(r => r.ok ? r.json() : null).catch(() => null)
-          if (worldJson) echarts.registerMap('world', worldJson)
-        }
-        const hasMap = !!echarts.getMap('world')
+        // 底图常驻：无论有无点、库是否可用，都先渲染世界地图
+        const hasMap = await ensureWorldMap()
         await nextTick()
-        const c = echarts.getInstanceByDom(mapChart.value) || echarts.init(mapChart.value)
-        charts.map = c
-        const pts = geo.value.points
-        const maxV = Math.max(...pts.map(p => p.value[2]), 1)
-        c.setOption({
-          tooltip: { trigger: 'item', formatter: (p) => `${p.name}<br/>请求量: ${p.value ? p.value[2] : 0}` },
-          visualMap: { min: 0, max: maxV, calculable: true, left: 10, bottom: 10,
-            inRange: { color: ['#a3d2ff', '#1677ff', '#ff4d4f'] } },
-          geo: hasMap ? { map: 'world', roam: true, itemStyle: { areaColor: '#f0f2f5', borderColor: '#ccc' } } : undefined,
-          series: [{
-            type: 'scatter', coordinateSystem: hasMap ? 'geo' : undefined,
-            data: pts, symbolSize: (v) => 6 + (v[2] / maxV) * 24,
-            encode: { value: 2 },
-          }],
-        })
-        c.resize() // 兜底：确保按真实容器尺寸渲染（修复窄屏/显隐切换时地图偏小）
+        const c = renderBaseMap(hasMap)
+        if (!c) return
+        // 有点则渐进铺点
+        const pts = (geo.value && geo.value.points) || []
+        if (pts.length) progressiveRender(c, pts, hasMap)
       } catch (e) { /* 地图失败不阻塞 */ }
     }
 
@@ -500,12 +553,13 @@ export default {
     onUnmounted(() => {
       window.removeEventListener('resize', onResize)
       if (sysTimer) clearInterval(sysTimer)
+      if (geoRenderTimer) clearInterval(geoRenderTimer)  // 清渐进渲染定时器
       Object.values(charts).forEach(c => c && c.dispose())
     })
     return {
       loading, error, data, wm, geo, goto, fmt, fmtBytes,
       trendChart, statusChart, blockChart, hitChart, mapChart,
-      trendHasData, hasDist, hasBlocked, hasHit, geoAvailable,
+      trendHasData, hasDist, hasBlocked, hasHit, geoAvailable, geoLibReady,
       api429Chart, uaTopChart, cacheSrcChart,
       has429, hasUaTop, hasCacheSrc, insightCards, cs, sys,
       loopLagClass, poolClass, queueClass,
@@ -529,6 +583,13 @@ export default {
 .chart-map { height: 460px; }
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 .map-sub { font-size: 12px; color: #999; font-weight: normal; margin-left: 10px; }
+.map-sub--err { color: #f56c6c; }
+/* 库文件状态灯 */
+.geo-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  margin-left: 8px; vertical-align: middle; cursor: help; }
+.geo-dot--ok { background: #52c41a; box-shadow: 0 0 4px #52c41a; }
+.geo-dot--err { background: #f5222d; box-shadow: 0 0 4px #f5222d; }
+.geo-tip { margin-top: 8px; font-size: 12px; color: #f56c6c; }
 .card-label { color: #888; font-size: 13px; margin-bottom: 8px; }
 .card-value { font-size: 26px; font-weight: 600; color: #333; }
 .card-sub { color: #999; font-size: 12px; margin-top: 4px; }

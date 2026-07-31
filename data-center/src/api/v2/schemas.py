@@ -17,6 +17,8 @@ class ApiResult(BaseModel):
 class PageResult(BaseModel):
     total: int
     items: List[Any]
+    # total 是否为估算值（大表跳过精确 COUNT 时为 True，前端可显示"约 N 条"）
+    total_estimated: bool = False
 
 
 # ---------- 认证 ----------
@@ -120,6 +122,8 @@ class UaRuleCreate(BaseModel):
     path_limits: Optional[List[dict]] = None  # [{"path": "...", "maxRequestsPerHour": 50}]
     enabled: bool = True
     sign_group_id: Optional[str] = None  # 绑定的签名密钥组 group_id，空=不启用
+    user_group_id: Optional[str] = None  # 绑定的用户允许名单组 group_id，空=不校验用户名
+    # 实例校验参数已移入 UserAllowPool（brand_mark/obf_key），UA 只需绑定 user_group_id
 
 
 class UaRuleUpdate(BaseModel):
@@ -129,6 +133,7 @@ class UaRuleUpdate(BaseModel):
     path_limits: Optional[List[dict]] = None
     enabled: Optional[bool] = None
     sign_group_id: Optional[str] = None  # 绑定的签名密钥组 group_id，空=不启用
+    user_group_id: Optional[str] = None  # 绑定的用户允许名单组 group_id，空=不校验
 
 
 class UaRuleImport(BaseModel):

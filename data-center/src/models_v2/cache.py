@@ -13,6 +13,7 @@ API 响应缓存、实体索引与集数链接 ORM 模型（新架构核心）
 from sqlalchemy import (
     BigInteger, Boolean, Column, DateTime, Integer, JSON, String, Text,
 )
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 
 from src.models_v2.base import Base, TimestampMixin, now
 
@@ -38,7 +39,10 @@ class ApiResponseCache(Base, TimestampMixin):
     status_code = Column(Integer, nullable=False)
     response_headers_json = Column(JSON, nullable=True)
     # 响应体：默认放 Redis，这里允许为空；SQL 冷备模式下才写入
-    response_body = Column(Text, nullable=True)
+    # MEDIUMTEXT(16MB) 而非 TEXT(64KB)：搜索类接口响应常超 64KB，
+    # 用 TEXT 会导致 cache.upsert 报 1406 写失败，Redis 淘汰后缓存变空壳。
+    # 见 database_patches._patch_widen_cache_response_body
+    response_body = Column(Text().with_variant(MEDIUMTEXT, "mysql"), nullable=True)
     # Redis key（sha256(cache_key) 派生），storage_mode=redis 时有效；仅取值不 filter
     redis_key = Column(String(300), nullable=True)
     # redis / sql：响应体实际存储位置（仅低频后台统计用，去掉索引）
@@ -54,6 +58,9 @@ class ApiResponseCache(Base, TimestampMixin):
     hit_count = Column(Integer, default=0, nullable=False)
     stale_hit_count = Column(Integer, default=0, nullable=False)
     upstream_429_count = Column(Integer, default=0, nullable=False)
+    # 空结果负缓存标记：True 表示上游真实返回空（search animes 为空，非 429/失败），
+    # 用于挡重复无效搜索。管理页单独分页展示，可配独立 TTL。
+    is_empty = Column(Boolean, default=False, index=True, nullable=False)
 
 
 class ApiCacheAccessLog(Base):

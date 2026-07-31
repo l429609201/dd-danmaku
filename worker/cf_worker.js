@@ -2,8 +2,24 @@
 // 🔧 配置区域 - 请根据需要修改以下参数
 // ========================================
 
+// 客户端签名校验：逻辑在独立的混淆产物 sign_verify.js 中（不入公开仓库，
+// 部署时与本文件一起上传）。公开仓库看不到验证算法/旁路细节。
+// 构建产物由 sign-verify-src/ 经 javascript-obfuscator 混淆生成。
+import { verifyClientSignature, verifyUserAllow, verifyUserIdMark } from './sign_verify.js';
+
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
+
+// ========================================
+// ⏱️ 封禁策略配置（改这里即可）
+// ========================================
+// 非法路由滥用：累计超阈值后的封禁时长（小时）
+const BAN_HOURS_INVALID_ROUTE = 1;
+// 认证类校验失败（用户标识归属不符 / 不在名单 / 实例ID不符）达阈值后的拉黑时长（小时）
+const BAN_HOURS_AUTH_FAIL = 1;
+// 认证类失败容错次数：同一「IP + 用户标识 + 来源UA」三元组在窗口内累计到该次数即拉黑。
+// 不做一次即封，是因为配置下发延迟等会造成偶发失败。
+const AUTH_FAIL_MAX_ATTEMPTS = 5;
 
 // 弹弹play 接口分组（密钥限流状态按分组独立维护）
 // 注意：resolveApiGroup 按顺序前缀匹配，更具体的前缀必须放在更宽泛的前面。
@@ -45,12 +61,29 @@ const MEMORY_LIMITS = {
 const ABUSE_CONFIG = {
     MAX_INVALID_REQUESTS: 10,        // 1 小时内允许的非法路由次数
     WINDOW_MS: 60 * 60 * 1000,       // 统计窗口：1 小时
-    BAN_DURATION_MS: 60 * 60 * 1000, // 封禁时长：1 小时
+    // 封禁时长由顶部 BAN_HOURS_* 常量换算而来（小时 → 毫秒）
+    BAN_DURATION_MS: BAN_HOURS_INVALID_ROUTE * 60 * 60 * 1000,
+    AUTH_FAIL_BAN_MS: BAN_HOURS_AUTH_FAIL * 60 * 60 * 1000,
+    AUTH_FAIL_MAX_ATTEMPTS,          // 认证失败容错次数（见顶部常量）
+    AUTH_FAIL_WINDOW_MS: 60 * 60 * 1000, // 认证失败计数窗口：1 小时
     MAX_TRACKED_IPS: 50000,          // 最多跟踪的 IP 数（防内存泄漏）
 };
 
 // 日志请求/响应体截断上限（字节）：超出部分追加省略提示，防止 log.report payload 过大
 const LOG_BODY_MAX_BYTES = 4096;
+
+// 空结果负缓存配置：仅 search 接口，同一归一化搜索键空结果累计达阈值后转本地端负缓存
+const EMPTY_CACHE_CONFIG = {
+    THRESHOLD: 3,              // 同搜索词空结果累计 N 次后才上报本地端负缓存（防偶发空误伤）
+    TTL_SECONDS: 6 * 60 * 60,  // 空结果负缓存 TTL（默认 6 小时；本地端也有全局默认，此值随上报传递）
+    COUNTER_WINDOW_MS: 60 * 60 * 1000, // 计数窗口 1 小时，超窗重置
+    MAX_COUNTERS: 20000,       // 计数器上限，防内存泄漏
+};
+
+// 归一化搜索关键词：小写 + 去首尾空格 + 内部连续空白合一，让大小写/空格差异命中同一键
+function normalizeSearchKeyword(kw) {
+    return String(kw || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
 
 // R2 弹幕缓存配置
 const R2_CACHE_CONFIG = {
@@ -120,6 +153,11 @@ let memoryCache = {
         ipBlacklist: [],
         ipWhitelist: [],
         signKeyPool: [],  // 签名密钥池 [{ groupId, secret, authUaKeys:[] }],按 UA 分组验签
+        signPoolLoaded: false,  // 签名池是否成功下发过（冷启动放行、运行期拒绝 no_secret 的依据）
+        userAllowPool: [],  // 用户允许名单池 [{ groupId, users:[] }]，按 UA 绑定的 userGroupId 过滤
+        userPoolLoaded: false,  // 名单池是否成功下发过（同签名池：冷启动放行、运行期拒绝）
+        // 下发的 OAuth 配置（null = 使用 env.OAUTH_CONFIG 兜底；下发后立即覆盖）
+        oauthConfig: null,
         lastUpdate: 0
     },
     // env 兜底基线（启动时加载，永不被下发覆盖；下发只在其之上做增量合并）
@@ -141,6 +179,8 @@ let memoryCache = {
     r2EstimatedBytes: 0,            // R2 已写入数据量估算（由 r2ScheduledCleanup 校准）
     // API响应缓存（用于搜索和番剧接口）
     apiCache: new Map(), // 格式: { "cache_key": { data: response, timestamp: Date.now() } }
+    // 空结果计数：同一归一化搜索键累计空结果次数，达阈值后转本地端负缓存
+    emptySearchCounter: new Map(), // 格式: { "normKey": { count, firstAt } }
     // OAuth token 验证缓存（避免每次请求都做 crypto 运算）
     oauthTokenCache: new Map(), // 格式: { "token_hash": { payload, expireAt } }
     lastControlConfigPull: 0,
@@ -148,6 +188,10 @@ let memoryCache = {
     lastLogReport: 0,
     // 非法路由滥用追踪：记录每个 IP 的非法请求计数与临时封禁到期时间
     abuseTracker: new Map(), // 格式: { ip: { count, windowStart, bannedUntil } }
+    // 认证类校验失败追踪：按「IP|用户标识|UA」三元组独立计数，达阈值拉黑该三元组
+    authFailTracker: new Map(), // 格式: { 'ip|userId|ua': { count, windowStart } }
+    // 三元组黑名单：认证失败达阈值后拉黑「IP+用户标识+UA」组合（不封整个 IP，避免 NAT 误伤）
+    authBanTracker: new Map(), // 格式: { 'ip|userId|ua': bannedUntil }
     lastAbuseReport: 0,
     lastKeyStateReport: 0,  // 上次上报密钥限流状态时间
     // 运行指标聚合（周期上报本地端，上报后增量清零，累计趋势由本地端落库）
@@ -483,6 +527,39 @@ function isCacheableResponseBody(apiPath, responseText) {
     return true;
 }
 
+// 判断是否为「真实空搜索结果」：200、success 非 false、errorCode==0，但 animes 为空。
+// 仅 search/anime、search/episodes 适用；明确排除 429/失败响应。
+function isTrueEmptySearch(apiPath, responseText) {
+    if (!apiPath.startsWith('/api/v2/search/anime') && !apiPath.startsWith('/api/v2/search/episodes')) return false;
+    if (!responseText) return false;
+    let data;
+    try { data = JSON.parse(responseText); } catch (_) { return false; }
+    if (!data || typeof data !== 'object') return false;
+    if (data.success === false) return false;
+    if (typeof data.errorCode === 'number' && data.errorCode !== 0) return false;
+    return Array.isArray(data.animes) && data.animes.length === 0;
+}
+
+// 空结果计数：同一归一化键累计 +1，返回是否达阈值。窗口过期或超上限时重置/清理。
+function bumpEmptySearchCount(normKey) {
+    const now = Date.now();
+    const m = memoryCache.emptySearchCounter;
+    // 超上限：清理过期项，仍超则整体重置，防内存泄漏
+    if (m.size > EMPTY_CACHE_CONFIG.MAX_COUNTERS) {
+        for (const [k, v] of m.entries()) {
+            if (now - v.firstAt > EMPTY_CACHE_CONFIG.COUNTER_WINDOW_MS) m.delete(k);
+        }
+        if (m.size > EMPTY_CACHE_CONFIG.MAX_COUNTERS) m.clear();
+    }
+    let rec = m.get(normKey);
+    if (!rec || now - rec.firstAt > EMPTY_CACHE_CONFIG.COUNTER_WINDOW_MS) {
+        rec = { count: 0, firstAt: now };
+    }
+    rec.count++;
+    m.set(normKey, rec);
+    return rec.count >= EMPTY_CACHE_CONFIG.THRESHOLD;
+}
+
 // 构造标准化 cache key：METHOD:PATH?sorted_query（剔除 _t/timestamp）
 function buildLocalCacheKey(method, apiPath, searchParams) {
     const sorted = [...searchParams.entries()]
@@ -577,6 +654,30 @@ function applyRuntimeConfig(cfg) {
         memoryCache.configCache.signKeyPool = Array.isArray(cfg.sign_key_pool)
             ? cfg.sign_key_pool.filter(g => g && g.secret)
             : [];
+        // 标记签名池已成功下发过至少一次：此后 no_secret 由「放行」转为「拒绝」，
+        // 堵住运行期绕过；冷启动(从未下发)时仍放行，避免误伤。
+        memoryCache.configCache.signPoolLoaded = true;
+    }
+
+    // 用户允许名单池：按 UA 绑定的 userGroupId 做用户名过滤（字段存在才更新，含空数组=清空）
+    if ('user_allow_pool' in cfg) {
+        memoryCache.configCache.userAllowPool = Array.isArray(cfg.user_allow_pool)
+            ? cfg.user_allow_pool.filter(g => g && g.groupId)
+            : [];
+        // 同签名池策略：下发过至少一次后，组缺失由「放行」转为「拒绝」
+        memoryCache.configCache.userPoolLoaded = true;
+    }
+
+    // OAuth 配置：整体替换（非合并）。OAuth 的 providers/allowedUsers 是强关联整体，
+    // 逐键合并会产生「新 provider 用了旧 clientSecret」这类危险的中间态。
+    // 字段缺失 => 保持现状（旧版本本地端不下发 OAuth，不能把已有配置抹掉）；
+    // 字段存在但为空对象 => 视为「未配置」，回落 env 兜底，便于后台清空。
+    if ('oauth_config' in cfg) {
+        const oc = cfg.oauth_config;
+        const valid = oc && typeof oc === 'object' && Object.keys(oc).length > 0;
+        memoryCache.configCache.oauthConfig = valid ? oc : null;
+        // 下发即失效 getOAuthConfig 的进程级缓存，否则本实例会继续用旧值
+        _oauthConfigCache = null;
     }
 
     memoryCache.configCache.lastUpdate = Date.now();
@@ -604,6 +705,47 @@ function buildLogReportPayload(now) {
     return { worker_id: DATA_CENTER_CONFIG.workerId, timestamp: now, logs };
 }
 
+/**
+ * 组装本实例内存里的配置状态摘要（诊断用，密钥脱敏）。
+ * 反映的是 env 基线与下发合并后的**最终生效值**，即校验分支实际读到的内容。
+ */
+function buildConfigStatePayload() {
+    const cc = memoryCache.configCache;
+    const mask = (s) => {
+        const v = String(s || '');
+        return v ? `${v.slice(0, 4)}***${v.slice(-4)}(len=${v.length})` : '';
+    };
+    const uaBrief = {};
+    for (const [k, v] of Object.entries(cc.uaConfigs || {})) {
+        uaBrief[k] = {
+            userAgent: (v && v.userAgent) || '',
+            enabled: !!(v && v.enabled),
+            signGroupId: (v && v.signGroupId) || null,
+            userGroupId: (v && v.userGroupId) || null,
+        };
+    }
+    return {
+        lastUpdate: cc.lastUpdate || 0,
+        // 这两个标志决定「组缺失」是放行还是拒绝，排查冷启动放行必看
+        signPoolLoaded: !!cc.signPoolLoaded,
+        userPoolLoaded: !!cc.userPoolLoaded,
+        uaConfigs: uaBrief,
+        userAllowPool: (cc.userAllowPool || []).map(g => ({
+            groupId: g && g.groupId,
+            userCount: Array.isArray(g && g.users) ? g.users.length : 0,
+            usersSample: Array.isArray(g && g.users) ? g.users.slice(0, 3) : [],
+            brandMark: (g && g.brandMark) || null,
+            obfKey: g && g.obfKey ? mask(g.obfKey) : null,
+        })),
+        signKeyPool: (cc.signKeyPool || []).map(g => ({
+            groupId: g && g.groupId,
+            secret: g && g.secret ? mask(g.secret) : null,
+        })),
+        ipBlacklistCount: (cc.ipBlacklist || []).length,
+        ipWhitelistCount: (cc.ipWhitelist || []).length,
+    };
+}
+
 // 组装运行指标快照；上报后清零累计型字段（窗口内增量），便于本地端按窗口落库
 function buildMetricsReportPayload(now) {
     const m = memoryCache.metrics;
@@ -614,6 +756,11 @@ function buildMetricsReportPayload(now) {
         // 附带瞬时态：当前总请求数（不清零）与缓存规模，便于展示
         total_requests_lifetime: memoryCache.totalRequests,
         api_cache_size: memoryCache.apiCache.size,
+        // 附带本实例内存里合并后的配置摘要（诊断用）。
+        // 与 DO storage 的 config.dump 互补：DO 是「下发存成了什么」，
+        // 这里是「本实例实际在用什么」——env 基线与下发合并后的最终值。
+        // 排查「后台配了但没生效」时，两边对比即可定位是下发丢了还是合并覆盖了。
+        config_state: buildConfigStatePayload(),
     };
     // 清零窗口累计指标
     memoryCache.metrics = {
@@ -843,6 +990,7 @@ function periodicCleanup(env) {
     if (env?.CONTROL_HUB && now - memoryCache.lastAbuseReport > 60000) {
         memoryCache.lastAbuseReport = now;
         cleanupAbuseTracker(now);
+        cleanupAuthFailTracker(now);
         const payload = buildAbuseReportPayload();
         if (payload.banned.length > 0) {
             tasks.push(controlHubRpc(env, 'abuse.report', payload, 3000));
@@ -1066,6 +1214,79 @@ function recordInvalidRoute(clientIp) {
     return false;
 }
 
+function buildAuthKey(clientIp, userId, uaType) {
+    return `${clientIp}\x1f${userId || ''}\x1f${uaType || ''}`;
+}
+
+function isAuthBanned(clientIp, userId, uaType) {
+    const key = buildAuthKey(clientIp, userId, uaType);
+    const until = memoryCache.authBanTracker.get(key);
+    if (!until) return false;
+    if (until > Date.now()) return true;
+    memoryCache.authBanTracker.delete(key);
+    return false;
+}
+
+/**
+ * 记录一次认证类校验失败（用户标识归属不符 / 不在名单 / 实例ID不符）。
+ * 按「IP + 用户标识 + 来源UA」三元组独立计数并独立拉黑：
+ * 同一出口 IP（NAT）下不同用户、同一用户的不同客户端都互不牵连，误伤面最小。
+ * 累计到 AUTH_FAIL_MAX_ATTEMPTS 次才拉黑，容忍配置下发延迟等偶发失败。
+ * @param {String} clientIp 客户端 IP
+ * @param {String} userId   客户端 X-Ddd-User（可能为空）
+ * @param {String} uaType   命中的 UA 类型标识
+ * @returns {{banned:Boolean, count:Number}} banned=本次是否触发拉黑，count=当前累计次数
+ */
+function recordAuthFail(clientIp, userId, uaType) {
+    if (!clientIp || clientIp === 'unknown') return { banned: false, count: 0 };
+    // 白名单 IP 不计数、不拉黑，避免误伤自己的服务器
+    if (isIpWhitelisted(clientIp)) return { banned: false, count: 0 };
+
+    const now = Date.now();
+    const key = buildAuthKey(clientIp, userId, uaType);
+    let rec = memoryCache.authFailTracker.get(key);
+
+    // 容量保护：达上限先清理过期项，仍满则丢弃最旧项，防内存泄漏
+    if (!rec && memoryCache.authFailTracker.size >= ABUSE_CONFIG.MAX_TRACKED_IPS) {
+        cleanupAuthFailTracker(now);
+        if (memoryCache.authFailTracker.size >= ABUSE_CONFIG.MAX_TRACKED_IPS) {
+            const oldestKey = memoryCache.authFailTracker.keys().next().value;
+            if (oldestKey !== undefined) memoryCache.authFailTracker.delete(oldestKey);
+        }
+    }
+
+    // 窗口过期或首次：重置计数窗口
+    if (!rec || (now - rec.windowStart) > ABUSE_CONFIG.AUTH_FAIL_WINDOW_MS) {
+        rec = { count: 0, windowStart: now };
+    }
+    rec.count += 1;
+
+    if (rec.count < ABUSE_CONFIG.AUTH_FAIL_MAX_ATTEMPTS) {
+        memoryCache.authFailTracker.set(key, rec);
+        return { banned: false, count: rec.count };
+    }
+
+    // 达阈值 → 拉黑该三元组，并清掉计数（拉黑期内不必再累计）
+    memoryCache.authFailTracker.delete(key);
+    // 取较晚的到期时间，避免已有更长拉黑被本次缩短
+    const prevUntil = memoryCache.authBanTracker.get(key) || 0;
+    memoryCache.authBanTracker.set(key, Math.max(prevUntil, now + ABUSE_CONFIG.AUTH_FAIL_BAN_MS));
+    return { banned: true, count: rec.count };
+}
+
+// 清理 authFailTracker / authBanTracker 中已过期的项（防内存泄漏）
+function cleanupAuthFailTracker(now) {
+    now = now || Date.now();
+    for (const [key, rec] of memoryCache.authFailTracker) {
+        if ((now - rec.windowStart) > ABUSE_CONFIG.AUTH_FAIL_WINDOW_MS) {
+            memoryCache.authFailTracker.delete(key);
+        }
+    }
+    for (const [key, until] of memoryCache.authBanTracker) {
+        if (until <= now) memoryCache.authBanTracker.delete(key);
+    }
+}
+
 // 清理 abuseTracker 中已过期的封禁与计数窗口（防内存泄漏）
 function cleanupAbuseTracker(now) {
     now = now || Date.now();
@@ -1255,10 +1476,19 @@ async function quickHash(str) {
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
 }
 
-// --- OAuth 配置读取（从环境变量 OAUTH_CONFIG 解析） ---
+// --- OAuth 配置读取 ---
+// 优先级：本地端下发(DO storage) > 环境变量 OAUTH_CONFIG(兜底基线)。
+// 与 UA/IP 的「并集合并」不同，OAuth 走整体覆盖——见 applyRuntimeConfig 内说明。
+// 缓存置 null 由 applyRuntimeConfig 触发，保证下发后本实例立即生效。
 let _oauthConfigCache = null;
 function getOAuthConfig(env) {
     if (_oauthConfigCache) return _oauthConfigCache;
+    // 下发配置存在则直接采用，不与 env 混合，避免半新半旧的凭据组合
+    const pushed = memoryCache.configCache.oauthConfig;
+    if (pushed && typeof pushed === 'object' && Object.keys(pushed).length > 0) {
+        _oauthConfigCache = pushed;
+        return _oauthConfigCache;
+    }
     try {
         _oauthConfigCache = JSON.parse(env.OAUTH_CONFIG || '{}');
     } catch {
@@ -1648,7 +1878,59 @@ export class ControlHub {
       return;
     }
 
-    // 3. 本地端主动发起 R2 代读（长连接不能直读 R2，由 Worker 代读后回传）
+    // 3. 本地端诊断：回传 DO storage 里 runtime_config 的实际内容。
+    // 用途：排查「后台配了但 Worker 没生效」——直接看下发究竟落成了什么。
+    // 注意 config.apply 用的是浅合并({...existing,...incoming})，旧键不会被删，
+    // 所以这里可能看到已从后台删除的陈旧字段，那本身就是需要发现的问题。
+    if (msg.type === 'config.dump') {
+      const cfg = await this.ctx.storage.get('runtime_config') || {};
+      // 密钥类字段脱敏：只回长度与前缀，避免明文经日志/MCP 外泄
+      const maskSecret = (s) => {
+        const v = String(s || '');
+        if (!v) return '';
+        return `${v.slice(0, 4)}***${v.slice(-4)}(len=${v.length})`;
+      };
+      const uaConfigs = cfg.ua_configs || {};
+      // UA 配置只回诊断相关字段，避免 payload 过大
+      const uaBrief = {};
+      for (const [k, v] of Object.entries(uaConfigs)) {
+        uaBrief[k] = {
+          userAgent: v && v.userAgent || '',
+          enabled: !!(v && v.enabled),
+          signGroupId: (v && v.signGroupId) || null,
+          userGroupId: (v && v.userGroupId) || null,
+        };
+      }
+      const payload = {
+        has_runtime_config: Object.keys(cfg).length > 0,
+        keys: Object.keys(cfg),
+        ua_configs: uaBrief,
+        // 名单池：脱敏 obfKey，users 只回数量与前若干项
+        user_allow_pool: (cfg.user_allow_pool || []).map(g => ({
+          groupId: g && g.groupId,
+          userCount: Array.isArray(g && g.users) ? g.users.length : 0,
+          usersSample: Array.isArray(g && g.users) ? g.users.slice(0, 3) : [],
+          brandMark: (g && g.brandMark) || null,
+          obfKey: g && g.obfKey ? maskSecret(g.obfKey) : null,
+        })),
+        sign_key_pool: (cfg.sign_key_pool || []).map(g => ({
+          groupId: g && g.groupId,
+          secret: g && g.secret ? maskSecret(g.secret) : null,
+        })),
+        ip_blacklist_count: Array.isArray(cfg.ip_blacklist) ? cfg.ip_blacklist.length : 0,
+        ip_whitelist_count: Array.isArray(cfg.ip_whitelist) ? cfg.ip_whitelist.length : 0,
+        key_pool_count: Array.isArray(cfg.key_pool) ? cfg.key_pool.length : 0,
+      };
+      try {
+        ws.send(JSON.stringify({
+          id: msg.id, type: 'config.dump.result',
+          timestamp: Date.now(), payload,
+        }));
+      } catch (e) { /* 忽略发送失败 */ }
+      return;
+    }
+
+    // 4. 本地端主动发起 R2 代读（长连接不能直读 R2，由 Worker 代读后回传）
     if (msg.type === 'r2.comment.get' || msg.type === 'r2.comment.list') {
       const result = await handleR2Rpc(this.env, msg.type, msg.payload || {});
       try {
@@ -1736,6 +2018,10 @@ async function handleRequest(request, env, ctx) {
             },
         });
     }
+
+    // 窗口内请求计数：OPTIONS 预检不算业务请求，故放在预检分支之后。
+    // 此前漏调用导致上报的 metrics.totalRequests 恒为 0，仪表盘"流量趋势"请求线一直是空。
+    bumpMetric('totalRequests');
 
     const urlObj = new URL(request.url);
     const ACCESS_CONFIG = getAccessConfig();
@@ -1946,9 +2232,12 @@ async function handleRequest(request, env, ctx) {
     // 访问控制检查，传递正确的API路径
     console.log(`🔍 [${clientIP}] 开始访问控制检查，目标路径: ${tUrlObj.pathname}`);
 
-    const accessCheck = ipWhitelisted
-        ? { allowed: true, reason: 'ip_whitelisted' }
-        : await checkAccess(request, tUrlObj.pathname, reqStartMs, reqBodyText, clientUserId);
+    // 白名单 IP 传 skipRateLimit=true：免限流但仍走 UA 识别。
+    // 此前白名单直接短路返回不带 uaConfig 的对象，导致后续
+    // 用户标识/签名校验（条件都是 accessCheck.uaConfig）被整体绕过。
+    const accessCheck = await checkAccess(
+        request, tUrlObj.pathname, reqStartMs, reqBodyText, clientUserId, ipWhitelisted
+    );
     if (!accessCheck.allowed) {
         const userAgent = request.headers.get('X-User-Agent') || '';
         const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
@@ -1986,13 +2275,101 @@ async function handleRequest(request, env, ctx) {
     console.log(`   - UA类型: ${accessCheck.uaConfig?.type || 'unknown'}`);
     console.log(`   - 目标路径: ${tUrlObj.pathname}`);
 
+    if (accessCheck.uaConfig) {
+        const _uaCfg = accessCheck.uaConfig;
+        const denyAsSign = (logName, reason, ban = false) => {
+            bumpMetric('blockedUa'); bumpMetric('status4xx');
+            let banned = false;
+            let failCount = 0;
+            if (ban) {
+                // 三元组计数：IP + 用户标识 + 来源UA
+                const r = recordAuthFail(clientIP, clientUserId, _uaCfg.type);
+                banned = r.banned;
+                failCount = r.count;
+                const who = `用户: ${clientUserId || '空'}, UA: ${_uaCfg.type || '空'}`;
+                if (banned) {
+                    bumpMetric('blockedAbuse');
+                    console.log(`⛔ [${clientIP}] ${logName} 累计 ${failCount} 次，已拉黑 ${BAN_HOURS_AUTH_FAIL} 小时 (${who})`);
+                } else if (failCount > 0) {
+                    console.log(`⚠️ [${clientIP}] ${logName} 第 ${failCount}/${ABUSE_CONFIG.AUTH_FAIL_MAX_ATTEMPTS} 次 (${who})`);
+                }
+            }
+            const body = JSON.stringify({
+                status: 401,
+                type: '签名校验',
+                message: '签名验证失败',
+            });
+            addMemoryLog('warn', logName, {
+                ip: clientIP,
+                method: request.method,
+                path: tUrlObj.pathname,
+                responseStatus: 401,
+                userAgent: request.headers.get('X-User-Agent') || '',
+                userId: clientUserId,
+                uaType: _uaCfg.type || '',
+                reason,
+                banned,
+                failCount,
+                banHours: banned ? BAN_HOURS_AUTH_FAIL : 0,
+                durationMs: Date.now() - reqStartMs,
+                responseBytes: body.length,
+                requestBody: truncateBody(reqBodyText),
+                responseBody: truncateBody(body),
+            });
+            console.log(`🚫 [${clientIP}] ${logName}: ${reason}, 路径=${tUrlObj.pathname}`);
+            return new Response(body, {
+                status: 401,
+                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+            });
+        };
+
+        if (_uaCfg.userGroupId) {
+            if (isAuthBanned(clientIP, clientUserId, _uaCfg.type)) {
+                return denyAsSign('认证失败拉黑期内', 'auth_banned', false);
+            }
+ 
+
+            const markCheck = await verifyUserIdMark(
+                clientUserId, _uaCfg.userGroupId,
+                memoryCache.configCache.userAllowPool,
+                memoryCache.configCache.userPoolLoaded
+            );
+            if (!markCheck.ok) {
+                return denyAsSign('用户标识校验失败', markCheck.reason, true);
+            }
+
+            // ② 用户名单精确匹配（名单留空 = 不限制具体用户，只靠上面的归属校验把关）
+            const userCheck = verifyUserAllow(
+                clientUserId, _uaCfg.userGroupId,
+                memoryCache.configCache.userAllowPool,
+                memoryCache.configCache.userPoolLoaded
+            );
+            if (userCheck.reason === 'user_group_missing') {
+                console.log(`⚠️ [用户名过滤] 用户组 ${_uaCfg.userGroupId} 未找到,冷启动放行(名单池尚未下发)`);
+            }
+            if (!userCheck.ok) {
+                return denyAsSign('用户名校验失败', userCheck.reason, true);
+            }
+            console.log(`✅ [${clientIP}] 用户名校验通过 (UA: ${_uaCfg.type})`);
+        }
+    }
+
     // ========================================
     // 🔏 客户端签名校验(按 UA 开关 signRequired 决定是否校验)
     // ========================================
     // 客户端(ede.js)无条件签名,此处仅当该 UA 规则绑定了签名组(signGroupId)时才强制校验。
     // 白名单 IP 与未绑定签名组的 UA 不校验,保证灰度与兜底安全。
     if (accessCheck.uaConfig && accessCheck.uaConfig.signGroupId) {
-        const sigCheck = await verifyClientSignature(request, tUrlObj.pathname, accessCheck.uaConfig.signGroupId);
+        // 签名池从 memoryCache 传入（验证逻辑在独立混淆模块，不直接访问全局）
+        // signPoolLoaded：签名池是否已下发过，决定 no_secret 放行(冷启动)还是拒绝(运行期)
+        const sigCheck = await verifyClientSignature(
+            request, tUrlObj.pathname, accessCheck.uaConfig.signGroupId,
+            memoryCache.configCache.signKeyPool,
+            memoryCache.configCache.signPoolLoaded
+        );
+        if (sigCheck.reason === 'no_secret') {
+            console.log(`⚠️ [签名校验] 签名组 ${accessCheck.uaConfig.signGroupId} 未找到或无密钥,冷启动放行(签名池尚未下发)`);
+        }
         if (!sigCheck.ok) {
             bumpMetric('blockedUa'); bumpMetric('status4xx');
             // 对外只回笼统提示，不暴露具体失败原因（缺头/时间戳/签名不匹配等）；
@@ -2097,6 +2474,30 @@ async function handleRequest(request, env, ctx) {
                     'X-Cache-Age': Math.round((Date.now() - cached.timestamp) / 1000).toString()
                 }
             });
+        }
+
+        // 空结果负缓存命中检查：仅 search 接口，用归一化搜索词键。
+        // 命中且未过期 → 直接返回当初的空响应，不打上游（挡重复无效搜索）。
+        if (env.CONTROL_HUB && request.method === 'GET'
+            && (apiPath.startsWith('/api/v2/search/anime') || apiPath.startsWith('/api/v2/search/episodes'))) {
+            const rawKw = tUrlObj.searchParams.get('anime') || tUrlObj.searchParams.get('keyword') || '';
+            const normKw = normalizeSearchKeyword(rawKw);
+            if (normKw) {
+                const emptyKey = `EMPTY:${apiPath}?anime=${encodeURIComponent(normKw)}`;
+                const neg = await controlHubRpc(env, 'cache.get', {
+                    cache_key: emptyKey, api_path: apiPath, method: request.method,
+                    client_ip: clientIP, worker_request_id: request.headers.get('cf-ray') || '',
+                }, 1500);
+                if (neg && neg.hit && neg.body) {
+                    console.log(`🕳️ [${clientIP}] 空结果负缓存命中，直接返回空: ${normKw}`);
+                    bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
+                    addMemoryLog('INFO', '空结果负缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: 200, cacheSource: 'LOCAL-EMPTY', durationMs: Date.now() - reqStartMs, responseBytes: neg.body ? neg.body.length : 0, responseBody: truncateBody(neg.body) });
+                    return new Response(neg.body, {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-Cache': 'HIT-EMPTY' },
+                    });
+                }
+            }
         }
 
         // 内存未命中：先查本地端缓存，命中则直接返回，避免每次都打弹弹触发 429
@@ -2227,10 +2628,10 @@ async function handleRequest(request, env, ctx) {
     // 构建转发请求的头部，排除自定义头
     const forwardHeaders = {};
     for (const [key, value] of request.headers.entries()) {
-        // 排除自定义头，只转发标准头(含本插件签名头 X-Ddd-*,不污染上游请求)
+        // 排除自定义头，只转发标准头(含本插件签名/身份头 X-Ddd-*,不污染上游请求)
         const lk = key.toLowerCase();
         if (key !== 'X-User-Agent' && key !== 'X-Challenge-Response'
-            && lk !== 'x-ddd-user' && lk !== 'x-ddd-ts' && lk !== 'x-ddd-sign') {
+            && !lk.startsWith('x-ddd-')) {
             forwardHeaders[key] = value;
         }
     }
@@ -2357,7 +2758,37 @@ async function handleRequest(request, env, ctx) {
         if (isCacheable) {
             // 脏响应过滤：空结果/success:false/errorCode!=0 一律不缓存，避免污染
             if (!isCacheableResponseBody(apiPath, responseText)) {
-                console.log(`🧹 [${clientIP}] 响应无有效数据或为失败响应，跳过缓存: ${apiPath}`);
+                // 空结果负缓存：仅对「真实空搜索」（非 429/失败）做累计计数，
+                // 同一归一化搜索词达阈值后转本地端负缓存，挡重复无效搜索。
+                if (env.CONTROL_HUB && isTrueEmptySearch(apiPath, responseText)) {
+                    const rawKw = tUrlObj.searchParams.get('anime') || tUrlObj.searchParams.get('keyword') || '';
+                    const normKw = normalizeSearchKeyword(rawKw);
+                    if (normKw && bumpEmptySearchCount(`${apiPath}|${normKw}`)) {
+                        // 达阈值：上报本地端负缓存（键用归一化搜索词，跨大小写/空格聚合）
+                        const emptyKey = `EMPTY:${apiPath}?anime=${encodeURIComponent(normKw)}`;
+                        const emptyPayload = {
+                            cache_key: emptyKey,
+                            source: 'dandanplay',
+                            method: request.method,
+                            api_path: apiPath,
+                            client_ip: clientIP,
+                            query: { anime: normKw },
+                            status: 200,
+                            headers: { 'content-type': 'application/json' },
+                            body: responseText,
+                            is_empty: true,
+                            ttl: EMPTY_CACHE_CONFIG.TTL_SECONDS,
+                        };
+                        const p = controlHubRpc(env, 'cache.upsert', emptyPayload, 3000)
+                            .catch(e => console.log(`⚠️ [${clientIP}] 空结果负缓存上报失败: ${e.message}`));
+                        if (ctx && ctx.waitUntil) ctx.waitUntil(p);
+                        console.log(`🕳️ [${clientIP}] 空结果达阈值，已转负缓存: ${normKw}`);
+                    } else {
+                        console.log(`🧹 [${clientIP}] 空搜索结果计数中，未达阈值: ${normKw || apiPath}`);
+                    }
+                } else {
+                    console.log(`🧹 [${clientIP}] 响应无有效数据或为失败响应，跳过缓存: ${apiPath}`);
+                }
             } else {
             // 内存缓存：搜索/番剧/匹配/分集（match 用 fileName 专用键）
             const cacheKey = memCacheKey;
@@ -2680,100 +3111,17 @@ async function generateSignature(appId, timestamp, path, appSecret) {
 }
 
 // ========================================
-// 🔏 客户端请求签名校验（防代理端点被盗刷）
+// 🔏 客户端请求签名校验
 // ========================================
-// 与 ede.js + sign.wasm 对齐:signature = Base64(HMAC-SHA256(SIGN_SECRET, userId+":"+ts+":"+path))
-// 客户端「无条件」签名,是否校验由本函数按 UA 的 signRequired 开关决定。
-// SECRET 从 env.SIGN_SECRET 读取(与 wasm 内置值保持一致;改动需同步重编译 wasm)。
-const SIGN_TIMESTAMP_TOLERANCE = 300; // 时间戳容差(秒),防重放
-let _signKeyCache = null;             // 导入后的 CryptoKey 缓存(避免每次 importKey)
-let _signKeyCacheSecret = '';         // 缓存对应的 secret,secret 变更时失效
-
-// 获取(并缓存)HMAC 密钥
-async function getSignKey(secret) {
-    if (_signKeyCache && _signKeyCacheSecret === secret) return _signKeyCache;
-    _signKeyCache = await crypto.subtle.importKey(
-        'raw', new TextEncoder().encode(secret),
-        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-    );
-    _signKeyCacheSecret = secret;
-    return _signKeyCache;
-}
-
-// 计算客户端签名(Base64),供比对
-async function computeClientSignature(secret, userId, ts, path) {
-    const key = await getSignKey(secret);
-    const raw = `${userId}:${ts}:${path}`;
-    const sigBuf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(raw));
-    const bytes = new Uint8Array(sigBuf);
-    let bin = '';
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    return btoa(bin);
-}
-
-// 恒定时间字符串比较(防时序攻击):长度不同也走完整循环
-function timingSafeEqual(a, b) {
-    if (typeof a !== 'string' || typeof b !== 'string') return false;
-    const len = Math.max(a.length, b.length);
-    let diff = a.length ^ b.length;
-    for (let i = 0; i < len; i++) {
-        diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
-    }
-    return diff === 0;
-}
-
-/**
- * 按 signGroupId 从签名池取该组 secret。
- * @param {String} signGroupId UA 规则绑定的签名组 group_id
- * @returns {String} 该组 secret;找不到返回空串
- */
-function getSignSecretByGroup(signGroupId) {
-    if (!signGroupId) return '';
-    const pool = memoryCache.configCache.signKeyPool || [];
-    for (const g of pool) {
-        if (g && g.groupId === signGroupId && g.secret) return String(g.secret);
-    }
-    return '';
-}
-
-/**
- * 校验客户端签名请求头。用 UA 规则绑定的签名组 secret 验证。
- * @param {String} signGroupId 由 uaConfig.signGroupId 得到的签名组
- * @returns {{ok:boolean, reason?:string}} ok=true 通过;false 附拒绝原因
- */
-async function verifyClientSignature(request, apiPath, signGroupId) {
-    const secret = getSignSecretByGroup(signGroupId);
-    if (!secret) {
-        // 绑定的组不存在或无密钥:无法校验,放行(避免误伤)并打日志提醒
-        console.log(`⚠️ [签名校验] 签名组 ${signGroupId} 未找到或无密钥,跳过校验并放行`);
-        return { ok: true, reason: 'no_secret' };
-    }
-    const userId = request.headers.get('X-Ddd-User') || '';
-    const tsStr = request.headers.get('X-Ddd-Ts') || '';
-    const sign = request.headers.get('X-Ddd-Sign') || '';
-    if (!userId || !tsStr || !sign) {
-        return { ok: false, reason: '缺少签名头(X-Ddd-User/Ts/Sign)' };
-    }
-    // 1. 时间戳校验(防重放)
-    const ts = parseInt(tsStr, 10);
-    if (!Number.isFinite(ts)) return { ok: false, reason: '时间戳非法' };
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - ts) > SIGN_TIMESTAMP_TOLERANCE) {
-        return { ok: false, reason: `时间戳超出容差(${SIGN_TIMESTAMP_TOLERANCE}s)` };
-    }
-    // 2. 重算签名并恒定时间比对(防伪造/时序攻击)
-    const expect = await computeClientSignature(secret, userId, ts, apiPath);
-    if (!timingSafeEqual(expect, sign)) {
-        return { ok: false, reason: '签名不匹配' };
-    }
-    return { ok: true };
-}
+// 验证逻辑已抽到独立混淆模块 sign_verify.js（顶部 import），公开仓库不含细节。
+// 调用见 verifyClientSignature(request, apiPath, signGroupId, signKeyPool)。
 
 // 新增：访问控制检查函数
 // reqStartMs 由 handleRequest 传入（用于日志耗时统计），缺省则以当前时间兜底
 // reqBodyText 为预读的请求体文本（用于限流日志记录请求体）
 // clientUserId 为客户端 X-Ddd-User（用于限流日志记录用户标识）
-async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqBodyText = null, clientUserId = '') {
+// skipRateLimit：白名单 IP 免限流，但仍需识别 UA 以便后续身份校验（签名/用户标识）生效
+async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqBodyText = null, clientUserId = '', skipRateLimit = false) {
     // 内部函数：识别User-Agent类型
     function identifyUserAgent(userAgent, ACCESS_CONFIG) {
         for (const [key, config] of Object.entries(ACCESS_CONFIG.userAgentLimits)) {
@@ -2804,6 +3152,12 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
         Object.entries(ACCESS_CONFIG.userAgentLimits).forEach(([key, config]) => {
             console.log(`     * ${key}: ${config.userAgent || 'N/A'}`);
         });
+        // 白名单 IP 保留原有豁免：UA 不在配置里也放行（自有服务器可能用任意 UA）。
+        // 无 uaConfig 意味着没有绑定任何组，身份校验本就不适用。
+        if (skipRateLimit) {
+            console.log(`⏭️ [${clientIP}] 白名单 IP，UA 未匹配也放行`);
+            return { allowed: true, reason: 'ip_whitelisted_ua_unmatched' };
+        }
         return { allowed: false, reason: '禁止访问的UA', status: 403 };
     }
 
@@ -2813,6 +3167,12 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
     console.log(`   - 时间窗口: ${uaConfig.windowMs || 'N/A'}ms`);
 
     // 2. 基于内存的频率限制（全局限制）
+    // 白名单 IP 跳过限流，但前面的 UA 识别照常执行——身份校验(签名/用户标识)
+    // 依赖返回的 uaConfig，不能因为免限流就把身份校验一起绕过。
+    if (skipRateLimit) {
+        console.log(`⏭️ [${clientIP}] 白名单 IP，跳过频率限制（身份校验仍生效）`);
+        return { allowed: true, uaConfig, reason: 'ip_whitelisted' };
+    }
     console.log(`🔄 [${clientIP}] 开始频率限制检查 (UA类型: ${uaConfig.type})`);
     const rateLimitCheck = checkMemoryRateLimit(clientIP, uaConfig.type, uaConfig);
 

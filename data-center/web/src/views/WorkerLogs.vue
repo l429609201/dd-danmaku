@@ -21,18 +21,21 @@
     <el-card shadow="never">
       <el-table ref="tableRef" :data="items" size="small" v-loading="loading" empty-text="暂无日志"
                 :row-class-name="rowClass"
-                row-key="_uid">
-        <!-- 展开行：显示请求体 & 响应体，只在有内容时才渲染 -->
+                row-key="_uid"
+                @expand-change="onExpand">
+        <!-- 展开行：显示请求体 & 响应体。
+             列表接口已不返回大字段，首次展开时按需拉 /worker-logs/detail/{id} -->
         <el-table-column type="expand">
           <template #default="{ row }">
-            <div v-if="row.request_body || row.response_body" class="body-expand">
+            <div v-if="row._bodyLoading" class="body-empty">加载请求/响应体…</div>
+            <div v-else-if="row.request_body || row.response_body" class="body-expand">
               <div v-if="row.request_body" class="body-block">
                 <span class="body-label">请求体</span>
-                <pre class="body-pre">{{ renderBody(row.request_body) }}</pre>
+                <pre class="body-pre" :key="(prettyJson ? 'p' : 'r') + '-req'">{{ renderBody(row.request_body) }}</pre>
               </div>
               <div v-if="row.response_body" class="body-block">
                 <span class="body-label">响应体</span>
-                <pre class="body-pre">{{ renderBody(row.response_body) }}</pre>
+                <pre class="body-pre" :key="(prettyJson ? 'p' : 'r') + '-resp'">{{ renderBody(row.response_body) }}</pre>
               </div>
             </div>
             <div v-else class="body-empty">该条日志无请求/响应体（拦截类早退路径）</div>
@@ -62,7 +65,7 @@
           <template #default="{ row }">{{ row.method || '—' }}</template>
         </el-table-column>
         <el-table-column label="路径" min-width="200">
-          <template #default="{ row }"><span class="app-mono">{{ row.path || '—' }}</span></template>
+          <template #default="{ row }"><span class="app-mono">{{ decodeText(row.path) }}</span></template>
         </el-table-column>
         <el-table-column prop="status" label="状态" width="80">
           <template #default="{ row }">{{ row.status || '—' }}</template>
@@ -125,6 +128,8 @@ export default {
     // 统一拉取某一页，append=false 时替换（首次/查询），true 时追加（滚动加载）
     const fetchPage = async (targetPage, append) => {
       const q = new URLSearchParams({ page: targetPage, page_size: PAGE_SIZE })
+      // 本页用无限滚动、不展示总条数，故跳过后端 COUNT（大表上 COUNT 是主要耗时）
+      q.set('with_total', 'false')
       if (level.value) q.set('level', level.value)
       if (keyword.value) q.set('keyword', keyword.value)
       if (ipSearch.value) q.set('ip', ipSearch.value)
@@ -139,6 +144,33 @@ export default {
       page.value = targetPage
       // 本页数量不足 PAGE_SIZE 说明已到末页
       hasMore.value = mapped.length >= PAGE_SIZE
+    }
+
+    // 展开行时按需拉取请求/响应体：列表接口已不返回这两个大字段，
+    // 避免单页响应几 MB 拖慢加载。同一行只拉一次（_bodyLoaded 标记）。
+    const onExpand = async (row, expanded) => {
+      if (!expanded || !row || !row.id) return
+      if (row._bodyLoaded || row._bodyLoading) return
+      if (!row.has_body) { row._bodyLoaded = true; return }
+      row._bodyLoading = true
+      try {
+        const res = await apiV2(`/worker-logs/detail/${row.id}`)
+        const d = res.data || res || {}
+        row.request_body = d.request_body || ''
+        row.response_body = d.response_body || ''
+        row._bodyLoaded = true
+      } catch (e) {
+        ElMessage.error(`请求/响应体加载失败: ${e.message}`)
+      } finally {
+        row._bodyLoading = false
+      }
+    }
+
+    // 安全 URL 解码：path/cache_key 里的中文被 Worker encodeURIComponent 编码过，
+    // 展示时解码成可读文本；非法编码序列会抛异常，此时回退原值。
+    const decodeText = (s) => {
+      if (!s) return '—'
+      try { return decodeURIComponent(String(s)) } catch (_) { return String(s) }
     }
 
     // 查询/刷新：重置到第一页
@@ -157,6 +189,18 @@ export default {
       try { await fetchPage(page.value + 1, true) }
       catch (e) { ElMessage.error(e.message) }
       finally { loadingMore.value = false }
+    }
+
+    // 客户端过滤：SSE 是后端无差别广播所有新日志，前端必须自己过滤，
+    // 语义与后端 like '%kw%' 对齐（大小写不敏感的包含匹配）。
+    const matchFilter = (item) => {
+      if (level.value && String(item.level || '').toUpperCase() !== level.value.toUpperCase()) return false
+      const inc = (val, kw) => String(val || '').toLowerCase().includes(kw.toLowerCase())
+      if (keyword.value && !inc(item.path, keyword.value)) return false
+      if (ipSearch.value && !inc(item.client_ip, ipSearch.value)) return false
+      if (uaSearch.value && !inc(item.ua_type, uaSearch.value)) return false
+      if (userIdSearch.value && !inc(item.client_user_id, userIdSearch.value)) return false
+      return true
     }
 
     // fetch 流式读取 SSE（可携带 Authorization 头，EventSource 不支持自定义头）
@@ -180,9 +224,14 @@ export default {
             if (!line) continue
             try {
               const item = JSON.parse(line.slice(6))
+              // 客户端过滤：不匹配当前搜索条件的实时日志直接跳过，与历史查询保持一致
+              if (!matchFilter(item)) continue
               // SSE 推送无数据库 id，客户端生成唯一 _uid 避免 el-table 全部行共用同一 key
               item._uid = `sse-${Date.now()}-${Math.random().toString(36).slice(2)}`
               item._live = true
+              // 实时流本身已带 body，无需再走详情接口
+              item._bodyLoaded = true
+              item.has_body = !!(item.request_body || item.response_body)
               items.value.unshift(item)
               if (items.value.length > 200) items.value.pop()
             } catch { /* 忽略心跳 */ }
@@ -201,6 +250,7 @@ export default {
     // 缓存来源标签色：命中类绿色、MISS 灰、限流红
     const sourceType = (s) => {
       if (!s) return 'info'
+      if (s === 'LOCAL-EMPTY') return 'info'  // 空结果负缓存：中性灰
       if (s.indexOf('429') >= 0 || s.indexOf('STALE') >= 0) return 'warning'
       if (s === 'MISS' || s === 'UPSTREAM-429') return s === 'MISS' ? 'info' : 'danger'
       return 'success'
@@ -211,6 +261,7 @@ export default {
       'LOCAL': '本地缓存',
       'LOCAL-STALE': '本地缓存(过期)',
       'LOCAL-COMMENT': '本地弹幕兜底',
+      'LOCAL-EMPTY': '空结果负缓存',
       'R2': 'R2缓存',
       'MISS': '未命中(回源)',
       'UPSTREAM-429': '上游限流',
@@ -264,7 +315,7 @@ export default {
       window.removeEventListener('scroll', onScroll)
     })
     return { items, tableRef, level, keyword, ipSearch, uaSearch, userIdSearch, loading, loadingMore, hasMore, streaming, prettyJson, expandedRows, Search,
-      reload, loadMore, toggleStream, levelType, sourceType, sourceLabel, rowClass, fmtBytes, fmtJson, renderBody, fmt }
+      reload, loadMore, toggleStream, levelType, sourceType, sourceLabel, rowClass, fmtBytes, fmtJson, renderBody, fmt, onExpand, decodeText }
   }
 }
 </script>

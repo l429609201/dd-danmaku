@@ -9,6 +9,7 @@ IP 地理定位服务（请求地图城市级散点）
 """
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func
@@ -29,6 +30,10 @@ class GeoIpService:
         self._reader = None
         self._loaded = False
         self._available = False
+        # 聚合结果内存缓存：地理分布低频变化，缓存 5 分钟避免每次全量重算
+        self._result_cache = None
+        self._result_cache_at = 0.0
+        self._RESULT_TTL = 300  # 秒
 
     def _ensure_reader(self):
         """懒加载 mmdb reader，只尝试一次"""
@@ -63,18 +68,26 @@ class GeoIpService:
             # 私有 IP / 未收录 / 解析异常都跳过
             return None
 
-    def aggregate_points(self, limit_ips: int = 200000,
+    def aggregate_points(self, limit_ips: int = 5000,
                          top_points: int = 500) -> Dict[str, Any]:
         """解析 Top IP 聚合为散点：按经纬度网格合并请求量。
 
-        解析结果持久化到 ip_geo_cache 表：已解析的 IP（含解析失败的）直接读表，
-        只对未入表的「新 IP」做 GeoLite2 lookup 并写回，避免每次全量重算。
+        性能优化：
+        - 结果内存缓存 TTL 5 分钟，命中直接返回，避免每次全量重算
+        - 只取 Top limit_ips（默认 5000，散点图足够），不再全量 20 万
+        - IpGeoCache 分批 IN 查询（500/批），避免超大 IN 触发 SQLite 参数上限
+        - 已解析 IP（含失败记录）直接读表，仅未入表新 IP 才 lookup 并批量写回
 
         返回 { available, points:[{name,value:[lng,lat,count]}], total_ips, resolved }
         """
         self._ensure_reader()
         if not self._available:
             return {"available": False, "points": [], "total_ips": 0, "resolved": 0}
+
+        # 结果内存缓存命中：5 分钟内重复打开直接返回，0 DB / 0 解析
+        if self._result_cache is not None and \
+                time.time() - self._result_cache_at < self._RESULT_TTL:
+            return self._result_cache
 
         from src.models_v2 import IpGeoCache
         db = get_db_sync()
@@ -91,12 +104,16 @@ class GeoIpService:
             if not ip_counts:
                 return {"available": True, "points": [], "total_ips": 0, "resolved": 0}
 
-            # 1. 读已缓存的解析结果（含失败记录，避免重复 lookup）
-            cached = {c.ip: c for c in db.query(IpGeoCache).filter(
-                IpGeoCache.ip.in_(list(ip_counts.keys()))).all()}
+            # 1. 分批读已缓存的解析结果（500/批，避免超大 IN 触发参数上限）
+            cached: Dict[str, Any] = {}
+            all_ips = list(ip_counts.keys())
+            for i in range(0, len(all_ips), 500):
+                batch = all_ips[i:i + 500]
+                for c in db.query(IpGeoCache).filter(IpGeoCache.ip.in_(batch)).all():
+                    cached[c.ip] = c
 
-            # 2. 对未缓存的新 IP 解析并写回表（增量）
-            new_count = 0
+            # 2. 对未缓存的新 IP 解析并批量写回表（增量）
+            new_recs = []
             for ip in ip_counts:
                 if ip in cached:
                     continue
@@ -112,10 +129,10 @@ class GeoIpService:
                 )
                 db.merge(rec)
                 cached[ip] = rec
-                new_count += 1
-            if new_count:
+                new_recs.append(ip)
+            if new_recs:
                 db.commit()
-                logger.info(f"🌍 IP 地理解析增量 {new_count} 个新 IP（总 {len(ip_counts)}）")
+                logger.info(f"🌍 IP 地理解析增量 {len(new_recs)} 个新 IP（总 {len(ip_counts)}）")
         finally:
             db.close()
 
@@ -138,7 +155,7 @@ class GeoIpService:
             agg[key]["count"] += cnt
 
         points = sorted(agg.values(), key=lambda x: x["count"], reverse=True)[:top_points]
-        return {
+        result = {
             "available": True,
             "points": [{
                 "name": p["name"], "country": p["country"],
@@ -147,6 +164,10 @@ class GeoIpService:
             "total_ips": len(ip_counts),
             "resolved": resolved,
         }
+        # 写入内存缓存，TTL 内后续请求直接返回
+        self._result_cache = result
+        self._result_cache_at = time.time()
+        return result
 
 
 geoip_service = GeoIpService()

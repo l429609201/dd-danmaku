@@ -1,12 +1,14 @@
 """
 缓存查询管理：响应缓存、访问日志、刷新任务
 """
+import asyncio
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from src.api.v2.deps import get_current_user, require_operator
+from src.api.v2.pagination import build_cache_key, compute_total, invalidate_total_cache
 from src.api.v2.schemas import ApiResult, PageResult
 from src.database import get_db_sync
 from src.models_v2 import (
@@ -33,6 +35,7 @@ def _cache_brief(row: ApiResponseCache) -> dict:
         "hit_count": row.hit_count, "stale_hit_count": row.stale_hit_count,
         "upstream_429_count": row.upstream_429_count,
         "refresh_pending": row.refresh_pending,
+        "is_empty": row.is_empty,
     }
 
 
@@ -64,14 +67,28 @@ def cache_stats(_: LocalUser = Depends(get_current_user)):
 
 
 @router.get("/responses")
-def list_responses(
+async def list_responses(
     api_path: Optional[str] = None, keyword: Optional[str] = None,
     client_ip: Optional[str] = None,
     refresh_pending: Optional[bool] = None,
+    is_empty: Optional[bool] = None,
+    with_total: bool = True,
     page: int = 1, page_size: int = Query(20, le=100),
     _: LocalUser = Depends(get_current_user),
 ):
-    """响应缓存列表"""
+    """响应缓存列表（is_empty=true 只看空结果负缓存）
+
+    total 走截断 COUNT + 短 TTL 缓存；整体放线程池避免阻塞事件循环。
+    """
+    return await asyncio.to_thread(
+        _query_responses, api_path, keyword, client_ip,
+        refresh_pending, is_empty, with_total, page, page_size,
+    )
+
+
+def _query_responses(api_path, keyword, client_ip, refresh_pending,
+                     is_empty, with_total, page, page_size) -> PageResult:
+    """响应缓存分页查询（同步，供线程池调用）"""
     db = get_db_sync()
     try:
         q = db.query(ApiResponseCache)
@@ -83,10 +100,18 @@ def list_responses(
             q = q.filter(ApiResponseCache.client_ip.like(f"%{client_ip}%"))
         if refresh_pending is not None:
             q = q.filter(ApiResponseCache.refresh_pending == refresh_pending)
-        total = q.count()
+        # 空结果分页：is_empty 显式传 true/false 时过滤；不传则全部
+        if is_empty is not None:
+            q = q.filter(ApiResponseCache.is_empty == is_empty)
+
+        ck = build_cache_key("api_cache", api_path, keyword, client_ip,
+                             refresh_pending, is_empty)
+        total, estimated = compute_total(db, q, ck, with_total)
+
         rows = q.order_by(ApiResponseCache.fetched_at.desc()) \
                 .offset((page - 1) * page_size).limit(page_size).all()
-        return PageResult(total=total, items=[_cache_brief(r) for r in rows])
+        return PageResult(total=total, items=[_cache_brief(r) for r in rows],
+                          total_estimated=estimated)
     finally:
         db.close()
 
@@ -124,6 +149,8 @@ async def delete_response(cache_id: int, _: LocalUser = Depends(require_operator
             await redis_cache.delete(row.redis_key)
         db.delete(row)
         db.commit()
+        # 删除后失效 total 缓存，避免列表总数长时间不变
+        invalidate_total_cache("total:api_cache:")
         return ApiResult(message="删除成功")
     finally:
         db.close()
@@ -152,13 +179,46 @@ def mark_refresh(cache_id: int, _: LocalUser = Depends(require_operator)):
         db.close()
 
 
+@router.post("/responses/{cache_id}/ttl")
+def set_ttl(cache_id: int, body: dict = Body(...),
+            _: LocalUser = Depends(require_operator)):
+    """调整缓存过期时间：body { ttl_seconds } 从当前时间起算，主要用于空结果负缓存"""
+    ttl = int(body.get("ttl_seconds") or 0)
+    if ttl <= 0:
+        raise HTTPException(status_code=400, detail="ttl_seconds 必须为正整数")
+    from datetime import timedelta
+    db = get_db_sync()
+    try:
+        row = db.query(ApiResponseCache).filter(ApiResponseCache.id == cache_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="缓存不存在")
+        row.expire_at = now() + timedelta(seconds=ttl)
+        db.commit()
+        return ApiResult(message=f"已设置过期时间为 {ttl} 秒后",
+                         data={"expire_at": row.expire_at.isoformat()})
+    finally:
+        db.close()
+
+
 @router.get("/access-logs")
-def list_access_logs(
+async def list_access_logs(
     cache_key: Optional[str] = None, access_type: Optional[str] = None,
+    with_total: bool = True,
     page: int = 1, page_size: int = Query(50, le=200),
     _: LocalUser = Depends(get_current_user),
 ):
-    """缓存访问日志（含 429 兜底记录）"""
+    """缓存访问日志（含 429 兜底记录）
+
+    该表增长最快，total 走截断 COUNT + 短 TTL 缓存；查询放线程池。
+    """
+    return await asyncio.to_thread(
+        _query_access_logs, cache_key, access_type, with_total, page, page_size,
+    )
+
+
+def _query_access_logs(cache_key, access_type, with_total,
+                       page, page_size) -> PageResult:
+    """访问日志分页查询（同步，供线程池调用）"""
     db = get_db_sync()
     try:
         q = db.query(ApiCacheAccessLog)
@@ -166,7 +226,10 @@ def list_access_logs(
             q = q.filter(ApiCacheAccessLog.cache_key.like(f"%{cache_key}%"))
         if access_type:
             q = q.filter(ApiCacheAccessLog.access_type == access_type)
-        total = q.count()
+
+        ck = build_cache_key("access_logs", cache_key, access_type)
+        total, estimated = compute_total(db, q, ck, with_total)
+
         rows = q.order_by(ApiCacheAccessLog.created_at.desc()) \
                 .offset((page - 1) * page_size).limit(page_size).all()
         return PageResult(total=total, items=[{
@@ -174,6 +237,6 @@ def list_access_logs(
             "access_type": r.access_type, "upstream_status": r.upstream_status,
             "served_status": r.served_status,
             "created_at": r.created_at.isoformat() if r.created_at else None,
-        } for r in rows])
+        } for r in rows], total_estimated=estimated)
     finally:
         db.close()

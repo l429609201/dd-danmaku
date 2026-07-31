@@ -55,6 +55,30 @@ def is_clean_cache_body(api_path: str, body: str) -> bool:
     return True
 
 
+def is_true_empty_search(api_path: str, body: str) -> bool:
+    """判断是否为「真实空搜索结果」：200 响应、success 非 false、errorCode==0，
+    但 animes 为空数组。仅 search/anime、search/episodes 适用。
+    用于空结果负缓存判定，明确排除 429/失败响应。
+    """
+    if "/search/anime" not in api_path and "/search/episodes" not in api_path:
+        return False
+    if not body:
+        return False
+    try:
+        data = json.loads(body)
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("success") is False:
+        return False
+    ec = data.get("errorCode")
+    if isinstance(ec, int) and ec != 0:
+        return False
+    animes = data.get("animes")
+    return isinstance(animes, list) and len(animes) == 0
+
+
 # ============ 脏缓存扫描结果缓存（单进程内存，避免翻页重复全表扫描） ============
 # uvicorn --workers 1，进程内缓存即可，无需跨进程同步。
 # 结构：token -> {created_at, scanned, by_reason, samples:[全部脏条目明细]}
@@ -108,16 +132,28 @@ class CacheService:
         cache_key = record["cache_key"]
         body = record.get("body") or ""
         api_path = record.get("api_path", "")
-        # 双保险：脏响应（空结果/success:false/errorCode!=0）拒绝落库
-        if not is_clean_cache_body(api_path, body):
-            logger.info(f"🧹 拒绝缓存脏响应: {api_path} (cache_key={cache_key})")
-            return False
+        # 空结果负缓存：Worker 显式标记 is_empty=true，走独立 TTL、绕过脏响应拦截
+        is_empty = bool(record.get("is_empty"))
+        if is_empty:
+            # 二次校验：确实是真实空搜索结果（防误标）
+            if not is_true_empty_search(api_path, body):
+                logger.info(f"🧹 is_empty 标记但非真实空搜索，拒绝: {api_path}")
+                return False
+        else:
+            # 双保险：脏响应（空结果/success:false/errorCode!=0）拒绝落库
+            if not is_clean_cache_body(api_path, body):
+                logger.info(f"🧹 拒绝缓存脏响应: {api_path} (cache_key={cache_key})")
+                return False
         body_hash = record.get("body_hash") or f"sha256:{_sha256(body)}"
         body_size = len(body.encode("utf-8")) if body else 0
         redis_key = self._redis_key(cache_key)
 
         refresh_interval = settings.CACHE_REFRESH_INTERVAL_SECONDS
-        stale_max_age = settings.CACHE_STALE_MAX_AGE_SECONDS
+        # 空结果用独立 TTL（record.ttl 优先，否则全局 EMPTY_CACHE_TTL_SECONDS）
+        if is_empty:
+            stale_max_age = int(record.get("ttl") or settings.EMPTY_CACHE_TTL_SECONDS)
+        else:
+            stale_max_age = settings.CACHE_STALE_MAX_AGE_SECONDS
         current = now()
 
         # 1. body 优先写 Redis（主缓存，用于快速响应）
@@ -132,11 +168,12 @@ class CacheService:
         import asyncio
         return await asyncio.to_thread(
             self._upsert_db, record, cache_key, body, body_hash, body_size,
-            redis_key, storage_mode, current, refresh_interval, stale_max_age,
+            redis_key, storage_mode, current, refresh_interval, stale_max_age, is_empty,
         )
 
     def _upsert_db(self, record, cache_key, body, body_hash, body_size,
-                   redis_key, storage_mode, current, refresh_interval, stale_max_age) -> bool:
+                   redis_key, storage_mode, current, refresh_interval, stale_max_age,
+                   is_empty=False) -> bool:
         """upsert 的同步 DB 段（供线程池调用，不阻塞事件循环）"""
         db = get_db_sync()
         try:
@@ -177,6 +214,8 @@ class CacheService:
             row.refresh_after = current + timedelta(seconds=refresh_interval)
             row.expire_at = current + timedelta(seconds=stale_max_age)
             row.refresh_pending = False
+            # 空结果负缓存标记
+            row.is_empty = is_empty
             db.commit()
 
             self._log(db, cache_key, row.api_path, "upsert",

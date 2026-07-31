@@ -45,6 +45,17 @@ class SignKeyPoolService:
         finally:
             db.close()
 
+    def get_secret(self, pk: int) -> str:
+        """按 id 取明文 secret（供运维复制回填 wasm config）；不存在抛 ValueError"""
+        db = get_db_sync()
+        try:
+            row = db.query(SignKeyPool).filter(SignKeyPool.id == pk).first()
+            if not row:
+                raise ValueError("密钥组不存在")
+            return row.secret or ""
+        finally:
+            db.close()
+
     def create_group(self, data: Dict[str, Any]) -> Dict[str, Any]:
         db = get_db_sync()
         try:

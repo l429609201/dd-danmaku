@@ -1,8 +1,14 @@
 name = "danmu-api"
+# 路径均相对本文件所在目录（worker/）解析
 main = "cf_worker.js"
 compatibility_date = "2024-09-21"
 
+# 关闭 wrangler 匿名遥测：CI 环境里上报接口常被限流（Too Many Requests）并反复重试，
+# 拖慢甚至挂住构建；关闭后不影响部署功能。
+send_metrics = false
+
 # 静态资源配置 - 工具文件通过 /tools/ 路径访问
+# 注意：访问路径由文件名决定，与本地目录位置无关，故仍是 /tools/xxx
 [assets]
 directory = "./tools"
 binding = "ASSETS"
@@ -30,10 +36,12 @@ CONTROL_TOKEN = "{{CONTROL_TOKEN}}"
 [observability.logs]
 enabled = true
 
-# 迁移：删除Durable Objects类
-[[migrations]]
-tag = "v6"
-deleted_classes = ["RateLimiter", "AppState"]
+# 注意：曾有一段 tag="v6" 的 deleted_classes = ["RateLimiter","AppState"] 迁移，
+# 已删除。原因：这两个类早已从代码中移除，wrangler 新版会校验
+# "deleted_classes 指向的类必须存在"，否则报
+#   Cannot apply deleted_classes migration to non-existent class RateLimiter
+# 并让 POST /workers/scripts/{name}/versions 返回 400，部署直接失败。
+# 迁移记录一旦在线上生效过就无需保留，删掉不影响已完成的迁移。
 
 # 迁移：新增 ControlHub 长连接控制中心（本地端 WebSocket 汇聚点）
 # 免费计划仅支持 SQLite 后端的 Durable Object，故用 new_sqlite_classes；
@@ -53,7 +61,9 @@ binding = "DANMAKU_CACHE"
 bucket_name = "danmu-api-cache"
 
 # Cron 定时触发：每30分钟清理一次 R2 弹幕缓存（过期清理 + 9GB阈值清理）
+# wrangler v4 起字段名为 crons（旧版 crontab 会报 "Unexpected fields" 告警并被忽略，
+# 导致定时任务实际不生效）
 [triggers]
-crontab = ["*/30 * * * *"]
+crons = ["*/30 * * * *"]
 
 

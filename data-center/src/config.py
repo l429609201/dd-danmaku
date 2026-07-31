@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     CONFIG_PATH: str = "/app/config"
     DATABASE_ECHO: bool = False
 
+    # 连接池与线程池（大量同步 DB 查询通过 asyncio.to_thread 卸载执行）
+    # 线程池上限应与 DB 连接池容量（DB_POOL_SIZE + DB_MAX_OVERFLOW）对齐，
+    # 否则线程拿不到连接只能空等，反而增加延迟。
+    DB_POOL_SIZE: int = 40
+    DB_MAX_OVERFLOW: int = 40
+    DB_THREAD_POOL_SIZE: int = 64
+    # 慢 SQL 阈值（毫秒）：超过则记录到慢查询环形缓冲，供 /ext/diag/slow-sql 查看
+    SLOW_SQL_MS: int = 200
+
     # Redis 热缓存配置（新架构：响应体走 Redis，元数据走 SQL）
     REDIS_ENABLED: bool = True
     REDIS_URL: str = "redis://redis:6379/0"
@@ -66,6 +75,9 @@ class Settings(BaseSettings):
     # 缓存策略默认值
     CACHE_REFRESH_INTERVAL_SECONDS: int = 6 * 60 * 60      # 6 小时
     CACHE_STALE_MAX_AGE_SECONDS: int = 30 * 24 * 60 * 60   # 30 天
+    # 空结果负缓存：搜索真实返回空（非 429/失败）时缓存以挡重复无效搜索
+    EMPTY_CACHE_TTL_SECONDS: int = 6 * 60 * 60             # 空结果默认存 6 小时
+    EMPTY_CACHE_THRESHOLD: int = 3                         # 同搜索词空结果累计 N 次后才转负缓存
     
     # Telegram机器人配置
     TG_BOT_TOKEN: Optional[str] = None

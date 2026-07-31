@@ -21,6 +21,7 @@
           <td>{{ r.remark || '—' }}</td>
           <td>{{ r.enabled ? '是' : '否' }}</td>
           <td class="actions">
+            <button class="link" @click="copyRowSecret(r.id)">复制密钥</button>
             <button class="link" @click="openEdit(r)">编辑</button>
             <button class="link" @click="toggle(r)">{{ r.enabled ? '停用' : '启用' }}</button>
             <button class="link danger" @click="del(r.id)">删除</button>
@@ -90,6 +91,16 @@ export default {
       try { await navigator.clipboard.writeText(form.secret); msg.value = '已复制' }
       catch (e) { msg.value = '复制失败，请手动复制' }
     }
+    // 复制列表某行的明文密钥：先向后端取明文（列表返回的是脱敏值），再写剪贴板
+    const copyRowSecret = async (id) => {
+      try {
+        const res = await apiV2(`/sign-key-pool/${id}/secret`)
+        const secret = (res.data && res.data.secret) || ''
+        if (!secret) { msg.value = '该密钥为空'; return }
+        await navigator.clipboard.writeText(secret)
+        msg.value = '已复制明文密钥'
+      } catch (e) { msg.value = '复制失败：' + (e.message || e) }
+    }
 
     const resetForm = () => {
       form.group_id = ''; form.secret = ''
@@ -137,7 +148,7 @@ export default {
 
     onMounted(load)
     return { items, msg, showEdit, saving, editId, form, secretShow,
-      openCreate, openEdit, submit, toggle, del, genSecret, copySecret }
+      openCreate, openEdit, submit, toggle, del, genSecret, copySecret, copyRowSecret }
   }
 }
 </script>

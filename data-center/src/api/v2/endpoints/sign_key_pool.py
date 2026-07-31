@@ -28,6 +28,16 @@ def list_groups(_: LocalUser = Depends(get_current_user)):
     return ApiResult(data={"items": sign_key_pool_service.list_groups(mask=True)})
 
 
+@router.get("/{pk}/secret")
+def get_secret(pk: int, _: LocalUser = Depends(require_operator)):
+    """获取指定密钥组的明文 secret（operator 权限，供运维复制回填 wasm config）"""
+    try:
+        secret = sign_key_pool_service.get_secret(pk)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return ApiResult(data={"secret": secret})
+
+
 @router.get("/gen")
 def gen_secret(_: LocalUser = Depends(get_current_user)):
     """随机生成一个 48 位 base64url 签名密钥（与 wasm-sign 生成规格一致）"""
