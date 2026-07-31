@@ -5,7 +5,7 @@
 """
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from src.api.v2.deps import require_admin
 from src.api.v2.schemas import ApiResult
