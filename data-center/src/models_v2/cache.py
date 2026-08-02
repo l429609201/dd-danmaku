@@ -11,7 +11,8 @@ API 响应缓存、实体索引与集数链接 ORM 模型（新架构核心）
 当 Redis 不可用时降级为 storage_mode=sql，response_body 落 SQL 冷备。
 """
 from sqlalchemy import (
-    BigInteger, Boolean, Column, DateTime, Integer, JSON, String, Text,
+    BigInteger, Boolean, Column, DateTime, Index, Integer, JSON, String, Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 
@@ -100,7 +101,11 @@ class ApiCacheRefreshTask(Base, TimestampMixin):
 
 
 class ApiResponseEntity(Base, TimestampMixin):
-    """响应实体索引表"""
+    """响应实体索引表
+
+    「化整为零」的落点：上游整季响应在此按 anime / bangumi / episode 拆成独立行，
+    后续可由 entity_assemble 反向「从零拼整」，避免带 episode=N 时每集各回源一次。
+    """
     __tablename__ = "api_response_entities"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -110,11 +115,24 @@ class ApiResponseEntity(Base, TimestampMixin):
     # title 仅 LIKE '%x%' 模糊查（用不上索引），api_path/cache_key 不做条件，去掉索引
     title = Column(String(500), nullable=True)
     episode_title = Column(String(500), nullable=True)
+    # episode 实体所属番剧 ID。显式存储而非从 episodeId 推算：
+    # 现网规律是 episodeId = animeId * 10000 + 集号，但超过 9999 集或特殊编号会破裂，
+    # 解析 /bangumi/{id} 时父级已带 animeId，直接取即可，不做算术反推。
+    anime_id = Column(String(100), nullable=True)
+    # 集号（上游 episodeNumber 原样保留字符串，可能是 "7" / "SP1" / "OVA"）
+    episode_number = Column(String(50), nullable=True)
     api_path = Column(String(300), nullable=False)
     cache_key = Column(String(700), nullable=False)
     raw_json = Column(JSON, nullable=True)
     first_seen_at = Column(DateTime, default=now, nullable=False)
     last_seen_at = Column(DateTime, default=now, index=True, nullable=False)
+
+    __table_args__ = (
+        # (entity_type, entity_id) 是业务唯一键，加约束防并发写入产生重复行
+        UniqueConstraint("entity_type", "entity_id", name="uq_are_type_id"),
+        # 拼装整季 / 取指定集的主查询路径
+        Index("ix_are_anime_ep", "entity_type", "anime_id", "episode_number"),
+    )
 
 
 class EpisodeLink(Base, TimestampMixin):

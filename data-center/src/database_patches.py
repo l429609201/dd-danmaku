@@ -268,6 +268,10 @@ _COMPOSITE_INDEXES = {
     "api_response_entities": [
         # 实体列表：类型过滤 + 最近出现时间倒序
         ("ix_are_type_lastseen", ["entity_type", "last_seen_at"]),
+        # 「从零拼整」主查询路径：按番剧取整季 / 按番剧+集号取单集
+        ("ix_are_anime_ep", ["entity_type", "anime_id", "episode_number"]),
+        # 按标题反查 animeId（search 关键词匹配入口）
+        ("ix_are_type_title", ["entity_type", "title"]),
     ],
 }
 
@@ -327,6 +331,154 @@ def _patch_add_composite_indexes(engine: Engine) -> bool:
     return changed
 
 
+def _patch_entity_unique_key(engine: Engine) -> bool:
+    """为 api_response_entities 建 (entity_type, entity_id) 唯一约束。
+
+    该表是「化整为零」的落点，业务上 (type, id) 必须唯一，
+    原先只有两个独立普通索引，并发 upsert 有产生重复行的空隙。
+
+    单独成一个补丁而不并入 _COMPOSITE_INDEXES，是因为建唯一约束前
+    **必须先去重**：存量若已有重复行，CREATE UNIQUE INDEX 会直接失败。
+    去重保留 id 最小的行（first_seen_at 最早，raw_json 由后续 upsert 覆盖）。
+
+    幂等：表不存在 / 已有等价唯一索引则跳过。
+    """
+    table = "api_response_entities"
+    cols = ("entity_type", "entity_id")
+    inspector = inspect(engine)
+    if table not in set(inspector.get_table_names()):
+        return False
+    try:
+        existing = inspector.get_indexes(table)
+        table_cols = {c["name"] for c in inspector.get_columns(table)}
+    except Exception as e:
+        logger.warning(f"⚠️ 读取 {table} 结构失败，跳过唯一约束: {e}")
+        return False
+    if not set(cols).issubset(table_cols):
+        return False
+    # 已存在「列序相同且 unique」的索引则视为已完成
+    for idx in existing:
+        if tuple(idx.get("column_names") or []) == cols and idx.get("unique"):
+            return False
+    if "uq_are_type_id" in {idx.get("name") for idx in existing}:
+        return False
+
+    dialect = engine.dialect.name
+    try:
+        with engine.begin() as conn:
+            # 先去重：按 (entity_type, entity_id) 分组，只保留最小 id
+            dup_sql = (
+                f"DELETE FROM {table} WHERE id NOT IN ("
+                f"  SELECT keep_id FROM ("
+                f"    SELECT MIN(id) AS keep_id FROM {table}"
+                f"    GROUP BY entity_type, entity_id"
+                f"  ) AS t"
+                f")"
+            )
+            result = conn.exec_driver_sql(dup_sql)
+            removed = result.rowcount or 0
+            if removed > 0:
+                logger.info(f"🧹 {table} 去重完成，删除 {removed} 行重复实体")
+            if dialect == "mysql":
+                conn.exec_driver_sql(
+                    f"CREATE UNIQUE INDEX `uq_are_type_id` ON `{table}` "
+                    f"(`entity_type`, `entity_id`)"
+                )
+            else:
+                conn.exec_driver_sql(
+                    f'CREATE UNIQUE INDEX IF NOT EXISTS "uq_are_type_id" '
+                    f'ON "{table}" ("entity_type", "entity_id")'
+                )
+        logger.info(f"🔑 已创建唯一约束 {table}.uq_are_type_id")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ 创建 {table} 唯一约束失败（跳过）: {e}")
+        return False
+
+
+def _patch_backfill_entity_anime_ep(engine: Engine) -> bool:
+    """回填 api_response_entities 存量 episode 行的 anime_id / episode_number。
+
+    存量 10 万+ episode 行是在加列之前写入的，两列全空，
+    「从零拼整」查不到任何数据。好在 raw_json 里本来就带 episodeNumber，
+    可以纯 SQL 回填，无需重新回源。
+
+    - episode_number：从 raw_json 取 episodeNumber
+    - anime_id：按 title 关联同表的 anime/bangumi 实体反查
+      （比截取 episodeId 前缀可靠——集号位数不固定）
+
+    幂等：只更新目标列为 NULL 的行；全部已回填则不做事。
+    仅 MySQL / SQLite 走各自的 JSON 提取语法，其它方言跳过（不报错）。
+    """
+    table = "api_response_entities"
+    inspector = inspect(engine)
+    if table not in set(inspector.get_table_names()):
+        return False
+    try:
+        table_cols = {c["name"] for c in inspector.get_columns(table)}
+    except Exception as e:
+        logger.warning(f"⚠️ 读取 {table} 结构失败，跳过回填: {e}")
+        return False
+    if not {"anime_id", "episode_number"}.issubset(table_cols):
+        return False
+
+    dialect = engine.dialect.name
+    if dialect == "mysql":
+        json_expr = "JSON_UNQUOTE(JSON_EXTRACT(raw_json, '$.episodeNumber'))"
+    elif dialect == "sqlite":
+        json_expr = "json_extract(raw_json, '$.episodeNumber')"
+    else:
+        return False
+
+    changed = False
+    try:
+        # 先看有没有待回填的行，避免每次启动都跑全表 UPDATE
+        with engine.connect() as conn:
+            pending = conn.exec_driver_sql(
+                f"SELECT COUNT(*) FROM {table} WHERE entity_type = 'episode' "
+                f"AND (anime_id IS NULL OR episode_number IS NULL)"
+            ).scalar() or 0
+        if pending == 0:
+            return False
+
+        logger.info(f"🔄 开始回填 {table} 的 anime_id/episode_number（待处理 {pending} 行）")
+        with engine.begin() as conn:
+            r1 = conn.exec_driver_sql(
+                f"UPDATE {table} SET episode_number = {json_expr} "
+                f"WHERE entity_type = 'episode' AND episode_number IS NULL "
+                f"AND {json_expr} IS NOT NULL"
+            )
+            logger.info(f"  ├─ episode_number 回填 {r1.rowcount or 0} 行")
+
+        # anime_id 用自关联子查询：按 title 找同名 anime/bangumi 实体。
+        # 同名可能匹配到多个（不同季同名较少但存在），取 MIN 保证确定性。
+        with engine.begin() as conn:
+            if dialect == "mysql":
+                # MySQL 不允许 UPDATE 时直接子查询同一张表，套一层派生表绕过
+                r2 = conn.exec_driver_sql(
+                    f"UPDATE {table} e JOIN ("
+                    f"  SELECT title, MIN(entity_id) AS aid FROM {table}"
+                    f"  WHERE entity_type IN ('anime','bangumi') AND title IS NOT NULL"
+                    f"  GROUP BY title"
+                    f") m ON e.title = m.title "
+                    f"SET e.anime_id = m.aid "
+                    f"WHERE e.entity_type = 'episode' AND e.anime_id IS NULL"
+                )
+            else:
+                r2 = conn.exec_driver_sql(
+                    f"UPDATE {table} SET anime_id = ("
+                    f"  SELECT MIN(a.entity_id) FROM {table} a"
+                    f"  WHERE a.entity_type IN ('anime','bangumi')"
+                    f"    AND a.title = {table}.title"
+                    f") WHERE entity_type = 'episode' AND anime_id IS NULL"
+                )
+            logger.info(f"  └─ anime_id 回填 {r2.rowcount or 0} 行")
+        changed = True
+    except Exception as e:
+        logger.warning(f"⚠️ 回填 {table} 失败（跳过，不影响启动）: {e}")
+    return changed
+
+
 # ============ 补丁注册表 ============
 # 按顺序执行；新增补丁在此登记即生效。
 _PATCHES: List[Callable[[Engine], bool]] = [
@@ -336,6 +488,9 @@ _PATCHES: List[Callable[[Engine], bool]] = [
     _patch_widen_client_user_id,
     _patch_widen_cache_response_body,
     _patch_add_composite_indexes,
+    _patch_entity_unique_key,
+    # 回填放在建索引之后：先有 ix_are_anime_ep，UPDATE 的 WHERE 才走索引
+    _patch_backfill_entity_anime_ep,
 ]
 
 

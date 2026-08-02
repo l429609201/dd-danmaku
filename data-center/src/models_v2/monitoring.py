@@ -85,6 +85,17 @@ class UaLimitRule(Base, TimestampMixin):
     # 实例 ID 校验参数已移入 UserAllowPool（通过 user_group_id 引用）
     # 删除本表的 instance_brand_mark / instance_obf_key，保持与签名组对称
 
+    # ---------- 回源限流（origin_*）----------
+    # 与上面的「请求限流」是两回事：上面限「客户端打 Worker 的频率」，
+    # 这里限「Worker 真正回源打弹弹play 的次数」——后者才对应付费配额。
+    # 缓存命中不会走到回源检查，所以命中不再消耗上游配额。
+    # 计数维度：UA + IP（与请求侧一致），-1 表示无限制。
+    origin_limit_enabled = Column(Boolean, default=False, nullable=False)
+    origin_max_per_hour = Column(Integer, nullable=True)
+    origin_max_per_day = Column(Integer, nullable=True)
+    # 回源侧路径级配额，结构同 path_limits_json：[{"path": "...", "maxRequestsPerHour": 50}]
+    origin_path_limits_json = Column(JSON, nullable=True)
+
 
 class WorkerRequestLog(Base):
     """Worker 请求/拦截日志（实时日志数据源）"""

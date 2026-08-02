@@ -124,6 +124,11 @@ class UaRuleCreate(BaseModel):
     sign_group_id: Optional[str] = None  # 绑定的签名密钥组 group_id，空=不启用
     user_group_id: Optional[str] = None  # 绑定的用户允许名单组 group_id，空=不校验用户名
     # 实例校验参数已移入 UserAllowPool（brand_mark/obf_key），UA 只需绑定 user_group_id
+    # 回源限流：限制真正打上游的次数（缓存命中不消耗），-1=无限制
+    origin_limit_enabled: bool = False
+    origin_max_per_hour: Optional[int] = None
+    origin_max_per_day: Optional[int] = None
+    origin_path_limits: Optional[List[dict]] = None
 
 
 class UaRuleUpdate(BaseModel):
@@ -134,6 +139,11 @@ class UaRuleUpdate(BaseModel):
     enabled: Optional[bool] = None
     sign_group_id: Optional[str] = None  # 绑定的签名密钥组 group_id，空=不启用
     user_group_id: Optional[str] = None  # 绑定的用户允许名单组 group_id，空=不校验
+    # 回源限流（同 Create）
+    origin_limit_enabled: Optional[bool] = None
+    origin_max_per_hour: Optional[int] = None
+    origin_max_per_day: Optional[int] = None
+    origin_path_limits: Optional[List[dict]] = None
 
 
 class UaRuleImport(BaseModel):

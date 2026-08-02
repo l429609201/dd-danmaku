@@ -254,9 +254,12 @@ class ControlClient:
         client_ip = payload.get("client_ip")
         # prefetch 标记：内存未命中的主动预查，命中才有日志价值
         log_miss = not bool(payload.get("prefetch"))
+        # allow_stale：Worker 回源配额耗尽时的降级查询，过期数据也返回
+        allow_stale = bool(payload.get("allow_stale"))
         result = await cache_service.get(
             cache_key, worker_request_id=worker_request_id,
             client_ip=client_ip, log_miss=log_miss,
+            allow_stale=allow_stale,
         )
         hit = bool(result and result.get("hit"))
         await self._send({

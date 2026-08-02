@@ -232,17 +232,28 @@ class CacheService:
     async def get(self, cache_key: str,
                   worker_request_id: Optional[str] = None,
                   client_ip: Optional[str] = None,
-                  log_miss: bool = True) -> Optional[Dict[str, Any]]:
+                  log_miss: bool = True,
+                  allow_stale: bool = False) -> Optional[Dict[str, Any]]:
         """读取本地缓存。log_miss=False 时不写 miss/expired 访问日志
         （主动预查场景调用频繁，避免 access_logs 暴涨）。
+
+        allow_stale=True 时连过期数据也返回（响应里带 stale 标记）。
+        用于 Worker 回源配额耗尽的降级：过期数据胜过直接报错。
 
         高并发关键：同步 DB 段放线程池，redis await 留在事件循环，避免阻塞。"""
         import asyncio
         client_ip = (client_ip or None)
         # ① 同步 DB 查询段（线程池）：查 row，返回字段快照 + 状态
         snap = await asyncio.to_thread(
-            self._get_lookup, cache_key, worker_request_id, client_ip, log_miss)
+            self._get_lookup, cache_key, worker_request_id, client_ip, log_miss,
+            allow_stale)
         if snap is None or not snap.get("found"):
+            # 整体 cache_key 未命中，但实体表里可能已有拼装素材。
+            # 典型场景：带 episode=N 的查询，集号进了 cache_key 导致每集一个 key，
+            # 而整季明细早已按集拆进 api_response_entities。
+            assembled = await self._try_assemble(cache_key, worker_request_id, client_ip)
+            if assembled:
+                return assembled
             return None
         if snap.get("expired"):
             return None
@@ -271,16 +282,57 @@ class CacheService:
         stale = await asyncio.to_thread(
             self._get_touch, cache_key, redis_hit,
             worker_request_id, client_ip)
+        # served_stale：本次是靠 allow_stale 才放行的过期数据，
+        # 与 stale（仅超过 refresh_after、尚未真正过期）区分开
+        served_stale = bool(snap.get("served_stale"))
         return {
             "hit": True,
             "status": snap["status_code"],
             "headers": snap["response_headers_json"] or {},
             "body": body,
             "cached_at": snap["fetched_at_ms"],
-            "stale": stale,
+            "stale": stale or served_stale,
+            "served_stale": served_stale,
         }
 
-    def _get_lookup(self, cache_key, worker_request_id, client_ip, log_miss):
+    async def _try_assemble(self, cache_key: str, worker_request_id, client_ip):
+        """cache_key 未命中时，尝试从实体表拼装等价响应。
+
+        拼装成功等于省掉一次回源。开关 entity_assemble_enabled 默认开，
+        出现字段差异等问题时可关掉立即回到纯回源路径。
+        拼装结果不写 api_response_cache——它是派生数据，
+        写回去会和上游真实响应混在一起，难以区分来源。
+        """
+        import asyncio
+        if not getattr(settings, "ENTITY_ASSEMBLE_ENABLED", True):
+            return None
+        try:
+            from src.services_v2.entity_assemble import entity_assemble_service
+            result = await asyncio.to_thread(
+                entity_assemble_service.try_assemble, cache_key)
+        except Exception as e:
+            logger.warning(f"⚠️ 实体拼装异常（转回源）: {e}")
+            return None
+        if not result:
+            return None
+        api_path = cache_key.split("?", 1)[0].split(":", 1)[-1]
+        await asyncio.to_thread(
+            self._log_async, cache_key, api_path, "assembled",
+            worker_request_id, client_ip)
+        logger.info(f"🧩 实体拼装命中（{result['mode']}）省去回源: {cache_key[:120]}")
+        return {
+            "hit": True,
+            "status": 200,
+            # 标记来源，便于在 Worker 日志与前端区分拼装响应
+            "headers": {"X-Cache-Source": f"assembled-{result['mode']}"},
+            "body": result["body"],
+            "cached_at": 0,
+            "stale": False,
+            "assembled": True,
+        }
+
+    def _get_lookup(self, cache_key, worker_request_id, client_ip, log_miss,
+                    allow_stale: bool = False):
         """get 段①：同步查 row，返回字段快照（不跨线程持有 ORM 对象）"""
         db = get_db_sync()
         try:
@@ -293,13 +345,17 @@ class CacheService:
                               worker_request_id=worker_request_id, client_ip=client_ip)
                 return {"found": False}
             current = now()
-            if row.expire_at and current > row.expire_at:
+            is_expired = bool(row.expire_at and current > row.expire_at)
+            # allow_stale：回源配额已耗尽时的降级档。过期数据也比直接报错强，
+            # 照常返回并打 stale 标记，由调用方决定怎么呈现。
+            if is_expired and not allow_stale:
                 if log_miss:
                     self._log(db, cache_key, row.api_path, "expired",
                               worker_request_id=worker_request_id, client_ip=client_ip)
                 return {"found": True, "expired": True}
             return {
                 "found": True, "expired": False,
+                "served_stale": is_expired,
                 "storage_mode": row.storage_mode, "redis_key": row.redis_key,
                 "response_body": row.response_body, "api_path": row.api_path,
                 "status_code": row.status_code,

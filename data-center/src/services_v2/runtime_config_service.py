@@ -59,6 +59,16 @@ class RuntimeConfigService:
                     cfg["maxRequestsPerHour"] = u.max_requests_per_hour
                 if u.max_requests_per_day is not None:
                     cfg["maxRequestsPerDay"] = u.max_requests_per_day
+                # 回源限流：只有开关打开才下发，Worker 侧缺字段即视为不限，
+                # 保证旧库（列为空）行为与改动前完全一致。
+                if getattr(u, "origin_limit_enabled", False):
+                    cfg["originLimitEnabled"] = True
+                    if u.origin_max_per_hour is not None:
+                        cfg["originMaxRequestsPerHour"] = u.origin_max_per_hour
+                    if u.origin_max_per_day is not None:
+                        cfg["originMaxRequestsPerDay"] = u.origin_max_per_day
+                    if u.origin_path_limits_json:
+                        cfg["originPathLimits"] = u.origin_path_limits_json
                 if u.description:
                     cfg["description"] = u.description
                 # 签名校验：下发绑定的签名组 signGroupId，Worker 据此决定是否强制验签。

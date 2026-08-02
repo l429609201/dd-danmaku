@@ -42,12 +42,21 @@ class EntityIndexService:
         # 搜索动画 / 番剧详情
         if "/search/anime" in api_path or "/search/episodes" in api_path:
             for a in (data.get("animes") or []):
+                a_id = str(a.get("animeId") or a.get("bangumiId") or "")
+                # anime 实体的 raw 剔除 episodes：整季列表已按集拆成独立 episode 实体，
+                # 再冗余存一份会让单行 JSON 膨胀到几十 KB（现网最多 201 集）
+                anime_meta = {k: v for k, v in a.items() if k != "episodes"}
                 entities.append({
                     "type": "anime",
-                    "id": str(a.get("animeId") or a.get("bangumiId") or ""),
+                    "id": a_id,
                     "title": a.get("animeTitle") or a.get("title"),
-                    "raw": a,  # 保留上游原始对象（含 imageUrl/typeDescription 等）
+                    "raw": anime_meta,
                 })
+                # search/episodes 的响应里 animes[].episodes[] 同样是可复用的单集数据，
+                # 原先只存了 anime 实体、整季明细被丢弃，导致带 episode=N 查询无法本地拼装。
+                for ep in (a.get("episodes") or []):
+                    entities.append(self._episode_entity(
+                        ep, a_id, a.get("animeTitle") or a.get("title")))
         elif "/bangumi/" in api_path:
             bangumi = data.get("bangumi") or data
             anime_id = str(bangumi.get("animeId") or "")
@@ -60,13 +69,8 @@ class EntityIndexService:
                     "raw": bangumi_meta,
                 })
             for ep in (bangumi.get("episodes") or []):
-                entities.append({
-                    "type": "episode",
-                    "id": str(ep.get("episodeId") or ""),
-                    "title": bangumi.get("animeTitle"),
-                    "episode_title": ep.get("episodeTitle"),
-                    "raw": ep,
-                })
+                entities.append(self._episode_entity(
+                    ep, anime_id, bangumi.get("animeTitle")))
 
         if not entities:
             return 0
@@ -101,6 +105,12 @@ class EntityIndexService:
             row.episode_title = e.get("episode_title")
             row.api_path = api_path
             row.cache_key = cache_key
+            # 归属与集号：拼装整季/取指定集全靠这两列，非空才覆盖，
+            # 避免后续某个残缺响应把已有的归属关系清空
+            if e.get("anime_id"):
+                row.anime_id = e["anime_id"]
+            if e.get("episode_number"):
+                row.episode_number = e["episode_number"]
             # 写入上游原始数据用于溯源/媒体库提取封面简介
             if e.get("raw") is not None:
                 row.raw_json = e["raw"]
@@ -110,6 +120,35 @@ class EntityIndexService:
             if e["type"] in ("anime", "bangumi") and isinstance(e.get("raw"), dict):
                 self._upsert_media(db, e["id"], e["raw"], e["type"], current)
         return count
+
+    @staticmethod
+    def _episode_entity(ep: dict, anime_id: str, anime_title: Optional[str]) -> dict:
+        """把上游单集对象转成待写入的 episode 实体。
+
+        anime_id 由调用方从父级对象取（search 的 animes[] 或 bangumi 详情），
+        不从 episodeId 做算术反推——现网虽有 episodeId = animeId*10000+集号 的规律，
+        但超过 9999 集或特殊编号（SP/OVA）会破裂。
+        """
+        ep_id = str(ep.get("episodeId") or "")
+        # 集号字段上游不统一：优先 episodeNumber，回退 episodeIndex/episodeNo
+        raw_no = (ep.get("episodeNumber") if ep.get("episodeNumber") is not None
+                  else ep.get("episodeIndex") if ep.get("episodeIndex") is not None
+                  else ep.get("episodeNo"))
+        ep_no = str(raw_no).strip() if raw_no is not None and str(raw_no).strip() else None
+        # 兜底：上游未给集号时，用 episodeId 末 4 位推算（仅在有 anime_id 佐证时）
+        if not ep_no and ep_id and anime_id and ep_id.startswith(anime_id):
+            suffix = ep_id[len(anime_id):]
+            if suffix.isdigit():
+                ep_no = str(int(suffix))
+        return {
+            "type": "episode",
+            "id": ep_id,
+            "title": anime_title,
+            "episode_title": ep.get("episodeTitle"),
+            "anime_id": anime_id or None,
+            "episode_number": ep_no,
+            "raw": ep,
+        }
 
     def _upsert_media(self, db, anime_id: str, raw: dict, source: str, current):
         """从 anime/bangumi 原始对象抽取媒体信息，upsert 到 media_library。

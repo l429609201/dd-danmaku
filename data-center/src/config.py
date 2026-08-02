@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     # 空结果负缓存：搜索真实返回空（非 429/失败）时缓存以挡重复无效搜索
     EMPTY_CACHE_TTL_SECONDS: int = 6 * 60 * 60             # 空结果默认存 6 小时
     EMPTY_CACHE_THRESHOLD: int = 3                         # 同搜索词空结果累计 N 次后才转负缓存
+    # 实体拼装：cache_key 未命中时从 api_response_entities 拼出等价响应，省掉回源。
+    # 主要解决带 episode=N 的查询每集一个 cache_key、命中率恒为 0 的问题。
+    ENTITY_ASSEMBLE_ENABLED: bool = True
     
     # Telegram机器人配置
     TG_BOT_TOKEN: Optional[str] = None

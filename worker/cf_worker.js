@@ -282,6 +282,87 @@ function getMemoryLogs(limit = 100) {
 // 🔄 内存频率限制
 // ========================================
 
+/**
+ * 回源配额检查（与入口的请求限流是两套独立计数）
+ *
+ * 为什么要单独一层：入口的 checkAccess 统计「客户端打 Worker 的次数」，
+ * 缓存命中也会计数——可是命中根本没碰上游。而真正稀缺的是弹弹play 的
+ * 付费配额。所以这里只在缓存全部 miss、即将真的打上游时才递增，
+ * 让上游配额只被真实回源消耗。
+ *
+ * 计数键前缀 origin- 与请求侧隔离，复用同一个 rateLimitCounts Map
+ * 和它的清理逻辑，不新增内存结构。
+ *
+ * @returns {{allowed:boolean, reason?:string, count?:number, limit?:number|string}}
+ */
+function checkOriginQuota(clientIP, uaConfig, apiPath) {
+    // 未配置或开关关闭 => 不限（旧库新列为空时行为与改动前一致）
+    if (!uaConfig || !uaConfig.originLimitEnabled) {
+        return { allowed: true, reason: 'origin_limit_disabled' };
+    }
+
+    const uaType = uaConfig.type || 'unknown';
+    const perHour = uaConfig.originMaxRequestsPerHour;
+    const perDay = uaConfig.originMaxRequestsPerDay;
+
+    console.log(`🌐 [${clientIP}] 回源配额检查: UA=${uaType} path=${apiPath}`);
+
+    // ① 路径级配额优先：命中某个路径模式时用它的值覆盖小时上限
+    let effectiveHourly = perHour;
+    let matchedPath = '';
+    const originPathLimits = uaConfig.originPathLimits;
+    if (Array.isArray(originPathLimits)) {
+        for (const pl of originPathLimits) {
+            const p = pl && (pl.path || pl.pathPattern);
+            if (p && apiPath.includes(p)) {
+                const v = pl.maxRequestsPerHour !== undefined
+                    ? pl.maxRequestsPerHour
+                    : pl.originMaxRequestsPerHour;
+                if (v !== undefined && v !== null) {
+                    effectiveHourly = v;
+                    matchedPath = p;
+                }
+                break;
+            }
+        }
+    }
+
+    // ② 小时窗口检查
+    if (effectiveHourly !== undefined && effectiveHourly !== null) {
+        const suffix = matchedPath ? `-path-${matchedPath}` : '';
+        const r = checkMemoryRateLimit(clientIP, `origin-${uaType}${suffix}`, {
+            windowMs: 3600000,
+            maxRequestsPerHour: effectiveHourly,
+        });
+        if (!r.allowed) {
+            return {
+                allowed: false,
+                reason: `回源配额超限(小时): ${r.count}/${r.limit}`,
+                count: r.count,
+                limit: r.limit,
+            };
+        }
+    }
+
+    // ③ 天窗口检查（UTC+8 自然日，与弹弹play 配额重置时区一致）
+    if (perDay !== undefined && perDay !== null) {
+        const r = checkMemoryRateLimit(clientIP, `origin-day-${uaType}`, {
+            windowMs: 86400000,
+            maxRequestsPerHour: perDay,
+        });
+        if (!r.allowed) {
+            return {
+                allowed: false,
+                reason: `回源配额超限(当日): ${r.count}/${r.limit}`,
+                count: r.count,
+                limit: r.limit,
+            };
+        }
+    }
+
+    return { allowed: true };
+}
+
 // 内存频率限制检查
 function checkMemoryRateLimit(clientIP, uaType, limits) {
     const now = Date.now();
@@ -568,6 +649,59 @@ function buildLocalCacheKey(method, apiPath, searchParams) {
         .map(([k, v]) => `${k}=${v}`)
         .join('&');
     return sorted ? `${method}:${apiPath}?${sorted}` : `${method}:${apiPath}`;
+}
+
+// 从整季 /search/episodes 响应里抽出指定集，保持上游同构结构。
+// 抽不到（集号不存在/结构异常）返回 null，由调用方回退为原样返回整季，
+// 不因抽取失败而让请求失败。
+function extractEpisodeFromSeason(responseText, epNo) {
+    if (!responseText || !epNo) return null;
+    let data;
+    try {
+        data = JSON.parse(responseText);
+    } catch (_) {
+        return null;
+    }
+    if (!data || !Array.isArray(data.animes)) return null;
+
+    const want = String(epNo).trim();
+    const wantNum = Number(want);
+    // 多季场景：animes 每项各带自己的 episodes，需逐项过滤后保留命中的项，
+    // 与本地端 entity_assemble 的 _assemble_episodes 行为保持一致
+    const picked = [];
+    for (const anime of data.animes) {
+        if (!anime || !Array.isArray(anime.episodes)) continue;
+        const animeId = String(anime.animeId || '');
+        const hit = anime.episodes.filter(ep => {
+            if (!ep) return false;
+            // 上游集号字段形态不统一：episodeNumber 优先，缺失则从 episodeTitle 里取「第N话」
+            let n = ep.episodeNumber;
+            if (n === undefined || n === null || n === '') {
+                const m = /第\s*(\d+)\s*[话集]/.exec(ep.episodeTitle || '');
+                n = m ? m[1] : null;
+            }
+            // 末级兜底：从 episodeId 剥掉 animeId 前缀得集号（97710007 - 9771 → 0007 → 7）。
+            // 与本地端 entity_service._episode_entity 同策略：必须校验前缀匹配，
+            // 不写死「后 4 位」——集数超 9999 或 animeId 位数不同时该假设会破裂。
+            if (n === null && animeId && /^\d+$/.test(animeId)) {
+                const epId = String(ep.episodeId || '');
+                if (epId.startsWith(animeId)) {
+                    const suffix = epId.slice(animeId.length);
+                    if (suffix && /^\d+$/.test(suffix)) n = String(Number(suffix));
+                }
+            }
+            if (n === null) return false;
+            const s = String(n).trim();
+            // 数值比较兜住 '07' 与 '7' 这类补零差异
+            return s === want || (Number.isFinite(wantNum) && Number(s) === wantNum);
+        });
+        if (hit.length > 0) {
+            // 番剧其余字段（animeId/animeTitle/type/imageUrl 等）原样保留，只替换 episodes
+            picked.push({ ...anime, episodes: hit });
+        }
+    }
+    if (picked.length === 0) return null;
+    return JSON.stringify({ ...data, animes: picked });
 }
 
 // 通过 ControlHub DO 向本地端发起 RPC；DO 不可用/超时返回 null，不阻塞主流程
@@ -1711,7 +1845,15 @@ async function handleOAuthRequest(request, env, urlObj) {
                 return oauthJson({ error: 'Token 接口返回非 JSON', status: res.status, body: text.slice(0, 300) }, 502);
             }
             if (!data.access_token) {
-                addMemoryLog('WARN', 'OAuth 刷新失败', { provider, status: res.status });
+                // 记录上游返回的错误码与描述：此前只记 status，导致日志里全是无信息的 400，
+                // 无法区分 invalid_grant(令牌失效/已被轮换消费) 与配置错误(invalid_client 等)。
+                // data 中不含 access_token（此分支的前提），只白名单取错误字段，避免带出敏感值。
+                addMemoryLog('WARN', 'OAuth 刷新失败', {
+                    provider,
+                    status: res.status,
+                    upstreamError: data.error || '',
+                    upstreamDesc: String(data.error_description || '').slice(0, 200),
+                });
                 return oauthJson({ error: '刷新失败', detail: data }, 400);
             }
             addMemoryLog('INFO', 'OAuth 刷新成功', { provider });
@@ -2229,6 +2371,43 @@ async function handleRequest(request, env, ctx) {
         return Forbidden(tUrlObj);
     }
 
+    // ========================================
+    // 🎯 指定集数搜索：剥离 episode 转全季回源
+    // ========================================
+    // 问题：/search/episodes?anime=X&episode=7 的集号进了缓存键，
+    // 一部 12 集番 = 12 个独立 key，每集都 miss 打上游，而整季数据其实一次就能拿全。
+    // 做法：这里就把 episode 摘掉，让「上游请求 + 内存键 + 本地端键」统一归到全季形态，
+    // 上游返回整季后，再在响应出口按原集号抽出那一集还给客户端。
+    // 收益：同番第 2 集起直接命中整季缓存；上游请求量降到 1/N。
+    let strippedEpisode = null;   // 原始请求的集号，非空表示出口需要抽取
+    if (request.method === 'GET'
+        && tUrlObj.pathname.startsWith('/api/v2/search/episodes')
+        && tUrlObj.searchParams.has('episode')) {
+        const epRaw = (tUrlObj.searchParams.get('episode') || '').trim();
+        // 仅对纯数字集号生效：movie/sp 等特殊值语义由上游定义，剥离后可能取不回来，保持原样透传
+        if (/^\d+$/.test(epRaw)) {
+            strippedEpisode = epRaw;
+            tUrlObj.searchParams.delete('episode');
+            // url 同时是上游 fetch 目标与内存缓存键(api_cache_${url})的来源，必须同步改写
+            url = tUrlObj.toString();
+            console.log(`🎯 [${clientIP}] 指定集数搜索转全季回源: episode=${epRaw} 已剥离`);
+        }
+    }
+
+    // 出口统一收口：把整季响应裁成客户端要的那一集。
+    // 缓存里始终存整季，只在返回瞬间裁剪，因此不影响缓存复用。
+    // 抽不到就原样返回整季——客户端能自行找集，比报错好。
+    const narrowToEpisode = (text) => {
+        if (!strippedEpisode || !text) return text;
+        const picked = extractEpisodeFromSeason(text, strippedEpisode);
+        if (picked) {
+            console.log(`🎯 [${clientIP}] 已从整季抽取 episode=${strippedEpisode}`);
+            return picked;
+        }
+        console.log(`⚠️ [${clientIP}] 整季中未找到 episode=${strippedEpisode}，返回完整结果`);
+        return text;
+    };
+
     // 访问控制检查，传递正确的API路径
     console.log(`🔍 [${clientIP}] 开始访问控制检查，目标路径: ${tUrlObj.pathname}`);
 
@@ -2240,7 +2419,12 @@ async function handleRequest(request, env, ctx) {
     );
     if (!accessCheck.allowed) {
         const userAgent = request.headers.get('X-User-Agent') || '';
-        const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
+        // 对外消息只用 UA 配置名称，绝不回显原始 UA：
+        // 原始 UA 形如 "misaka10876/&7Y4c#4#"，斜杠后是身份校验密钥，
+        // 直接吐给客户端等于泄露凭据。原始 UA 仅进服务端日志。
+        const uaLabel = accessCheck.uaName || accessCheck.uaConfig?.type || '未识别';
+        // IP 同样只对外打码，完整值留在下方 addMemoryLog 里供排查
+        const errorMessage = `IP:${maskIp(clientIP)} UA:${uaLabel} 消息：${accessCheck.reason}`;
 
         console.log(`🚫 [${clientIP}] 访问被拒绝: ${errorMessage}, 路径=${tUrlObj.pathname}`);
         bumpMetric('blockedUa'); bumpMetric('status4xx');
@@ -2448,10 +2632,12 @@ async function handleRequest(request, env, ctx) {
 
         if (cached && (Date.now() - cached.timestamp < MEMORY_LIMITS.API_CACHE_TTL)) {
             console.log(`📦 [${clientIP}] 内存缓存命中: ${apiPath}`);
+            // 缓存存的是整季，按原始请求的集号裁剪后再返回
+            const memBody = narrowToEpisode(cached.data);
             // 指标：内存缓存命中 + 出流量 + 响应/2xx
             bumpMetric('memCacheHits'); bumpMetric('totalResponses');
             bumpMetric('status2xx');
-            bumpMetric('bytesOut', (cached.data && cached.data.length) ? cached.data.length : 0);
+            bumpMetric('bytesOut', (memBody && memBody.length) ? memBody.length : 0);
             addMemoryLog('INFO', '内存缓存命中', {
                 ip: clientIP,
                 path: apiPath,
@@ -2462,10 +2648,10 @@ async function handleRequest(request, env, ctx) {
                 cacheSource: 'MEM',
                 cacheAge: Math.round((Date.now() - cached.timestamp) / 1000) + 's',
                 durationMs: Date.now() - reqStartMs,
-                responseBytes: (cached.data && cached.data.length) ? cached.data.length : 0,
-                responseBody: truncateBody(cached.data),
+                responseBytes: (memBody && memBody.length) ? memBody.length : 0,
+                responseBody: truncateBody(memBody),
             });
-            return new Response(cached.data, {
+            return new Response(memBody, {
                 status: 200,
                 headers: {
                     'Content-Type': 'application/json',
@@ -2517,11 +2703,13 @@ async function handleRequest(request, env, ctx) {
             if (local && local.hit && local.body) {
                 console.log(`📦 [${clientIP}] 本地端缓存命中${local.stale ? '(stale)' : ''}: ${apiPath}`);
                 bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
-                bumpMetric('bytesOut', local.body.length || 0);
-                // 命中即回填本实例内存，降低后续同 key 的 DO RPC
+                // 回填内存必须用整季原文（local.body），裁剪后的只用于本次响应，
+                // 否则后续请求别的集会从内存拿到被裁过的脏数据
                 memoryCache.apiCache.set(cacheKey, { data: local.body, timestamp: Date.now() });
-                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: local.status || 200, cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL', stale: !!local.stale, durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0, responseBody: truncateBody(local.body) });
-                return new Response(local.body, {
+                const localBody = narrowToEpisode(local.body);
+                bumpMetric('bytesOut', localBody.length || 0);
+                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: local.status || 200, cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL', stale: !!local.stale, durationMs: Date.now() - reqStartMs, responseBytes: localBody ? localBody.length : 0, responseBody: truncateBody(localBody) });
+                return new Response(localBody, {
                     status: local.status || 200,
                     headers: {
                         'Content-Type': 'application/json',
@@ -2577,6 +2765,76 @@ async function handleRequest(request, env, ctx) {
                 });
             }
         }
+    }
+
+    // ========================================
+    // 🌐 回源配额检查：所有缓存均未命中，即将真正打上游
+    // ========================================
+    // 走到这里说明内存/本地端/R2 全部 miss，是唯一会产生上游调用的位置。
+    // 超限时不直接报错，先降级取过期缓存（allow_stale），拿不到才返回 429。
+    const originQuota = checkOriginQuota(clientIP, accessCheck.uaConfig, apiPath);
+    if (!originQuota.allowed) {
+        console.log(`🚫 [${clientIP}] 回源配额超限: ${originQuota.reason} (${originQuota.count}/${originQuota.limit})`);
+
+        // 降级档：容忍过期的本地端缓存，过期数据胜过直接失败
+        if (env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)) {
+            const staleKey = isMatchApi
+                ? matchCacheKeyOf()
+                : buildLocalCacheKey(request.method, apiPath, tUrlObj.searchParams);
+            const staleHit = await controlHubRpc(env, 'cache.get', {
+                cache_key: staleKey,
+                api_path: apiPath,
+                method: request.method,
+                client_ip: clientIP,
+                worker_request_id: request.headers.get('cf-ray') || '',
+                prefetch: true,
+                allow_stale: true,
+            }, 1500);
+            if (staleHit && staleHit.hit && staleHit.body) {
+                bumpMetric('totalResponses'); bumpMetric('status2xx');
+                addMemoryLog('WARN', '回源配额超限-返回过期缓存', {
+                    ip: clientIP, path: apiPath, method: request.method,
+                    userAgent: request.headers.get('X-User-Agent') || '',
+                    userId: clientUserId, responseStatus: 200,
+                    cacheSource: 'STALE-QUOTA', durationMs: Date.now() - reqStartMs,
+                    responseBytes: staleHit.body.length,
+                    responseBody: truncateBody(staleHit.body),
+                });
+                return new Response(staleHit.body, {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*',
+                        'X-Cache': 'HIT-STALE-QUOTA',
+                    },
+                });
+            }
+        }
+
+        // 连过期缓存都没有：返回 429（沿用密钥全限流的 200+errorCode 约定，
+        // 客户端按 errorCode 判断，避免播放器把非 200 当网络错误）
+        const quotaBody = JSON.stringify({
+            errorCode: 429, success: false,
+            errorMessage: '回源请求已达配额上限，请稍后再试',
+        });
+        addMemoryLog('WARN', '回源配额超限', {
+            ip: clientIP, path: apiPath,
+            userAgent: request.headers.get('X-User-Agent') || '',
+            userId: clientUserId, reason: originQuota.reason,
+            durationMs: Date.now() - reqStartMs,
+            responseBytes: quotaBody.length,
+            requestBody: truncateBody(reqBodyText),
+            responseBody: truncateBody(quotaBody),
+        });
+        bumpMetric('totalResponses'); bumpMetric('status4xx');
+        return new Response(quotaBody, {
+            status: 200,
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+                'X-Cache': 'ORIGIN-QUOTA-EXCEEDED',
+            },
+        });
     }
 
     // ========================================
@@ -2880,7 +3138,8 @@ async function handleRequest(request, env, ctx) {
         }, 1500);
         if (cached && cached.hit && cached.body) {
             console.log(`✅ [${clientIP}] 命中本地兜底缓存${cached.stale ? '(stale)' : ''}: ${localCacheKey}`);
-            return new Response(cached.body, {
+            // 兜底缓存同样是整季，按原始集号裁剪后返回
+            return new Response(narrowToEpisode(cached.body), {
                 status: cached.status || 200,
                 headers: {
                     'Content-Type': 'application/json',
@@ -2920,7 +3179,15 @@ async function handleRequest(request, env, ctx) {
         responseHeaders.set('X-Cache', 'MISS');
     }
 
-    return new Response(responseText, {
+    // 缓存写入已在上面用整季原文完成，这里只裁剪返回给客户端的副本。
+    // Content-Length 若存在会与裁剪后长度不符，交给运行时重算
+    const finalBody = narrowToEpisode(responseText);
+    if (finalBody !== responseText) {
+        responseHeaders.delete('Content-Length');
+        responseHeaders.set('X-Episode-Extracted', strippedEpisode);
+    }
+
+    return new Response(finalBody, {
         status: response.status,
         statusText: response.statusText,
         headers: responseHeaders
@@ -3116,6 +3383,42 @@ async function generateSignature(appId, timestamp, path, appSecret) {
 // 验证逻辑已抽到独立混淆模块 sign_verify.js（顶部 import），公开仓库不含细节。
 // 调用见 verifyClientSignature(request, apiPath, signGroupId, signKeyPool)。
 
+/**
+ * IP 中间段打码，仅用于对外响应；服务端日志始终保留完整 IP 以便排查。
+ * IPv4：保留首尾段     38.207.184.219            → 38.*.*.219
+ * IPv6：保留首两组+末组 2001:db8:85a3::1319:7348  → 2001:db8:*:*:*:7348
+ * 含端口 / IPv4-mapped / 无法识别的值一律走保守分支，不泄露中间信息。
+ */
+function maskIp(ip) {
+    if (!ip || typeof ip !== 'string') return 'unknown';
+    const raw = ip.trim();
+    if (!raw || raw === 'unknown') return 'unknown';
+
+    // X-Forwarded-For 可能是 "a, b, c"，只取第一跳（真实客户端）
+    const first = raw.split(',')[0].trim();
+    // 去掉 IPv6 字面量方括号与端口，如 [::1]:8080
+    let addr = first.replace(/^\[/, '').replace(/\](:\d+)?$/, '');
+
+    // IPv4（可能带端口 1.2.3.4:5678）
+    const v4 = addr.split(':')[0];
+    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4)) {
+        const p = v4.split('.');
+        return `${p[0]}.*.*.${p[3]}`;
+    }
+
+    // IPv6：按组处理，:: 先展开成显式空组再打码
+    if (addr.includes(':')) {
+        const parts = addr.split(':');
+        if (parts.length <= 3) return '*:*:*';          // 过短，无法安全保留
+        const head = parts.slice(0, 2).join(':');
+        const tail = parts[parts.length - 1] || '*';
+        const midCount = Math.max(parts.length - 3, 1);
+        return `${head}:${'*:'.repeat(midCount)}${tail}`;
+    }
+
+    return '*';  // 既非 v4 也非 v6，整体隐藏
+}
+
 // 新增：访问控制检查函数
 // reqStartMs 由 handleRequest 传入（用于日志耗时统计），缺省则以当前时间兜底
 // reqBodyText 为预读的请求体文本（用于限流日志记录请求体）
@@ -3158,7 +3461,9 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
             console.log(`⏭️ [${clientIP}] 白名单 IP，UA 未匹配也放行`);
             return { allowed: true, reason: 'ip_whitelisted_ua_unmatched' };
         }
-        return { allowed: false, reason: '禁止访问的UA', status: 403 };
+        // uaName 供外层拼错误消息用：此处 UA 未匹配任何配置，没有名称可用，
+        // 给固定占位，避免外层回退到原始 UA（原始 UA 含密钥片段）。
+        return { allowed: false, reason: '禁止访问的UA', status: 403, uaName: '未识别' };
     }
 
     console.log(`✅ [${clientIP}] UA识别成功: ${uaConfig.type}`);
@@ -3190,7 +3495,12 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
             requestBody: truncateBody(reqBodyText),
         });
 
-        return { allowed: false, reason: rateLimitCheck.reason, status: 429 };
+        // 带上 uaConfig / uaName：外层错误消息要显示配置名称而非原始 UA，
+        // 原始 UA 形如 "misaka10876/&7Y4c#4#"，后半段是校验密钥，不能对外回显。
+        return {
+            allowed: false, reason: rateLimitCheck.reason, status: 429,
+            uaConfig, uaName: uaConfig.type
+        };
     }
 
     console.log(`📊 [${clientIP}] 频率限制检查结果: 通过 (${rateLimitCheck.count}/${rateLimitCheck.limit})`);
@@ -3232,7 +3542,8 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
                     return {
                         allowed: false,
                         reason: `路径 ${pathPattern} 频率限制: ${pathRateLimitCheck.reason}`,
-                        status: 429
+                        status: 429,
+                        uaConfig, uaName: uaConfig.type
                     };
                 }
                 console.log(`📊 [${clientIP}] 路径限制 [${pathPattern}]: 通过 (${pathRateLimitCheck.count}/${pathRateLimitCheck.limit})`);
