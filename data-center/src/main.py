@@ -244,7 +244,13 @@ def create_application() -> FastAPI:
             # 返回构建后的index.html
             index_file = final_static_dir / "index.html"
             if index_file.exists():
-                return FileResponse(str(index_file))
+                # index.html 必须禁用缓存：它内部引用带 hash 的 JS/CSS，
+                # 一旦被浏览器缓存就会继续指向旧 hash，前端更新永远不生效
+                return FileResponse(str(index_file), headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                })
             else:
                 return HTMLResponse("Frontend index.html not found", status_code=404)
         else:
