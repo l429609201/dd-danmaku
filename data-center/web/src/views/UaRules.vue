@@ -16,7 +16,7 @@
       <table class="data-table">
         <thead><tr>
           <th>ua_key</th><th>UA 匹配</th><th>最大请求</th><th>窗口(ms)</th>
-          <th>路径限流</th><th>签名组</th><th>用户组</th><th>启用</th><th>操作</th>
+          <th>路径限流</th><th>回源配额</th><th>签名组</th><th>用户组</th><th>启用</th><th>操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="r in items" :key="r.id">
@@ -25,8 +25,10 @@
             <td>{{ r.max_requests || '无限制' }}</td>
             <td>{{ r.window_ms }}</td>
             <td>{{ (r.path_limits && r.path_limits.length) || 0 }} 条</td>
+            <!-- 回源配额概览：关闭时只显示「关」，开启时汇总时/天上限与路径条数 -->
+            <td class="msg">{{ originSummary(r) }}</td>
             <td>{{ r.sign_group_id || '关' }}</td>
-          <td>{{ r.user_group_id || '关' }}</td>
+            <td>{{ r.user_group_id || '关' }}</td>
             <td>{{ r.enabled ? '是' : '否' }}</td>
             <td class="actions">
               <button class="link" @click="openEdit(r)">编辑</button>
@@ -34,7 +36,7 @@
               <button class="link danger" @click="del(r.id)">删除</button>
             </td>
           </tr>
-          <tr v-if="!items.length"><td colspan="7" class="empty">暂无规则</td></tr>
+          <tr v-if="!items.length"><td colspan="10" class="empty">暂无规则</td></tr>
         </tbody>
       </table>
       <Pager :page="page" :page-size="pageSize" :total="total" @update:page="goPage" />
@@ -232,6 +234,11 @@ export default {
       // 过滤空路径行
       const pathLimits = form.path_limits.filter(p => p.path && p.path.trim())
       const originPathLimits = form.origin_path_limits.filter(p => p.path && p.path.trim())
+      // v-model.number 在输入框清空时会得到空串，直接提交会被后端 Optional[int] 校验拒绝（422）。
+      // 归一成 -1（Worker 侧 -1 即无限制），避免用户清空输入后保存整体失败
+      const numOr = (v, dft) => (v === '' || v === null || v === undefined || Number.isNaN(v)) ? dft : v
+      const originPerHour = numOr(form.origin_max_per_hour, -1)
+      const originPerDay = numOr(form.origin_max_per_day, -1)
       creating.value = true
       try {
         if (editId.value) {
@@ -241,14 +248,17 @@ export default {
             sign_group_id: form.sign_group_id,
             user_group_id: form.user_group_id,
             origin_limit_enabled: form.origin_limit_enabled,
-            origin_max_per_hour: form.origin_max_per_hour,
-            origin_max_per_day: form.origin_max_per_day,
+            origin_max_per_hour: originPerHour,
+            origin_max_per_day: originPerDay,
             origin_path_limits: originPathLimits,
           }
           const res = await apiV2(`/ua-rules/${editId.value}`, { method: 'PUT', body })
           msg.value = res.message || '更新成功'
         } else {
-          const body = { ...form, path_limits: pathLimits, origin_path_limits: originPathLimits }
+          const body = {
+            ...form, path_limits: pathLimits, origin_path_limits: originPathLimits,
+            origin_max_per_hour: originPerHour, origin_max_per_day: originPerDay,
+          }
           const res = await apiV2('/ua-rules', { method: 'POST', body })
           msg.value = res.message || '创建成功'
         }
@@ -309,12 +319,24 @@ export default {
     // 跳转到指定页（含上下页/输入跳转）
     const goPage = (p) => { page.value = p; load() }
 
+    // 列表页「回源配额」列摘要：未开启显示「关」，
+    // 开启则汇总时/天上限与路径配额条数。-1 与空值统一按「无限制」展示，
+    // 与后端 -1 = 不限制的语义一致（见 runtime_config_service 下发逻辑）
+    const originSummary = (r) => {
+      if (!r || !r.origin_limit_enabled) return '关'
+      const fmt = (v) => (v === null || v === undefined || v === -1) ? '∞' : v
+      const parts = [`时 ${fmt(r.origin_max_per_hour)}`, `天 ${fmt(r.origin_max_per_day)}`]
+      const n = (r.origin_path_limits && r.origin_path_limits.length) || 0
+      if (n > 0) parts.push(`路径 ${n} 条`)
+      return parts.join(' / ')
+    }
+
     onMounted(() => { load(); loadSignGroups(); loadUserGroups() })
     return { items, total, page, pageSize, keyword, msg, showCreate, creating, editId, form, signGroups, userGroups,
       showImport, importText, replaceAll, importing, importError,
       load, openCreate, openEdit, addPathLimit, removePathLimit,
       addOriginPathLimit, removeOriginPathLimit, submit, toggle, del, resync, goPage,
-      openImport, doImport, exportJson }
+      openImport, doImport, exportJson, originSummary }
   }
 }
 </script>
