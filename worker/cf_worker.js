@@ -315,10 +315,11 @@ function checkOriginQuota(clientIP, uaConfig, apiPath) {
         for (const pl of originPathLimits) {
             const p = pl && (pl.path || pl.pathPattern);
             if (p && apiPath.includes(p)) {
-                const v = pl.maxRequestsPerHour !== undefined
-                    ? pl.maxRequestsPerHour
-                    : pl.originMaxRequestsPerHour;
-                if (v !== undefined && v !== null) {
+                const v = pickLimitValue(
+                    pl.maxRequestsPerHour,
+                    pl.originMaxRequestsPerHour
+                );
+                if (v !== undefined) {
                     effectiveHourly = v;
                     matchedPath = p;
                 }
@@ -363,6 +364,23 @@ function checkOriginQuota(clientIP, uaConfig, apiPath) {
     return { allowed: true };
 }
 
+/**
+ * 按优先级取第一个「已配置」的限流值。
+ *
+ * 存在的意义：限流值 0 是合法配置（表示无限制），但 0 在 JS 里是 falsy，
+ * 用 `a || b` 取值会把它当未配置而跳到兜底值上。本函数只跳过
+ * undefined / null，确保本地端下发的 0 能原样生效。
+ *
+ * @param {...(number|undefined|null)} values 按优先级排列的候选值
+ * @returns {number|undefined} 第一个非空值，全为空时返回 undefined
+ */
+function pickLimitValue(...values) {
+    for (const v of values) {
+        if (v !== undefined && v !== null) return v;
+    }
+    return undefined;
+}
+
 // 内存频率限制检查
 function checkMemoryRateLimit(clientIP, uaType, limits) {
     const now = Date.now();
@@ -385,14 +403,22 @@ function checkMemoryRateLimit(clientIP, uaType, limits) {
     const counter = memoryCache.rateLimitCounts.get(key);
     const windowDuration = limits.windowMs || 60000; // 默认1分钟窗口
 
-    // 正确获取最大请求数，支持-1表示无限制
-    let maxRequests = limits.hourlyLimit || limits.maxRequestsPerHour;
-    if (maxRequests === undefined || maxRequests === null) {
-        maxRequests = limits.maxRequests || 100; // 兼容旧字段名
-    }
+    // 取最大请求数：按 hourlyLimit → maxRequestsPerHour → maxRequests 优先级回退。
+    // 必须用显式判空而非 ||，否则配置值 0 会被当 falsy 跳过（这正是
+    // 「下发 maxRequests=0 却出现 100/小时」的根因）。
+    let maxRequests = pickLimitValue(
+        limits.hourlyLimit,
+        limits.maxRequestsPerHour,
+        limits.maxRequests // 兼容旧字段名
+    );
 
-    // 如果是-1，表示无限制
-    const isUnlimited = maxRequests === -1;
+    // 配置里没有任何限制字段 => 不限流。
+    // 这里过去兜底成硬编码 100，等于静默篡改本地端配置，已移除。
+    const isUnlimited =
+        maxRequests === undefined ||
+        maxRequests === null ||
+        maxRequests === -1 ||
+        maxRequests === 0; // 0 与 -1 同义，均表示无限制（与 UI 文案一致）
 
     console.log(`   - 窗口持续时间: ${windowDuration}ms (${Math.round(windowDuration/1000)}秒)`);
     console.log(`   - 最大请求数: ${isUnlimited ? '无限制' : maxRequests}`);
@@ -3469,7 +3495,8 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
 
     console.log(`✅ [${clientIP}] UA识别成功: ${uaConfig.type}`);
     console.log(`   - 匹配的UA配置: ${JSON.stringify(uaConfig)}`);
-    console.log(`   - 最大请求数: ${uaConfig.maxRequests || 'N/A'}`);
+    // 0/-1 语义为无限制，直接输出原值避免 || 把 0 显示成 N/A 干扰排查
+    console.log(`   - 最大请求数: ${uaConfig.maxRequests === undefined || uaConfig.maxRequests === null ? 'N/A' : uaConfig.maxRequests}`);
     console.log(`   - 时间窗口: ${uaConfig.windowMs || 'N/A'}ms`);
 
     // 2. 基于内存的频率限制（全局限制）
@@ -3513,13 +3540,15 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
         for (const [pathPattern, pathLimit] of Object.entries(uaConfig.pathSpecificLimits)) {
             console.log(`   - 检查路径模式: ${pathPattern} (当前路径: ${apiPath})`);
             if (apiPath.includes(pathPattern)) {
-                console.log(`   - 路径匹配! 应用路径特定限制: ${pathLimit.maxRequestsPerHour || 50}/小时`);
+                // 路径上限同样用显式判空取值：0 表示该路径不限，不能被 || 兜底成 50
+                const pathHourly = pickLimitValue(pathLimit.maxRequestsPerHour);
+                console.log(`   - 路径匹配! 应用路径特定限制: ${pathHourly === undefined || pathHourly === 0 || pathHourly === -1 ? '无限制' : pathHourly + '/小时'}`);
                 // 使用IP+UA类型+路径的组合作为限制键，确保每个IP在每个UA类型下的每个路径都有独立的限制
                 const pathRateLimitCheck = checkMemoryRateLimit(
                     clientIP,
                     `${uaConfig.type}-path-${pathPattern}`,
                     {
-                        maxRequests: pathLimit.maxRequestsPerHour || 50,
+                        maxRequests: pathHourly,
                         windowMs: 60 * 60 * 1000 // 1小时窗口
                     }
                 );
