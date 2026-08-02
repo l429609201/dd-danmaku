@@ -2819,15 +2819,17 @@ async function handleRequest(request, env, ctx) {
             }, 1500);
             if (staleHit && staleHit.hit && staleHit.body) {
                 bumpMetric('totalResponses'); bumpMetric('status2xx');
+                // 与其他命中出口保持一致：过期缓存存的也是整季，需按原集号裁剪后返回
+                const staleBody = narrowToEpisode(staleHit.body);
                 addMemoryLog('WARN', '回源配额超限-返回过期缓存', {
                     ip: clientIP, path: apiPath, method: request.method,
                     userAgent: request.headers.get('X-User-Agent') || '',
                     userId: clientUserId, responseStatus: 200,
                     cacheSource: 'STALE-QUOTA', durationMs: Date.now() - reqStartMs,
-                    responseBytes: staleHit.body.length,
-                    responseBody: truncateBody(staleHit.body),
+                    responseBytes: staleBody.length,
+                    responseBody: truncateBody(staleBody),
                 });
-                return new Response(staleHit.body, {
+                return new Response(staleBody, {
                     status: 200,
                     headers: {
                         'Content-Type': 'application/json',
