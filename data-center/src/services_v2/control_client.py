@@ -262,14 +262,46 @@ class ControlClient:
             allow_stale=allow_stale,
         )
         hit = bool(result and result.get("hit"))
+        # 未命中时顺带做一次别名解析：不新增 RPC 往返，Worker 拿到 canonical
+        # 就用规范词重组 URL 回源。命中则无需解析（已有数据可直接返回）。
+        extra = None
+        if not hit:
+            extra = await self._resolve_alias(cache_key)
         await self._send({
             "id": msg_id, "type": "cache.get.result",
             "timestamp": _ts(),
-            "payload": result if hit else {"hit": False},
+            "payload": result if hit else (extra or {"hit": False}),
         })
         self._audit("worker_to_local", "cache.get",
                     "success" if hit else "success",
                     request_cache_key=cache_key)
+
+    @staticmethod
+    async def _resolve_alias(cache_key: str):
+        """查 approved 别名，返回 {hit:False, alias_hit:True, canonical:...}。
+
+        同步 DB 查询放线程池，避免阻塞事件循环（cache.get 是每请求一次的热路径）。
+        任何异常都降级为 None——别名是增值功能，不能影响缓存查询主流程。
+        """
+        import asyncio
+        try:
+            from src.database import get_db_sync
+            from src.services_v2.media_meta_service import media_meta_service
+
+            def _q():
+                db = get_db_sync()
+                try:
+                    return media_meta_service.resolve_search_term(db, cache_key)
+                finally:
+                    db.close()
+            r = await asyncio.to_thread(_q)
+            if not r:
+                return None
+            # hit 仍为 False：本地没有可用响应体，只是给 Worker 换个词去回源
+            return {"hit": False, **r}
+        except Exception as ex:
+            logger.debug(f"ℹ️ 别名解析跳过: {ex}")
+            return None
 
     async def _handle_cache_upsert(self, msg_id, payload):
         """Worker 200 响应：写入本地缓存 + 解析实体/集数链接"""

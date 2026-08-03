@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional
 from src.database import get_db_sync
 from src.models_v2 import ApiResponseEntity, EpisodeLink, MediaLibrary
 from src.models_v2.base import now
+# 直接导入子模块而非从包导入，避免 services_v2/__init__ 的循环导入
+from src.services_v2.media_meta_service import media_meta_service
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +41,15 @@ class EntityIndexService:
             return 0
 
         entities: List[Dict[str, Any]] = []
+        # 本次搜索响应命中的 animeId 列表，用于在末尾写「搜索词 → animeId」别名。
+        # 只有 /search/* 才有搜索词，/bangumi/ 是按 ID 直查，不产生别名。
+        search_anime_ids: List[str] = []
         # 搜索动画 / 番剧详情
         if "/search/anime" in api_path or "/search/episodes" in api_path:
             for a in (data.get("animes") or []):
                 a_id = str(a.get("animeId") or a.get("bangumiId") or "")
+                if a_id:
+                    search_anime_ids.append(a_id)
                 # anime 实体的 raw 剔除 episodes：整季列表已按集拆成独立 episode 实体，
                 # 再冗余存一份会让单行 JSON 膨胀到几十 KB（现网最多 201 集）
                 anime_meta = {k: v for k, v in a.items() if k != "episodes"}
@@ -119,6 +126,26 @@ class EntityIndexService:
             # anime/bangumi 实体同步进媒体库主档（含海报/类型/简介）
             if e["type"] in ("anime", "bangumi") and isinstance(e.get("raw"), dict):
                 self._upsert_media(db, e["id"], e["raw"], e["type"], current)
+            # bangumi 详情的 raw 里带 onlineDatabases[] 与 titles[]，
+            # 顺带提取外部平台 ID 与多语言别名（纯本地计算，不请求外部服务）。
+            # 只对 bangumi 做：search 的 anime 对象没有这两个字段。
+            if e["type"] == "bangumi" and isinstance(e.get("raw"), dict):
+                try:
+                    media_meta_service.ingest_bangumi_raw(db, e["id"], e["raw"])
+                except Exception as ex:
+                    # 元数据提取属增值功能，失败不影响实体索引主流程
+                    logger.warning(f"⚠️ 外部ID/别名提取失败 animeId={e['id']}: {ex}")
+
+        # Worker 每写入一条搜索响应就立即落别名，不等周期任务扫表。
+        # 否则新词最长要滞后一个 interval（默认 1 小时）才能生效，
+        # 而这段时间里同一个词的重复搜索仍会打上游。
+        # 分档规则与周期任务共用 ingest_search_term，避免两处各写一份。
+        if search_anime_ids:
+            try:
+                media_meta_service.ingest_search_term(
+                    db, cache_key, search_anime_ids)
+            except Exception as ex:
+                logger.warning(f"⚠️ 搜索词别名写入失败 {cache_key}: {ex}")
         return count
 
     @staticmethod

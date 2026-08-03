@@ -131,6 +131,24 @@ async def init_app_settings():
             "cleanup_runtime_event_retention_days": ("30", "int", "运行事件保留天数", False),
             "cleanup_expired_cache_enabled": ("false", "bool", "是否删除过期响应缓存空壳", False),
             "cleanup_expired_cache_retention_days": ("90", "int", "过期响应缓存空壳额外保留天数", False),
+            # 别名自动补充任务（增量提取缓存词 + 生成空结果词候选）
+            "alias_supplement_enabled": ("true", "bool", "是否启用别名自动补充任务", False),
+            "alias_supplement_interval_seconds": ("3600", "int", "别名补充任务执行间隔（秒）", False),
+            "alias_supplement_extract_cache": ("true", "bool", "是否增量提取有结果搜索词为别名", False),
+            "alias_supplement_auto_match": ("true", "bool", "是否为空结果词自动生成候选", False),
+            "alias_supplement_candidate_limit": ("200", "int", "每轮生成候选的最大扫描条数", False),
+            # AI 辅助：仅给 pending 候选打分供人工参考，不自动上线
+            "alias_ai_enabled": ("false", "bool", "是否启用 AI 辅助别名匹配", False),
+            "alias_ai_base_url": ("https://api.openai.com/v1", "string", "AI 接口地址（OpenAI 兼容）", False),
+            "alias_ai_api_key": ("", "secret", "AI 接口 API Key", True),
+            "alias_ai_model": ("gpt-4o-mini", "string", "AI 模型名", False),
+            "alias_ai_max_calls_per_run": ("50", "int", "每轮最多调用 AI 次数（控费）", False),
+            "alias_ai_skip_confidence": ("80", "int", "算法置信度高于此值则跳过 AI", False),
+            # 外部源别名补充（阶段 8）：本地匹配不到时才用，产出仍是 pending
+            "alias_external_enabled": ("false", "bool", "是否启用外部源（TMDB/BGM）别名补充", False),
+            "alias_external_provider": ("tmdb", "string", "外部源：tmdb 或 bgm", False),
+            "alias_tmdb_api_key": ("", "secret", "TMDB API Key（选 tmdb 时必填）", True),
+            "alias_external_max_calls": ("30", "int", "每轮最多请求外部源次数", False),
         }
 
         db = SessionLocal()

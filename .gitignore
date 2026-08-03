@@ -52,3 +52,4 @@ wasm-sign/*
 # only hide the plaintext source project.
 sign-verify-src/
 sign-verify-wasm/*
+docs/媒体元数据清洗方案.md

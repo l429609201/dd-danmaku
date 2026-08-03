@@ -188,3 +188,81 @@ class MediaLibrary(Base, TimestampMixin):
     source = Column(String(50), index=True, nullable=True)
     first_seen_at = Column(DateTime, default=now, nullable=False)
     last_seen_at = Column(DateTime, default=now, index=True, nullable=False)
+
+
+
+class MediaExternalId(Base, TimestampMixin):
+    """番剧的外部平台 ID 索引（Bangumi.tv / AniDB / TMDB / IMDb / ...）
+
+    数据来源：dandanplay /bangumi/{id} 响应里的 onlineDatabases[]，
+    该数组已给出各平台完整 URL，正则提取 ID 即可，无需请求外部服务。
+
+    provider 刻意用自由文本而非 Enum：新增平台只写数据不改代码，
+    正则匹配不到的平台（如 Notify.moe）也照样入库，只留 external_url 不丢数据。
+    """
+    __tablename__ = "media_external_ids"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # dandanplay animeId，关联 media_library.anime_id
+    anime_id = Column(String(100), index=True, nullable=False)
+    # 平台标识：bangumi_tv / anidb / mal / tmdb / imdb / tvdb / anilist / ...
+    provider = Column(String(50), nullable=False)
+    # 从 URL 提取的 ID（617123 / tt39246964 / anime-planet 的 slug）；提取失败留空
+    external_id = Column(String(200), nullable=True)
+    # 原始 URL，前端直接跳转，也是提取失败时的兜底
+    external_url = Column(String(500), nullable=True)
+    # auto（脚本从 onlineDatabases 提取）/ manual（人工填写，增量脚本不覆盖）
+    source = Column(String(30), default="auto", nullable=False)
+    confidence = Column(Integer, default=0, nullable=False)
+
+    __table_args__ = (
+        # 一部番在同一平台只有一个 ID，加约束防并发写入产生重复行
+        UniqueConstraint("anime_id", "provider", name="uq_mei_anime_provider"),
+        # 反查路径：已知 TMDB ID 找对应的 dandanplay 条目
+        Index("ix_mei_provider_extid", "provider", "external_id"),
+    )
+
+
+class MediaAlias(Base, TimestampMixin):
+    """番剧别名表：统一承载所有来源的「别名 → animeId」映射
+
+    刻意不拆成两张表（官方别名 / 搜索词映射）——两者本质都是别名到
+    animeId 的映射，查询逻辑相同，用 source 区分来源、status 控制是否生效即可，
+    线上解析只查一张表。
+
+    只有 status=approved 参与线上解析；auto_match / bgm / tmdb 一律先 pending，
+    人工确认后才生效，避免算法误判直接影响线上搜索。
+    """
+    __tablename__ = "media_alias"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # 归属的 dandanplay animeId
+    anime_id = Column(String(100), index=True, nullable=False)
+    alias = Column(String(500), nullable=False)
+    # 归一化形式（小写 + 去空格 + 全角转半角），线上查询走这列而非 alias
+    alias_norm = Column(String(500), nullable=False)
+    # zh-Hans / zh-Hant / ja / ja-romaji / en / unknown
+    lang = Column(String(50), nullable=True)
+    # main（主标题）/ official / alias / search_keyword
+    title_type = Column(String(30), nullable=True)
+    # dandanplay_titles / cache_extract_1 / cache_extract_n / auto_match
+    # / bgm / tmdb / manual
+    source = Column(String(30), nullable=False)
+    # approved（线上生效）/ pending（待人工确认）/ rejected
+    status = Column(String(20), default="pending", nullable=False)
+    confidence = Column(Integer, default=0, nullable=False)
+    # 录入时该搜索词的命中次数，人工校验页按此降序（命中越多修好收益越大）
+    hit_snapshot = Column(Integer, default=0, nullable=False)
+    verified_by = Column(Integer, nullable=True)
+    # AI 给出的建议：{match_index, confidence, reason}，仅作人工判断参考
+    ai_suggestion = Column(JSON, nullable=True)
+    ai_called_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        # 同一别名不能重复挂到同一番剧上
+        UniqueConstraint("alias_norm", "anime_id", name="uq_ma_norm_anime"),
+        # 线上解析主查询路径：按归一化别名 + approved 状态查
+        Index("ix_ma_norm_status", "alias_norm", "status"),
+        # 人工校验页排序路径：pending 按命中数降序
+        Index("ix_ma_status_hit", "status", "hit_snapshot"),
+    )

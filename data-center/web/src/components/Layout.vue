@@ -16,6 +16,7 @@
         </el-menu-item-group>
         <el-menu-item-group title="数据情况">
           <el-menu-item index="/media"><el-icon><Film /></el-icon><span>媒体库</span></el-menu-item>
+          <el-menu-item index="/alias-review"><el-icon><MagicStick /></el-icon><span>别名校验</span></el-menu-item>
           <el-menu-item index="/cache"><el-icon><Box /></el-icon><span>响应缓存</span></el-menu-item>
           <el-menu-item index="/episodes"><el-icon><VideoCamera /></el-icon><span>集数链接</span></el-menu-item>
           <el-menu-item index="/entities"><el-icon><Collection /></el-icon><span>实体索引</span></el-menu-item>

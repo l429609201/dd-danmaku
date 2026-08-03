@@ -2406,6 +2406,9 @@ async function handleRequest(request, env, ctx) {
     // 上游返回整季后，再在响应出口按原集号抽出那一集还给客户端。
     // 收益：同番第 2 集起直接命中整季缓存；上游请求量降到 1/N。
     let strippedEpisode = null;   // 原始请求的集号，非空表示出口需要抽取
+    // 别名改写记录：非空表示本次回源用的是别名表给出的规范词而非客户端原词。
+    // 仅用于日志与响应头标记，便于排查「为什么搜到的标题和请求的不一样」。
+    let aliasRewritten = null;
     if (request.method === 'GET'
         && tUrlObj.pathname.startsWith('/api/v2/search/episodes')
         && tUrlObj.searchParams.has('episode')) {
@@ -2744,6 +2747,22 @@ async function handleRequest(request, env, ctx) {
                         'X-Cache': local.stale ? 'HIT-LOCAL-STALE' : 'HIT-LOCAL',
                     }
                 });
+            }
+            // 本地无缓存，但本地端在同一次 RPC 里顺带做了别名解析：
+            // 客户端搜的词 dandanplay 搜不到（如「无职转生 第三季」），而库里
+            // 有等价的规范标题（「无职转生Ⅲ ～…～」）。用规范词改写回源 URL，
+            // 把原本注定为空的请求变成能拿到数据的请求。
+            // 只改 tUrlObj + url：两者同时是上游 fetch 目标与内存缓存键的来源，
+            // 与上面剥离 episode 的处理方式一致。
+            if (local && !local.hit && local.alias_hit && local.canonical
+                && request.method === 'GET' && !isMatchApi) {
+                const kwName = tUrlObj.searchParams.has('keyword') ? 'keyword' : 'anime';
+                if (tUrlObj.searchParams.has(kwName)) {
+                    aliasRewritten = { from: local.term || '', to: local.canonical };
+                    tUrlObj.searchParams.set(kwName, local.canonical);
+                    url = tUrlObj.toString();
+                    console.log(`🔤 [${clientIP}] 别名改写搜索词: ${aliasRewritten.from} → ${local.canonical}`);
+                }
             }
         }
     }
@@ -3214,6 +3233,11 @@ async function handleRequest(request, env, ctx) {
     if (finalBody !== responseText) {
         responseHeaders.delete('Content-Length');
         responseHeaders.set('X-Episode-Extracted', strippedEpisode);
+    }
+    // 别名改写标记：本次回源用的是规范词而非客户端原词。
+    // 排查「请求 A 却返回 B 的数据」时，看这个头就知道是别名表在起作用。
+    if (aliasRewritten) {
+        responseHeaders.set('X-Alias-Rewritten', encodeURIComponent(aliasRewritten.to));
     }
 
     return new Response(finalBody, {
