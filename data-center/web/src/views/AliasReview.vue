@@ -1,13 +1,13 @@
 <template>
-  <div>
-    <h2 class="page-title">别名校验</h2>
+  <div class="app-page">
+    <h1 class="app-page__title">别名校验</h1>
     <p class="page-desc">
       客户端搜不到结果的词，算法已在库里找到疑似对应的规范标题。
       确认后该词会被自动改写为规范词回源，把原本注定为空的搜索变成有结果的搜索。
       按命中数降序排列，先修最热的收益最大。
     </p>
 
-    <div class="toolbar">
+    <div class="app-toolbar">
       <el-select v-model="status" size="small" style="width: 130px" @change="reload">
         <el-option label="待确认" value="pending" />
         <el-option label="已生效" value="approved" />
@@ -19,7 +19,8 @@
       </el-button>
       <el-button size="small" :loading="scoring" @click="aiScore">AI 打分</el-button>
       <el-button size="small" :loading="supplementing" @click="external">外部源补充</el-button>
-      <span class="tip">共 {{ total }} 条</span>
+      <span class="app-toolbar__spacer" />
+      <span class="tip">共 {{ total }} 个词</span>
     </div>
 
     <!-- 卡片式而非表格：搜索词和候选标题都是长中文，表格列宽一挤就全截断，
@@ -58,7 +59,7 @@
       </div>
     </div>
 
-    <el-pagination v-if="total > pageSize" class="pager" background
+    <el-pagination v-if="total > pageSize" class="app-pager" background
                    layout="total, prev, pager, next" :total="total"
                    :current-page="page" :page-size="pageSize" @current-change="onPage" />
   </div>
@@ -173,10 +174,8 @@ export default {
 
 <style scoped>
 .page-desc { color: #909399; font-size: 13px; margin-bottom: 16px; line-height: 1.6; }
-.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
-.tip { color: #909399; font-size: 12px; margin-left: auto; }
+.tip { color: #909399; font-size: 12px; }
 .muted { color: #c0c4cc; }
-.pager { margin-top: 16px; justify-content: flex-end; }
 
 /* 卡片列表：一个搜索词一张卡，候选逐行排在词下面 */
 .review-list { min-height: 120px; }
