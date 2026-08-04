@@ -195,10 +195,11 @@ class CleanupService:
         while True:
             db = get_db_sync()
             try:
-                # 子查询取一批主键，再按主键删除（兼容 MySQL/SQLite/PG）
+                # 按时间、主键稳定取最老的一批；配合 (created_at, id) 复合索引，
+                # 避免百万行表每轮清理都全表扫描并 filesort。
                 pk = inspect(model).primary_key[0]
                 ids = [r[0] for r in db.query(pk).filter(field < cutoff)
-                       .limit(batch).all()]
+                       .order_by(field.asc(), pk.asc()).limit(batch).all()]
                 if not ids:
                     break
                 deleted = db.query(model).filter(pk.in_(ids)) \

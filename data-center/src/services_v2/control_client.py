@@ -73,6 +73,15 @@ class ControlClient:
         self._audit_buf: list = []
         self._audit_task: Optional[asyncio.Task] = None
         self._audit_dropped = 0
+        self._audit_sampled_out = 0
+        # 这些成功消息已有专门数据源，审计表仅保留 1% 用于链路抽查；
+        # 失败/超时及其他业务消息仍全量保存，避免削弱故障诊断能力。
+        self._AUDIT_SAMPLE_RATE = 100
+        self._AUDIT_SAMPLED_SUCCESS_TYPES = {
+            "cache.get", "cache.upsert", "log.report",
+            "metrics.report", "stats.report", "keypool.report",
+        }
+        self._audit_sample_counters: Dict[str, int] = {}
         self._AUDIT_BUF_MAX = 5000       # 缓冲上限，超出丢弃保护内存
         self._AUDIT_FLUSH_BATCH = 200    # 单批落库条数
         self._AUDIT_FLUSH_INTERVAL = 2.0  # 落库间隔（秒）
@@ -92,6 +101,7 @@ class ControlClient:
             # 审计缓冲水位：depth 持续走高或 dropped 增长说明落库跟不上
             "audit_buf_depth": len(self._audit_buf),
             "audit_dropped": self._audit_dropped,
+            "audit_sampled_out": self._audit_sampled_out,
             "config_resync_pending": bool(
                 self._resync_task and not self._resync_task.done()),
             "config_resync_dirty": self._resync_dirty,
@@ -646,11 +656,19 @@ class ControlClient:
 
     def _audit(self, direction: str, message_type: str, status: str,
                request_cache_key: Optional[str] = None):
-        """写消息审计：仅入内存缓冲（纯 append，零阻塞），由后台消费者攒批落库。
+        """写消息审计：高频常规成功消息采样，其余全量进入内存缓冲。
 
-        原实现是同步 DB 写入，而本方法每条 Worker 消息都会调用一次
-        （cache.get 每个请求一次），高频下直接把事件循环拖到数百毫秒延迟。
+        cache/log/metrics/stats/keypool 已有专门数据源，重复成功审计按每类
+        100 条保留 1 条；失败、超时及其他业务消息不采样。这样保留链路抽查
+        能力，同时避免 control_messages 以每小时数十万条持续膨胀。
         """
+        if (status == "success"
+                and message_type in self._AUDIT_SAMPLED_SUCCESS_TYPES):
+            count = self._audit_sample_counters.get(message_type, 0) + 1
+            self._audit_sample_counters[message_type] = count
+            if count % self._AUDIT_SAMPLE_RATE != 1:
+                self._audit_sampled_out += 1
+                return
         if len(self._audit_buf) >= self._AUDIT_BUF_MAX:
             self._audit_dropped += 1
             return

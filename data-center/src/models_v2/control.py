@@ -7,7 +7,7 @@
 - RuntimeEvent     本地端统一运行事件（替代旧 SystemLog / SyncLog）
 """
 from sqlalchemy import (
-    BigInteger, Boolean, Column, DateTime, Integer, JSON, String, Text,
+    BigInteger, Boolean, Column, DateTime, Index, Integer, JSON, String, Text,
 )
 
 from src.models_v2.base import Base, TimestampMixin, now
@@ -64,6 +64,11 @@ class ControlMessage(Base, TimestampMixin):
     payload_summary = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
     duration_ms = Column(Integer, default=0, nullable=False)
+
+    __table_args__ = (
+        # 保留期清理按时间、主键稳定分批，避免大表全扫和 filesort。
+        Index("ix_cm_created_id", "created_at", "id"),
+    )
 
 
 class RuntimeEvent(Base):

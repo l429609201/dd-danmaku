@@ -335,6 +335,10 @@ def _patch_drop_worker_request_logs(engine: Engine) -> bool:
 #
 # 命名统一 ix_<表>_<列缩写>，便于识别与回滚。
 _COMPOSITE_INDEXES = {
+    "control_messages": [
+        # 清理任务按保留期稳定分批取主键；时间+主键同时有序，避免全表扫描/filesort
+        ("ix_cm_created_id", ["created_at", "id"]),
+    ],
     "worker_request_logs": [
         # 按级别筛选 + 时间倒序（日志页最常用组合）
         ("ix_wrl_level_created", ["level", "created_at"]),
