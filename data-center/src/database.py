@@ -98,13 +98,27 @@ async def ensure_compatible_schema():
 
 
 async def apply_db_patches():
-    """执行数据库特殊补丁（数据回填/索引/一次性修正等）。
+    """执行带历史记录的数据库特殊补丁。
 
-    补丁逻辑集中在 database_patches.py，单补丁失败不中断启动。
+    普通补丁只在首次成功检查时运行；不可逆补丁默认关闭，需显式开关。
     """
     try:
-        from src.database_patches import apply_patches
-        apply_patches(engine)
+        from src.config import settings
+        from src.db_patches import (
+            DESTRUCTIVE_PATCHES,
+            PATCHES,
+            apply_patch_registry,
+        )
+
+        patches = list(PATCHES)
+        if settings.ALLOW_DESTRUCTIVE_DB_PATCHES:
+            logger.warning("⚠️ 已开启不可逆数据库补丁；请确认已完成备份")
+            patches.extend(DESTRUCTIVE_PATCHES)
+        apply_patch_registry(
+            engine,
+            patches,
+            allow_destructive=settings.ALLOW_DESTRUCTIVE_DB_PATCHES,
+        )
     except Exception as e:
         # 补丁入口本身异常也不阻断启动（补丁是兜底修正，非关键路径）
         logger.error(f"❌ 数据库补丁入口执行异常（已跳过）: {e}")

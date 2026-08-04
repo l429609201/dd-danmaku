@@ -8,24 +8,27 @@ from pydantic import validator
 
 class Settings(BaseSettings):
     """应用配置"""
-    
+
     # 基础配置
     PROJECT_NAME: str = "Worker 数据交互中心"
     PROJECT_DESCRIPTION: str = "Worker API代理系统的数据管理和监控中心"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api"
-    
+
     # 服务器配置
     HOST: str = "0.0.0.0"
     PORT: int = 7759
     DEBUG: bool = False
-    
+
     # 跨域配置
     ALLOWED_HOSTS: List[str] = ["*"]
-    
+
     # 数据库配置
     DATABASE_TYPE: str = "sqlite"  # sqlite, mysql, postgresql
     DATABASE_URL: Optional[str] = None  # 如果指定则直接使用
+
+    # 不可逆数据库补丁默认关闭；仅在已备份并人工确认时临时开启。
+    ALLOW_DESTRUCTIVE_DB_PATCHES: bool = False
 
     # SQLite配置
     SQLITE_PATH: str = "/app/config/database.db"
@@ -81,11 +84,11 @@ class Settings(BaseSettings):
     # 实体拼装：cache_key 未命中时从 api_response_entities 拼出等价响应，省掉回源。
     # 主要解决带 episode=N 的查询每集一个 cache_key、命中率恒为 0 的问题。
     ENTITY_ASSEMBLE_ENABLED: bool = True
-    
+
     # Telegram机器人配置
     TG_BOT_TOKEN: Optional[str] = None
     TG_ADMIN_USER_ID: Optional[str] = None
-    
+
     # Worker端点配置
     WORKER_ENDPOINTS: Optional[str] = None  # 逗号分隔的Worker地址列表
     WORKER_API_KEYS: Optional[str] = None  # 逗号分隔的Worker API密钥列表
@@ -95,22 +98,22 @@ class Settings(BaseSettings):
     SYNC_INTERVAL_HOURS: int = 1  # 同步间隔（小时）
     SYNC_RETRY_ATTEMPTS: int = 3  # 同步重试次数
     SYNC_TIMEOUT_SECONDS: int = 30  # 同步超时时间
-    
+
     # 日志配置
     LOG_LEVEL: str = "INFO"
     LOG_FILE: Optional[str] = "/app/config/logs/app.log"
-    
+
     # 安全配置
     SECRET_KEY: str = "your-secret-key-change-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    
+
     @validator("TG_ADMIN_USER_ID")
     def parse_admin_user_ids(cls, v):
         """解析管理员用户ID列表"""
         if not v:
             return []
         return [int(uid.strip()) for uid in v.split(",") if uid.strip()]
-    
+
     @validator("WORKER_ENDPOINTS")
     def parse_worker_endpoints(cls, v):
         """解析Worker端点列表"""
@@ -124,7 +127,7 @@ class Settings(BaseSettings):
         if not v:
             return []
         return [key.strip() for key in v.split(",") if key.strip()]
-    
+
     @property
     def database_url(self) -> str:
         """根据数据库类型生成连接URL"""
@@ -140,7 +143,7 @@ class Settings(BaseSettings):
         else:
             # 默认使用SQLite
             return f"sqlite:///{self.SQLITE_PATH}"
-    
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

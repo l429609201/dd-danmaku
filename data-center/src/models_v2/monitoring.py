@@ -4,11 +4,10 @@
 - IpRule                 IP 黑白名单规则（下发给 Worker）
 - IpRequestStatCurrent   IP 请求统计当前累计（Worker 周期上报 upsert）
 - IpRequestStatSnapshot  IP 请求统计周期快照（用于趋势）
-- WorkerRequestLog       Worker 请求/拦截日志（历史表，明细已迁到轮转文件）
 - WorkerLogDailyStat     Worker 日志按日聚合计数（仪表盘洞察数据源）
 """
 from sqlalchemy import (
-    BigInteger, Boolean, Column, DateTime, Integer, JSON, String, Text,
+    BigInteger, Boolean, Column, DateTime, Integer, JSON, String,
     UniqueConstraint,
 )
 
@@ -96,44 +95,6 @@ class UaLimitRule(Base, TimestampMixin):
     origin_max_per_day = Column(Integer, nullable=True)
     # 回源侧路径级配额，结构同 path_limits_json：[{"path": "...", "maxRequestsPerHour": 50}]
     origin_path_limits_json = Column(JSON, nullable=True)
-
-
-class WorkerRequestLog(Base):
-    """Worker 请求/拦截日志（实时日志数据源）"""
-    __tablename__ = "worker_request_logs"
-
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    worker_id = Column(String(100), index=True, nullable=True)
-    client_ip = Column(String(64), index=True, nullable=True)
-    method = Column(String(10), nullable=True)
-    path = Column(String(500), index=True, nullable=True)
-    # 提取 URL 参数中的搜索词/episodeId，便于日志查看和筛选
-    # （GET 请求参数在 query 而非 body，Worker 侧从 tUrlObj.searchParams 提取）
-    query = Column(String(500), nullable=True)
-    status = Column(Integer, index=True, nullable=True)
-    ua_type = Column(String(100), index=True, nullable=True)
-    # 缓存来源：MEM / LOCAL / R2 / MISS / KEY-POOL 等（便于排查命中链路）
-    cache_source = Column(String(20), index=True, nullable=True)
-    # 上游响应状态（软限流时记录真实 errorCode）
-    upstream_status = Column(Integer, nullable=True)
-    # 本次请求使用的密钥 id（密钥池调度排查）
-    key_id = Column(String(64), nullable=True)
-    # 客户端用户标识（X-Ddd-User，来自客户端签名头，用于按用户标识/过滤）
-    # 长度 255：上报的是**混淆后**的标识（`品牌:GUID` 经 hex 编码后约 96 字符），
-    # 原 64 会溢出导致整批日志落库失败（见 database_patches._patch_widen_client_user_id）
-    client_user_id = Column(String(255), index=True, nullable=True)
-    # 请求处理耗时（毫秒）
-    duration_ms = Column(Integer, nullable=True)
-    # 响应体字节数（缓存命中/回源均记录，拦截类为 None）
-    response_bytes = Column(Integer, nullable=True)
-    # 请求体内容（POST/PUT 截断至 4 KB，GET 为 None）
-    request_body = Column(Text, nullable=True)
-    # 响应体内容（截断至 4 KB，拦截类早退路径为 None）
-    response_body = Column(Text, nullable=True)
-    # INFO / WARN / ERROR
-    level = Column(String(20), index=True, nullable=False, default="INFO")
-    message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=now, index=True, nullable=False)
 
 
 class WorkerLogDailyStat(Base):

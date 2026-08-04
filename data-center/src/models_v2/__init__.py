@@ -19,7 +19,7 @@ from src.models_v2.cache import (
 )
 from src.models_v2.monitoring import (
     IpRule, IpRequestStatCurrent, IpRequestStatSnapshot,
-    UaLimitRule, WorkerRequestLog, WorkerLogDailyStat,
+    UaLimitRule, WorkerLogDailyStat,
     WorkerMetricsSnapshot, LocalCommentStore,
     CleanupPolicy, AppKeyPool, WorkerKeyState, IpGeoCache, SignKeyPool,
     UserAllowPool, OAuthConfig,
@@ -53,7 +53,6 @@ __all__ = [
     "IpRequestStatCurrent",
     "IpRequestStatSnapshot",
     "UaLimitRule",
-    "WorkerRequestLog",
     "WorkerLogDailyStat",
     "WorkerMetricsSnapshot",
     "LocalCommentStore",
