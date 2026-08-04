@@ -329,6 +329,22 @@ class ControlClient:
             r = await asyncio.to_thread(_q)
             if not r:
                 return None
+
+            # 裸系列词可能被某一季的 approved 别名抢先改写（如 OVERLORD → OVERLORD II）。
+            # 若本地已能按原词聚合出多个季度，应保留原词进入正式缓存查询，
+            # 让 cache_service 的多季度覆盖逻辑返回完整系列，而不是截断为单季。
+            term = r.get("term")
+            if term:
+                from src.services_v2.alias_external_service import alias_external_service
+                series = await asyncio.to_thread(
+                    alias_external_service.search_by_keyword, term)
+                animes = series.get("animes") if isinstance(series, dict) else None
+                if isinstance(animes, list) and len(animes) > 1:
+                    logger.info(
+                        f"🧩 裸系列词保留原词，跳过单季别名改写: "
+                        f"{term} → {len(animes)} 季")
+                    return None
+
             # hit 仍为 False：本地没有可用响应体，只是给 Worker 换个词去回源
             return {"hit": False, **r}
         except Exception as ex:

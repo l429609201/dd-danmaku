@@ -29,8 +29,9 @@ export async function tryLocalSearchFallback({ keyword, rpc, extraHeaders = {} }
                 },
             }),
         };
-    } catch {
-        // 本地端不可用时保持原 429 流程，兜底本身不能阻断请求。
+    } catch (error) {
+        // 本地端不可用时保持原 429 流程，但保留失败原因，避免兜底异常被静默吞掉。
+        console.warn(`⚠️ 本地搜索兜底失败: ${normalized}`, error?.message || error);
         return null;
     }
 }
