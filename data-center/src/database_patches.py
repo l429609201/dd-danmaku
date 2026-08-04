@@ -273,6 +273,10 @@ _COMPOSITE_INDEXES = {
         # 按标题反查 animeId（search 关键词匹配入口）
         ("ix_are_type_title", ["entity_type", "title"]),
     ],
+    "media_alias": [
+        # 空格差异兜底解析：alias_norm 精确匹配失配后按无空白形态查
+        ("ix_ma_normns_status", ["alias_norm_ns", "status"]),
+    ],
 }
 
 
@@ -479,6 +483,55 @@ def _patch_backfill_entity_anime_ep(engine: Engine) -> bool:
     return changed
 
 
+def _patch_backfill_alias_norm_ns(engine: Engine) -> bool:
+    """回填 media_alias 存量行的 alias_norm_ns（alias_norm 去掉所有空白）。
+
+    该列是「空格差异兜底解析」的查询列。存量 2 万+ 行是加列之前写入的，
+    值为 NULL，不回填则兜底查询永远查不到，等于该能力对历史别名无效。
+
+    纯 SQL 可完成：alias_norm 已是 NFKC + 小写形态，只需再删空白。
+    半角空格覆盖绝大多数场景；全角空格（U+3000）在 alias_norm 阶段
+    已被 NFKC 转成半角，无需单独处理。
+
+    幂等：只更新 alias_norm_ns IS NULL 的行；全部回填后不再做事。
+    """
+    table = "media_alias"
+    inspector = inspect(engine)
+    if table not in set(inspector.get_table_names()):
+        return False
+    try:
+        table_cols = {c["name"] for c in inspector.get_columns(table)}
+    except Exception as e:
+        logger.warning(f"⚠️ 读取 {table} 结构失败，跳过回填: {e}")
+        return False
+    if "alias_norm_ns" not in table_cols or "alias_norm" not in table_cols:
+        return False
+
+    dialect = engine.dialect.name
+    if dialect not in ("mysql", "sqlite", "postgresql"):
+        return False
+    try:
+        with engine.begin() as conn:
+            cur = conn.exec_driver_sql(
+                f"SELECT COUNT(*) FROM {table} WHERE alias_norm_ns IS NULL"
+            )
+            pending = (cur.fetchone() or [0])[0] or 0
+            if not pending:
+                return False
+            # 三种方言的 REPLACE 语义一致，可共用同一条 UPDATE
+            conn.exec_driver_sql(
+                f"UPDATE {table} "
+                "SET alias_norm_ns = REPLACE(REPLACE(REPLACE("
+                "alias_norm, ' ', ''), CHAR(9), ''), CHAR(10), '') "
+                "WHERE alias_norm_ns IS NULL"
+            )
+        logger.info(f"🔤 已回填 {table}.alias_norm_ns 共 {pending} 行")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ 回填 {table}.alias_norm_ns 失败（跳过，不影响启动）: {e}")
+        return False
+
+
 # ============ 补丁注册表 ============
 # 按顺序执行；新增补丁在此登记即生效。
 _PATCHES: List[Callable[[Engine], bool]] = [
@@ -491,6 +544,8 @@ _PATCHES: List[Callable[[Engine], bool]] = [
     _patch_entity_unique_key,
     # 回填放在建索引之后：先有 ix_are_anime_ep，UPDATE 的 WHERE 才走索引
     _patch_backfill_entity_anime_ep,
+    # 同理：先建 ix_ma_normns_status，再回填 alias_norm_ns
+    _patch_backfill_alias_norm_ns,
 ]
 
 

@@ -239,8 +239,13 @@ class MediaAlias(Base, TimestampMixin):
     # 归属的 dandanplay animeId
     anime_id = Column(String(100), index=True, nullable=False)
     alias = Column(String(500), nullable=False)
-    # 归一化形式（小写 + 去空格 + 全角转半角），线上查询走这列而非 alias
+    # 归一化形式（NFKC + 小写 + 连续空白合一），线上查询走这列而非 alias
     alias_norm = Column(String(500), nullable=False)
+    # 再去掉所有空白的形态：用户手输标题时空格位置随意
+    # （「无职转生Ⅱ ～…～」vs「无职转生ii～…～」），alias_norm 保留单个空格
+    # 会导致精确匹配失配。单独存一列并建索引，避免查询时用
+    # REPLACE() 导致全表扫描。alias_norm 不改动——它还承担唯一键与展示职责。
+    alias_norm_ns = Column(String(500), nullable=True)
     # zh-Hans / zh-Hant / ja / ja-romaji / en / unknown
     lang = Column(String(50), nullable=True)
     # main（主标题）/ official / alias / search_keyword
@@ -263,6 +268,8 @@ class MediaAlias(Base, TimestampMixin):
         UniqueConstraint("alias_norm", "anime_id", name="uq_ma_norm_anime"),
         # 线上解析主查询路径：按归一化别名 + approved 状态查
         Index("ix_ma_norm_status", "alias_norm", "status"),
+        # 空格差异兜底查询路径：精确匹配失配后按无空白形态 + approved 查
+        Index("ix_ma_normns_status", "alias_norm_ns", "status"),
         # 人工校验页排序路径：pending 按命中数降序
         Index("ix_ma_status_hit", "status", "hit_snapshot"),
     )

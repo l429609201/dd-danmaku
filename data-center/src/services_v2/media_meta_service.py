@@ -185,6 +185,19 @@ def normalize_alias(text: str) -> str:
     return s
 
 
+def normalize_alias_ns(text: str) -> str:
+    """在 normalize_alias 基础上再删掉所有空白，用于空格差异兜底匹配。
+
+    客户端搜的词与库标题常只差空格位置（「无职转生Ⅱ ～…～」vs
+    「无职转生ii～…～」），alias_norm 保留单个空格导致精确匹配失配。
+    该形态写入 alias_norm_ns 列并建索引，查询时无需 REPLACE() 全表扫描。
+    """
+    norm = normalize_alias(text)
+    if not norm:
+        return ""
+    return re.sub(r"\s+", "", norm)
+
+
 def parse_language(language: Optional[str]) -> Tuple[Optional[str], str]:
     """把上游 language 描述串解析成 (lang, title_type)。
 
@@ -465,6 +478,8 @@ class MediaMetaService:
                     anime_id=anime_id,
                     alias=it["alias"],
                     alias_norm=norm,
+                    # 无空白形态：供空格差异兜底查询，与 alias_norm 同步写入
+                    alias_norm_ns=re.sub(r"\s+", "", norm),
                     lang=it.get("lang"),
                     title_type=it.get("title_type"),
                     source=source,
@@ -611,6 +626,16 @@ class MediaMetaService:
             MediaAlias.status == "approved",
         ).order_by(MediaAlias.confidence.desc()).limit(5).all()
         if not rows:
+            # 精确匹配失配时按无空白形态再查一次：客户端手输标题的空格位置随意，
+            # 「无职转生ii～…～ 第二部分」与库里「无职转生Ⅱ ～…～ 第二部分」
+            # 仅差一个空格，alias_norm 精确比较会漏掉。走 ix_ma_normns_status 索引。
+            norm_ns = normalize_alias_ns(term)
+            if norm_ns and norm_ns != norm:
+                rows = db.query(MediaAlias).filter(
+                    MediaAlias.alias_norm_ns == norm_ns,
+                    MediaAlias.status == "approved",
+                ).order_by(MediaAlias.confidence.desc()).limit(5).all()
+        if not rows:
             return None
 
         # 别名只给出 animeId，真正要回给 Worker 的是该番剧的规范标题——
@@ -726,6 +751,8 @@ class MediaMetaService:
         if not row:
             row = MediaAlias(anime_id=anime_id, alias_norm=norm)
             db.add(row)
+        # 无空白形态：兜底匹配列，每次写入都同步（存量由启动补丁回填）
+        row.alias_norm_ns = normalize_alias_ns(text_alias)
         row.alias = text_alias
         row.lang = lang or "unknown"
         row.title_type = title_type or "alias"
