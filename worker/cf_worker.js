@@ -2709,7 +2709,20 @@ async function handleRequest(request, env, ctx) {
                 if (neg && neg.hit && neg.is_empty === true && neg.body) {
                     console.log(`🕳️ [${clientIP}] 空结果负缓存命中，直接返回空: ${normKw}`);
                     bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
-                    addMemoryLog('INFO', '空结果负缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: 200, cacheSource: 'LOCAL-EMPTY', durationMs: Date.now() - reqStartMs, responseBytes: neg.body ? neg.body.length : 0, requestBody: truncateBody(reqBodyText), responseBody: truncateBody(neg.body) });
+                    addMemoryLog('INFO', '空结果负缓存命中', {
+                        ip: clientIP,
+                        path: apiPath,
+                        query: normKw,  // 归一化后的搜索词
+                        method: request.method,
+                        userAgent: request.headers.get('X-User-Agent') || '',
+                        userId: clientUserId,
+                        responseStatus: 200,
+                        cacheSource: 'LOCAL-EMPTY',
+                        durationMs: Date.now() - reqStartMs,
+                        responseBytes: neg.body ? neg.body.length : 0,
+                        requestBody: truncateBody(reqBodyText),
+                        responseBody: truncateBody(neg.body)
+                    });
                     return new Response(neg.body, {
                         status: 200,
                         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-Cache': 'HIT-EMPTY' },
@@ -2754,7 +2767,21 @@ async function handleRequest(request, env, ctx) {
                 memoryCache.apiCache.set(cacheKey, { data: local.body, timestamp: Date.now() });
                 const localBody = narrowToEpisode(local.body);
                 bumpMetric('bytesOut', localBody.length || 0);
-                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: local.status || 200, cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL', stale: !!local.stale, durationMs: Date.now() - reqStartMs, responseBytes: localBody ? localBody.length : 0, requestBody: truncateBody(reqBodyText), responseBody: truncateBody(localBody) });
+                addMemoryLog('INFO', '本地端缓存命中', {
+                    ip: clientIP,
+                    path: apiPath,
+                    query: tUrlObj.searchParams.get('anime') || tUrlObj.searchParams.get('keyword') || '',
+                    method: request.method,
+                    userAgent: request.headers.get('X-User-Agent') || '',
+                    userId: clientUserId,
+                    responseStatus: local.status || 200,
+                    cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL',
+                    stale: !!local.stale,
+                    durationMs: Date.now() - reqStartMs,
+                    responseBytes: localBody ? localBody.length : 0,
+                    requestBody: truncateBody(reqBodyText),
+                    responseBody: truncateBody(localBody)
+                });
                 return new Response(localBody, {
                     status: local.status || 200,
                     headers: {
@@ -2795,7 +2822,20 @@ async function handleRequest(request, env, ctx) {
             bumpMetric('r2CacheHits'); bumpMetric('totalResponses');
             bumpMetric('status2xx');
             bumpMetric('bytesOut', (cachedData && cachedData.length) ? cachedData.length : 0);
-            addMemoryLog('INFO', 'R2弹幕缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: 200, cacheSource: 'R2', durationMs: Date.now() - reqStartMs, responseBytes: cachedData ? cachedData.length : 0, requestBody: truncateBody(reqBodyText), responseBody: truncateBody(cachedData) });
+            addMemoryLog('INFO', 'R2弹幕缓存命中', {
+                ip: clientIP,
+                path: apiPath,
+                query: tUrlObj.searchParams.get('episodeId') || '',
+                method: request.method,
+                userAgent: request.headers.get('X-User-Agent') || '',
+                userId: clientUserId,
+                responseStatus: 200,
+                cacheSource: 'R2',
+                durationMs: Date.now() - reqStartMs,
+                responseBytes: cachedData ? cachedData.length : 0,
+                requestBody: truncateBody(reqBodyText),
+                responseBody: truncateBody(cachedData)
+            });
             return new Response(cachedData, {
                 status: 200,
                 headers: {
@@ -2813,7 +2853,20 @@ async function handleRequest(request, env, ctx) {
                 console.log(`📦 [${clientIP}] 本地端弹幕兜底命中: ${episodeId} (${local.comment_count}条)`);
                 bumpMetric('r2CacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
                 bumpMetric('bytesOut', local.body.length || 0);
-                addMemoryLog('INFO', '本地端弹幕兜底命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: 200, cacheSource: 'LOCAL-COMMENT', durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0, requestBody: truncateBody(reqBodyText), responseBody: truncateBody(local.body) });
+                addMemoryLog('INFO', '本地端弹幕兜底命中', {
+                    ip: clientIP,
+                    path: apiPath,
+                    query: tUrlObj.searchParams.get('episodeId') || '',
+                    method: request.method,
+                    userAgent: request.headers.get('X-User-Agent') || '',
+                    userId: clientUserId,
+                    responseStatus: 200,
+                    cacheSource: 'LOCAL-COMMENT',
+                    durationMs: Date.now() - reqStartMs,
+                    responseBytes: local.body ? local.body.length : 0,
+                    requestBody: truncateBody(reqBodyText),
+                    responseBody: truncateBody(local.body)
+                });
                 // 回填 R2 一级缓存，下次走边缘
                 const r2Promise = r2PutComment(env, r2Key, local.body).catch(() => {});
                 if (ctx && ctx.waitUntil) ctx.waitUntil(r2Promise);
@@ -3039,6 +3092,8 @@ async function handleRequest(request, env, ctx) {
         ip: clientIP,
         method: request.method,
         path: apiPath,
+        // 提取 URL 参数中的搜索词，便于日志查看（GET 请求的参数在 query 而非 body）
+        query: tUrlObj.searchParams.get('anime') || tUrlObj.searchParams.get('keyword') || '',
         userAgent: request.headers.get('X-User-Agent') || '',
         userId: clientUserId,
         responseStatus: response.status,
