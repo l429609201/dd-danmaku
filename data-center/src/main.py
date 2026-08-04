@@ -83,19 +83,9 @@ async def lifespan(app: FastAPI):
     logger.info("🧹 启动数据保留清理任务...")
     await cleanup_service.start()
 
-    # 媒体外部ID/别名一次性回填：仅首次启动执行，靠 app_settings 标记防重复。
-    # 放线程池执行（内部全是同步 DB 操作），失败不写标记、下次启动重试，
-    # 且不阻塞启动流程——属增值数据，缺了不影响主链路。
-    # task 引用挂到 app.state：裸 create_task 的返回值若无强引用，可能被 GC 提前回收。
-    try:
-        from scripts.backfill_media_meta import run_once_if_needed as _backfill_once
-        app.state.media_meta_backfill_task = _aio.create_task(
-            _aio.to_thread(_backfill_once))
-    except Exception as _ex:
-        # import 失败（如工作目录不含 scripts 包）不应拖垮启动
-        logger.warning(f"⚠️ 媒体元数据回填任务未启动: {_ex}")
-
     # 启动别名自动补充周期任务（增量提取缓存词 + 生成空结果词候选）
+    # 存量一次性回填也在该服务内完成（原先放这里 import scripts 包，
+    # 但 scripts/ 不在容器镜像内，线上从未真正执行过）。
     logger.info("🔤 启动别名自动补充任务...")
     from src.services_v2.alias_supplement_service import alias_supplement_service
     await alias_supplement_service.start()

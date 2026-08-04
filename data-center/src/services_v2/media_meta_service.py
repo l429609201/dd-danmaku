@@ -13,10 +13,11 @@ import logging
 import re
 import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 # 别名归一化函数的形参名叫 text，这里改名导入避免遮蔽
-from sqlalchemy import text as sql_text
+from sqlalchemy import bindparam, func, text as sql_text
+from sqlalchemy.exc import IntegrityError
 
 from src.models_v2 import MediaAlias, MediaExternalId, MediaLibrary
 
@@ -413,21 +414,24 @@ class MediaMetaService:
                 continue
             row = existing.get(norm)
             if row is None:
-                row = MediaAlias(
-                    anime_id=anime_id,
-                    alias=it["alias"],
-                    alias_norm=norm,
-                    lang=it.get("lang"),
-                    title_type=it.get("title_type"),
-                    source=source,
-                    status=status,
-                    confidence=confidence,
-                    hit_snapshot=hit_snapshot,
-                )
-                db.add(row)
+                # MySQL 的 utf8mb4_0900_ai_ci 是重音/宽度不敏感的：
+                # 'naruto shippūden' 与 'naruto shippuden'、'weiß' 与 'weiss'
+                # 在 DB 层视为同值，而 Python 侧精确比较判定为两个不同的 norm，
+                # 于是走到这里插入、撞唯一键。无法在 Python 里完整复刻 MySQL
+                # 的折叠规则（ß=ss / æ=ae / ø=o / Ⅲ=iii ...），所以用
+                # SAVEPOINT 兜住：冲突只回滚这一条别名。
+                # 这一点很关键——本方法是在调用方（entity_service）的事务里跑的，
+                # 不隔离的话一条别名冲突会连带回滚整个实体索引写入。
+                row = self._insert_alias_guarded(
+                    db, anime_id, it, norm, source, status,
+                    confidence, hit_snapshot)
+                if row is None:
+                    continue
                 existing[norm] = row
-                count += 1
-                continue
+                if row.source == source and row.confidence == confidence:
+                    count += 1
+                    continue
+                # 冲突后查回的既有行：继续走下面的升级判断
 
             # 已存在：人工确认过的记录（manual / 已 verified）一律不动
             if row.source == "manual" or row.verified_by is not None:
@@ -444,6 +448,37 @@ class MediaMetaService:
             if hit_snapshot > (row.hit_snapshot or 0):
                 row.hit_snapshot = hit_snapshot
         return count
+
+    @staticmethod
+    def _insert_alias_guarded(db, anime_id: str, it: Dict[str, Any], norm: str,
+                              source: str, status: str,
+                              confidence: int, hit_snapshot: int):
+        """在 SAVEPOINT 内插入一条别名；撞唯一键时查回既有行。
+
+        返回新行 / 既有行 / None（既插不进也查不到，属异常情况，跳过该条）。
+        """
+        try:
+            with db.begin_nested():
+                row = MediaAlias(
+                    anime_id=anime_id,
+                    alias=it["alias"],
+                    alias_norm=norm,
+                    lang=it.get("lang"),
+                    title_type=it.get("title_type"),
+                    source=source,
+                    status=status,
+                    confidence=confidence,
+                    hit_snapshot=hit_snapshot,
+                )
+                db.add(row)
+                db.flush()
+            return row
+        except IntegrityError:
+            # 已被等价别名（仅重音/宽度不同）占用，取回那一行交给升级逻辑
+            return db.query(MediaAlias).filter(
+                MediaAlias.anime_id == anime_id,
+                MediaAlias.alias_norm == norm,
+            ).first()
 
     def ingest_bangumi_raw(self, db, anime_id: str,
                            raw: Dict[str, Any]) -> Tuple[int, int]:
@@ -836,19 +871,31 @@ class MediaMetaService:
 
     def list_pending(self, db, status: str = "pending",
                      page: int = 1, page_size: int = 20) -> Dict[str, Any]:
-        """跨番剧列出待校验别名，按命中数降序。
+        """按搜索词分组列出待校验别名，命中高的在前。
 
-        校验页的核心视图：人工只需从上往下点，命中最高的先修，
-        按方案 §1.3 的统计，前 50 条就能覆盖 60%+ 的命中量。
-        同时带出候选番剧的标题与外部 ID，人工判断时不用再跳页面。
+        **按 alias_norm 分组而非逐行返回**：cache_extract_n 一个词匹配多个
+        animeId 就写多行，逐行展示会让同一个词出现三四次，人工得对同一个词
+        点三四次「通过」。分组后一行一个词、候选并列，一次决策定音。
         """
-        q = db.query(MediaAlias).filter(MediaAlias.status == status)
-        total = q.count()
-        rows = q.order_by(
-            MediaAlias.hit_snapshot.desc(), MediaAlias.id.desc()
+        # 分组分页：先取本页的 alias_norm（按最大命中降序），再拉回该组全部候选
+        grp = db.query(
+            MediaAlias.alias_norm.label("norm"),
+            func.max(MediaAlias.hit_snapshot).label("hit"),
+            func.max(MediaAlias.id).label("mid"),
+        ).filter(MediaAlias.status == status).group_by(MediaAlias.alias_norm)
+        total = grp.count()
+        page_groups = grp.order_by(
+            func.max(MediaAlias.hit_snapshot).desc(),
+            func.max(MediaAlias.id).desc(),
         ).offset((page - 1) * page_size).limit(page_size).all()
-        if not rows:
+        if not page_groups:
             return {"total": total, "items": []}
+
+        norms = [g.norm for g in page_groups]
+        rows = db.query(MediaAlias).filter(
+            MediaAlias.status == status,
+            MediaAlias.alias_norm.in_(norms),
+        ).all()
 
         # 批量取候选番剧标题，避免逐行查（N+1）
         anime_ids = [r.anime_id for r in rows if r.anime_id]
@@ -868,19 +915,72 @@ class MediaMetaService:
             ).all():
                 link_map.setdefault(e.anime_id, {})[e.provider] = e.external_url
 
-        items = [{
-            "id": r.id,
-            "alias": r.alias,
-            "anime_id": r.anime_id,
-            "candidate_title": title_map.get(r.anime_id),
-            "source": r.source,
-            "status": r.status,
-            "confidence": r.confidence,
-            "hit_snapshot": r.hit_snapshot,
-            "ai_suggestion": r.ai_suggestion,
-            "links": link_map.get(r.anime_id) or {},
-        } for r in rows]
+        # hit_snapshot 是录入时的快照，会过时；这里按本页 20 个词实时取当前命中，
+        # 只查一页的量，开销可忽略。取不到则回退快照值。
+        live_hits = self._live_hit_counts(db, [r.alias for r in rows])
+
+        # 按 alias_norm 聚合成「一个词 + 多个候选」
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for r in rows:
+            g = grouped.setdefault(r.alias_norm, {
+                "alias": r.alias,
+                "alias_norm": r.alias_norm,
+                "status": r.status,
+                "hit": max(r.hit_snapshot or 0,
+                           live_hits.get(normalize_alias(r.alias), 0)),
+                "candidates": [],
+            })
+            g["candidates"].append({
+                "id": r.id,
+                "anime_id": r.anime_id,
+                "title": title_map.get(r.anime_id),
+                "source": r.source,
+                "confidence": r.confidence,
+                "ai_suggestion": r.ai_suggestion,
+                "links": link_map.get(r.anime_id) or {},
+            })
+        # 候选内部按置信度降序，最可能的排最前，人工默认接受第一个即可
+        for g in grouped.values():
+            g["candidates"].sort(
+                key=lambda c: (c["confidence"] or 0), reverse=True)
+        # 输出顺序与分组分页查询一致
+        items = [grouped[n] for n in norms if n in grouped]
+        items.sort(key=lambda x: x["hit"], reverse=True)
         return {"total": total, "items": items}
+
+    @staticmethod
+    def _live_hit_counts(db, aliases: List[str]) -> Dict[str, int]:
+        """取这批搜索词当前的真实命中数（归一化后的 key → hit_count）。
+
+        为什么不靠 hit_snapshot：实时写入路径在 cache.upsert 那一刻就落别名，
+        那时缓存条目刚创建、hit_count 恒为 0，快照注定拿不到有意义的值。
+        命中数是「先修最热的词」的排序依据，必须取当前值。
+        """
+        if not aliases:
+            return {}
+        # 两个搜索接口的参数名不同，各拼一种；EMPTY: 前缀的负缓存也要算进来
+        keys = []
+        for a in aliases:
+            enc = quote(a)
+            for prefix in ("GET", "EMPTY"):
+                keys.append(f"{prefix}:/api/v2/search/episodes?anime={a}")
+                keys.append(f"{prefix}:/api/v2/search/episodes?anime={enc}")
+                keys.append(f"{prefix}:/api/v2/search/anime?keyword={a}")
+                keys.append(f"{prefix}:/api/v2/search/anime?anime={enc}")
+        out: Dict[str, int] = {}
+        sql = sql_text("""
+            SELECT cache_key, hit_count FROM api_response_cache
+            WHERE cache_key IN :keys
+        """).bindparams(bindparam("keys", expanding=True))
+        for cache_key, hit in db.execute(sql, {"keys": keys}):
+            term = parse_search_term(cache_key or "")
+            if not term:
+                continue
+            norm = normalize_alias(term)
+            # 同一个词可能有多条缓存（不同接口/编码形态），取最大命中
+            if (hit or 0) > out.get(norm, 0):
+                out[norm] = hit or 0
+        return out
 
 
 media_meta_service = MediaMetaService()

@@ -22,53 +22,41 @@
       <span class="tip">共 {{ total }} 条</span>
     </div>
 
-    <el-table :data="items" v-loading="loading" size="small"
-              empty-text="暂无待校验别名（可点「生成候选」扫描空结果搜索词）">
-      <el-table-column prop="alias" label="客户端搜索词" min-width="200" show-overflow-tooltip />
-      <el-table-column prop="hit_snapshot" label="命中" width="90" sortable />
-      <el-table-column label="推荐匹配" min-width="200" show-overflow-tooltip>
-        <template #default="{ row }">
-          <span v-if="row.candidate_title">{{ row.candidate_title }}</span>
-          <span v-else class="muted">（媒体库无此条目 {{ row.anime_id }}）</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="置信度" width="90">
-        <template #default="{ row }">
-          <el-tag :type="confType(row.confidence)" size="small">{{ row.confidence }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="source" label="来源" width="130" show-overflow-tooltip />
-      <!-- AI 建议仅作人工参考：不改 status/confidence，是否上线仍由人工点确认 -->
-      <el-table-column label="AI 建议" min-width="160" show-overflow-tooltip>
-        <template #default="{ row }">
-          <template v-if="row.ai_suggestion">
-            <el-tag :type="confType(row.ai_suggestion.confidence)" size="small">
-              {{ row.ai_suggestion.confidence }}
-            </el-tag>
-            <span class="ai-reason">{{ row.ai_suggestion.reason }}</span>
+    <!-- 卡片式而非表格：搜索词和候选标题都是长中文，表格列宽一挤就全截断，
+         最需要阅读的两列反而看不清。卡片让文本占满整行宽度。 -->
+    <div v-loading="loading" class="review-list">
+      <el-empty v-if="!items.length"
+                description="暂无待校验别名（可点「生成候选」扫描空结果搜索词）" />
+      <div v-for="g in items" :key="g.alias_norm" class="review-card">
+        <div class="card-head">
+          <span class="term" :title="g.alias">{{ g.alias }}</span>
+          <el-tag :type="g.hit > 100 ? 'danger' : g.hit > 10 ? 'warning' : 'info'"
+                  size="small" effect="plain">命中 {{ g.hit }}</el-tag>
+        </div>
+        <!-- 一个词可能匹配多个 animeId（系列名），并列展示，各自独立通过/拒绝 -->
+        <div v-for="c in g.candidates" :key="c.id" class="cand-row">
+          <el-tag :type="confType(c.confidence)" size="small" class="conf">
+            {{ c.confidence }}
+          </el-tag>
+          <span v-if="c.title" class="cand-title" :title="c.title">{{ c.title }}</span>
+          <span v-else class="muted">（媒体库无此条目 {{ c.anime_id }}）</span>
+          <span class="src">{{ srcText(c.source) }}</span>
+          <span v-if="c.ai_suggestion" class="ai" :title="c.ai_suggestion.reason">
+            AI {{ c.ai_suggestion.confidence }} · {{ c.ai_suggestion.reason }}
+          </span>
+          <span class="spacer" />
+          <el-link v-if="c.links && c.links.bangumi_tv" type="primary"
+                   :href="c.links.bangumi_tv" target="_blank" rel="noreferrer">BGM</el-link>
+          <el-link v-if="c.links && c.links.tmdb" type="primary"
+                   :href="c.links.tmdb" target="_blank" rel="noreferrer">TMDB</el-link>
+          <template v-if="g.status === 'pending'">
+            <el-link type="success" @click="review(c.id, true)">通过</el-link>
+            <el-link type="warning" @click="review(c.id, false)">拒绝</el-link>
           </template>
-          <span v-else class="muted">—</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="核对" width="110">
-        <template #default="{ row }">
-          <el-link v-if="row.links && row.links.bangumi_tv" type="primary"
-                   :href="row.links.bangumi_tv" target="_blank" rel="noreferrer">BGM</el-link>
-          <el-link v-if="row.links && row.links.tmdb" type="primary" style="margin-left: 6px"
-                   :href="row.links.tmdb" target="_blank" rel="noreferrer">TMDB</el-link>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="150">
-        <template #default="{ row }">
-          <template v-if="row.status === 'pending'">
-            <el-link type="success" @click="review(row.id, true)">通过</el-link>
-            <el-link type="warning" style="margin-left: 8px"
-                     @click="review(row.id, false)">拒绝</el-link>
-          </template>
-          <el-link type="danger" style="margin-left: 8px" @click="del(row.id)">删除</el-link>
-        </template>
-      </el-table-column>
-    </el-table>
+          <el-link type="danger" @click="del(c.id)">删除</el-link>
+        </div>
+      </div>
+    </div>
 
     <el-pagination v-if="total > pageSize" class="pager" background
                    layout="total, prev, pager, next" :total="total"
@@ -111,6 +99,18 @@ export default {
 
     // 置信度配色：90+ 绿（季号精确对上）、75+ 蓝、其余橙（需人工细看）
     const confType = (c) => (c >= 90 ? 'success' : c >= 75 ? '' : 'warning')
+
+    // source 原值是内部标识（cache_extract_n 等），列表里直接显示读不懂
+    const SRC_TEXT = {
+      dandanplay_titles: '官方别名',
+      cache_extract_1: '搜索词精确命中',
+      cache_extract_n: '搜索词命中系列',
+      auto_match: '算法季号对齐',
+      tmdb: 'TMDB',
+      bgm: 'Bangumi',
+      manual: '人工',
+    }
+    const srcText = (s) => SRC_TEXT[s] || s || '—'
 
     const review = async (id, approve) => {
       try {
@@ -165,7 +165,7 @@ export default {
 
     onMounted(load)
     return { items, total, page, pageSize, status, loading, generating, scoring,
-      supplementing, Refresh, reload, onPage, confType, review, del,
+      supplementing, Refresh, reload, onPage, confType, srcText, review, del,
       generate, aiScore, external }
   }
 }
@@ -176,6 +176,32 @@ export default {
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
 .tip { color: #909399; font-size: 12px; margin-left: auto; }
 .muted { color: #c0c4cc; }
-.ai-reason { color: #909399; font-size: 12px; margin-left: 6px; }
 .pager { margin-top: 16px; justify-content: flex-end; }
+
+/* 卡片列表：一个搜索词一张卡，候选逐行排在词下面 */
+.review-list { min-height: 120px; }
+.review-card {
+  border: 1px solid #ebeef5; border-radius: 6px;
+  padding: 10px 12px; margin-bottom: 10px; background: #fff;
+}
+.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+/* 搜索词是主信息，给足字号与宽度；长词换行而非截断 */
+.term {
+  font-size: 14px; font-weight: 600; color: #303133;
+  word-break: break-all; line-height: 1.4;
+}
+.cand-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0 6px 4px; font-size: 13px;
+  border-top: 1px dashed #f2f6fc;
+}
+.conf { flex-shrink: 0; }
+.cand-title { color: #606266; word-break: break-all; }
+.src { color: #909399; font-size: 12px; flex-shrink: 0; }
+.ai {
+  color: #909399; font-size: 12px; max-width: 260px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 把操作区推到右侧，无论中间文本多长都对齐 */
+.spacer { flex: 1; }
 </style>

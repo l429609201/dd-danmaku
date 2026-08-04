@@ -7,7 +7,7 @@
 
 刻意不含子任务 A（bangumi titles/onlineDatabases 提取）——
 entity_service._index_with_db 已在实体落库时同步提取，这里再扫一遍是重复劳动。
-存量数据由 scripts/backfill_media_meta 的一次性任务负责。
+存量数据由本服务的 _backfill_once_if_needed 一次性回填负责（首轮循环前执行）。
 
 配置全部存 app_settings，前端可改开关与间隔，不需要改代码调参。
 """
@@ -16,7 +16,7 @@ import logging
 from typing import Optional
 
 from src.database import get_db_sync
-from src.models_v2 import AppSetting
+from src.models_v2 import ApiResponseEntity, AppSetting
 from src.services_v2.media_meta_service import media_meta_service
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 # 增量水位线的存储键：记上次处理到的 api_response_cache.id，
 # 每轮只扫新增部分，避免每次全表重扫。
 WATERMARK_KEY = "alias_supplement_last_cache_id"
+
+# 一次性存量回填的完成标记。存量提取只需跑一次，之后由 entity_service
+# 的增量挂钩与本服务的周期任务持续补充。
+BACKFILL_FLAG_KEY = "media_meta_backfill_done"
 
 
 class AliasSupplementService:
@@ -65,7 +69,14 @@ class AliasSupplementService:
 
     async def _run_loop(self):
         """按配置间隔循环执行；异常只记录，不影响主服务"""
-        # 启动后先等一段再干活：避开启动时的一次性回填，别抢 DB 连接
+        # 先跑存量回填（仅首次）。原先放在 main.py 里 import scripts 包执行，
+        # 但 scripts/ 不在容器镜像内（只拷了 src/），线上一直报
+        # "No module named 'scripts'" 从未真正执行过。搬进本服务后随 src/ 一起打包。
+        try:
+            await asyncio.to_thread(self._backfill_once_if_needed)
+        except Exception as e:
+            logger.error(f"❌ 存量回填失败（下次启动重试）: {e}")
+        # 回填后再等一段，避免紧接着又抢 DB 连接
         interval = await asyncio.to_thread(
             self._get_int, "alias_supplement_interval_seconds", 3600)
         await asyncio.sleep(min(300, max(60, interval)))
@@ -77,6 +88,92 @@ class AliasSupplementService:
             interval = await asyncio.to_thread(
                 self._get_int, "alias_supplement_interval_seconds", 3600)
             await asyncio.sleep(max(300, interval))
+
+    # ---------- 存量一次性回填（原 scripts/backfill_media_meta.py） ----------
+
+    def _backfill_once_if_needed(self) -> dict:
+        """未跑过则执行一次全量回填，跑过直接跳过。
+
+        失败不写标记，下次启动重试。
+        """
+        if self._get_bool(BACKFILL_FLAG_KEY, False):
+            return {"skipped": True}
+        logger.info("🚀 首次启动：回填存量媒体外部ID与别名...")
+        s1 = self._backfill_bangumi(200)
+        s2 = self._backfill_cache_terms(2000)
+        self._set_setting(BACKFILL_FLAG_KEY, "true")
+        logger.info(
+            f"✅ 存量回填完成：bangumi {s1['scanned']} 条"
+            f"(外部ID {s1['ext_ids']}/别名 {s1['aliases']}/失败 {s1['failed']})，"
+            f"缓存词 {s2['scanned']} 条"
+            f"(approved {s2['approved']}/pending {s2['pending']})"
+        )
+        return {"skipped": False, "bangumi": s1, "cache": s2}
+
+    @staticmethod
+    def _backfill_bangumi(batch: int = 200) -> dict:
+        """扫全部 bangumi 实体，提取外部 ID 与官方别名。
+
+        按主键游标分页而非 offset：中途有新数据插入也不会漏行或重复。
+        """
+        stat = {"scanned": 0, "ext_ids": 0, "aliases": 0, "failed": 0}
+        last_id = 0
+        db = get_db_sync()
+        try:
+            while True:
+                rows = (
+                    db.query(ApiResponseEntity)
+                    .filter(
+                        ApiResponseEntity.entity_type == "bangumi",
+                        ApiResponseEntity.raw_json.isnot(None),
+                        ApiResponseEntity.id > last_id,
+                    )
+                    .order_by(ApiResponseEntity.id)
+                    .limit(batch)
+                    .all()
+                )
+                if not rows:
+                    break
+                for row in rows:
+                    last_id = row.id
+                    stat["scanned"] += 1
+                    try:
+                        n_ext, n_alias = media_meta_service.ingest_bangumi_raw(
+                            db, row.entity_id, row.raw_json or {})
+                        stat["ext_ids"] += n_ext
+                        stat["aliases"] += n_alias
+                    except Exception as ex:
+                        stat["failed"] += 1
+                        logger.warning(f"⚠️ animeId={row.entity_id} 提取失败: {ex}")
+                # 每批提交一次：单事务过大会拉长锁持有时间
+                db.commit()
+        finally:
+            db.close()
+        return stat
+
+    @staticmethod
+    def _backfill_cache_terms(batch: int = 2000) -> dict:
+        """扫有结果搜索缓存，提取搜索词别名"""
+        total = {"scanned": 0, "approved": 0, "pending": 0,
+                 "skipped_wide": 0, "skipped_noterm": 0}
+        min_id = 0
+        db = get_db_sync()
+        try:
+            while True:
+                stat = media_meta_service.ingest_cache_search_terms(
+                    db, min_cache_id=min_id, limit=batch)
+                if stat["scanned"] == 0:
+                    break
+                db.commit()
+                for k in total:
+                    total[k] += stat.get(k, 0)
+                # 水位未推进说明已到末尾，防止空转死循环
+                if stat["max_cache_id"] <= min_id:
+                    break
+                min_id = stat["max_cache_id"]
+        finally:
+            db.close()
+        return total
 
     async def run_once(self) -> dict:
         """执行一轮补充。同步 DB 操作整体放线程池，避免阻塞事件循环。"""
