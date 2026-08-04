@@ -2715,6 +2715,19 @@ async function handleRequest(request, env, ctx) {
                         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-Cache': 'HIT-EMPTY' },
                     });
                 }
+                // 负缓存未命中，但本地端解析出了别名：客户端搜的词在 dandanplay 搜不到，
+                // 而库里有等价的规范标题。用规范词改写回源 URL，让原本注定为空的请求能拿到数据。
+                // 注意：必须在这里立即改写，否则别名信息会在第二次 RPC 前被丢弃。
+                if (neg && !neg.hit && neg.alias_hit && neg.canonical) {
+                    const kwName = tUrlObj.searchParams.has('keyword') ? 'keyword' : 'anime';
+                    if (tUrlObj.searchParams.has(kwName)) {
+                        aliasRewritten = { from: neg.term || normKw, to: neg.canonical };
+                        tUrlObj.searchParams.set(kwName, neg.canonical);
+                        url = new URL(tUrlObj.toString());
+                        cacheKey = url.toString();
+                        console.log(`🔤 [${clientIP}] 别名改写搜索词: "${aliasRewritten.from}" → "${aliasRewritten.to}"`);
+                    }
+                }
             }
         }
 
