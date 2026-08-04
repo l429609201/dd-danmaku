@@ -298,15 +298,27 @@ class AliasExternalService:
                 (MediaAlias.alias_norm_ns == norm_kw.replace(" ", "")),
             ).distinct().limit(20).all() if row.anime_id]
 
-            # 系列聚合仅考虑 TV 条目，并要求剥掉季号后的标题与基础词完全相同；
-            # 因此不会把 OVA、剧场版或同前缀的其他作品混进来。
+            # 严格季度集合：仅 TV，且剥掉季号/篇章后必须与基础词完全一致。
+            # 明确搜索“第二季”等场景继续使用它，避免把电影、外传混进指定季度。
             series_rows = []
+            related_rows = []
             if base_kw:
                 candidates = db.query(MediaLibrary).filter(
-                    MediaLibrary.type_code == "tvseries",
                     MediaLibrary.title.ilike(f"{base_kw}%"),
                 ).limit(50).all()
-                series_rows = [row for row in candidates if _title_base(row.title or "") == base_kw]
+                series_rows = [
+                    row for row in candidates
+                    if row.type_code == "tvseries"
+                    and _title_base(row.title or "") == base_kw
+                ]
+                # 裸中文系列词用于“作品全集”检索：同前缀的 TV、外传、特别篇、
+                # 电影都属于用户期望结果。必须确认输入本身未被剥掉“篇/最终季”等
+                # 修饰，避免明确搜索 Alicization篇 时反而扩成整个系列；同时限制
+                # 至少 4 个中文字符，防止短词把同前缀的无关作品纳入。
+                cjk_count = len(re.findall(r"[\u4e00-\u9fff]", base_kw))
+                if (requested_season is None and norm_kw == base_kw
+                        and cjk_count >= 4):
+                    related_rows = candidates
 
             if requested_season is not None:
                 libraries_list = [row for row in series_rows
@@ -315,13 +327,19 @@ class AliasExternalService:
                 if not libraries_list and exact_ids:
                     libraries_list = db.query(MediaLibrary).filter(
                         MediaLibrary.anime_id.in_(exact_ids)).all()
-            elif len(series_rows) > 1:
+            elif len(related_rows) > 1:
+                libraries_list = related_rows
+            elif len(series_rows) > 1 and norm_kw == base_kw:
+                # 仅裸系列词允许聚合多季度；明确“某某篇”等搜索应回到
+                # approved 精确别名，避免被扩展成第一季到当前篇的多个结果。
                 libraries_list = series_rows
             else:
                 libraries_list = db.query(MediaLibrary).filter(
                     MediaLibrary.anime_id.in_(exact_ids)).all() if exact_ids else []
 
+            # 裸系列全集按发行时间稳定排列；缺失日期时再按季号、标题兜底。
             libraries_list.sort(key=lambda row: (
+                row.start_date or "9999-12-31",
                 season_of_title(row.title or "") or 1,
                 normalize_alias(row.title or ""),
             ))
