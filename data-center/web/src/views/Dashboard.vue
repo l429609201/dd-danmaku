@@ -153,21 +153,21 @@
         </div>
       </div>
 
-      <!-- 运维洞察 -->
-      <h2 class="section-title">运维洞察（近 24h）</h2>
+      <!-- 运维洞察已改为按日聚合，文案必须与后端 stat_date 口径一致。 -->
+      <h2 class="section-title">运维洞察（今日）</h2>
       <div class="chart-grid">
         <div class="panel">
-          <h2 class="panel-title">各接口上游限流（近 24h）</h2>
+          <h2 class="panel-title">各接口上游限流（今日）</h2>
           <div v-show="has429" ref="api429Chart" class="chart chart-sm"></div>
-          <div v-show="!has429" class="empty">近 24h 无上游限流</div>
+          <div v-show="!has429" class="empty">今日无上游限流</div>
         </div>
         <div class="panel">
-          <h2 class="panel-title">UA 来源 Top（近 24h）</h2>
+          <h2 class="panel-title">UA 来源 Top（今日）</h2>
           <div v-show="hasUaTop" ref="uaTopChart" class="chart chart-sm"></div>
           <div v-show="!hasUaTop" class="empty">暂无 UA 数据</div>
         </div>
         <div class="panel">
-          <h2 class="panel-title">缓存来源构成（近 24h）</h2>
+          <h2 class="panel-title">缓存来源构成（今日）</h2>
           <div v-show="hasCacheSrc" ref="cacheSrcChart" class="chart chart-sm"></div>
           <div v-show="!hasCacheSrc" class="empty">暂无来源数据</div>
         </div>
@@ -416,7 +416,8 @@ export default {
       } catch (e) { /* 忽略 */ }
       // 洞察图表（drawBar/drawPie 内部已等 nextTick 再渲染，避免 0 宽容器画歪）
       try {
-        const res = await apiV2('/dashboard/insights?hours=24')
+        // 后端已按 stat_date 聚合；不再传废弃的 hours 参数，默认读取今天。
+        const res = await apiV2('/dashboard/insights')
         const d = res.data || {}
         const a429 = (d.api_429 || []).filter(x => x.count > 0)
         has429.value = a429.length > 0

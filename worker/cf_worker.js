@@ -6,6 +6,7 @@
 // 部署时与本文件一起上传）。公开仓库看不到验证算法/旁路细节。
 // 构建产物由 sign-verify-src/ 经 javascript-obfuscator 混淆生成。
 import { verifyClientSignature, verifyUserAllow, verifyUserIdMark } from './sign_verify.js';
+import { tryLocalSearchFallback } from './local_search_fallback.mjs';
 
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
@@ -2969,48 +2970,30 @@ async function handleRequest(request, env, ctx) {
         // 全部密钥该接口已限流：先尝试本地别名兜底，再返回流控
         console.log(`🚫 [${clientIP}] 接口 ${apiGroup} 所有密钥已限流`);
 
-        // 🔄 别名兜底：密钥池耗尽时，对搜索接口尝试本地别名查询
+        // 密钥池耗尽与上游 429 共用同一兜底契约，避免两处响应结构漂移。
         if (env.CONTROL_HUB && (apiPath === '/api/v2/search/episodes' || apiPath === '/api/v2/search/anime')) {
             const rawKw = tUrlObj.searchParams.get('anime') || tUrlObj.searchParams.get('keyword') || '';
             const normKw = normalizeSearchKeyword(rawKw);
             if (normKw) {
                 console.log(`🔄 [${clientIP}] 密钥池耗尽，尝试本地别名兜底: ${normKw}`);
-                try {
-                    const fallbackResp = await controlHubRpc(env, 'alias.query', { keyword: normKw }, 5000);
-                    if (fallbackResp && fallbackResp.success && fallbackResp.data && fallbackResp.data.length > 0) {
-                        // 本地端返回了匹配结果，用它替代 429 响应
-                        // 两条 429 兜底路径统一返回 dandanplay 搜索响应外壳，
-                        // 避免客户端把裸数组或缺 success/errorCode 的对象视为无结果。
-                        const fallbackBody = JSON.stringify({
-                            hasMore: false,
-                            animes: fallbackResp.data,
-                            errorCode: 0,
-                            success: true,
-                        });
-                        console.log(`✅ [${clientIP}] 密钥池耗尽时本地别名兜底命中: ${fallbackResp.data.length} 个作品`);
-                        bumpMetric('totalResponses'); bumpMetric('status2xx');
-                        addMemoryLog('INFO', '密钥池耗尽-别名兜底命中', {
-                            ip: clientIP, path: apiPath, query: normKw, method: request.method,
-                            userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId,
-                            responseStatus: 200, cacheSource: 'LOCAL-ALIAS-FALLBACK',
-                            durationMs: Date.now() - reqStartMs, responseBytes: fallbackBody.length,
-                            requestBody: truncateBody(reqBodyText), responseBody: truncateBody(fallbackBody)
-                        });
-                        return new Response(fallbackBody, {
-                            status: 200,
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Access-Control-Allow-Origin': '*',
-                                'X-Cache': 'LOCAL-ALIAS-FALLBACK',
-                                'X-Key-Pool': 'EXHAUSTED',
-                            },
-                        });
-                    } else {
-                        console.log(`ℹ️ [${clientIP}] 密钥池耗尽且本地别名无匹配，返回 429`);
-                    }
-                } catch (e) {
-                    console.log(`⚠️ [${clientIP}] 密钥池耗尽时本地别名兜底失败: ${e.message}`);
+                const fallback = await tryLocalSearchFallback({
+                    keyword: normKw,
+                    rpc: (type, payload, timeoutMs) => controlHubRpc(env, type, payload, timeoutMs),
+                    extraHeaders: { 'X-Key-Pool': 'EXHAUSTED' },
+                });
+                if (fallback) {
+                    console.log(`✅ [${clientIP}] 密钥池耗尽时本地别名兜底命中: ${fallback.count} 个作品`);
+                    bumpMetric('totalResponses'); bumpMetric('status2xx');
+                    addMemoryLog('INFO', '密钥池耗尽-别名兜底命中', {
+                        ip: clientIP, path: apiPath, query: normKw, method: request.method,
+                        userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId,
+                        responseStatus: 200, cacheSource: 'LOCAL-ALIAS-FALLBACK',
+                        durationMs: Date.now() - reqStartMs, responseBytes: fallback.body.length,
+                        requestBody: truncateBody(reqBodyText), responseBody: truncateBody(fallback.body)
+                    });
+                    return fallback.response;
                 }
+                console.log(`ℹ️ [${clientIP}] 密钥池耗尽且本地别名无匹配或不可用，返回 429`);
             }
         }
 
@@ -3124,42 +3107,24 @@ async function handleRequest(request, env, ctx) {
     let isUpstreamRateLimited = fwd.limited;
     if (isUpstreamRateLimited) {
         console.log(`🚫 [${clientIP}] 检测到上游限流 (HTTP ${response.status}, errorCode=${upstreamErrorCode})`);
-        // 🔄 别名兜底：当上游限流且本地端可用时，尝试用搜索词在本地别名表查询已缓存集数
+        // 上游 429 与密钥池耗尽复用同一纯契约函数，仅保留本分支状态更新。
         if (env.CONTROL_HUB && (apiPath === '/api/v2/search/episodes' || apiPath === '/api/v2/search/anime')) {
             const rawKw = tUrlObj.searchParams.get('anime') || tUrlObj.searchParams.get('keyword') || '';
             const normKw = normalizeSearchKeyword(rawKw);
             if (normKw) {
                 console.log(`🔄 [${clientIP}] 尝试本地端别名兜底: ${normKw}`);
-                try {
-                    const fallbackResp = await controlHubRpc(env, 'alias.query', { keyword: normKw }, 5000);
-                    if (fallbackResp && fallbackResp.success && fallbackResp.data && fallbackResp.data.length > 0) {
-                        // 本地端返回了匹配结果，用它替代 429 响应
-                        // 与“密钥池提前耗尽”分支保持完全相同的响应契约。
-                        const fallbackBody = JSON.stringify({
-                            hasMore: false,
-                            animes: fallbackResp.data,
-                            errorCode: 0,
-                            success: true,
-                        });
-                        console.log(`✅ [${clientIP}] 本地端别名兜底命中: ${fallbackResp.data.length} 条结果`);
-                        response = new Response(fallbackBody, {
-                            status: 200,
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Access-Control-Allow-Origin': '*',
-                                'X-Cache': 'LOCAL-ALIAS-FALLBACK',
-                                'X-Upstream-Status': '429',
-                            },
-                        });
-                        // 覆盖响应文本供后续日志使用
-                        responseText = fallbackBody;
-                        // 标记不再是限流状态（避免后续逻辑把它当 429 处理）
-                        isUpstreamRateLimited = false;
-                    } else {
-                        console.log(`ℹ️ [${clientIP}] 本地端别名无匹配，保持 429 响应`);
-                    }
-                } catch (e) {
-                    console.log(`⚠️ [${clientIP}] 本地端别名兜底失败: ${e.message}`);
+                const fallback = await tryLocalSearchFallback({
+                    keyword: normKw,
+                    rpc: (type, payload, timeoutMs) => controlHubRpc(env, type, payload, timeoutMs),
+                    extraHeaders: { 'X-Upstream-Status': '429' },
+                });
+                if (fallback) {
+                    console.log(`✅ [${clientIP}] 本地端别名兜底命中: ${fallback.count} 条结果`);
+                    response = fallback.response;
+                    responseText = fallback.body;
+                    isUpstreamRateLimited = false;
+                } else {
+                    console.log(`ℹ️ [${clientIP}] 本地端别名无匹配或不可用，保持 429 响应`);
                 }
             }
         }

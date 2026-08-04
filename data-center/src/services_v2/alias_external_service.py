@@ -12,6 +12,7 @@
 中文译名多版本），不能直接上线。
 """
 import logging
+import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -259,38 +260,79 @@ class AliasExternalService:
         }
 
     def search_by_keyword(self, keyword: str) -> Dict[str, Any]:
-        """按已审核别名返回本地集数，供 Worker 在上游 429 时兜底。
-
-        ORM 类名是 EpisodeLink，表名才是 episode_links；响应使用 dandanplay
-        的 animeId/episodeId 字段，避免把本地主键误暴露给客户端。
-        """
+        """按本地已审核别名返回集数；裸系列词会聚合同系列 TV 季度。"""
         from src.models_v2 import EpisodeLink, MediaAlias, MediaLibrary
+        from src.services_v2.media_meta_service import season_of_title
 
         norm_kw = normalize_alias(keyword)
         if not norm_kw:
             return {"animes": []}
 
+        # strip_season 负责中文/Season/Sx；这里补齐 dandanplay 常用的尾部罗马数字。
+        base_kw, requested_season = strip_season(norm_kw)
+        if requested_season is None:
+            roman_map = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5,
+                         "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10}
+            match = re.match(r"^(.*?)(?:\s+)(viii|vii|iii|vi|iv|ii|ix|x|v|i)$", norm_kw)
+            if match:
+                base_kw = match.group(1).strip()
+                requested_season = roman_map[match.group(2)]
+            else:
+                match = re.match(r"^(.*?)(?:\s+)([1-9][0-9]?)$", norm_kw)
+                if match:
+                    base_kw = match.group(1).strip()
+                    requested_season = int(match.group(2))
+
+        def _title_base(title: str) -> str:
+            value = normalize_alias(title)
+            value, _ = strip_season(value)
+            value = re.sub(
+                r"\s+(?:viii|vii|iii|vi|iv|ii|ix|x|v|i)$", "", value).strip()
+            return value
+
         db = get_db_sync()
         try:
-            q = db.query(MediaAlias.anime_id).filter(
+            exact_ids = [row.anime_id for row in db.query(MediaAlias.anime_id).filter(
                 MediaAlias.status == "approved",
                 (MediaAlias.alias_norm == norm_kw) |
                 (MediaAlias.alias_norm_ns == norm_kw.replace(" ", "")),
-            ).distinct().limit(10)
-            anime_ids = [row.anime_id for row in q.all() if row.anime_id]
+            ).distinct().limit(20).all() if row.anime_id]
+
+            # 系列聚合仅考虑 TV 条目，并要求剥掉季号后的标题与基础词完全相同；
+            # 因此不会把 OVA、剧场版或同前缀的其他作品混进来。
+            series_rows = []
+            if base_kw:
+                candidates = db.query(MediaLibrary).filter(
+                    MediaLibrary.type_code == "tvseries",
+                    MediaLibrary.title.ilike(f"{base_kw}%"),
+                ).limit(50).all()
+                series_rows = [row for row in candidates if _title_base(row.title or "") == base_kw]
+
+            if requested_season is not None:
+                libraries_list = [row for row in series_rows
+                                  if (season_of_title(row.title or "") or 1) == requested_season]
+                # 非标准标题无法归入系列时，仍保留精确 approved 别名的兼容路径。
+                if not libraries_list and exact_ids:
+                    libraries_list = db.query(MediaLibrary).filter(
+                        MediaLibrary.anime_id.in_(exact_ids)).all()
+            elif len(series_rows) > 1:
+                libraries_list = series_rows
+            else:
+                libraries_list = db.query(MediaLibrary).filter(
+                    MediaLibrary.anime_id.in_(exact_ids)).all() if exact_ids else []
+
+            libraries_list.sort(key=lambda row: (
+                season_of_title(row.title or "") or 1,
+                normalize_alias(row.title or ""),
+            ))
+            anime_ids = [row.anime_id for row in libraries_list]
             if not anime_ids:
                 return {"animes": []}
 
-            libraries = {
-                row.anime_id: row
-                for row in db.query(MediaLibrary).filter(
-                    MediaLibrary.anime_id.in_(anime_ids)).all()
-            }
-            links = db.query(EpisodeLink).filter(
-                EpisodeLink.dandan_anime_id.in_(anime_ids)
-            ).all()
+            libraries = {row.anime_id: row for row in libraries_list}
             grouped: Dict[str, List[EpisodeLink]] = {}
-            for link in links:
+            for link in db.query(EpisodeLink).filter(
+                    EpisodeLink.dandan_anime_id.in_(anime_ids)).all():
                 grouped.setdefault(link.dandan_anime_id, []).append(link)
 
             def _episode_sort(link: EpisodeLink):
@@ -299,9 +341,9 @@ class AliasExternalService:
 
             animes = []
             for anime_id in anime_ids:
-                lib = libraries.get(anime_id)
+                lib = libraries[anime_id]
                 eps = sorted(grouped.get(anime_id, []), key=_episode_sort)
-                if not lib or not eps:
+                if not eps:
                     continue
                 animes.append({
                     "animeId": int(anime_id) if str(anime_id).isdigit() else anime_id,

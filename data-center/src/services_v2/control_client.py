@@ -412,9 +412,9 @@ class ControlClient:
         self._audit("worker_to_local", "stats.report", "success")
 
     async def _handle_log_report(self, msg_id, payload):
-        """Worker 主动上报日志：落库 worker_request_logs + SSE 广播
+        """Worker 主动上报日志：写入轮转 JSONL 文件、累计按日统计并 SSE 广播。
 
-        批量落库（单次最多 100 条）是同步 DB 操作，放线程池避免阻塞事件循环。
+        文件写入是同步 I/O，放线程池避免阻塞事件循环。
         """
         logs = payload.get("logs") or []
         worker_id = payload.get("worker_id", "worker-1")
