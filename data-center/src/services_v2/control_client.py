@@ -262,11 +262,19 @@ class ControlClient:
             allow_stale=allow_stale,
         )
         hit = bool(result and result.get("hit"))
-        # 未命中时顺带做一次别名解析：不新增 RPC 往返，Worker 拿到 canonical
-        # 就用规范词重组 URL 回源。命中则无需解析（已有数据可直接返回）。
+        # 空结果负缓存：命中了也只是"确认搜不到"，不是有用数据。
+        # 此时若已有 approved 别名，换规范词回源远胜于把空结果吐回去。
+        # 不加这个判断，热词（负缓存最新鲜、最不易过期）的别名会长期不生效——
+        # 而热词恰恰是最需要修的那批。
+        empty_hit = bool(result and result.get("is_empty"))
+        # 未命中或负缓存命中时做别名解析：不新增 RPC 往返，Worker 拿到
+        # canonical 就用规范词重组 URL 回源。
         extra = None
-        if not hit:
+        if not hit or empty_hit:
             extra = await self._resolve_alias(cache_key)
+        # 负缓存命中但解析出了别名 → 按未命中处理，让 Worker 拿规范词回源
+        if empty_hit and extra:
+            hit = False
         await self._send({
             "id": msg_id, "type": "cache.get.result",
             "timestamp": _ts(),

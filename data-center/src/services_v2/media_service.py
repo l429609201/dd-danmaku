@@ -13,6 +13,7 @@ from src.database import get_db_sync
 from src.models_v2 import (
     ApiResponseCache, EpisodeLink, LocalCommentStore, MediaLibrary,
 )
+from src.utils.cache_key_display import pretty_cache_key
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +214,8 @@ class MediaService:
                     entity_index_service.index_from_response(ap, cache_key, body)
                     parsed += 1
                 except Exception as e:
-                    logger.warning(f"⚠️ 媒体库回填解析失败 {cache_key}: {e}")
+                    logger.warning(
+                        f"⚠️ 媒体库回填解析失败 {pretty_cache_key(cache_key)}: {e}")
                 if limit and scanned >= limit:
                     stop = True
                     break

@@ -17,6 +17,7 @@ from src.database import get_db_sync
 from src.models_v2 import LocalUser
 from src.services_v2.media_meta_service import media_meta_service
 from src.services_v2.media_service import media_service
+from src.services_v2.redis_cache import redis_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -194,16 +195,25 @@ async def reassign_alias(row_id: int, body: AliasReassign,
         try:
             r = media_meta_service.reassign_alias(
                 db, row_id, body.target_anime_id, user.id)
+            # 改挂后目标侧是 approved，同样要清负缓存才能立即生效
+            keys = []
+            if r:
+                keys = media_meta_service.purge_empty_cache(db, r["alias"])
             db.commit()
-            return r
+            return r, keys
         except Exception:
             db.rollback()
             raise
         finally:
             db.close()
-    r = await asyncio.to_thread(_do)
+    r, keys = await asyncio.to_thread(_do)
     if not r:
         raise HTTPException(status_code=400, detail="记录不存在或目标番剧与原番剧相同")
+    for k in keys:
+        try:
+            await redis_cache.delete(k)
+        except Exception:
+            pass
     return ApiResult(message=f"已改挂到 {r['to']}", data=r)
 
 
@@ -267,13 +277,21 @@ async def put_alias(anime_id: str, body: AliasBody,
         try:
             media_meta_service.save_alias(
                 db, anime_id, body.alias, body.lang, body.title_type, user.id)
+            # 人工新增即 approved，清负缓存让它立即生效
+            keys = media_meta_service.purge_empty_cache(db, body.alias)
             db.commit()
+            return keys
         finally:
             db.close()
     try:
-        await asyncio.to_thread(_save)
+        keys = await asyncio.to_thread(_save)
     except ValueError as ex:
         raise HTTPException(status_code=400, detail=str(ex))
+    for k in keys:
+        try:
+            await redis_cache.delete(k)
+        except Exception:
+            pass
     return ApiResult(message="已保存")
 
 
@@ -285,12 +303,26 @@ async def review_alias(row_id: int, body: AliasReview,
         db = get_db_sync()
         try:
             row = media_meta_service.review_alias(db, row_id, body.approve, user.id)
+            if row is None:
+                return None
+            # 通过的同时清掉该词的空结果负缓存：不清的话 TTL 内 cache.get
+            # 会命中负缓存，别名要等它过期才生效（热词尤其明显）
+            redis_keys = []
+            if body.approve:
+                redis_keys = media_meta_service.purge_empty_cache(db, row.alias)
             db.commit()
-            return row is not None
+            return redis_keys
         finally:
             db.close()
-    if not await asyncio.to_thread(_review):
+    redis_keys = await asyncio.to_thread(_review)
+    if redis_keys is None:
         raise HTTPException(status_code=404, detail="记录不存在")
+    # Redis 删除留在事件循环里做（DB 段是同步的，不能 await）
+    for k in redis_keys:
+        try:
+            await redis_cache.delete(k)
+        except Exception:
+            pass  # 负缓存清理失败不影响审核结果，TTL 到期自然消失
     return ApiResult(message="已通过" if body.approve else "已拒绝")
 
 

@@ -11,6 +11,7 @@ from src.models_v2 import ApiResponseEntity, EpisodeLink, MediaLibrary
 from src.models_v2.base import now
 # 直接导入子模块而非从包导入，避免 services_v2/__init__ 的循环导入
 from src.services_v2.media_meta_service import media_meta_service
+from src.utils.cache_key_display import pretty_cache_key
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,8 @@ class EntityIndexService:
                 media_meta_service.ingest_search_term(
                     db, cache_key, search_anime_ids)
             except Exception as ex:
-                logger.warning(f"⚠️ 搜索词别名写入失败 {cache_key}: {ex}")
+                logger.warning(
+                    f"⚠️ 搜索词别名写入失败 {pretty_cache_key(cache_key)}: {ex}")
         return count
 
     @staticmethod

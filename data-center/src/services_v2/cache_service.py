@@ -17,6 +17,7 @@ from src.models_v2 import ApiResponseCache, ApiCacheAccessLog
 from src.models_v2.base import now
 from src.services_v2.redis_cache import redis_cache
 from src.services_v2.access_log_buffer import access_log_buffer
+from src.utils.cache_key_display import pretty_cache_key
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,8 @@ class CacheService:
         else:
             # 双保险：脏响应（空结果/success:false/errorCode!=0）拒绝落库
             if not is_clean_cache_body(api_path, body):
-                logger.info(f"🧹 拒绝缓存脏响应: {api_path} (cache_key={cache_key})")
+                logger.info(f"🧹 拒绝缓存脏响应: {api_path} "
+                            f"(cache_key={pretty_cache_key(cache_key)})")
                 return False
         body_hash = record.get("body_hash") or f"sha256:{_sha256(body)}"
         body_size = len(body.encode("utf-8")) if body else 0
@@ -293,6 +295,8 @@ class CacheService:
             "cached_at": snap["fetched_at_ms"],
             "stale": stale or served_stale,
             "served_stale": served_stale,
+            # 空结果负缓存：调用方可据此再给一次别名改写的机会
+            "is_empty": bool(snap.get("is_empty")),
         }
 
     async def _try_assemble(self, cache_key: str, worker_request_id, client_ip):
@@ -319,7 +323,10 @@ class CacheService:
         await asyncio.to_thread(
             self._log_async, cache_key, api_path, "assembled",
             worker_request_id, client_ip)
-        logger.info(f"🧩 实体拼装命中（{result['mode']}）省去回源: {cache_key[:120]}")
+        # 打解码后的中文：cache_key 原文是 URL 编码，且原先的 [:120] 会把
+        # 编码序列切一半（日志里出现 %E8%83%BD%E5 这种断尾）
+        logger.info(f"🧩 实体拼装命中（{result['mode']}）省去回源: "
+                    f"{pretty_cache_key(cache_key)}")
         return {
             "hit": True,
             "status": 200,
@@ -361,6 +368,9 @@ class CacheService:
                 "status_code": row.status_code,
                 "response_headers_json": row.response_headers_json,
                 "fetched_at_ms": int(row.fetched_at.timestamp() * 1000) if row.fetched_at else 0,
+                # 负缓存标记要透出：调用方据此决定是否尝试别名改写回源
+                # （空结果 + 有 approved 别名 → 换规范词回源比返回空结果强）
+                "is_empty": bool(row.is_empty),
             }
         except Exception as e:
             logger.error(f"❌ cache.get 查询失败: {e}")

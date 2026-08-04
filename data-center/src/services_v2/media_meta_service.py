@@ -19,7 +19,9 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from sqlalchemy import bindparam, func, text as sql_text
 from sqlalchemy.exc import IntegrityError
 
-from src.models_v2 import MediaAlias, MediaExternalId, MediaLibrary
+from src.models_v2 import (
+    ApiResponseCache, MediaAlias, MediaExternalId, MediaLibrary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -753,6 +755,37 @@ class MediaMetaService:
             return False
         db.delete(row)
         return True
+
+    @staticmethod
+    def purge_empty_cache(db, alias: str) -> List[str]:
+        """删掉某搜索词的空结果负缓存，返回被删行的 redis_key 列表。
+
+        为什么必须删：别名 approved 后，若该词的 EMPTY 负缓存还在 TTL 内，
+        cache.get 会命中它并返回空结果。虽然 control_client 已改为
+        「负缓存命中也尝试别名解析」，但删掉后可省去那次解析、
+        且缓存表不再留无用的负缓存行。
+
+        Redis key 由调用方在事件循环里删（本方法是同步的，不碰 await）。
+        """
+        if not alias:
+            return []
+        norm = normalize_alias(alias)
+        if not norm:
+            return []
+        # 同一个词可能有多条负缓存（两个搜索接口 × 原文/编码形态），全查出来
+        rows = db.query(ApiResponseCache).filter(
+            ApiResponseCache.is_empty == True,  # noqa: E712
+            ApiResponseCache.api_path.like("/api/v2/search/%"),
+        ).all()
+        redis_keys = []
+        for r in rows:
+            term = parse_search_term(r.cache_key or "")
+            if not term or normalize_alias(term) != norm:
+                continue
+            if r.redis_key:
+                redis_keys.append(r.redis_key)
+            db.delete(r)
+        return redis_keys
 
     def delete_alias(self, db, row_id: int) -> bool:
         row = db.query(MediaAlias).filter(MediaAlias.id == row_id).first()
