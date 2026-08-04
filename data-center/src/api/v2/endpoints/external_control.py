@@ -388,51 +388,58 @@ async def logs_worker(
     user_id: Optional[str] = None,
     _: bool = Depends(verify_external_token),
 ):
-    """Worker 请求日志（worker_request_logs 表），按时间倒序。
+    """Worker 请求日志（轮转 JSONL 文件），按时间倒序。
 
-    每条含 path / status / cache_source / duration_ms / 请求体响应体等。
-    排查方向：cache_source 看命中来源分布，duration_ms 找慢请求，
-    status>=400 找失败请求。
+    数据源已从 worker_request_logs 表迁移到轮转文件（worker.log），
+    聚合统计走 worker_log_daily_stats 按日计数表。
+
+    每条含 path / query / status / cache_source / duration_ms /
+    请求体响应体等。排查方向：cache_source 看命中来源分布，
+    duration_ms 找慢请求，status>=400 找失败请求。
 
     参数：
         limit   返回条数，默认 50，上限 200
         level   INFO / WARN / ERROR
-        keyword 按 path 模糊匹配
+        keyword 跨字段搜（path/query/message/body）
         ip      按客户端 IP 模糊匹配
         ua      按 X-UA 模糊匹配
         user_id 按客户端用户标识模糊匹配
     """
-    from src.models_v2 import WorkerRequestLog
-    from src.database import get_db_sync
+    from src.services_v2.worker_log_file_service import worker_log_file_service
 
     limit = max(1, min(int(limit or 50), 200))
 
     def _query():
-        db = get_db_sync()
-        try:
-            q = db.query(WorkerRequestLog)
-            if level:
-                q = q.filter(WorkerRequestLog.level == level.upper())
-            if keyword:
-                q = q.filter(WorkerRequestLog.path.like(f"%{keyword}%"))
-            if ip:
-                q = q.filter(WorkerRequestLog.client_ip.like(f"%{ip}%"))
-            if ua:
-                q = q.filter(WorkerRequestLog.ua_type.like(f"%{ua}%"))
-            if user_id:
-                q = q.filter(WorkerRequestLog.client_user_id.like(f"%{user_id}%"))
-            rows = q.order_by(WorkerRequestLog.created_at.desc()).limit(limit).all()
-            return [{
-                "id": r.id, "created_at": r.created_at.isoformat() if r.created_at else None,
-                "level": r.level, "client_ip": r.client_ip, "ua_type": r.ua_type,
-                "client_user_id": r.client_user_id,
-                "method": r.method, "path": r.path, "status": r.status,
-                "cache_source": r.cache_source, "upstream_status": r.upstream_status,
-                "duration_ms": r.duration_ms, "response_bytes": r.response_bytes,
-                "message": r.message,
-            } for r in rows]
-        finally:
-            db.close()
+        # 只查当前文件，page_size=limit（不分页，一次返回 limit 条）
+        res = worker_log_file_service.search(
+            file_name=None,  # 当前 worker.log
+            level=level,
+            keyword=keyword,
+            ip=ip,
+            ua=ua,
+            user_id=user_id,
+            status=None,
+            page=1,
+            page_size=limit,
+        )
+        items = res["items"]
+        # 返回格式与旧接口保持一致（去掉 request_body/response_body 大字段）
+        return [{
+            "created_at": r.get("created_at"),
+            "level": r.get("level"),
+            "client_ip": r.get("client_ip"),
+            "ua_type": r.get("ua_type"),
+            "client_user_id": r.get("client_user_id"),
+            "method": r.get("method"),
+            "path": r.get("path"),
+            "query": r.get("query"),  # 新增：GET 请求的搜索词在这里
+            "status": r.get("status"),
+            "cache_source": r.get("cache_source"),
+            "upstream_status": r.get("upstream_status"),
+            "duration_ms": r.get("duration_ms"),
+            "response_bytes": r.get("response_bytes"),
+            "message": r.get("message"),
+        } for r in items]
 
     items = await asyncio.to_thread(_query)
     return ApiResult(data={"returned": len(items), "items": items})
