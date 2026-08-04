@@ -5,6 +5,7 @@
 - 响应体（response_body）默认写 Redis，SQL 只保存 redis_key + 元数据；
 - Redis 不可用时降级为 SQL 存储 body（storage_mode=sql）。
 """
+import asyncio
 import hashlib
 import json
 import logging
@@ -285,6 +286,13 @@ class CacheService:
             await redis_cache.set(snap["redis_key"], body,
                                   ttl=settings.CACHE_STALE_MAX_AGE_SECONDS)
 
+        # 旧的整季响应缓存可能只含一个季度；本地媒体库已拥有同系列更多季度时，
+        # 返回派生的多季度结果，但不覆盖原始上游缓存，避免混淆数据来源。
+        series_body = await self._try_series_override(
+            cache_key, body, worker_request_id, client_ip)
+        if series_body is not None:
+            return series_body
+
         # ③ 同步 DB 更新段（线程池）：命中计数 + stale 标记 + 访问日志
         stale = await asyncio.to_thread(
             self._get_touch, cache_key, redis_hit,
@@ -303,6 +311,50 @@ class CacheService:
             # 空结果负缓存：调用方可据此再给一次别名改写的机会
             "is_empty": bool(snap.get("is_empty")),
         }
+
+
+    async def _try_series_override(self, cache_key: str, cached_body: str,
+                                   worker_request_id, client_ip):
+        """旧缓存仅含单季而本地存在多季时，返回本地多季度派生响应。"""
+        if "/api/v2/search/episodes" not in cache_key or "episode=" in cache_key:
+            return None
+        try:
+            from src.services_v2.entity_assemble import parse_search_key
+            from src.services_v2.alias_external_service import alias_external_service
+            cond = parse_search_key(cache_key)
+            if not cond or cond["kind"] != "episodes":
+                return None
+            result = await asyncio.to_thread(
+                alias_external_service.search_by_keyword, cond["title"])
+            animes = result.get("animes") if isinstance(result, dict) else None
+            if not isinstance(animes, list) or len(animes) < 2:
+                return None
+            try:
+                cached_count = len((json.loads(cached_body) or {}).get("animes") or [])
+            except Exception:
+                cached_count = 0
+            if len(animes) <= cached_count:
+                return None
+            body = json.dumps({
+                "hasMore": False, "animes": animes,
+                "errorCode": 0, "success": True,
+            }, ensure_ascii=False)
+            api_path = cache_key.split("?", 1)[0].split(":", 1)[-1]
+            await asyncio.to_thread(
+                self._log_async, cache_key, api_path, "assembled",
+                worker_request_id, client_ip)
+            logger.info(
+                f"🧩 本地多季度覆盖旧缓存: {pretty_cache_key(cache_key)} "
+                f"({cached_count} → {len(animes)} 季)")
+            return {
+                "hit": True, "status": 200,
+                "headers": {"X-Cache-Source": "assembled-series"},
+                "body": body, "cached_at": 0, "stale": False,
+                "assembled": True,
+            }
+        except Exception as e:
+            logger.warning(f"⚠️ 多季度拼装异常（继续使用原缓存）: {e}")
+            return None
 
     async def _try_assemble(self, cache_key: str, worker_request_id, client_ip):
         """cache_key 未命中时，尝试从实体表拼装等价响应。
