@@ -127,7 +127,8 @@ class RuntimeConfigService:
     async def push_to_worker(self) -> bool:
         """组装完整配置并通过长连接下发"""
         payload = self.build_full_payload()
-        result = await control_client.request("config.apply", payload)
+        # DO 需要完成 storage 读写后才回包，不能沿用普通轻量 RPC 的 3 秒超时。
+        result = await control_client.request("config.apply", payload, timeout=10.0)
         return bool(result and result.get("success"))
 
 

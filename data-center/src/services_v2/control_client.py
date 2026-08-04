@@ -55,6 +55,12 @@ class ControlClient:
         self._reconnect_count = 0
         # 滥用封禁回灌的后台任务（避免在接收循环里同步等回包导致自死锁）
         self._resync_task: Optional[asyncio.Task] = None
+        # 多 Worker 隔离实例会并发上报封禁；用 dirty + 冷却合并全量配置下发，
+        # 避免每条 abuse.report 都写一次 DO storage 形成 config.apply 风暴。
+        self._resync_dirty = False
+        self._last_resync_at = 0.0
+        self._RESYNC_DEBOUNCE = 5.0
+        self._RESYNC_COOLDOWN = 30.0
         # 可观测：累计收到消息数 / 累计处理消息数（供外部诊断 API）
         self._msg_received = 0
         self._msg_handled = 0
@@ -86,6 +92,9 @@ class ControlClient:
             # 审计缓冲水位：depth 持续走高或 dropped 增长说明落库跟不上
             "audit_buf_depth": len(self._audit_buf),
             "audit_dropped": self._audit_dropped,
+            "config_resync_pending": bool(
+                self._resync_task and not self._resync_task.done()),
+            "config_resync_dirty": self._resync_dirty,
         }
 
     @property
@@ -122,6 +131,13 @@ class ControlClient:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        # 防抖任务也必须随服务停机取消，避免关闭阶段继续发 config.apply。
+        if self._resync_task and not self._resync_task.done():
+            self._resync_task.cancel()
+            try:
+                await self._resync_task
+            except asyncio.CancelledError:
+                pass
         # 停审计消费者，并把缓冲里剩余的审计记录落库，避免丢数据
         if self._audit_task and not self._audit_task.done():
             self._audit_task.cancel()
@@ -153,6 +169,9 @@ class ControlClient:
                 async with ws_connect(
                     full_url, additional_headers=headers,
                     ping_interval=20, ping_timeout=20, open_timeout=10,
+                    # 配置与批量日志可能超过默认 1 MiB；保留 8 MiB 明确上限，
+                    # 避免已在线上发生的 1009 message too big 反复断连。
+                    max_size=8 * 1024 * 1024,
                 ) as ws:
                     self._ws = ws
                     self._connected = True
@@ -382,19 +401,48 @@ class ControlClient:
             self._schedule_config_resync()
 
     def _schedule_config_resync(self):
-        """调度一次配置回灌后台任务；已有未完成任务时跳过，避免任务堆叠"""
+        """防抖并合并配置回灌，避免多实例 abuse.report 触发下发风暴。"""
+        self._resync_dirty = True
         if self._resync_task and not self._resync_task.done():
             return
 
         async def _run():
             try:
-                # 延迟导入避免循环依赖（runtime_config_service 依赖 control_client）
-                from src.services_v2.runtime_config_service import runtime_config_service
-                await runtime_config_service.push_to_worker()
+                loop = asyncio.get_running_loop()
+                while self._running and self._resync_dirty:
+                    # 首批等待 5 秒聚合；后续变化至少间隔 30 秒再全量下发。
+                    since_last = loop.time() - self._last_resync_at
+                    delay = max(
+                        self._RESYNC_DEBOUNCE,
+                        self._RESYNC_COOLDOWN - since_last,
+                    )
+                    await asyncio.sleep(delay)
+                    # 吸收等待期间的全部变化；下发过程中若又变化会重新置 dirty，
+                    # 下一轮在冷却结束后补发一次，保证最终一致而不丢更新。
+                    self._resync_dirty = False
+                    from src.services_v2.runtime_config_service import runtime_config_service
+                    success = await runtime_config_service.push_to_worker()
+                    self._last_resync_at = loop.time()
+                    # 超时或失败时保留 dirty，冷却后自动重试，避免配置永久停在旧版本。
+                    if not success:
+                        self._resync_dirty = True
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
+                self._resync_dirty = True
                 logger.warning(f"⚠️ 滥用封禁回灌下发失败: {e}")
 
-        self._resync_task = asyncio.create_task(_run())
+        task = asyncio.create_task(_run())
+        self._resync_task = task
+
+        def _restart_if_dirty(done_task):
+            # 收尾窗口内若又收到变化，旧任务已 done 后立即重新调度，避免丢更新。
+            if self._resync_task is done_task:
+                self._resync_task = None
+            if self._running and self._resync_dirty:
+                self._schedule_config_resync()
+
+        task.add_done_callback(_restart_if_dirty)
 
     async def _handle_metrics_report(self, msg_id, payload):
         """Worker 上报运行指标快照：落库 worker_metrics_snapshot
