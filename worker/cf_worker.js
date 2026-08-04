@@ -2979,7 +2979,14 @@ async function handleRequest(request, env, ctx) {
                     const fallbackResp = await controlHubRpc(env, 'alias.query', { keyword: normKw }, 5000);
                     if (fallbackResp && fallbackResp.success && fallbackResp.data && fallbackResp.data.length > 0) {
                         // 本地端返回了匹配结果，用它替代 429 响应
-                        const fallbackBody = JSON.stringify({ animes: fallbackResp.data });
+                        // 两条 429 兜底路径统一返回 dandanplay 搜索响应外壳，
+                        // 避免客户端把裸数组或缺 success/errorCode 的对象视为无结果。
+                        const fallbackBody = JSON.stringify({
+                            hasMore: false,
+                            animes: fallbackResp.data,
+                            errorCode: 0,
+                            success: true,
+                        });
                         console.log(`✅ [${clientIP}] 密钥池耗尽时本地别名兜底命中: ${fallbackResp.data.length} 个作品`);
                         bumpMetric('totalResponses'); bumpMetric('status2xx');
                         addMemoryLog('INFO', '密钥池耗尽-别名兜底命中', {
@@ -3127,7 +3134,13 @@ async function handleRequest(request, env, ctx) {
                     const fallbackResp = await controlHubRpc(env, 'alias.query', { keyword: normKw }, 5000);
                     if (fallbackResp && fallbackResp.success && fallbackResp.data && fallbackResp.data.length > 0) {
                         // 本地端返回了匹配结果，用它替代 429 响应
-                        const fallbackBody = JSON.stringify(fallbackResp.data);
+                        // 与“密钥池提前耗尽”分支保持完全相同的响应契约。
+                        const fallbackBody = JSON.stringify({
+                            hasMore: false,
+                            animes: fallbackResp.data,
+                            errorCode: 0,
+                            success: true,
+                        });
                         console.log(`✅ [${clientIP}] 本地端别名兜底命中: ${fallbackResp.data.length} 条结果`);
                         response = new Response(fallbackBody, {
                             status: 200,
