@@ -39,8 +39,11 @@ class WorkerLogFileService:
     def __init__(self):
         self._handler: Optional[RotatingFileHandler] = None
         self._lock = threading.Lock()
+        self._meta_lock = threading.Lock()
         self._log_dir = _resolve_log_dir()
         self._written = 0
+        # 按文件身份缓存元信息；轮转改名后 inode 不变，可直接复用。
+        self._meta_cache: Dict[Any, Dict[str, Any]] = {}
 
     # ---------- 写入 ----------
     def _ensure_handler(self) -> Optional[RotatingFileHandler]:
@@ -70,10 +73,7 @@ class WorkerLogFileService:
         return self._handler
 
     def append_many(self, rows: List[Dict[str, Any]]) -> int:
-        """批量追加日志行；返回成功写入条数。
-
-        单条序列化失败只丢自己，不影响同批其他行。
-        """
+        """批量追加日志行；返回成功写入条数。"""
         h = self._ensure_handler()
         if h is None or not rows:
             return 0
@@ -94,17 +94,88 @@ class WorkerLogFileService:
         return count
 
     def stats(self) -> dict:
-        """可观测：累计写入条数与各轮转文件体积"""
+        """可观测：累计写入条数与各轮转文件元信息"""
         return {
             "written": self._written,
             "log_dir": self._log_dir,
             "files": self.list_files(),
         }
 
+    # ---------- 文件元信息 ----------
+    @staticmethod
+    def _file_identity(path: str, st) -> tuple:
+        """用设备号+inode识别文件；平台不提供 inode 时回退绝对路径。"""
+        inode = getattr(st, "st_ino", 0)
+        return (getattr(st, "st_dev", 0), inode, "" if inode else path)
+
+    @staticmethod
+    def _line_time(raw: Optional[bytes]) -> Optional[str]:
+        if not raw:
+            return None
+        try:
+            return json.loads(raw.decode("utf-8", errors="replace")).get("created_at")
+        except Exception:
+            return None
+
+    def _file_metadata(self, path: str, st) -> Dict[str, Any]:
+        """首次扫全文件；后续只扫描新增字节并更新行数/时间范围。"""
+        identity = self._file_identity(path, st)
+        with self._meta_lock:
+            cached = self._meta_cache.get(identity)
+            mtime_ns = getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))
+            if (cached and cached["observed_size"] == st.st_size
+                    and cached["mtime_ns"] == mtime_ns):
+                return dict(cached)
+            # 只有尺寸严格增长才视为追加；同尺寸但 mtime 变化可能是外部重写。
+            can_increment = bool(
+                cached and st.st_size > cached["observed_size"]
+                and cached["scanned_bytes"] <= cached["observed_size"])
+            start = cached["scanned_bytes"] if can_increment else 0
+            line_count = cached["line_count"] if can_increment else 0
+            first_at = cached["first_at"] if can_increment else None
+            last_at = cached["last_at"] if can_increment else None
+            first_new = last_new = None
+            scanned = start
+            with open(path, "rb") as file_obj:
+                file_obj.seek(start)
+                while True:
+                    line_start = file_obj.tell()
+                    raw = file_obj.readline()
+                    if not raw:
+                        scanned = file_obj.tell()
+                        break
+                    if not raw.endswith(b"\n"):
+                        # 写入线程可能尚未完成当前 JSONL 行；下次从该行起点补扫。
+                        scanned = line_start
+                        break
+                    raw = raw.strip()
+                    if not raw:
+                        scanned = file_obj.tell()
+                        continue
+                    line_count += 1
+                    if first_new is None:
+                        first_new = raw
+                    last_new = raw
+                    scanned = file_obj.tell()
+            first_at = first_at or self._line_time(first_new)
+            last_at = self._line_time(last_new) or last_at
+            meta = {
+                "size_bytes": st.st_size,
+                "observed_size": st.st_size,
+                "mtime_ns": mtime_ns,
+                "scanned_bytes": scanned,
+                "line_count": line_count,
+                "first_at": first_at,
+                "last_at": last_at,
+            }
+            self._meta_cache[identity] = meta
+            return dict(meta)
+
     # ---------- 检索 ----------
     def list_files(self) -> List[Dict[str, Any]]:
-        """列出所有轮转文件（当前文件在前，编号越大越旧）"""
+        """列出轮转文件及缓存的行数、首末时间（当前文件在前）。"""
         out: List[Dict[str, Any]] = []
+        seen = set()
         try:
             for i in range(0, ROTATE_BACKUPS + 1):
                 name = LOG_FILE_NAME if i == 0 else f"{LOG_FILE_NAME}.{i}"
@@ -112,13 +183,22 @@ class WorkerLogFileService:
                 if not os.path.exists(path):
                     continue
                 st = os.stat(path)
+                identity = self._file_identity(path, st)
+                seen.add(identity)
+                meta = self._file_metadata(path, st)
                 out.append({
                     "name": name,
-                    "size_bytes": st.st_size,
-                    "size_mb": round(st.st_size / 1024 / 1024, 2),
+                    "size_bytes": meta["size_bytes"],
+                    "size_mb": round(meta["size_bytes"] / 1024 / 1024, 2),
+                    "line_count": meta["line_count"],
+                    "first_at": meta["first_at"],
+                    "last_at": meta["last_at"],
                     "modified_at": int(st.st_mtime * 1000),
                     "is_current": i == 0,
                 })
+            with self._meta_lock:
+                self._meta_cache = {
+                    key: value for key, value in self._meta_cache.items() if key in seen}
         except Exception as e:
             logger.warning(f"⚠️ 读取 Worker 日志文件列表失败: {e}")
         return out

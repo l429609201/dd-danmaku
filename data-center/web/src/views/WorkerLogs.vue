@@ -3,12 +3,16 @@
     <h1 class="app-page__title">Worker 日志</h1>
 
     <div class="app-toolbar">
-      <el-select v-model="selectedFile" placeholder="当前日志文件" style="width: 160px" @change="reload">
-        <el-option v-for="f in files" :key="f.name" :label="f.name" :value="f.name">
-          <span>{{ f.name }}</span>
-          <span style="float: right; color: var(--el-text-color-secondary); font-size: 12px">
-            {{ f.size_mb }} MB
-          </span>
+      <el-select v-model="selectedFile" placeholder="当前日志文件" style="width: 320px"
+                 popper-class="worker-log-file-popper" @change="reload">
+        <el-option v-for="f in files" :key="f.name" :label="fileLabel(f)" :value="f.name">
+          <div class="log-file-option">
+            <div class="log-file-option__main">
+              <span>{{ f.name }}</span>
+              <span class="log-file-option__stats">{{ f.size_mb }} MB · {{ f.line_count || 0 }} 行</span>
+            </div>
+            <div class="log-file-option__range">{{ fileRange(f) }}</div>
+          </div>
         </el-option>
       </el-select>
       <el-select v-model="level" placeholder="全部级别" clearable style="width: 130px" @change="reload">
@@ -31,8 +35,7 @@
                 :row-class-name="rowClass"
                 row-key="_uid"
                 @expand-change="onExpand">
-        <!-- 展开行：显示请求体 & 响应体。
-             列表接口已不返回大字段，首次展开时按需拉 /worker-logs/detail/{id} -->
+        <!-- 展开行：文件列表接口已随行返回请求体与响应体，无需二次请求。 -->
         <el-table-column type="expand">
           <template #default="{ row }">
             <div v-if="row._bodyLoading" class="body-empty">加载请求/响应体…</div>
@@ -308,6 +311,12 @@ export default {
     }
     const rowClass = ({ row }) => (row._live ? 'live-row' : '')
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
+    // 文件选择始终限定单个轮转文件；标签给出体积与行数，避免误解为跨文件搜索。
+    const fileLabel = (file) => `${file.name} · ${file.size_mb}MB · ${file.line_count || 0}行`
+    const fileRange = (file) => {
+      if (!file.first_at && !file.last_at) return '暂无有效日志时间'
+      return `${fmt(file.first_at)} ～ ${fmt(file.last_at)}`
+    }
 
     // 表格已取消高度限制，改为监听整个页面滚动：接近页面底部（剩余 <120px）时加载下一页
     const onScroll = () => {
@@ -341,12 +350,20 @@ export default {
     })
     return { items, tableRef, files, selectedFile, level, keyword, ipSearch, uaSearch, userIdSearch,
       loading, loadingMore, hasMore, totalEstimated, streaming, prettyJson, expandedRows, Search,
-      reload, loadMore, toggleStream, levelType, sourceType, sourceLabel, rowClass, fmtBytes, fmtJson, renderBody, fmt, onExpand, decodeText }
+      reload, loadMore, toggleStream, levelType, sourceType, sourceLabel, rowClass, fmtBytes, fmtJson,
+      renderBody, fmt, fileLabel, fileRange, onExpand, decodeText }
   }
 }
 </script>
 
 <style scoped>
+.log-file-option { width: 280px; line-height: 1.35; padding: 3px 0; }
+.log-file-option__main { display: flex; justify-content: space-between; gap: 12px; }
+.log-file-option__stats { color: var(--el-text-color-secondary); font-size: 12px; white-space: nowrap; }
+.log-file-option__range { color: var(--el-text-color-placeholder); font-size: 11px; }
+
+:global(.worker-log-file-popper .el-select-dropdown__item) { height: auto; line-height: normal; padding-top: 5px; padding-bottom: 5px; }
+
 :deep(.live-row) { background: #f6ffed; }
 .body-expand { padding: 12px 20px; background: #fafafa; border-top: 1px solid #f0f0f0; }
 .body-block { margin-bottom: 14px; }

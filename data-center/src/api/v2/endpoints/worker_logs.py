@@ -66,9 +66,10 @@ async def list_logs(
 
 @router.get("/files")
 async def list_log_files(_: LocalUser = Depends(get_current_user)):
-    """轮转文件列表：供前端下拉切换查看历史日志
+    """轮转文件列表：返回体积、行数与首末时间，供前端单文件切换。
 
-    worker.log 为当前写入文件，worker.log.1 ~ .10 编号越大越旧。
+    worker.log 为当前写入文件，worker.log.1 ~ .10 编号越大越旧；
+    元信息在服务层按文件身份缓存，当前文件追加时仅扫描新增字节。
     """
     files = await asyncio.to_thread(worker_log_file_service.list_files)
     return ApiResult(data={"files": files})
