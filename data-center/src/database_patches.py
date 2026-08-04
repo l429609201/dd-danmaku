@@ -224,6 +224,109 @@ def _patch_widen_cache_response_body(engine: Engine) -> bool:
         return False
 
 
+def _patch_widen_access_log_cache_key(engine: Engine) -> bool:
+    """把 api_cache_access_logs.cache_key 从 varchar(700) 扩到 varchar(2000)。
+
+    背景：搜索词进 cache_key，异常长的请求（如带整段描述的垃圾搜索，
+    URL 编码后可达数千字符）会超出 700，触发
+      (1406) Data too long for column 'cache_key'
+    而访问日志走 bulk_insert 单事务，一条坏数据会连坐同批全部日志丢失。
+
+    为什么能扩到 2000：本表 cache_key **无索引**（只做 LIKE '%x%' 模糊查），
+    不受 InnoDB 3072 字节索引键上限约束。而 api_response_cache /
+    api_cache_refresh_tasks 的 cache_key 带 UNIQUE 索引，utf8mb4 下
+    最多 768 字符（768×4=3072），维持 700 不动。
+
+    为什么不截断：截断会让访问日志里的键与 api_response_cache 里的真实键
+    对不上，破坏两表关联排查能力，属于静默数据损坏。
+
+    仅当现有长度 < 2000 时才 ALTER（幂等）。SQLite 的 VARCHAR 不强制长度，跳过。
+    """
+    table = "api_cache_access_logs"
+    inspector = inspect(engine)
+    if table not in set(inspector.get_table_names()):
+        return False
+    dialect = engine.dialect.name
+    if dialect == "sqlite":
+        return False  # SQLite 不限制 varchar 长度，本身不会报此错
+    try:
+        with engine.begin() as conn:
+            cur = conn.exec_driver_sql(
+                "SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS "
+                f"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{table}' "
+                "AND COLUMN_NAME = 'cache_key'"
+            ).fetchone()
+            if not cur or cur[0] is None:
+                return False
+            cur_len = int(cur[0])
+            if cur_len >= 2000:
+                return False  # 已够宽
+            if dialect == "mysql":
+                conn.exec_driver_sql(
+                    f"ALTER TABLE `{table}` "
+                    "MODIFY COLUMN `cache_key` VARCHAR(2000) NOT NULL"
+                )
+            else:  # postgresql
+                conn.exec_driver_sql(
+                    f'ALTER TABLE "{table}" '
+                    'ALTER COLUMN "cache_key" TYPE VARCHAR(2000)'
+                )
+        logger.info(
+            f"📏 已扩宽 {table}.cache_key: varchar({cur_len}) → varchar(2000)")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ 扩宽 {table}.cache_key 失败（跳过，不影响启动）: {e}")
+        return False
+
+
+def _patch_drop_worker_request_logs(engine: Engine) -> bool:
+    """删除已停写的 worker_request_logs 表。
+
+    背景：该表明细日志已迁到轮转 JSONL 文件（worker.log），聚合统计走
+    worker_log_daily_stats 按日计数表。原表现网 3.2 GB / 58 万行，
+    每行带两个 4 KB 大字段撑爆数据库且清理跟不上写入。
+
+    迁移完成后该表只占空间、无任何读写，可安全删除释放磁盘。
+    若后续需要历史数据，可在删除前手动导出：
+      mysqldump --where="created_at >= '2026-08-01'" worker_request_logs > backup.sql
+
+    只在表存在时才 DROP（幂等）。删除前先 DROP 索引降低锁持续时间。
+    """
+    table = "worker_request_logs"
+    inspector = inspect(engine)
+    if table not in set(inspector.get_table_names()):
+        return False  # 已不存在，跳过
+
+    try:
+        dialect = engine.dialect.name
+        with engine.begin() as conn:
+            # 先删索引：大表 DROP TABLE 会持有元数据锁，先删索引可缩短锁时间
+            indexes = inspector.get_indexes(table)
+            for idx in indexes:
+                idx_name = idx["name"]
+                try:
+                    if dialect == "mysql":
+                        conn.exec_driver_sql(f"DROP INDEX `{idx_name}` ON `{table}`")
+                    elif dialect == "postgresql":
+                        conn.exec_driver_sql(f'DROP INDEX IF EXISTS "{idx_name}"')
+                    else:  # sqlite
+                        conn.exec_driver_sql(f'DROP INDEX IF EXISTS "{idx_name}"')
+                except Exception:
+                    pass  # 索引可能已被删或不存在，继续
+
+            # 删表
+            if dialect == "mysql":
+                conn.exec_driver_sql(f"DROP TABLE IF EXISTS `{table}`")
+            else:
+                conn.exec_driver_sql(f'DROP TABLE IF EXISTS "{table}"')
+
+        logger.info(f"🗑️  已删除停写表 {table}（日志已迁至 worker.log 轮转文件）")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ 删除 {table} 失败（跳过，不影响启动）: {e}")
+        return False
+
+
 # ============ 复合索引：按"过滤列 + 排序列"建，让分页查询能走索引 ============
 # 背景：列表接口普遍是「WHERE 某列 = ? ORDER BY 时间 DESC LIMIT n」。
 # 只有单列索引时，MySQL 用 A 列索引过滤后仍需额外排序（filesort），
@@ -540,12 +643,16 @@ _PATCHES: List[Callable[[Engine], bool]] = [
     _patch_drop_sign_zombie_columns,
     _patch_widen_client_user_id,
     _patch_widen_cache_response_body,
+    _patch_widen_access_log_cache_key,
     _patch_add_composite_indexes,
     _patch_entity_unique_key,
     # 回填放在建索引之后：先有 ix_are_anime_ep，UPDATE 的 WHERE 才走索引
     _patch_backfill_entity_anime_ep,
     # 同理：先建 ix_ma_normns_status，再回填 alias_norm_ns
     _patch_backfill_alias_norm_ns,
+    # 删除已停写的旧表：放在最后，确保其他补丁都完成后再删
+    # （避免依赖该表的补丁运行时表已被删除）
+    _patch_drop_worker_request_logs,
 ]
 
 

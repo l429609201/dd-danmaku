@@ -75,6 +75,11 @@ async def lifespan(app: FastAPI):
     logger.info("📝 启动访问日志批量写入缓冲...")
     await access_log_buffer.start()
 
+    # 启动 Worker 日志按日聚合统计（明细在轮转文件，聚合走计数表）
+    logger.info("📊 启动 Worker 日志聚合统计...")
+    from src.services_v2.worker_log_stats_service import worker_log_stats_service
+    await worker_log_stats_service.start()
+
     # 启动事件循环延迟探针（诊断高并发下的同步阻塞）
     from src.services_v2.system_stats_service import start_loop_probe
     await start_loop_probe()
@@ -100,6 +105,9 @@ async def lifespan(app: FastAPI):
     await stop_loop_probe()
     await alias_supplement_service.stop()
     await cleanup_service.stop()
+    # 聚合统计先停：内部会把内存里未落库的增量刷进 DB，避免丢当日计数
+    from src.services_v2.worker_log_stats_service import worker_log_stats_service
+    await worker_log_stats_service.stop()
     await access_log_buffer.stop()
     await entity_ingest_queue.stop()
     await control_client.stop()

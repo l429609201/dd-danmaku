@@ -69,8 +69,12 @@ class ApiCacheAccessLog(Base):
     __tablename__ = "api_cache_access_logs"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    # cache_key 仅 LIKE '%x%' 模糊查（用不上索引），api_path 不做条件，去掉索引
-    cache_key = Column(String(700), nullable=False)
+    # cache_key 仅 LIKE '%x%' 模糊查（用不上索引），api_path 不做条件，去掉索引。
+    # 宽度 2000 而非 700：本表无索引，不受 InnoDB 3072 字节索引键上限约束
+    # （api_response_cache 的 cache_key 带 UNIQUE 索引，utf8mb4 下最多 768 字符）。
+    # 700 会被异常长的搜索词顶爆，触发 DataError 1406 且 bulk_insert 单事务
+    # 导致整批日志连坐丢失；截断又会让日志键与真实缓存键对不上、无法关联排查。
+    cache_key = Column(String(2000), nullable=False)
     api_path = Column(String(300), nullable=False)
     # upsert / hit / miss / stale_hit / expired / 429（按 access_type 过滤统计，保留）
     access_type = Column(String(50), index=True, nullable=False)

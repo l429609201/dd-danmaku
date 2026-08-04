@@ -4,7 +4,8 @@
 - IpRule                 IP 黑白名单规则（下发给 Worker）
 - IpRequestStatCurrent   IP 请求统计当前累计（Worker 周期上报 upsert）
 - IpRequestStatSnapshot  IP 请求统计周期快照（用于趋势）
-- WorkerRequestLog       Worker 请求/拦截日志（实时日志数据源）
+- WorkerRequestLog       Worker 请求/拦截日志（历史表，明细已迁到轮转文件）
+- WorkerLogDailyStat     Worker 日志按日聚合计数（仪表盘洞察数据源）
 """
 from sqlalchemy import (
     BigInteger, Boolean, Column, DateTime, Integer, JSON, String, Text,
@@ -133,6 +134,37 @@ class WorkerRequestLog(Base):
     level = Column(String(20), index=True, nullable=False, default="INFO")
     message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=now, index=True, nullable=False)
+
+
+class WorkerLogDailyStat(Base):
+    """Worker 日志按日聚合计数（仪表盘「运维洞察」数据源）
+
+    背景：明细日志已迁到轮转 JSONL 文件（worker_request_logs 表停写），
+    但仪表盘的缓存来源分布 / 429 分布 / UA Top 仍需聚合数据。
+    扫文件做统计每次要读上百 MB，秒级延迟；而这些统计只需要计数，
+    因此单独建计数表：内存累加 + 周期 upsert，一天只有几十行。
+
+    表结构用「日期 + 维度类型 + 维度值」三元组而非为每个维度建独立表：
+    新增统计维度只要多一种 dim_type，不必改表结构。
+    dim_type 取值：cache_source / api_429 / ua_type / level
+    """
+    __tablename__ = "worker_log_daily_stats"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # 统计日期（YYYY-MM-DD，本地时区），按日聚合便于「当日」口径查询
+    stat_date = Column(String(10), index=True, nullable=False)
+    # 维度类型：cache_source / api_429 / ua_type / level
+    dim_type = Column(String(30), index=True, nullable=False)
+    # 维度值：如 MEM / LOCAL / search_episodes / misaka10876/v1.0.0
+    dim_value = Column(String(200), nullable=False)
+    count = Column(BigInteger, default=0, nullable=False)
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
+
+    __table_args__ = (
+        # 同一天同一维度只有一行，作为 upsert 的冲突键
+        UniqueConstraint("stat_date", "dim_type", "dim_value",
+                         name="uq_wlds_date_dim"),
+    )
 
 
 class WorkerMetricsSnapshot(Base):
