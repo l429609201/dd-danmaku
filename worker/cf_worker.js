@@ -2715,17 +2715,18 @@ async function handleRequest(request, env, ctx) {
                         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-Cache': 'HIT-EMPTY' },
                     });
                 }
-                // 负缓存未命中，但本地端解析出了别名：客户端搜的词在 dandanplay 搜不到，
-                // 而库里有等价的规范标题。用规范词改写回源 URL，让原本注定为空的请求能拿到数据。
-                // 注意：必须在这里立即改写，否则别名信息会在第二次 RPC 前被丢弃。
+                // 负缓存未命中，但本地端在这次 RPC 里顺带解析出了别名：客户端搜的词
+                // dandanplay 搜不到，而库里有等价的规范标题。必须在这里立即改写，
+                // 否则这份别名信息会被丢弃——下面第二次 RPC 用的是另一个 cache_key。
+                // 只改 tUrlObj + url（字符串），与剥离 episode 的处理方式保持一致；
+                // 内存缓存键在上面已用 const 固定，不在此处改写。
                 if (neg && !neg.hit && neg.alias_hit && neg.canonical) {
                     const kwName = tUrlObj.searchParams.has('keyword') ? 'keyword' : 'anime';
                     if (tUrlObj.searchParams.has(kwName)) {
                         aliasRewritten = { from: neg.term || normKw, to: neg.canonical };
                         tUrlObj.searchParams.set(kwName, neg.canonical);
-                        url = new URL(tUrlObj.toString());
-                        cacheKey = url.toString();
-                        console.log(`🔤 [${clientIP}] 别名改写搜索词: "${aliasRewritten.from}" → "${aliasRewritten.to}"`);
+                        url = tUrlObj.toString();
+                        console.log(`🔤 [${clientIP}] 别名改写搜索词: ${aliasRewritten.from} → ${aliasRewritten.to}`);
                     }
                 }
             }
