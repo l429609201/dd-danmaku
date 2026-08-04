@@ -263,12 +263,12 @@ class AliasExternalService:
 
         查询逻辑：
         1. 用 normalize_alias(keyword) 在 media_alias 表查匹配的 anime_id
-        2. 对每个 anime_id，查 episode_link 表获取集数列表
+        2. 对每个 anime_id，查 episode_links 表获取集数列表
         3. 返回格式与弹幕 API 一致：{ animes: [{ animeId, animeTitle, type, episodes: [...] }] }
 
         返回：{ "animes": [...] }，空列表表示无匹配
         """
-        from src.models_v2 import MediaAlias, EpisodeLink, MediaLibrary
+        from src.models_v2 import MediaAlias, EpisodeLinks, MediaLibrary
         from src.services_v2.media_meta_service import normalize_alias
 
         norm_kw = normalize_alias(keyword)
@@ -297,10 +297,10 @@ class AliasExternalService:
                 if not lib:
                     continue
 
-                # 3. 查 episode_link 获取集数列表
-                eps = db.query(EpisodeLink).filter(
-                    EpisodeLink.anime_id == anime_id
-                ).order_by(EpisodeLink.episode).limit(100).all()
+                # 3. 查 episode_links 获取集数列表
+                eps = db.query(EpisodeLinks).filter(
+                    EpisodeLinks.anime_id == anime_id
+                ).order_by(EpisodeLinks.episode).limit(100).all()
 
                 episodes = [{
                     "episodeId": str(ep.id),
