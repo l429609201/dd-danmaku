@@ -3,12 +3,20 @@
     <h1 class="app-page__title">Worker 日志</h1>
 
     <div class="app-toolbar">
+      <el-select v-model="selectedFile" placeholder="当前日志文件" style="width: 160px" @change="reload">
+        <el-option v-for="f in files" :key="f.name" :label="f.name" :value="f.name">
+          <span>{{ f.name }}</span>
+          <span style="float: right; color: var(--el-text-color-secondary); font-size: 12px">
+            {{ f.size_mb }} MB
+          </span>
+        </el-option>
+      </el-select>
       <el-select v-model="level" placeholder="全部级别" clearable style="width: 130px" @change="reload">
         <el-option label="INFO" value="INFO" />
         <el-option label="WARN" value="WARN" />
         <el-option label="ERROR" value="ERROR" />
       </el-select>
-      <el-input v-model="keyword" placeholder="搜索 path" clearable style="width: 180px" @keyup.enter="reload" @clear="reload" />
+      <el-input v-model="keyword" placeholder="关键词（跨字段搜）" clearable style="width: 200px" @keyup.enter="reload" @clear="reload" />
       <el-input v-model="ipSearch" placeholder="搜索 IP" clearable style="width: 160px" @keyup.enter="reload" @clear="reload" />
       <el-input v-model="uaSearch" placeholder="搜索 X-UA" clearable style="width: 170px" @keyup.enter="reload" @clear="reload" />
       <el-input v-model="userIdSearch" placeholder="搜索 用户ID" clearable style="width: 150px" @keyup.enter="reload" @clear="reload" />
@@ -117,6 +125,8 @@ export default {
   setup() {
     const tableRef = ref(null)     // el-table 组件引用
     const items = ref([])
+    const files = ref([])          // 轮转文件列表
+    const selectedFile = ref('')   // 当前选中的文件（空=当前 worker.log）
     const level = ref('')
     const keyword = ref('')
     const ipSearch = ref('')       // 按客户端 IP 搜索
@@ -130,22 +140,43 @@ export default {
     const PAGE_SIZE = 50
     const page = ref(1)            // 当前已加载页码
     const hasMore = ref(true)      // 是否还有下一页
+    const totalEstimated = ref(false) // total 是否为估算值（文件扫描被截断）
     let abortCtrl = null
+
+    // 加载轮转文件列表
+    const loadFiles = async () => {
+      try {
+        const res = await apiV2('/worker-logs/files')
+        files.value = res.data?.files || []
+        // 默认选中当前文件
+        if (files.value.length > 0 && !selectedFile.value) {
+          selectedFile.value = files.value[0].name
+        }
+      } catch (e) {
+        ElMessage.warning('文件列表加载失败: ' + e.message)
+      }
+    }
 
     // 统一拉取某一页，append=false 时替换（首次/查询），true 时追加（滚动加载）
     const fetchPage = async (targetPage, append) => {
       const q = new URLSearchParams({ page: targetPage, page_size: PAGE_SIZE })
-      // 本页用无限滚动、不展示总条数，故跳过后端 COUNT（大表上 COUNT 是主要耗时）
-      q.set('with_total', 'false')
+      // 新接口：日志在轮转文件里，selectedFile 指定查哪个文件
+      if (selectedFile.value) q.set('file', selectedFile.value)
       if (level.value) q.set('level', level.value)
       if (keyword.value) q.set('keyword', keyword.value)
       if (ipSearch.value) q.set('ip', ipSearch.value)
       if (uaSearch.value) q.set('ua', uaSearch.value)
       if (userIdSearch.value) q.set('user_id', userIdSearch.value)
       const res = await apiV2(`/worker-logs?${q.toString()}`)
-      // 每条加唯一 _uid，防止 el-table row-key 因 id 缺失把全部行当同一行
-      const mapped = (res.items || []).map(item => ({
-        ...item, _uid: item.id ? `db-${item.id}` : `r-${Math.random().toString(36).slice(2)}`
+      // total_estimated=true 时显示「约 N 条」
+      totalEstimated.value = res.total_estimated || false
+      // 每条加唯一 _uid，防止 el-table row-key 因 id 缺失把全部行当同一行；
+      // 文件里的日志没有数据库 id，用时间戳+随机数生成
+      const mapped = (res.items || []).map((item, idx) => ({
+        ...item,
+        _uid: item.id ? `db-${item.id}` : `f-${targetPage}-${idx}-${Date.now()}`,
+        // body 已随列表返回，标记已加载
+        _bodyLoaded: true,
       }))
       items.value = append ? items.value.concat(mapped) : mapped
       page.value = targetPage
@@ -153,25 +184,10 @@ export default {
       hasMore.value = mapped.length >= PAGE_SIZE
     }
 
-    // 展开行时按需拉取请求/响应体：列表接口已不返回这两个大字段，
-    // 避免单页响应几 MB 拖慢加载。同一行只拉一次（_bodyLoaded 标记）。
+    // 展开行：body 已随列表返回（文件存储无列宽限制），不再按需加载。
+    // 保留空函数以免模板报错，实际不做任何操作。
     const onExpand = async (row, expanded) => {
-      if (!expanded || !row || !row.id) return
-      if (row._bodyLoaded || row._bodyLoading) return
-      // query 已在列表接口返回，无需再拉详情；只有 body 才需要按需加载
-      if (!row.has_body) { row._bodyLoaded = true; return }
-      row._bodyLoading = true
-      try {
-        const res = await apiV2(`/worker-logs/detail/${row.id}`)
-        const d = res.data || res || {}
-        row.request_body = d.request_body || ''
-        row.response_body = d.response_body || ''
-        row._bodyLoaded = true
-      } catch (e) {
-        ElMessage.error(`请求/响应体加载失败: ${e.message}`)
-      } finally {
-        row._bodyLoading = false
-      }
+      // 旧逻辑已废弃：body 在 fetchPage 时已标记 _bodyLoaded=true
     }
 
     // 安全 URL 解码：path/cache_key 里的中文被 Worker encodeURIComponent 编码过，
@@ -300,6 +316,7 @@ export default {
     }
 
     onMounted(async () => {
+      await loadFiles()  // 先加载文件列表
       await reload()
       await nextTick()
       window.addEventListener('scroll', onScroll, { passive: true })
@@ -322,7 +339,8 @@ export default {
       if (abortCtrl) abortCtrl.abort()
       window.removeEventListener('scroll', onScroll)
     })
-    return { items, tableRef, level, keyword, ipSearch, uaSearch, userIdSearch, loading, loadingMore, hasMore, streaming, prettyJson, expandedRows, Search,
+    return { items, tableRef, files, selectedFile, level, keyword, ipSearch, uaSearch, userIdSearch,
+      loading, loadingMore, hasMore, totalEstimated, streaming, prettyJson, expandedRows, Search,
       reload, loadMore, toggleStream, levelType, sourceType, sourceLabel, rowClass, fmtBytes, fmtJson, renderBody, fmt, onExpand, decodeText }
   }
 }
