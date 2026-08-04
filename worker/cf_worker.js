@@ -2966,8 +2966,48 @@ async function handleRequest(request, env, ctx) {
     let selectedKey = selectKey(uaKey, apiGroup);
 
     if (!selectedKey) {
-        // 全部密钥该接口已限流：缓存已在前面查过，直接返回流控
-        console.log(`🚫 [${clientIP}] 接口 ${apiGroup} 所有密钥已限流，返回流控`);
+        // 全部密钥该接口已限流：先尝试本地别名兜底，再返回流控
+        console.log(`🚫 [${clientIP}] 接口 ${apiGroup} 所有密钥已限流`);
+
+        // 🔄 别名兜底：密钥池耗尽时，对搜索接口尝试本地别名查询
+        if (env.CONTROL_HUB && (apiPath === '/api/v2/search/episodes' || apiPath === '/api/v2/search/anime')) {
+            const rawKw = tUrlObj.searchParams.get('anime') || tUrlObj.searchParams.get('keyword') || '';
+            const normKw = normalizeSearchKeyword(rawKw);
+            if (normKw) {
+                console.log(`🔄 [${clientIP}] 密钥池耗尽，尝试本地别名兜底: ${normKw}`);
+                try {
+                    const fallbackResp = await controlHubRpc(env, 'alias.query', { keyword: normKw }, 5000);
+                    if (fallbackResp && fallbackResp.success && fallbackResp.data && fallbackResp.data.length > 0) {
+                        // 本地端返回了匹配结果，用它替代 429 响应
+                        const fallbackBody = JSON.stringify({ animes: fallbackResp.data });
+                        console.log(`✅ [${clientIP}] 密钥池耗尽时本地别名兜底命中: ${fallbackResp.data.length} 个作品`);
+                        bumpMetric('totalResponses'); bumpMetric('status2xx');
+                        addMemoryLog('INFO', '密钥池耗尽-别名兜底命中', {
+                            ip: clientIP, path: apiPath, query: normKw, method: request.method,
+                            userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId,
+                            responseStatus: 200, cacheSource: 'LOCAL-ALIAS-FALLBACK',
+                            durationMs: Date.now() - reqStartMs, responseBytes: fallbackBody.length,
+                            requestBody: truncateBody(reqBodyText), responseBody: truncateBody(fallbackBody)
+                        });
+                        return new Response(fallbackBody, {
+                            status: 200,
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Access-Control-Allow-Origin': '*',
+                                'X-Cache': 'LOCAL-ALIAS-FALLBACK',
+                                'X-Key-Pool': 'EXHAUSTED',
+                            },
+                        });
+                    } else {
+                        console.log(`ℹ️ [${clientIP}] 密钥池耗尽且本地别名无匹配，返回 429`);
+                    }
+                } catch (e) {
+                    console.log(`⚠️ [${clientIP}] 密钥池耗尽时本地别名兜底失败: ${e.message}`);
+                }
+            }
+        }
+
+        // 本地别名也无结果，返回流控提示
         const exhaustBody = JSON.stringify({
             errorCode: 429, success: false,
             errorMessage: '当前接口所有密钥已达调用配额上限，请稍后再试',
