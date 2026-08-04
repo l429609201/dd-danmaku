@@ -3072,11 +3072,44 @@ async function handleRequest(request, env, ctx) {
     }
 
     let response = fwd.response;
-    const responseText = fwd.responseText;
+    let responseText = fwd.responseText;
     const upstreamErrorCode = fwd.errorCode;
-    const isUpstreamRateLimited = fwd.limited;
+    let isUpstreamRateLimited = fwd.limited;
     if (isUpstreamRateLimited) {
         console.log(`🚫 [${clientIP}] 检测到上游限流 (HTTP ${response.status}, errorCode=${upstreamErrorCode})`);
+        // 🔄 别名兜底：当上游限流且本地端可用时，尝试用搜索词在本地别名表查询已缓存集数
+        if (env.CONTROL_HUB && (apiPath === '/api/v2/search/episodes' || apiPath === '/api/v2/search/anime')) {
+            const rawKw = tUrlObj.searchParams.get('anime') || tUrlObj.searchParams.get('keyword') || '';
+            const normKw = normalizeSearchKeyword(rawKw);
+            if (normKw) {
+                console.log(`🔄 [${clientIP}] 尝试本地端别名兜底: ${normKw}`);
+                try {
+                    const fallbackResp = await controlHubRpc(env, 'alias.query', { keyword: normKw }, 5000);
+                    if (fallbackResp && fallbackResp.success && fallbackResp.data && fallbackResp.data.length > 0) {
+                        // 本地端返回了匹配结果，用它替代 429 响应
+                        const fallbackBody = JSON.stringify(fallbackResp.data);
+                        console.log(`✅ [${clientIP}] 本地端别名兜底命中: ${fallbackResp.data.length} 条结果`);
+                        response = new Response(fallbackBody, {
+                            status: 200,
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Access-Control-Allow-Origin': '*',
+                                'X-Cache': 'LOCAL-ALIAS-FALLBACK',
+                                'X-Upstream-Status': '429',
+                            },
+                        });
+                        // 覆盖响应文本供后续日志使用
+                        responseText = fallbackBody;
+                        // 标记不再是限流状态（避免后续逻辑把它当 429 处理）
+                        isUpstreamRateLimited = false;
+                    } else {
+                        console.log(`ℹ️ [${clientIP}] 本地端别名无匹配，保持 429 响应`);
+                    }
+                } catch (e) {
+                    console.log(`⚠️ [${clientIP}] 本地端别名兜底失败: ${e.message}`);
+                }
+            }
+        }
     }
 
     // 指标：回源响应（可缓存请求走到这里即未命中）+ 状态码分布 + 429

@@ -249,6 +249,8 @@ class ControlClient:
             await self._handle_cache_get(msg_id, payload)
         elif msg_type == "cache.upsert":
             await self._handle_cache_upsert(msg_id, payload)
+        elif msg_type == "alias.query":
+            await self._handle_alias_query(msg_id, payload)
         elif msg_type == "stats.report":
             await self._handle_stats_report(msg_id, payload)
         elif msg_type == "log.report":
@@ -353,6 +355,44 @@ class ControlClient:
         self._audit("worker_to_local", "cache.upsert",
                     "success" if ok else "failed",
                     request_cache_key=payload.get("cache_key"))
+
+    async def _handle_alias_query(self, msg_id, payload):
+        """Worker 429 限流时的别名兜底查询：用搜索词在本地别名表查已缓存集数
+
+        Worker 调用时机：当弹幕 API 返回 429 且搜索接口（/search/episodes 或 /search/anime）时，
+        Worker 会用搜索词调本接口，尝试从本地别名表查询已缓存的集数列表作为兜底。
+
+        返回格式与弹幕 API 一致（{ animes: [...] }），方便 Worker 直接替换 429 响应。
+        """
+        from src.services_v2.alias_external_service import alias_external_service
+
+        keyword = payload.get("keyword", "")
+        success = False
+        data = []
+
+        if keyword:
+            try:
+                # 调用别名服务查询：返回 { animes: [{ animeId, animeTitle, type, episodes: [...] }] }
+                result = await asyncio.to_thread(
+                    alias_external_service.search_by_keyword, keyword
+                )
+                if result and result.get("animes"):
+                    success = True
+                    data = result["animes"]
+                    logger.info(f"🔍 别名兜底查询命中: {keyword} → {len(data)} 个作品")
+                else:
+                    logger.info(f"🔍 别名兜底查询无匹配: {keyword}")
+            except Exception as e:
+                logger.warning(f"⚠️ 别名兜底查询失败: {keyword}, {e}")
+
+        await self._send({
+            "id": msg_id, "type": "alias.query.result",
+            "timestamp": _ts(),
+            "payload": {"success": success, "data": data},
+        })
+        self._audit("worker_to_local", "alias.query",
+                    "success" if success else "no_match",
+                    request_cache_key=keyword)
 
     async def _handle_stats_report(self, msg_id, payload):
         """Worker 主动上报 IP/限流统计：落库 current + snapshot
