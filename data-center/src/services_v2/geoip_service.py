@@ -105,12 +105,19 @@ class GeoIpService:
                 return {"available": True, "points": [], "total_ips": 0, "resolved": 0}
 
             # 1. 分批读已缓存的解析结果（500/批，避免超大 IN 触发参数上限）
-            cached: Dict[str, Any] = {}
+            # 存纯 dict 而非 ORM 对象：db.close() 后再访问 ORM 属性会触发
+            # 懒加载，此时 Session 已关闭 → DetachedInstanceError。
+            # db.commit() 还会 expire 所有属性，commit 过的实例必然踩到。
+            cached: Dict[str, Dict[str, Any]] = {}
             all_ips = list(ip_counts.keys())
             for i in range(0, len(all_ips), 500):
                 batch = all_ips[i:i + 500]
                 for c in db.query(IpGeoCache).filter(IpGeoCache.ip.in_(batch)).all():
-                    cached[c.ip] = c
+                    cached[c.ip] = {
+                        "resolved": bool(c.resolved),
+                        "lng": c.lng, "lat": c.lat,
+                        "city": c.city, "country": c.country,
+                    }
 
             # 2. 对未缓存的新 IP 解析并批量写回表（增量）
             new_recs = []
@@ -128,7 +135,14 @@ class GeoIpService:
                     resolved_at=now(),
                 )
                 db.merge(rec)
-                cached[ip] = rec
+                # 同样存快照：这些实例会在下面 commit 时被 expire
+                cached[ip] = {
+                    "resolved": bool(geo),
+                    "lng": str(geo["lng"]) if geo else None,
+                    "lat": str(geo["lat"]) if geo else None,
+                    "city": geo["city"] if geo else None,
+                    "country": geo["country"] if geo else None,
+                }
                 new_recs.append(ip)
             if new_recs:
                 db.commit()
@@ -141,16 +155,16 @@ class GeoIpService:
         resolved = 0
         for ip, cnt in ip_counts.items():
             c = cached.get(ip)
-            if not c or not c.resolved or c.lng is None or c.lat is None:
+            if not c or not c["resolved"] or c["lng"] is None or c["lat"] is None:
                 continue
             resolved += 1
             try:
-                lng, lat = float(c.lng), float(c.lat)
+                lng, lat = float(c["lng"]), float(c["lat"])
             except (TypeError, ValueError):
                 continue
             key = (lng, lat)
             if key not in agg:
-                agg[key] = {"name": c.city or "未知", "country": c.country or "",
+                agg[key] = {"name": c["city"] or "未知", "country": c["country"] or "",
                             "lng": lng, "lat": lat, "count": 0}
             agg[key]["count"] += cnt
 

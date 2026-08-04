@@ -41,6 +41,11 @@ class AliasReview(BaseModel):
     approve: bool
 
 
+class AliasReassign(BaseModel):
+    """改挂：把别名重新关联到指定番剧。原侧标 rejected 留痕。"""
+    target_anime_id: str
+
+
 @router.get("/library")
 async def list_library(
     keyword: Optional[str] = None,
@@ -137,6 +142,69 @@ async def external_supplement_aliases(
                  f"外部无结果 {s.get('no_external', 0)}，"
                  f"本地无对应 {s.get('no_local', 0)}"),
         data=s)
+
+
+@router.get("/alias/by-anime")
+async def list_aliases_by_anime(
+    only_pending: bool = True,
+    keyword: Optional[str] = None,
+    page: int = 1, page_size: int = Query(10, le=50),
+    _: LocalUser = Depends(get_current_user),
+):
+    """以番剧为主的别名视图（校验页主列表）。
+
+    only_pending=true 只列有待确认别名的番剧（待办清单），
+    false 列全部有别名记录的番剧（日常别名管理台）。
+    """
+    def _load():
+        db = get_db_sync()
+        try:
+            return media_meta_service.list_by_anime(
+                db, only_pending, keyword, page, page_size)
+        finally:
+            db.close()
+    r = await asyncio.to_thread(_load)
+    return PageResult(total=r["total"], items=r["items"])
+
+
+@router.get("/alias/cached-terms")
+async def search_cached_terms(
+    keyword: Optional[str] = None,
+    only_unlinked: bool = True,
+    limit: int = Query(30, le=100),
+    _: LocalUser = Depends(get_current_user),
+):
+    """搜已缓存的响应搜索词，供人工手动挂到番剧下"""
+    def _load():
+        db = get_db_sync()
+        try:
+            return media_meta_service.search_cached_terms(
+                db, keyword, only_unlinked, limit)
+        finally:
+            db.close()
+    return ApiResult(data=await asyncio.to_thread(_load))
+
+
+@router.put("/meta/alias/{row_id}/reassign")
+async def reassign_alias(row_id: int, body: AliasReassign,
+                         user: LocalUser = Depends(require_operator)):
+    """改挂别名到指定番剧：目标侧 approved，原侧 rejected 留痕"""
+    def _do():
+        db = get_db_sync()
+        try:
+            r = media_meta_service.reassign_alias(
+                db, row_id, body.target_anime_id, user.id)
+            db.commit()
+            return r
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+    r = await asyncio.to_thread(_do)
+    if not r:
+        raise HTTPException(status_code=400, detail="记录不存在或目标番剧与原番剧相同")
+    return ApiResult(message=f"已改挂到 {r['to']}", data=r)
 
 
 @router.get("/meta/{anime_id}")

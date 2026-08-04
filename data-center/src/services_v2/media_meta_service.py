@@ -948,6 +948,183 @@ class MediaMetaService:
         items.sort(key=lambda x: x["hit"], reverse=True)
         return {"total": total, "items": items}
 
+    # ---------- 以番剧为主的校验视图 ----------
+
+    def list_by_anime(self, db, only_pending: bool = True,
+                      keyword: Optional[str] = None,
+                      page: int = 1, page_size: int = 10) -> Dict[str, Any]:
+        """以番剧为主列出别名，每部番剧带上它名下的全部别名。
+
+        为什么以番剧为主而非以搜索词为主：判断「这个词是不是这部番的别名」
+        需要看到该番剧已有哪些别名做参照。只看孤立的搜索词无从判断，
+        也无法表达「是这部不是那部」——后者正是改挂要解决的。
+
+        only_pending=True 只列有待确认别名的番剧（待办清单），
+        False 列全部有别名记录的番剧（日常别名管理台）。
+        """
+        # 先定位本页的 anime_id：有 pending 的按最大命中降序（先修最热的），
+        # 全量模式按别名数降序（别名多的更可能需要维护）
+        sub = db.query(
+            MediaAlias.anime_id.label("aid"),
+            func.max(MediaAlias.hit_snapshot).label("hit"),
+            func.count(MediaAlias.id).label("cnt"),
+        )
+        if only_pending:
+            sub = sub.filter(MediaAlias.status == "pending")
+        sub = sub.group_by(MediaAlias.anime_id)
+
+        # 按番剧标题过滤：先在媒体库里找到匹配的 anime_id 再筛
+        if keyword:
+            matched = [m.anime_id for m in db.query(MediaLibrary.anime_id).filter(
+                MediaLibrary.title.like(f"%{keyword}%")).limit(500).all()]
+            if not matched:
+                return {"total": 0, "items": []}
+            sub = sub.filter(MediaAlias.anime_id.in_(matched))
+
+        total = sub.count()
+        order = (func.max(MediaAlias.hit_snapshot).desc() if only_pending
+                 else func.count(MediaAlias.id).desc())
+        page_rows = sub.order_by(order, MediaAlias.anime_id.desc()) \
+            .offset((page - 1) * page_size).limit(page_size).all()
+        if not page_rows:
+            return {"total": total, "items": []}
+
+        anime_ids = [r.aid for r in page_rows]
+        # 一次取回这些番剧名下的所有别名（含 approved，作为判断参照）
+        alias_rows = db.query(MediaAlias).filter(
+            MediaAlias.anime_id.in_(anime_ids)).all()
+        title_map = {}
+        img_map = {}
+        for m in db.query(MediaLibrary).filter(
+                MediaLibrary.anime_id.in_(anime_ids)).all():
+            title_map[m.anime_id] = m.title
+            img_map[m.anime_id] = m.image_url
+        link_map: Dict[str, Dict[str, str]] = {}
+        for e in db.query(MediaExternalId).filter(
+            MediaExternalId.anime_id.in_(anime_ids),
+            MediaExternalId.provider.in_(("bangumi_tv", "tmdb")),
+        ).all():
+            link_map.setdefault(e.anime_id, {})[e.provider] = e.external_url
+
+        # 命中数取实时值：hit_snapshot 在实时写入路径上恒为 0（写入时缓存刚建）
+        live = self._live_hit_counts(db, [r.alias for r in alias_rows])
+
+        buckets: Dict[str, Dict[str, Any]] = {
+            aid: {
+                "anime_id": aid,
+                "title": title_map.get(aid) or f"（媒体库无此条目 {aid}）",
+                "image_url": img_map.get(aid),
+                "links": link_map.get(aid) or {},
+                "approved": [], "pending": [], "rejected": [],
+                "max_hit": 0,
+            } for aid in anime_ids
+        }
+        for r in alias_rows:
+            b = buckets.get(r.anime_id)
+            if b is None:
+                continue
+            hit = max(r.hit_snapshot or 0, live.get(r.alias_norm, 0))
+            item = {
+                "id": r.id, "alias": r.alias, "lang": r.lang,
+                "source": r.source, "confidence": r.confidence,
+                "hit": hit, "ai_suggestion": r.ai_suggestion,
+            }
+            bucket = b.get(r.status)
+            if bucket is not None:
+                bucket.append(item)
+            if hit > b["max_hit"]:
+                b["max_hit"] = hit
+        for b in buckets.values():
+            b["pending"].sort(key=lambda x: x["hit"], reverse=True)
+            b["approved"].sort(key=lambda x: (x["confidence"] or 0), reverse=True)
+        items = [buckets[a] for a in anime_ids if a in buckets]
+        return {"total": total, "items": items}
+
+    def reassign_alias(self, db, alias_id: int, target_anime_id: str,
+                       user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """把别名改挂到别的番剧：目标侧建 approved，原侧标 rejected 留痕。
+
+        留痕而非删除——保留算法当初挂错的记录，便于回溯匹配规则哪里不对。
+        目标侧已有同名别名时只做状态升级，不产生重复行（唯一键是
+        alias_norm + anime_id）。
+        """
+        row = db.query(MediaAlias).filter(MediaAlias.id == alias_id).first()
+        if not row:
+            return None
+        if not target_anime_id or target_anime_id == row.anime_id:
+            return None
+        item = [{"alias": row.alias, "alias_norm": row.alias_norm,
+                 "lang": row.lang, "title_type": row.title_type}]
+        # 人工指定的关联给满置信度，后续自动任务不会覆盖
+        self.upsert_aliases(db, target_anime_id, item, source="manual",
+                            status="approved", confidence=100,
+                            hit_snapshot=row.hit_snapshot or 0)
+        target = db.query(MediaAlias).filter(
+            MediaAlias.anime_id == target_anime_id,
+            MediaAlias.alias_norm == row.alias_norm,
+        ).first()
+        if target is not None:
+            target.verified_by = user_id
+        # 原侧留痕：标记 verified_by 后自动任务也不会再改动它
+        row.status = "rejected"
+        row.verified_by = user_id
+        return {"alias": row.alias, "from": row.anime_id, "to": target_anime_id}
+
+    def search_cached_terms(self, db, keyword: Optional[str] = None,
+                            only_unlinked: bool = True,
+                            limit: int = 30) -> List[Dict[str, Any]]:
+        """搜已缓存的响应搜索词，供人工手动挂到番剧下。
+
+        用途：算法没生成候选、或候选被拒后，人工主动找词建立关联。
+        only_unlinked=True 只列还没有任何别名记录的词（避免重复挂）。
+        """
+        sql = sql_text("""
+            SELECT cache_key, hit_count, is_empty
+            FROM api_response_cache
+            WHERE api_path LIKE '/api/v2/search/%'
+              AND (:kw IS NULL OR cache_key LIKE :like_kw)
+            ORDER BY hit_count DESC
+            LIMIT :lim
+        """)
+        # 多取一些再过滤：同一个词可能有多条缓存（不同接口/编码形态）
+        rows = db.execute(sql, {
+            "kw": keyword or None,
+            "like_kw": f"%{keyword}%" if keyword else "%",
+            "lim": limit * 6,
+        })
+        seen: Dict[str, Dict[str, Any]] = {}
+        for cache_key, hit, is_empty in rows:
+            term = parse_search_term(cache_key or "")
+            if not term:
+                continue
+            norm = normalize_alias(term)
+            if not norm:
+                continue
+            # 关键词是给人输入的，按解析出的词再过一遍（cache_key 里是 URL 编码形态）
+            if keyword and keyword.lower() not in term.lower():
+                continue
+            cur = seen.get(norm)
+            if cur is None or (hit or 0) > cur["hit"]:
+                seen[norm] = {
+                    "term": term, "alias_norm": norm,
+                    "hit": hit or 0, "is_empty": bool(is_empty),
+                }
+        norms = list(seen.keys())
+        linked: Dict[str, List[str]] = {}
+        if norms:
+            for a in db.query(MediaAlias).filter(
+                    MediaAlias.alias_norm.in_(norms)).all():
+                linked.setdefault(a.alias_norm, []).append(a.status)
+        out = []
+        for norm, info in seen.items():
+            statuses = linked.get(norm) or []
+            if only_unlinked and statuses:
+                continue
+            info["linked_status"] = statuses
+            out.append(info)
+        out.sort(key=lambda x: x["hit"], reverse=True)
+        return out[:limit]
+
     @staticmethod
     def _live_hit_counts(db, aliases: List[str]) -> Dict[str, int]:
         """取这批搜索词当前的真实命中数（归一化后的 key → hit_count）。
