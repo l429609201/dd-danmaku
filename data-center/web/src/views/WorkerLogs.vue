@@ -28,7 +28,12 @@
         <el-table-column type="expand">
           <template #default="{ row }">
             <div v-if="row._bodyLoading" class="body-empty">加载请求/响应体…</div>
-            <div v-else-if="row.request_body || row.response_body" class="body-expand">
+            <div v-else class="body-expand">
+              <!-- 搜索词：GET 请求的参数在 URL query 而非 body，单独展示便于排查 -->
+              <div v-if="row.query" class="body-block">
+                <span class="body-label">搜索词</span>
+                <pre class="body-pre">{{ row.query }}</pre>
+              </div>
               <div v-if="row.request_body" class="body-block">
                 <span class="body-label">请求体</span>
                 <pre class="body-pre" :key="(prettyJson ? 'p' : 'r') + '-req'">{{ renderBody(row.request_body) }}</pre>
@@ -37,8 +42,10 @@
                 <span class="body-label">响应体</span>
                 <pre class="body-pre" :key="(prettyJson ? 'p' : 'r') + '-resp'">{{ renderBody(row.response_body) }}</pre>
               </div>
+              <div v-if="!row.query && !row.request_body && !row.response_body" class="body-empty">
+                该条日志无搜索词/请求体/响应体（拦截类早退路径）
+              </div>
             </div>
-            <div v-else class="body-empty">该条日志无请求/响应体（拦截类早退路径）</div>
           </template>
         </el-table-column>
         <el-table-column label="时间" width="180">
@@ -151,6 +158,7 @@ export default {
     const onExpand = async (row, expanded) => {
       if (!expanded || !row || !row.id) return
       if (row._bodyLoaded || row._bodyLoading) return
+      // query 已在列表接口返回，无需再拉详情；只有 body 才需要按需加载
       if (!row.has_body) { row._bodyLoaded = true; return }
       row._bodyLoading = true
       try {
@@ -231,7 +239,7 @@ export default {
               item._live = true
               // 实时流本身已带 body，无需再走详情接口
               item._bodyLoaded = true
-              item.has_body = !!(item.request_body || item.response_body)
+              item.has_body = !!(item.request_body || item.response_body || item.query)
               items.value.unshift(item)
               if (items.value.length > 200) items.value.pop()
             } catch { /* 忽略心跳 */ }

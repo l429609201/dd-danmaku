@@ -80,14 +80,16 @@ def _query_logs(worker_id, level, keyword, ip, ua, user_id,
                 .offset((page - 1) * page_size).limit(page_size).all()
         items = [{
             "id": r.id, "worker_id": r.worker_id, "client_ip": r.client_ip,
-            "method": r.method, "path": r.path, "status": r.status,
+            "method": r.method, "path": r.path, "query": r.query,
+            "status": r.status,
             "ua_type": r.ua_type, "level": r.level, "message": r.message,
             "cache_source": r.cache_source, "upstream_status": r.upstream_status,
             "key_id": r.key_id, "client_user_id": r.client_user_id,
             "duration_ms": r.duration_ms,
             "response_bytes": r.response_bytes,
-            # 是否有请求/响应体（前端据此决定展开行是否可点、要不要拉详情）；
-            # 体本身不在列表返回，避免单次响应几 MB 拖慢页面
+            # 是否有请求/响应体（前端据此决定要不要拉详情）；
+            # 体本身不在列表返回，避免单次响应几 MB 拖慢页面。
+            # query 已直接返回，不计入此判断——只有 query 的行也应可展开查看
             "has_body": bool(r.request_body or r.response_body),
             "created_at": r.created_at.isoformat() if r.created_at else None,
         } for r in rows]

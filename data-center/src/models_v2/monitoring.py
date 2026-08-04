@@ -106,6 +106,9 @@ class WorkerRequestLog(Base):
     client_ip = Column(String(64), index=True, nullable=True)
     method = Column(String(10), nullable=True)
     path = Column(String(500), index=True, nullable=True)
+    # 提取 URL 参数中的搜索词/episodeId，便于日志查看和筛选
+    # （GET 请求参数在 query 而非 body，Worker 侧从 tUrlObj.searchParams 提取）
+    query = Column(String(500), nullable=True)
     status = Column(Integer, index=True, nullable=True)
     ua_type = Column(String(100), index=True, nullable=True)
     # 缓存来源：MEM / LOCAL / R2 / MISS / KEY-POOL 等（便于排查命中链路）

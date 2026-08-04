@@ -87,7 +87,7 @@ function normalizeSearchKeyword(kw) {
 
 // R2 弹幕缓存配置
 const R2_CACHE_CONFIG = {
-    TTL: 12 * 60 * 60 * 1000,              // 12小时过期
+    TTL: 24 * 60 * 60 * 1000,              // 24小时过期
     MAX_STORAGE_BYTES: 9 * 1024 * 1024 * 1024, // 9GB 阈值
     KEY_PREFIX: 'comment/',                 // R2 key 前缀
     EXPIRE_POLL_INTERVAL: 5 * 60 * 1000,   // 过期轮询间隔：5分钟（请求路径被动清理）

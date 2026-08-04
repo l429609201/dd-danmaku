@@ -64,6 +64,8 @@ class WorkerLogService:
                     client_ip=self._clip(data.get("ip") or item.get("ip"), 64),
                     method=self._clip(data.get("method"), 10),
                     path=self._clip(data.get("path"), 500),
+                    # 提取 URL 参数中的搜索词/episodeId（Worker 侧新加的 query 字段）
+                    query=self._clip(data.get("query"), 500),
                     status=data.get("responseStatus") or data.get("status"),
                     ua_type=self._clip(data.get("userAgent") or data.get("ua_type"), 100),
                     # 客户端用户标识（X-Ddd-User，混淆值约 96 字符）
@@ -87,7 +89,7 @@ class WorkerLogService:
                     "worker_id": worker_id,
                     "level": row.level, "message": row.message,
                     "client_ip": row.client_ip, "method": row.method,
-                    "path": row.path, "status": row.status,
+                    "path": row.path, "query": row.query, "status": row.status,
                     "ua_type": row.ua_type,
                     "client_user_id": row.client_user_id,
                     "cache_source": row.cache_source,
@@ -115,6 +117,7 @@ class WorkerLogService:
                         client_ip=self._clip(data.get("ip") or item.get("ip"), 64),
                         method=self._clip(data.get("method"), 10),
                         path=self._clip(data.get("path"), 500),
+                        query=self._clip(data.get("query"), 500),
                         status=data.get("responseStatus") or data.get("status"),
                         ua_type=self._clip(data.get("userAgent") or data.get("ua_type"), 100),
                         client_user_id=self._clip(data.get("userId"), 255),
