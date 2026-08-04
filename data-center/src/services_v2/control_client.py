@@ -168,7 +168,10 @@ class ControlClient:
             try:
                 async with ws_connect(
                     full_url, additional_headers=headers,
-                    ping_interval=20, ping_timeout=20, open_timeout=10,
+                    # ping_interval: 每 20 秒发一次 ping
+                    # ping_timeout: 等待 pong 的最长时间，改为 60 秒以容忍
+                    #   config.apply 的 DO storage 慢速写入（10 秒超时 + 排队）
+                    ping_interval=20, ping_timeout=60, open_timeout=10,
                     # 配置与批量日志可能超过默认 1 MiB；保留 8 MiB 明确上限，
                     # 避免已在线上发生的 1009 message too big 反复断连。
                     max_size=8 * 1024 * 1024,
