@@ -259,17 +259,12 @@ class AliasExternalService:
         }
 
     def search_by_keyword(self, keyword: str) -> Dict[str, Any]:
-        """用搜索词在本地别名表查询已缓存的集数列表（Worker 429 兜底）
+        """按已审核别名返回本地集数，供 Worker 在上游 429 时兜底。
 
-        查询逻辑：
-        1. 用 normalize_alias(keyword) 在 media_alias 表查匹配的 anime_id
-        2. 对每个 anime_id，查 episode_links 表获取集数列表
-        3. 返回格式与弹幕 API 一致：{ animes: [{ animeId, animeTitle, type, episodes: [...] }] }
-
-        返回：{ "animes": [...] }，空列表表示无匹配
+        ORM 类名是 EpisodeLink，表名才是 episode_links；响应使用 dandanplay
+        的 animeId/episodeId 字段，避免把本地主键误暴露给客户端。
         """
-        from src.models_v2 import MediaAlias, EpisodeLinks, MediaLibrary
-        from src.services_v2.media_meta_service import normalize_alias
+        from src.models_v2 import EpisodeLink, MediaAlias, MediaLibrary
 
         norm_kw = normalize_alias(keyword)
         if not norm_kw:
@@ -277,44 +272,48 @@ class AliasExternalService:
 
         db = get_db_sync()
         try:
-            # 1. 查别名表找匹配的 anime_id（用 alias_norm_ns 兜底空格差异）
-            aliases = db.query(MediaAlias.anime_id).filter(
+            q = db.query(MediaAlias.anime_id).filter(
+                MediaAlias.status == "approved",
                 (MediaAlias.alias_norm == norm_kw) |
-                (MediaAlias.alias_norm_ns == norm_kw.replace(" ", ""))
-            ).distinct().limit(10).all()
-
-            if not aliases:
+                (MediaAlias.alias_norm_ns == norm_kw.replace(" ", "")),
+            ).distinct().limit(10)
+            anime_ids = [row.anime_id for row in q.all() if row.anime_id]
+            if not anime_ids:
                 return {"animes": []}
 
-            anime_ids = [a.anime_id for a in aliases]
+            libraries = {
+                row.anime_id: row
+                for row in db.query(MediaLibrary).filter(
+                    MediaLibrary.anime_id.in_(anime_ids)).all()
+            }
+            links = db.query(EpisodeLink).filter(
+                EpisodeLink.dandan_anime_id.in_(anime_ids)
+            ).all()
+            grouped: Dict[str, List[EpisodeLink]] = {}
+            for link in links:
+                grouped.setdefault(link.dandan_anime_id, []).append(link)
 
-            # 2. 对每个 anime_id，查 media_library 获取基本信息
+            def _episode_sort(link: EpisodeLink):
+                value = (link.episode_number or "").strip()
+                return (0, int(value)) if value.isdigit() else (1, value)
+
             animes = []
             for anime_id in anime_ids:
-                lib = db.query(MediaLibrary).filter(
-                    MediaLibrary.anime_id == anime_id
-                ).first()
-                if not lib:
+                lib = libraries.get(anime_id)
+                eps = sorted(grouped.get(anime_id, []), key=_episode_sort)
+                if not lib or not eps:
                     continue
-
-                # 3. 查 episode_links 获取集数列表
-                eps = db.query(EpisodeLinks).filter(
-                    EpisodeLinks.anime_id == anime_id
-                ).order_by(EpisodeLinks.episode).limit(100).all()
-
-                episodes = [{
-                    "episodeId": str(ep.id),
-                    "episodeTitle": f"第{ep.episode}集",  # 简化标题
-                } for ep in eps]
-
                 animes.append({
-                    "animeId": anime_id,
-                    "animeTitle": lib.title or anime_id,
-                    "type": lib.type or "tvseries",
-                    "typeDescription": "TV" if lib.type == "tvseries" else "剧场版",
-                    "episodes": episodes,
+                    "animeId": int(anime_id) if str(anime_id).isdigit() else anime_id,
+                    "animeTitle": lib.title or eps[0].anime_title or anime_id,
+                    "type": lib.type_code or "tvseries",
+                    "typeDescription": lib.type_desc or "TV动画",
+                    "episodes": [{
+                        "episodeId": int(ep.dandan_episode_id)
+                        if str(ep.dandan_episode_id).isdigit() else ep.dandan_episode_id,
+                        "episodeTitle": ep.episode_title or ep.local_title,
+                    } for ep in eps],
                 })
-
             return {"animes": animes}
         finally:
             db.close()
