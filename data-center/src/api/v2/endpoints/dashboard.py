@@ -74,7 +74,7 @@ def _build_summary() -> dict:
             ControlNode.last_seen_at.desc()
         ).first()
 
-        # 今日 429 兜底命中数
+        # 今日缓存命中与 429 兜底命中数；访问日志全量保存，直接计数。
         stale_hits = db.query(ApiCacheAccessLog).filter(
             ApiCacheAccessLog.access_type == "stale_hit",
             ApiCacheAccessLog.created_at >= today_start,

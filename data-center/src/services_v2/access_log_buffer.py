@@ -91,11 +91,9 @@ class AccessLogBuffer:
     def submit(self, cache_key, api_path, access_type,
                upstream_status=None, served_status=None,
                worker_request_id=None, client_ip=None):
-        """投递一条访问日志（同步非阻塞）；deque 满自动丢最旧。
+        """投递一条访问日志（同步非阻塞）；所有类型全量保存。
 
-        入队即按列宽截断：异常长的搜索词（如带整段描述的垃圾请求，
-        URL 编码后可达数千字符）会触发 DataError 1406，
-        而 bulk_insert 是整批一个事务，一条坏数据会连坐同批全部日志。
+        入队即按列宽截断，避免异常长缓存键导致整批 bulk insert 失败。
         """
         self._buf.append({
             "cache_key": _clip(cache_key, CACHE_KEY_MAX),

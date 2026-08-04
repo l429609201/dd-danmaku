@@ -480,8 +480,8 @@ async def logs_cache_access(
 ):
     """缓存访问日志（api_cache_access_logs 表）：命中 / 未命中 / 429 兜底记录。
 
-    access_type 取值：hit / miss / stale_hit / expired / upsert / 429。
-    统计各类型占比可判断缓存是否有效；429 记录多说明上游限流频繁。
+    所有访问类型全量保存。access_type 取值包括 hit / miss / stale_hit /
+    expired / upsert / assembled / 429；可按类型筛选排查缓存行为。
 
     参数：
         limit       返回条数，默认 50，上限 200

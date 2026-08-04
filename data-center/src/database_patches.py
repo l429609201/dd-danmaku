@@ -639,6 +639,56 @@ def _patch_backfill_alias_norm_ns(engine: Engine) -> bool:
         return False
 
 
+def _patch_access_log_retention_14d(engine: Engine) -> bool:
+    """把缓存访问日志的旧默认保留期从 30 天一次性迁移为 14 天。
+
+    仅当策略当前仍是旧默认 30 天时修改；无论是否修改都写迁移标记，
+    防止用户以后手工设回 30 天时被启动补丁再次覆盖。
+    """
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if not {"cleanup_policy", "app_settings"}.issubset(tables):
+        return False
+    marker = "patch_access_log_retention_14d_done"
+    try:
+        with engine.begin() as conn:
+            done = conn.execute(text(
+                "SELECT 1 FROM app_settings WHERE `key` = :key LIMIT 1"
+                if engine.dialect.name == "mysql" else
+                'SELECT 1 FROM app_settings WHERE "key" = :key LIMIT 1'
+            ), {"key": marker}).first()
+            if done:
+                return False
+            result = conn.execute(text(
+                "UPDATE cleanup_policy SET retention_days = 14, "
+                "updated_at = CURRENT_TIMESTAMP "
+                "WHERE table_key = 'api_cache_access_logs' AND retention_days = 30"
+            ))
+            conn.execute(text(
+                "INSERT INTO app_settings "
+                "(`key`, value, value_type, description, is_secret, created_at, updated_at) "
+                "VALUES (:key, 'true', 'bool', :description, :is_secret, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                if engine.dialect.name == "mysql" else
+                'INSERT INTO app_settings '
+                '("key", value, value_type, description, is_secret, created_at, updated_at) '
+                'VALUES (:key, \'true\', \'bool\', :description, :is_secret, '
+                'CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
+            ), {
+                "key": marker,
+                "description": "缓存访问日志旧默认保留期已迁移为14天",
+                "is_secret": False,
+            })
+        changed = bool(result.rowcount)
+        logger.info(
+            "🧹 缓存访问日志保留期迁移完成: "
+            + ("30天 → 14天" if changed else "保留用户现有配置"))
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ 缓存访问日志保留期迁移失败（跳过）: {e}")
+        return False
+
+
 # ============ 补丁注册表 ============
 # 按顺序执行；新增补丁在此登记即生效。
 _PATCHES: List[Callable[[Engine], bool]] = [
@@ -654,6 +704,7 @@ _PATCHES: List[Callable[[Engine], bool]] = [
     _patch_backfill_entity_anime_ep,
     # 同理：先建 ix_ma_normns_status，再回填 alias_norm_ns
     _patch_backfill_alias_norm_ns,
+    _patch_access_log_retention_14d,
     # 删除已停写的旧表：放在最后，确保其他补丁都完成后再删
     # （避免依赖该表的补丁运行时表已被删除）
     _patch_drop_worker_request_logs,

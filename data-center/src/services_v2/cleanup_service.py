@@ -46,7 +46,7 @@ TABLE_REGISTRY = {
 
 # 默认策略：table_key -> (默认启用, 默认保留天数)
 DEFAULT_POLICY = {
-    "api_cache_access_logs": (True, 30),
+    "api_cache_access_logs": (True, 14),
     "control_messages": (True, 30),
     "runtime_events": (True, 30),
     # worker_request_logs 已删除，不再清理
