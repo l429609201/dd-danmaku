@@ -250,6 +250,11 @@ class CacheService:
             self._get_lookup, cache_key, worker_request_id, client_ip, log_miss,
             allow_stale)
         if snap is None or not snap.get("found"):
+            # EMPTY: 是 Worker 专用的负缓存探测键，不是普通响应缓存键。
+            # 探测未命中必须直接返回 miss；若继续实体拼装，Worker 会把拼装出的
+            # 正常非空响应误判成“空结果负缓存”，并在别名解析前直接返回。
+            if cache_key.startswith("EMPTY:"):
+                return None
             # 整体 cache_key 未命中，但实体表里可能已有拼装素材。
             # 典型场景：带 episode=N 的查询，集号进了 cache_key 导致每集一个 key，
             # 而整季明细早已按集拆进 api_response_entities。

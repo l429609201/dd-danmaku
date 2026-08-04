@@ -2704,7 +2704,9 @@ async function handleRequest(request, env, ctx) {
                     cache_key: emptyKey, api_path: apiPath, method: request.method,
                     client_ip: clientIP, worker_request_id: request.headers.get('cf-ray') || '',
                 }, 1500);
-                if (neg && neg.hit && neg.body) {
+                // 双重校验：EMPTY: 只是探测键，只有本地端明确标记 is_empty 才能短路。
+                // 避免异常返回或旧逻辑的实体拼装 hit 被误当成负缓存直接吐给客户端。
+                if (neg && neg.hit && neg.is_empty === true && neg.body) {
                     console.log(`🕳️ [${clientIP}] 空结果负缓存命中，直接返回空: ${normKw}`);
                     bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
                     addMemoryLog('INFO', '空结果负缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: 200, cacheSource: 'LOCAL-EMPTY', durationMs: Date.now() - reqStartMs, responseBytes: neg.body ? neg.body.length : 0, requestBody: truncateBody(reqBodyText), responseBody: truncateBody(neg.body) });
