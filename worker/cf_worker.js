@@ -7,7 +7,12 @@
 // 构建产物由 sign-verify-src/ 经 javascript-obfuscator 混淆生成。
 import { verifyClientSignature, verifyUserAllow, verifyUserIdMark } from './sign_verify.js';
 import { tryLocalSearchFallback } from './local_search_fallback.mjs';
-import { classifyLocalCache } from './cache_refresh_policy.mjs';
+
+// 缓存判定保持在主脚本内：现网支持单文件热更新，避免新增模块未同步时整条请求链异常。
+function classifyLocalCache(local) {
+    if (!local?.hit || !local.body) return 'miss';
+    return local.stale === true ? 'refresh' : 'serve';
+}
 
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
@@ -2127,12 +2132,14 @@ export default {
       return await handleRequest(request, env, ctx);
     } catch (e) {
       // 顶层兜底：任何未捕获异常都返回 JSON，避免 Cloudflare 1101（Worker threw exception）
-      console.error(`❌ Worker 顶层异常: ${e && e.stack ? e.stack : e}`);
+      const errorDetail = String(e && e.stack ? e.stack : (e && e.message ? e.message : e));
+      console.error(`❌ Worker 顶层异常: ${errorDetail}`);
       try {
         addMemoryLog('ERROR', 'Worker 顶层异常', {
           path: (() => { try { return new URL(request.url).pathname; } catch (_) { return ''; } })(),
           method: request.method,
-          message: String(e && e.message ? e.message : e),
+          // 后端日志服务会持久化 responseBody；不要再只写未映射的 data.message，否则根因会丢失。
+          responseBody: truncateBody(errorDetail),
         });
       } catch (_) { /* 日志失败不阻塞 */ }
       return new Response(JSON.stringify({

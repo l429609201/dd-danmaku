@@ -1,13 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { classifyLocalCache } from '../cache_refresh_policy.mjs';
+
+const source = await readFile(new URL('../cf_worker.js', import.meta.url), 'utf8');
+const policyMatch = source.match(/function classifyLocalCache\(local\) \{[\s\S]*?\n\}/);
+assert.ok(policyMatch, '主脚本必须包含本地缓存判定函数');
+const classifyLocalCache = Function(`${policyMatch[0]}; return classifyLocalCache;`)();
 
 test('新鲜本地缓存直接返回，stale 缓存继续回源刷新', () => {
     assert.equal(classifyLocalCache({ hit: true, body: '{}', stale: false }), 'serve');
     assert.equal(classifyLocalCache({ hit: true, body: '{}', stale: true }), 'refresh');
     assert.equal(classifyLocalCache({ hit: false, body: '{}' }), 'miss');
     assert.equal(classifyLocalCache(null), 'miss');
+});
+
+
+test('缓存判定不依赖新增运行时模块，兼容主脚本单文件热更新', () => {
+    assert.doesNotMatch(source, /cache_refresh_policy\.mjs/);
+    assert.match(source, /function classifyLocalCache\(local\)/);
+});
+
+test('顶层异常详情写入可持久化字段', () => {
+    const start = source.indexOf("addMemoryLog('ERROR', 'Worker 顶层异常'");
+    const end = source.indexOf('\n      } catch (_)', start);
+    const errorLogSource = source.slice(start, end);
+
+    assert.ok(start >= 0 && end > start);
+    assert.match(errorLogSource, /responseBody:\s*truncateBody\(errorDetail\)/);
+    assert.doesNotMatch(errorLogSource, /\bmessage:/);
 });
 
 test('普通缓存阶段仅在 fresh 分支回填 Worker 内存', async () => {
