@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
 from src.database import get_db_sync
-from src.models_v2 import ApiResponseEntity, MediaLibrary
+from src.models_v2 import ApiResponseEntity, EpisodeLink, MediaLibrary
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +121,65 @@ class EntityAssembleService:
             "mode": "episodes_single" if ep_no else "episodes_season",
         }
 
+    def assemble_alias_episodes(self, db,
+                                libraries: List[MediaLibrary]) -> List[Dict[str, Any]]:
+        """按候选主档顺序组装 429 兜底分集；允许使用已有的部分集数。"""
+        anime_ids = [row.anime_id for row in libraries if row.anime_id]
+        if not anime_ids:
+            return []
+        episode_entities: Dict[str, List[ApiResponseEntity]] = {}
+        for episode in db.query(ApiResponseEntity).filter(
+                ApiResponseEntity.entity_type == "episode",
+                ApiResponseEntity.anime_id.in_(anime_ids)).all():
+            episode_entities.setdefault(episode.anime_id, []).append(episode)
+
+        # 旧入口始终以 episode_links 为结果基线；实体表仅补链接表不存在的集。
+        # 这样部分实体不会缩短整季，人工修正的链接也不会被原始实体覆盖。
+        grouped: Dict[str, List[Any]] = {}
+        for link in db.query(EpisodeLink).filter(
+                EpisodeLink.dandan_anime_id.in_(anime_ids)).all():
+            grouped.setdefault(link.dandan_anime_id, []).append(link)
+        for anime_id, entity_rows in episode_entities.items():
+            rows = grouped.setdefault(anime_id, [])
+            linked_ids = {str(row.dandan_episode_id) for row in rows}
+            rows.extend(
+                row for row in entity_rows if str(row.entity_id) not in linked_ids
+            )
+
+        animes = []
+        for library in libraries:
+            episodes = self._sort_episodes(grouped.get(library.anime_id, []))
+            if not episodes:
+                continue
+            # 保持旧别名兜底契约：番剧级字段只由 MediaLibrary 与链接标题构造。
+            episode_anime_title = getattr(episodes[0], "anime_title", None)
+            obj = {
+                "animeId": _as_int(library.anime_id),
+                "animeTitle": library.title or episode_anime_title or library.anime_id,
+                "type": library.type_code or "tvseries",
+                "typeDescription": library.type_desc or "TV动画",
+                "episodes": [self._build_episode_obj(ep) for ep in episodes],
+            }
+            animes.append(obj)
+        return animes
+
+    @staticmethod
+    def _sort_episodes(rows) -> List[Any]:
+        """保持原别名兜底排序：数字集按数值升序，其他集号按原字符串排序。"""
+        def _key(row):
+            value = str(getattr(row, "episode_number", "") or "").strip()
+            return (0, int(value)) if value.isdigit() else (1, value)
+        return sorted(rows, key=_key)
+
+    @staticmethod
+    def _build_episode_obj(row) -> Dict[str, Any]:
+        raw = getattr(row, "raw_json", None)
+        if isinstance(raw, dict):
+            return dict(raw)
+        episode_id = getattr(row, "entity_id", None) or row.dandan_episode_id
+        title = getattr(row, "episode_title", None) or getattr(row, "local_title", None)
+        return {"episodeId": _as_int(episode_id), "episodeTitle": title}
+
     def _load_episodes(self, db, anime_id: str,
                        ep_no: Optional[str]) -> List[ApiResponseEntity]:
         """取某番剧的集实体。ep_no 为 None 时取整季。"""
@@ -131,11 +190,8 @@ class EntityAssembleService:
         if ep_no is not None:
             return q.filter(ApiResponseEntity.episode_number == ep_no).all()
         rows = q.all()
-        # 按集号数值排序；非数字集号（SP/OVA）排到末尾，保持顺序稳定
-        def _sort_key(r):
-            n = (r.episode_number or "").strip()
-            return (0, int(n)) if n.isdigit() else (1, 0)
-        return sorted(rows, key=_sort_key)
+        # 普通拼装与 429 别名兜底共用同一排序口径，避免集数顺序分叉。
+        return self._sort_episodes(rows)
 
     def _season_complete(self, db, anime_id: str, have: int) -> bool:
         """整季完整性校验：实体集数需 >= media_library 声明的总集数。

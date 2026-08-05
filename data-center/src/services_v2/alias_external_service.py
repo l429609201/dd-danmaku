@@ -12,7 +12,6 @@
 中文译名多版本），不能直接上线。
 """
 import logging
-import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -260,120 +259,16 @@ class AliasExternalService:
         }
 
     def search_by_keyword(self, keyword: str) -> Dict[str, Any]:
-        """按本地已审核别名返回集数；裸系列词会聚合同系列 TV 季度。"""
-        from src.models_v2 import EpisodeLink, MediaAlias, MediaLibrary
-        from src.services_v2.media_meta_service import season_of_title
-
-        norm_kw = normalize_alias(keyword)
-        if not norm_kw:
-            return {"animes": []}
-
-        # strip_season 负责中文/Season/Sx；这里补齐 dandanplay 常用的尾部罗马数字。
-        base_kw, requested_season = strip_season(norm_kw)
-        if requested_season is None:
-            roman_map = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5,
-                         "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10}
-            match = re.match(r"^(.*?)(?:\s+)(viii|vii|iii|vi|iv|ii|ix|x|v|i)$", norm_kw)
-            if match:
-                base_kw = match.group(1).strip()
-                requested_season = roman_map[match.group(2)]
-            else:
-                match = re.match(r"^(.*?)(?:\s+)([1-9][0-9]?)$", norm_kw)
-                if match:
-                    base_kw = match.group(1).strip()
-                    requested_season = int(match.group(2))
-
-        def _title_base(title: str) -> str:
-            value = normalize_alias(title)
-            value, _ = strip_season(value)
-            value = re.sub(
-                r"\s+(?:viii|vii|iii|vi|iv|ii|ix|x|v|i)$", "", value).strip()
-            return value
+        """按已审核别名选择作品，并交给统一实体组装器生成分集响应。"""
+        from src.services_v2.entity_assemble import entity_assemble_service
 
         db = get_db_sync()
         try:
-            exact_ids = [row.anime_id for row in db.query(MediaAlias.anime_id).filter(
-                MediaAlias.status == "approved",
-                (MediaAlias.alias_norm == norm_kw) |
-                (MediaAlias.alias_norm_ns == norm_kw.replace(" ", "")),
-            ).distinct().limit(20).all() if row.anime_id]
-
-            # 严格季度集合：仅 TV，且剥掉季号/篇章后必须与基础词完全一致。
-            # 明确搜索“第二季”等场景继续使用它，避免把电影、外传混进指定季度。
-            series_rows = []
-            related_rows = []
-            if base_kw:
-                candidates = db.query(MediaLibrary).filter(
-                    MediaLibrary.title.ilike(f"{base_kw}%"),
-                ).limit(50).all()
-                series_rows = [
-                    row for row in candidates
-                    if row.type_code == "tvseries"
-                    and _title_base(row.title or "") == base_kw
-                ]
-                # 裸中文系列词用于“作品全集”检索：同前缀的 TV、外传、特别篇、
-                # 电影都属于用户期望结果。必须确认输入本身未被剥掉“篇/最终季”等
-                # 修饰，避免明确搜索 Alicization篇 时反而扩成整个系列；同时限制
-                # 至少 4 个中文字符，防止短词把同前缀的无关作品纳入。
-                cjk_count = len(re.findall(r"[\u4e00-\u9fff]", base_kw))
-                if (requested_season is None and norm_kw == base_kw
-                        and cjk_count >= 4):
-                    related_rows = candidates
-
-            if requested_season is not None:
-                libraries_list = [row for row in series_rows
-                                  if (season_of_title(row.title or "") or 1) == requested_season]
-                # 非标准标题无法归入系列时，仍保留精确 approved 别名的兼容路径。
-                if not libraries_list and exact_ids:
-                    libraries_list = db.query(MediaLibrary).filter(
-                        MediaLibrary.anime_id.in_(exact_ids)).all()
-            elif len(related_rows) > 1:
-                libraries_list = related_rows
-            elif len(series_rows) > 1 and norm_kw == base_kw:
-                # 仅裸系列词允许聚合多季度；明确“某某篇”等搜索应回到
-                # approved 精确别名，避免被扩展成第一季到当前篇的多个结果。
-                libraries_list = series_rows
-            else:
-                libraries_list = db.query(MediaLibrary).filter(
-                    MediaLibrary.anime_id.in_(exact_ids)).all() if exact_ids else []
-
-            # 裸系列全集按发行时间稳定排列；缺失日期时再按季号、标题兜底。
-            libraries_list.sort(key=lambda row: (
-                row.start_date or "9999-12-31",
-                season_of_title(row.title or "") or 1,
-                normalize_alias(row.title or ""),
-            ))
-            anime_ids = [row.anime_id for row in libraries_list]
-            if not anime_ids:
+            # 候选选择统一由媒体元数据服务负责，避免多处直接查询 MediaAlias。
+            libraries = media_meta_service.resolve_search_libraries(db, keyword)
+            if not libraries:
                 return {"animes": []}
-
-            libraries = {row.anime_id: row for row in libraries_list}
-            grouped: Dict[str, List[EpisodeLink]] = {}
-            for link in db.query(EpisodeLink).filter(
-                    EpisodeLink.dandan_anime_id.in_(anime_ids)).all():
-                grouped.setdefault(link.dandan_anime_id, []).append(link)
-
-            def _episode_sort(link: EpisodeLink):
-                value = (link.episode_number or "").strip()
-                return (0, int(value)) if value.isdigit() else (1, value)
-
-            animes = []
-            for anime_id in anime_ids:
-                lib = libraries[anime_id]
-                eps = sorted(grouped.get(anime_id, []), key=_episode_sort)
-                if not eps:
-                    continue
-                animes.append({
-                    "animeId": int(anime_id) if str(anime_id).isdigit() else anime_id,
-                    "animeTitle": lib.title or eps[0].anime_title or anime_id,
-                    "type": lib.type_code or "tvseries",
-                    "typeDescription": lib.type_desc or "TV动画",
-                    "episodes": [{
-                        "episodeId": int(ep.dandan_episode_id)
-                        if str(ep.dandan_episode_id).isdigit() else ep.dandan_episode_id,
-                        "episodeTitle": ep.episode_title or ep.local_title,
-                    } for ep in eps],
-                })
+            animes = entity_assemble_service.assemble_alias_episodes(db, libraries)
             return {"animes": animes}
         finally:
             db.close()

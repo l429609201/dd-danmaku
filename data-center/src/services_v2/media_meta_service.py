@@ -600,6 +600,78 @@ class MediaMetaService:
             out.append((r[0], r[1] or "", r[2] or 0, ids))
         return out
 
+    def resolve_search_libraries(self, db, keyword: str) -> List[MediaLibrary]:
+        """统一解析线上搜索词，返回按业务顺序排列的媒体主档。"""
+        norm_kw = normalize_alias(keyword)
+        if not norm_kw:
+            return []
+
+        base_kw, requested_season = strip_season(norm_kw)
+        if requested_season is None:
+            roman_map = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5,
+                         "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10}
+            match = re.match(r"^(.*?)(?:\s+)(viii|vii|iii|vi|iv|ii|ix|x|v|i)$", norm_kw)
+            if match:
+                base_kw = match.group(1).strip()
+                requested_season = roman_map[match.group(2)]
+            else:
+                match = re.match(r"^(.*?)(?:\s+)([1-9][0-9]?)$", norm_kw)
+                if match:
+                    base_kw = match.group(1).strip()
+                    requested_season = int(match.group(2))
+
+        def _title_base(title: str) -> str:
+            value, _ = strip_season(normalize_alias(title))
+            return re.sub(
+                r"\s+(?:viii|vii|iii|vi|iv|ii|ix|x|v|i)$", "", value
+            ).strip()
+
+        # 线上入口只允许 approved；无空白索引兼容用户输入的空格差异。
+        exact_ids = [row.anime_id for row in db.query(MediaAlias.anime_id).filter(
+            MediaAlias.status == "approved",
+            (MediaAlias.alias_norm == norm_kw) |
+            (MediaAlias.alias_norm_ns == norm_kw.replace(" ", "")),
+        ).distinct().limit(20).all() if row.anime_id]
+
+        series_rows = []
+        related_rows = []
+        if base_kw:
+            candidates = db.query(MediaLibrary).filter(
+                MediaLibrary.title.ilike(f"{base_kw}%"),
+            ).limit(50).all()
+            series_rows = [
+                row for row in candidates
+                if row.type_code == "tvseries"
+                and _title_base(row.title or "") == base_kw
+            ]
+            cjk_count = len(re.findall(r"[\u4e00-\u9fff]", base_kw))
+            if (requested_season is None and norm_kw == base_kw
+                    and cjk_count >= 4):
+                related_rows = candidates
+
+        if requested_season is not None:
+            libraries = [
+                row for row in series_rows
+                if (season_of_title(row.title or "") or 1) == requested_season
+            ]
+            if not libraries and exact_ids:
+                libraries = db.query(MediaLibrary).filter(
+                    MediaLibrary.anime_id.in_(exact_ids)).all()
+        elif len(related_rows) > 1:
+            libraries = related_rows
+        elif len(series_rows) > 1 and norm_kw == base_kw:
+            libraries = series_rows
+        else:
+            libraries = db.query(MediaLibrary).filter(
+                MediaLibrary.anime_id.in_(exact_ids)).all() if exact_ids else []
+
+        # 裸系列全集按发行时间稳定排列；缺失日期时按季号、标题兜底。
+        libraries.sort(key=lambda row: (
+            row.start_date or "9999-12-31",
+            season_of_title(row.title or "") or 1,
+            normalize_alias(row.title or ""),
+        ))
+        return libraries
 
     # ---------- 线上别名解析（阶段 5，Worker 走 cache.get 顺带调用） ----------
 

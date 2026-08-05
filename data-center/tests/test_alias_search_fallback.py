@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from src.database import Base
-from src.models_v2 import EpisodeLink, MediaAlias, MediaLibrary
+from src.models_v2 import ApiResponseEntity, EpisodeLink, MediaAlias, MediaLibrary
 
 alias_module = importlib.import_module("src.services_v2.alias_external_service")
 
@@ -99,4 +99,90 @@ def test_pending_alias_never_becomes_online_result(monkeypatch):
     result = alias_module.alias_external_service.search_by_keyword("未审核别名")
 
     assert result == {"animes": []}
+    engine.dispose()
+
+
+def test_episode_numbers_are_sorted_numerically(monkeypatch):
+    factory, engine = _session_factory()
+    session = factory()
+    media, first = _media("9", "排序测试", "2020-01-01", "90001")
+    session.add_all([media, first, EpisodeLink(
+        id=90023, local_title="排序测试 第23集", episode_number="23",
+        episode_title="第23集", dandan_anime_id="9", dandan_episode_id="90023",
+        anime_title="排序测试", match_source="search_episodes",
+        source_cache_key="cache-9",
+    ), EpisodeLink(
+        id=90901, local_title="排序测试 特别篇", episode_number="S1",
+        episode_title="S1 特别篇", dandan_anime_id="9", dandan_episode_id="90901",
+        anime_title="排序测试", match_source="search_episodes",
+        source_cache_key="cache-9",
+    ), MediaAlias(
+        id=9, anime_id="9", alias="排序测试", alias_norm="排序测试",
+        alias_norm_ns="排序测试", source="manual", status="approved", confidence=100,
+    )])
+    session.commit()
+    session.close()
+    monkeypatch.setattr(alias_module, "get_db_sync", factory)
+
+    result = alias_module.alias_external_service.search_by_keyword("排序测试")
+
+    titles = [ep["episodeTitle"] for ep in result["animes"][0]["episodes"]]
+    assert titles == ["第1集", "第23集", "S1 特别篇"]
+    engine.dispose()
+
+
+def test_episode_link_title_is_used_when_library_title_missing(monkeypatch):
+    factory, engine = _session_factory()
+    session = factory()
+    media, episode = _media("10", "分集标题兜底", "2020-01-01", "100001")
+    media.title = None
+    session.add_all([media, episode, MediaAlias(
+        id=10, anime_id="10", alias="标题兜底", alias_norm="标题兜底",
+        alias_norm_ns="标题兜底", source="manual", status="approved", confidence=100,
+    )])
+    session.commit()
+    session.close()
+    monkeypatch.setattr(alias_module, "get_db_sync", factory)
+
+    result = alias_module.alias_external_service.search_by_keyword("标题兜底")
+
+    assert result["animes"][0]["animeTitle"] == "分集标题兜底"
+    engine.dispose()
+
+
+def test_partial_entities_only_fill_missing_episode_links(monkeypatch):
+    factory, engine = _session_factory()
+    session = factory()
+    media, first = _media("11", "部分实体测试", "2020-01-01", "110001")
+    session.add_all([media, first, EpisodeLink(
+        id=110002, local_title="部分实体测试 第2集", episode_number="2",
+        episode_title="链接第2集", dandan_anime_id="11", dandan_episode_id="110002",
+        anime_title="部分实体测试", match_source="manual",
+        source_cache_key="cache-11", is_manual=True,
+    ), ApiResponseEntity(
+        id=111, entity_type="episode", entity_id="110002", anime_id="11",
+        episode_number="2", episode_title="实体第2集", api_path="/episodes",
+        cache_key="entity-11-2", raw_json={"episodeId": 110002, "episodeTitle": "实体第2集"},
+    ), ApiResponseEntity(
+        id=112, entity_type="episode", entity_id="110003", anime_id="11",
+        episode_number="3", episode_title="实体第3集", api_path="/episodes",
+        cache_key="entity-11-3", raw_json={"episodeId": 110003, "episodeTitle": "实体第3集"},
+    ), MediaAlias(
+        id=11, anime_id="11", alias="部分实体测试", alias_norm="部分实体测试",
+        alias_norm_ns="部分实体测试", source="manual", status="approved", confidence=100,
+    )])
+    session.commit()
+    session.close()
+    monkeypatch.setattr(alias_module, "get_db_sync", factory)
+
+    result = alias_module.alias_external_service.search_by_keyword("部分实体测试")
+
+    episodes = result["animes"][0]["episodes"]
+    assert set(result["animes"][0]) == {
+        "animeId", "animeTitle", "type", "typeDescription", "episodes",
+    }
+    assert [item["episodeId"] for item in episodes] == [110001, 110002, 110003]
+    assert [item["episodeTitle"] for item in episodes] == [
+        "第1集", "链接第2集", "实体第3集",
+    ]
     engine.dispose()
