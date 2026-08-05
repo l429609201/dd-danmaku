@@ -7,6 +7,7 @@
 // 构建产物由 sign-verify-src/ 经 javascript-obfuscator 混淆生成。
 import { verifyClientSignature, verifyUserAllow, verifyUserIdMark } from './sign_verify.js';
 import { tryLocalSearchFallback } from './local_search_fallback.mjs';
+import { classifyLocalCache } from './cache_refresh_policy.mjs';
 
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
@@ -2548,10 +2549,15 @@ async function tryLocalApiCache(
         client_ip: clientIP, worker_request_id: request.headers.get('cf-ray') || '',
         prefetch: true,
     }, 1500);
-    if (local && local.hit && local.body) {
-        console.log(`📦 [${clientIP}] 本地端缓存命中${local.stale ? '(stale)' : ''}: ${apiPath}`);
+    const localPolicy = classifyLocalCache(local);
+    if (localPolicy === 'refresh') {
+        // stale 只作为回源失败时的兜底；普通请求必须继续回源，避免旧数据被续上内存 TTL。
+        console.log(`🔄 [${clientIP}] 本地端缓存已进入刷新期，继续回源: ${apiPath}`);
+    }
+    if (localPolicy === 'serve') {
+        console.log(`📦 [${clientIP}] 本地端缓存命中: ${apiPath}`);
         bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
-        // 内存始终回填整季原文，裁剪仅用于本次响应。
+        // 新鲜缓存回填整季原文，裁剪仅用于本次响应。
         memoryCache.apiCache.set(memCacheKey, { data: local.body, timestamp: Date.now() });
         const body = narrowToEpisode(local.body);
         bumpMetric('bytesOut', body.length || 0);
@@ -2562,7 +2568,7 @@ async function tryLocalApiCache(
             method: request.method,
             userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId,
             responseStatus: local.status || 200,
-            cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL', stale: !!local.stale,
+            cacheSource: 'LOCAL', stale: false,
             durationMs: Date.now() - reqStartMs, responseBytes: body.length || 0,
             requestBody: truncateBody(reqBodyText), responseBody: truncateBody(body),
         });
@@ -2571,7 +2577,7 @@ async function tryLocalApiCache(
             headers: {
                 'Content-Type': 'application/json',
                 'Access-Control-Allow-Origin': '*',
-                'X-Cache': local.stale ? 'HIT-LOCAL-STALE' : 'HIT-LOCAL',
+                'X-Cache': 'HIT-LOCAL',
             },
         });
         return unchanged;
@@ -2998,6 +3004,8 @@ async function tryPersistentRateLimitFallback(
         const cached = await controlHubRpc(env, 'cache.get', {
             cache_key: cacheKey, api_path: apiPath, method: request.method,
             client_ip: clientIP, worker_request_id: request.headers.get('cf-ray') || '',
+            // 上游 429 时允许读取超过 expire_at 的本地数据，保证旧数据兜底可用。
+            allow_stale: true,
         }, 1500);
         if (cached && cached.hit && cached.body) {
             console.log(`✅ [${clientIP}] 命中本地兜底缓存${cached.stale ? '(stale)' : ''}: ${cacheKey}`);
@@ -3387,12 +3395,24 @@ async function handleRequest(request, env, ctx) {
         request, url, selectedKey, apiGroup, uaKey, cacheContext, requestContext
     );
     selectedKey = upstreamResult.selectedKey;
+    if (upstreamResult.limited) {
+        // 已有旧缓存时优先按原缓存键兜底；没有旧缓存才继续尝试别名等其他 429 兜底。
+        const persistentFallback = await tryPersistentRateLimitFallback(
+            request, env, tUrlObj, cacheContext, requestContext, narrowToEpisode
+        );
+        if (persistentFallback) {
+            recordUpstreamResponse(
+                request, tUrlObj, selectedKey, upstreamResult, cacheContext, requestContext
+            );
+            return persistentFallback;
+        }
+    }
     upstreamResult = await tryUpstreamRateLimitFallback(
         env, tUrlObj, upstreamResult, cacheContext, requestContext
     );
-    let response = upstreamResult.response;
-    let responseText = upstreamResult.responseText;
-    let isUpstreamRateLimited = upstreamResult.limited;
+    const response = upstreamResult.response;
+    const responseText = upstreamResult.responseText;
+    const isUpstreamRateLimited = upstreamResult.limited;
     recordUpstreamResponse(
         request, tUrlObj, selectedKey, upstreamResult, cacheContext, requestContext
     );
@@ -3401,13 +3421,6 @@ async function handleRequest(request, env, ctx) {
         writeUpstreamCaches(
             request, env, ctx, tUrlObj, response, responseText, cacheContext, requestContext
         );
-    }
-
-    if (isUpstreamRateLimited) {
-        const persistentFallback = await tryPersistentRateLimitFallback(
-            request, env, tUrlObj, cacheContext, requestContext, narrowToEpisode
-        );
-        if (persistentFallback) return persistentFallback;
     }
 
     return finalizeUpstreamResponse(
