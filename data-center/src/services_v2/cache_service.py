@@ -315,7 +315,7 @@ class CacheService:
 
     async def _try_series_override(self, cache_key: str, cached_body: str,
                                    worker_request_id, client_ip):
-        """旧缓存仅含单季而本地存在多季时，返回本地多季度派生响应。"""
+        """用本地系列数据修正旧缓存：优先补全多季度，并拦截唯一高季度误匹配。"""
         if "/api/v2/search/episodes" not in cache_key or "episode=" in cache_key:
             return None
         try:
@@ -327,24 +327,35 @@ class CacheService:
             result = await asyncio.to_thread(
                 alias_external_service.search_by_keyword, cond["title"])
             animes = result.get("animes") if isinstance(result, dict) else None
-            if not isinstance(animes, list) or len(animes) < 2:
-                return None
+
             try:
-                cached_count = len((json.loads(cached_body) or {}).get("animes") or [])
+                cached_animes = (json.loads(cached_body) or {}).get("animes") or []
+                cached_count = len(cached_animes)
             except Exception:
+                cached_animes = []
                 cached_count = 0
-            if len(animes) <= cached_count:
-                return None
-            body = json.dumps({
-                "hasMore": False, "animes": animes,
-                "errorCode": 0, "success": True,
-            }, ensure_ascii=False)
+            if isinstance(animes, list) and len(animes) >= 2 and len(animes) > cached_count:
+                body = json.dumps({
+                    "hasMore": False, "animes": animes,
+                    "errorCode": 0, "success": True,
+                }, ensure_ascii=False)
+            else:
+                from src.services_v2.media_meta_service import is_single_high_season_match
+                cached_title = str(cached_animes[0].get("animeTitle") or "") \
+                    if cached_count == 1 and isinstance(cached_animes[0], dict) else ""
+                # 已缓存的上游模糊结果若只是唯一高季度，不能冒充裸系列搜索结果。
+                if not is_single_high_season_match(cond["title"], cached_title):
+                    return None
+                body = json.dumps({
+                    "hasMore": False, "animes": [], "errorCode": 0,
+                    "success": True, "errorMessage": "",
+                }, ensure_ascii=False)
             api_path = cache_key.split("?", 1)[0].split(":", 1)[-1]
             await asyncio.to_thread(
                 self._log_async, cache_key, api_path, "assembled",
                 worker_request_id, client_ip)
             logger.info(
-                f"🧩 本地多季度覆盖旧缓存: {pretty_cache_key(cache_key)} "
+                f"🧩 本地系列语义覆盖旧缓存: {pretty_cache_key(cache_key)} "
                 f"({cached_count} → {len(animes)} 季)")
             return {
                 "hit": True, "status": 200,

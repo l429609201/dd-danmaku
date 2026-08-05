@@ -92,3 +92,49 @@ test('上游 429 时旧缓存兜底先于别名兜底', async () => {
         < upstreamFlow.indexOf('tryUpstreamRateLimitFallback')
     );
 });
+
+
+
+test('X-HUIYUAN 仅在值为1时强制跳过边缘缓存', () => {
+    const contextMatch = source.match(/function createRequestContext\(request\) \{[\s\S]*?\n\}/);
+    assert.ok(contextMatch, '主脚本必须包含请求上下文函数');
+    const createRequestContext = Function(`${contextMatch[0]};return createRequestContext;`)();
+
+    assert.equal(createRequestContext(new Request('https://worker.test/')).forceOrigin, false);
+    assert.equal(createRequestContext(new Request('https://worker.test/', {
+        headers: { 'X-HUIYUAN': '0' },
+    })).forceOrigin, false);
+    assert.equal(createRequestContext(new Request('https://worker.test/', {
+        headers: { 'X-HUIYUAN': '1' },
+    })).forceOrigin, true);
+
+    const edgeStart = source.indexOf('async function tryEdgeCaches');
+    const edgeEnd = source.indexOf('\nasync function tryOriginQuotaFallback', edgeStart);
+    const edgeSource = source.slice(edgeStart, edgeEnd);
+    assert.match(edgeSource, /requestContext\.forceOrigin/);
+    assert.match(edgeSource, /强制回源/);
+    assert.match(source, /Access-Control-Allow-Headers[^\n]*X-HUIYUAN/);
+    assert.match(source, /lowerKey !== 'x-huiyuan'/);
+});
+
+
+test('裸系列词不会被唯一高季度上游结果冒充', () => {
+    const helperMatch = source.match(/function suppressMisleadingBareSeries\(apiPath, targetUrl, responseText\) \{[\s\S]*?\n\}/);
+    assert.ok(helperMatch, '主脚本必须包含裸系列高季度保护函数');
+    const helper = Function(
+        `${source.match(/function normalizeSearchKeyword\(kw\) \{[\s\S]*?\n\}/)[0]};${helperMatch[0]};return suppressMisleadingBareSeries;`
+    )();
+    const bareUrl = new URL('https://api.test/api/v2/search/episodes?anime=欢迎来到实力至上主义的教室');
+    const seasonUrl = new URL('https://api.test/api/v2/search/episodes?anime=欢迎来到实力至上主义的教室 第五季');
+    const upstream = JSON.stringify({
+        hasMore: false,
+        animes: [{ animeId: 20123, animeTitle: '欢迎来到实力至上主义的教室 第五季', episodes: [] }],
+        errorCode: 0, success: true,
+    });
+
+    assert.deepEqual(
+        JSON.parse(helper('/api/v2/search/episodes', bareUrl, upstream)).animes,
+        []
+    );
+    assert.equal(helper('/api/v2/search/episodes', seasonUrl, upstream), upstream);
+});

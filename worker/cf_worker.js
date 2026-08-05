@@ -654,6 +654,29 @@ function isTrueEmptySearch(apiPath, responseText) {
     return Array.isArray(data.animes) && data.animes.length === 0;
 }
 
+// 裸系列词若被上游模糊搜索成唯一的第二季及以上条目，按空结果处理。
+// 明确带季号的搜索、多季度结果和普通精确标题均保持原响应。
+function suppressMisleadingBareSeries(apiPath, targetUrl, responseText) {
+    if (!apiPath.startsWith('/api/v2/search/episodes') || !responseText) return responseText;
+    const search = normalizeSearchKeyword(targetUrl.searchParams.get('anime') || '');
+    if (!search || /第\s*[二三四五六七八九十0-9]+\s*季/i.test(search)) return responseText;
+    let data;
+    try { data = JSON.parse(responseText); } catch (_) { return responseText; }
+    if (!data || !Array.isArray(data.animes) || data.animes.length !== 1) return responseText;
+    const title = normalizeSearchKeyword(data.animes[0]?.animeTitle || '');
+    const chinese = title.match(/^(.*?)\s*第\s*([二三四五六七八九十0-9]+)\s*季(?:\s.*)?$/i);
+    const roman = title.match(/^(.*?)\s+(viii|vii|iii|vi|iv|ii|ix|x|v)$/i);
+    const match = chinese || roman;
+    if (!match || normalizeSearchKeyword(match[1]) !== search) return responseText;
+    const cn = { 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+    const romans = { ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10 };
+    const seasonMark = String(match[2] || '').toLowerCase();
+    const season = Number(seasonMark) || cn[seasonMark] || romans[seasonMark] || 0;
+    if (season < 2) return responseText;
+    return JSON.stringify({ hasMore: false, animes: [], errorCode: 0, success: true, errorMessage: '' });
+}
+
+
 // 空结果计数：同一归一化键累计 +1，返回是否达阈值。窗口过期或超上限时重置/清理。
 function bumpEmptySearchCount(normKey) {
     const now = Date.now();
@@ -2208,6 +2231,8 @@ function createRequestContext(request) {
                   'unknown',
         reqStartMs: Date.now(),
         clientUserId: request.headers.get('X-Ddd-User') || '',
+        // 仅严格值 1 启用；缺失、0 或其他值均保持默认缓存策略。
+        forceOrigin: request.headers.get('X-HUIYUAN') === '1',
         reqBodyText: null,
     };
 }
@@ -2619,6 +2644,11 @@ async function tryEdgeCaches(
     request, env, ctx, targetUrl, originalUrl,
     cacheContext, requestContext, narrowToEpisode
 ) {
+    if (requestContext.forceOrigin) {
+        // 强制回源只跳过缓存读取；鉴权、配额、密钥池和成功后的缓存写入仍按原流程执行。
+        console.log(`🔄 [${requestContext.clientIP}] X-HUIYUAN=1，跳过边缘缓存: ${cacheContext.apiPath}`);
+        return { response: null, targetUrl, url: originalUrl, aliasRewritten: null };
+    }
     const memoryResponse = tryMemoryApiCache(
         request, cacheContext, requestContext, narrowToEpisode
     );
@@ -2822,7 +2852,7 @@ async function forwardUpstream(
     for (const [key, value] of request.headers.entries()) {
         const lowerKey = key.toLowerCase();
         if (key !== 'X-User-Agent' && key !== 'X-Challenge-Response'
-            && !lowerKey.startsWith('x-ddd-')) {
+            && lowerKey !== 'x-huiyuan' && !lowerKey.startsWith('x-ddd-')) {
             forwardHeaders[key] = value;
         }
     }
@@ -3067,6 +3097,8 @@ function finalizeUpstreamResponse(
 ) {
     const headers = new Headers(response.headers);
     headers.set('Access-Control-Allow-Origin', '*');
+    // 返回体可能经过系列保护或单集裁剪，禁止沿用上游原始 Content-Length。
+    if (cacheContext.isCacheable) headers.delete('Content-Length');
     if (cacheContext.isCacheable || cacheContext.isCommentApi) headers.set('X-Cache', 'MISS');
     // 缓存保留整季原文，仅对返回客户端的副本裁集，并移除失效的 Content-Length。
     const body = narrowToEpisode(responseText);
@@ -3118,7 +3150,7 @@ async function handleRequest(request, env, ctx) {
             headers: {
                 'Access-Control-Allow-Origin': '*',
                 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Agent, X-User-Agent, X-Challenge-Response, X-Ddd-User, X-Ddd-Ts, X-Ddd-Sign',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Agent, X-User-Agent, X-Challenge-Response, X-Ddd-User, X-Ddd-Ts, X-Ddd-Sign, X-HUIYUAN',
             },
         });
     }
@@ -3431,6 +3463,10 @@ async function handleRequest(request, env, ctx) {
         env, tUrlObj, upstreamResult, cacheContext, requestContext
     );
     const response = upstreamResult.response;
+    // 上游裸系列模糊成唯一高季度时先规范为空结果，后续日志、缓存与客户端保持同一口径。
+    upstreamResult.responseText = suppressMisleadingBareSeries(
+        cacheContext.apiPath, tUrlObj, upstreamResult.responseText
+    );
     const responseText = upstreamResult.responseText;
     const isUpstreamRateLimited = upstreamResult.limited;
     recordUpstreamResponse(

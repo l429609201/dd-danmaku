@@ -1,5 +1,7 @@
 """本地别名兜底的正式回归测试。"""
+import asyncio
 import importlib
+import json
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -186,3 +188,60 @@ def test_partial_entities_only_fill_missing_episode_links(monkeypatch):
         "第1集", "链接第2集", "实体第3集",
     ]
     engine.dispose()
+
+
+def test_bare_series_does_not_match_only_high_season_entity():
+    from src.services_v2.entity_assemble import entity_assemble_service
+    from src.services_v2.media_meta_service import is_single_high_season_match
+
+    factory, engine = _session_factory()
+    session = factory()
+    session.add(ApiResponseEntity(
+        id=20123, entity_type="anime", entity_id="20123",
+        title="欢迎来到实力至上主义的教室 第五季",
+        api_path="/api/v2/search/episodes", cache_key="entity-20123",
+        raw_json={"animeId": 20123, "animeTitle": "欢迎来到实力至上主义的教室 第五季"},
+    ))
+    session.commit()
+
+    assert is_single_high_season_match(
+        "欢迎来到实力至上主义的教室", "欢迎来到实力至上主义的教室 第五季"
+    ) is True
+    assert is_single_high_season_match(
+        "欢迎来到实力至上主义的教室 第五季", "欢迎来到实力至上主义的教室 第五季"
+    ) is False
+    assert entity_assemble_service._find_animes(
+        session, "欢迎来到实力至上主义的教室"
+    ) == []
+    assert len(entity_assemble_service._find_animes(
+        session, "欢迎来到实力至上主义的教室 第五季"
+    )) == 1
+    session.close()
+    engine.dispose()
+
+
+def test_polluted_bare_series_cache_is_replaced_with_empty(monkeypatch):
+    from src.services_v2.cache_service import cache_service
+
+    monkeypatch.setattr(
+        alias_module.alias_external_service, "search_by_keyword",
+        lambda _keyword: {"animes": []},
+    )
+    monkeypatch.setattr(cache_service, "_log_async", lambda *_args, **_kwargs: None)
+    polluted = json.dumps({
+        "hasMore": False,
+        "animes": [{
+            "animeId": 20123,
+            "animeTitle": "欢迎来到实力至上主义的教室 第五季",
+            "episodes": [],
+        }],
+        "errorCode": 0, "success": True,
+    }, ensure_ascii=False)
+
+    result = asyncio.run(cache_service._try_series_override(
+        "GET:/api/v2/search/episodes?anime=欢迎来到实力至上主义的教室",
+        polluted, None, None,
+    ))
+
+    assert result["headers"]["X-Cache-Source"] == "assembled-series"
+    assert json.loads(result["body"])["animes"] == []

@@ -8,12 +8,15 @@
 跨方言：SQLite(dbstat/page_count) / MySQL(information_schema) / PostgreSQL(pg_total_relation_size)。
 """
 import logging
+from datetime import timedelta
 from typing import Any, Dict, List
 
 from sqlalchemy import func, inspect, text
 
 from src.database import engine, get_db_sync
+from src.models_v2 import ApiCacheAccessLog, CleanupPolicy, ControlMessage
 from src.services_v2.redis_cache import redis_cache
+from src.utils import naive_now
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,49 @@ def _sqlite_sizes(conn) -> Dict[str, int]:
     except Exception as e:
         logger.debug(f"dbstat 不可用（需 SQLITE_ENABLE_DBSTAT_VTAB）: {e}")
     return sizes
+
+
+_FORECAST_MODELS = {
+    "control_messages": ControlMessage,
+    "api_cache_access_logs": ApiCacheAccessLog,
+}
+
+
+def _capacity_forecasts(db, table_stats: Dict[str, Dict[str, Any]]) -> None:
+    """给高增长表附加滚动 24 小时与保留期稳态容量估算。"""
+    cutoff = naive_now() - timedelta(hours=24)
+    policies = {
+        row.table_key: row
+        for row in db.query(CleanupPolicy).filter(
+            CleanupPolicy.table_key.in_(_FORECAST_MODELS.keys())
+        ).all()
+    }
+    for table_name, model in _FORECAST_MODELS.items():
+        stats = table_stats.get(table_name)
+        if not stats:
+            continue
+        rows_24h = int(db.query(func.count(model.id)).filter(
+            model.created_at >= cutoff
+        ).scalar() or 0)
+        row_count = int(stats["row_count"] or 0)
+        size_bytes = int(stats["size_bytes"] or 0)
+        avg_row_bytes = size_bytes / row_count if row_count > 0 else 0
+        daily_growth_bytes = int(rows_24h * avg_row_bytes)
+        policy = policies.get(table_name)
+        retention_days = int(policy.retention_days) if (
+            policy and policy.enabled and policy.retention_days > 0
+        ) else 0
+        projected = daily_growth_bytes * retention_days
+        stats.update({
+            "rows_24h": rows_24h,
+            "avg_row_bytes": round(avg_row_bytes, 1),
+            "daily_growth_bytes": daily_growth_bytes,
+            "retention_days": retention_days,
+            "projected_retained_bytes": projected,
+            "forecast_ratio": round(projected / size_bytes, 2) if size_bytes > 0 else 0,
+            "forecast_available": bool(size_bytes > 0 and retention_days > 0),
+        })
+
 
 
 def collect_sql_stats() -> Dict[str, Any]:
@@ -83,6 +129,9 @@ def collect_sql_stats() -> Dict[str, Any]:
                 "row_count": int(row_count),
                 "size_bytes": int(size_bytes or 0),
             })
+
+        # 预测查询复用当前会话，避免额外连接；仅处理两张已知高增长表。
+        _capacity_forecasts(db, {item["name"]: item for item in tables})
     finally:
         db.close()
 

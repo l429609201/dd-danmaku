@@ -170,6 +170,22 @@ def season_of_title(title: str) -> Optional[int]:
     return None
 
 
+def is_single_high_season_match(search_title: str, candidate_title: str) -> bool:
+    """判断裸系列词是否仅误命中同系列的第二季及以上条目。"""
+    search_norm = normalize_alias(search_title)
+    search_base, requested_season = strip_season(search_norm)
+    if not search_base or requested_season is not None:
+        return False
+    # 罗马数字季号不在 strip_season 的通用模式里，这里仅为系列基名比较去掉尾缀。
+    candidate_base, _ = strip_season(candidate_title)
+    candidate_base = re.sub(
+        r"\s+(?:viii|vii|iii|vi|iv|ii|ix|x|v)$", "",
+        normalize_alias(candidate_base),
+    ).strip()
+    season = season_of_title(candidate_title)
+    return bool(season and season >= 2 and candidate_base == search_base)
+
+
 def normalize_alias(text: str) -> str:
     """别名归一化：NFKC 全角转半角 + 小写 + 连续空白合一 + 去首尾空格。
 

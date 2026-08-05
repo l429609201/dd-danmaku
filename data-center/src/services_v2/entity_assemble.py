@@ -93,10 +93,16 @@ class EntityAssembleService:
             return rows
         if len(title) < 4:
             return []
-        return db.query(ApiResponseEntity).filter(
+        candidates = db.query(ApiResponseEntity).filter(
             ApiResponseEntity.entity_type.in_(("anime", "bangumi")),
             ApiResponseEntity.title.like(f"{title}%"),
         ).limit(5).all()
+        if len(candidates) == 1:
+            from src.services_v2.media_meta_service import is_single_high_season_match
+            # 裸系列词不能因唯一的高季度前缀候选而被误判为该季度；明确带季号的查询不受影响。
+            if is_single_high_season_match(title, candidates[0].title or ""):
+                return []
+        return candidates
 
     def _assemble_episodes(self, db, title: str,
                            ep_no: Optional[str]) -> Optional[Dict[str, Any]]:
