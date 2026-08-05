@@ -1,6 +1,16 @@
 import asyncio
 
 
+def test_comment_store_constructor_has_no_filesystem_side_effect(monkeypatch):
+    """服务导入/实例化不得创建 /app，目录只在实际 archive 时创建。"""
+    from src.services_v2 import comment_store_service as module
+
+    calls = []
+    monkeypatch.setattr(module.os, "makedirs", lambda *args, **kwargs: calls.append(args))
+    module.CommentStoreService()
+    assert calls == []
+
+
 def test_r2_sync_copies_objects_and_keeps_skips(monkeypatch):
     from src.services_v2 import r2_sync_service as module
 

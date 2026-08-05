@@ -28,9 +28,6 @@ MAX_STORE_BYTES = int(os.getenv("DANMAKU_STORE_MAX_BYTES", str(5 * 1024 * 1024 *
 class CommentStoreService:
     """弹幕兜底持久化"""
 
-    def __init__(self):
-        os.makedirs(DANMAKU_DIR, exist_ok=True)
-
     def _file_path(self, episode_id: str) -> str:
         safe = "".join(c for c in str(episode_id) if c.isalnum() or c in "-_")
         return os.path.join(DANMAKU_DIR, f"{safe}.json")
@@ -62,6 +59,8 @@ class CommentStoreService:
                 return {"saved": False, "reason": "fewer_comments",
                         "old": row.comment_count, "new": new_count}
 
+            # 目录只在实际写入时创建，避免模块导入阶段因 /app 无权限导致 CI/工具启动失败。
+            os.makedirs(DANMAKU_DIR, exist_ok=True)
             path = self._file_path(episode_id)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(body)
