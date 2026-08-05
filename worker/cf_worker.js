@@ -2778,7 +2778,8 @@ async function forwardWithKey(
         delete headers['user-agent'];
         headers['User-Agent'] = keyObj.forwardUa;
     }
-    if (ACCESS_CONFIG.logging.enabled) {
+    // 该函数位于模块作用域，不能读取 handleRequest 内的局部 ACCESS_CONFIG；按当前运行配置判断日志开关。
+    if (getAccessConfig().logging.enabled) {
         console.log(`📤 [${clientIP}] 转发请求头(key=${keyObj.id}):`, JSON.stringify(headers, null, 2));
     }
 
