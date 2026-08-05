@@ -189,7 +189,7 @@ export default {
 
     // 展开行：body 已随列表返回（文件存储无列宽限制），不再按需加载。
     // 保留空函数以免模板报错，实际不做任何操作。
-    const onExpand = async (row, expanded) => {
+    const onExpand = async () => {
       // 旧逻辑已废弃：body 在 fetchPage 时已标记 _bodyLoaded=true
     }
 

@@ -1,0 +1,3 @@
+# CI/本地测试依赖；生产镜像仍只安装 prod.txt。
+-r base.txt
+pytest==8.3.5
