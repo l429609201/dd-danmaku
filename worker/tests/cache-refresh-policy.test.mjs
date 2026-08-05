@@ -30,6 +30,16 @@ test('顶层异常详情写入可持久化字段', () => {
     assert.doesNotMatch(errorLogSource, /\bmessage:/);
 });
 
+test('上游转发函数不读取 handleRequest 局部 ACCESS_CONFIG', () => {
+    const start = source.indexOf('async function forwardWithKey');
+    const end = source.indexOf('\nasync function forwardUpstream', start);
+    const forwardSource = source.slice(start, end);
+
+    assert.ok(start >= 0 && end > start);
+    assert.match(forwardSource, /getAccessConfig\(\)\.logging\.enabled/);
+    assert.doesNotMatch(forwardSource, /if\s*\(ACCESS_CONFIG\./);
+});
+
 test('普通缓存阶段仅在 fresh 分支回填 Worker 内存', async () => {
     const source = await readFile(new URL('../cf_worker.js', import.meta.url), 'utf8');
     const start = source.indexOf('async function tryLocalApiCache');
@@ -44,6 +54,19 @@ test('普通缓存阶段仅在 fresh 分支回填 Worker 内存', async () => {
     const serveStart = localCacheSource.indexOf("localPolicy === 'serve'");
     assert.equal(localCacheSource.slice(refreshStart, serveStart).includes('apiCache.set'), false);
 })
+
+test('本地组装响应透传来源并细分日志缓存类型', () => {
+    const start = source.indexOf('async function tryLocalApiCache');
+    const end = source.indexOf('\nasync function tryEdgeCaches', start);
+    const localCacheSource = source.slice(start, end);
+
+    assert.ok(start >= 0 && end > start);
+    assert.match(localCacheSource, /X-Cache-Source/);
+    assert.match(localCacheSource, /LOCAL-ASSEMBLED-SERIES/);
+    assert.match(localCacheSource, /LOCAL-ASSEMBLED-EPISODES/);
+    assert.match(localCacheSource, /本地端组装缓存命中/);
+});
+
 
 test('429 兜底显式允许读取真正过期的本地缓存', async () => {
     const source = await readFile(new URL('../cf_worker.js', import.meta.url), 'utf8');

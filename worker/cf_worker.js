@@ -2562,30 +2562,42 @@ async function tryLocalApiCache(
         console.log(`🔄 [${clientIP}] 本地端缓存已进入刷新期，继续回源: ${apiPath}`);
     }
     if (localPolicy === 'serve') {
-        console.log(`📦 [${clientIP}] 本地端缓存命中: ${apiPath}`);
+        // 只透传本地端生成的来源标记，不透传全部 RPC 响应头，避免内部字段意外暴露。
+        const localSource = String(
+            local.headers?.['X-Cache-Source'] || local.headers?.['x-cache-source'] || ''
+        );
+        const cacheSource = localSource === 'assembled-series'
+            ? 'LOCAL-ASSEMBLED-SERIES'
+            : (localSource.startsWith('assembled-episodes')
+                ? 'LOCAL-ASSEMBLED-EPISODES' : 'LOCAL');
+        const logMessage = cacheSource === 'LOCAL'
+            ? '本地端缓存命中' : '本地端组装缓存命中';
+        console.log(`📦 [${clientIP}] ${logMessage}: ${apiPath}`);
         bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
         // 新鲜缓存回填整季原文，裁剪仅用于本次响应。
         memoryCache.apiCache.set(memCacheKey, { data: local.body, timestamp: Date.now() });
         const body = narrowToEpisode(local.body);
         bumpMetric('bytesOut', body.length || 0);
-        addMemoryLog('INFO', '本地端缓存命中', {
+        addMemoryLog('INFO', logMessage, {
             ip: clientIP, path: apiPath,
             query: targetUrl.searchParams.get('anime')
                 || targetUrl.searchParams.get('keyword') || '',
             method: request.method,
             userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId,
             responseStatus: local.status || 200,
-            cacheSource: 'LOCAL', stale: false,
+            cacheSource, stale: false,
             durationMs: Date.now() - reqStartMs, responseBytes: body.length || 0,
             requestBody: truncateBody(reqBodyText), responseBody: truncateBody(body),
         });
+        const responseHeaders = {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'X-Cache': 'HIT-LOCAL',
+        };
+        if (localSource) responseHeaders['X-Cache-Source'] = localSource;
         unchanged.response = new Response(body, {
             status: local.status || 200,
-            headers: {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*',
-                'X-Cache': 'HIT-LOCAL',
-            },
+            headers: responseHeaders,
         });
         return unchanged;
     }
