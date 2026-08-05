@@ -161,6 +161,9 @@ class WorkerMetricsSnapshot(Base):
     # 瞬时态
     total_requests_lifetime = Column(BigInteger, default=0, nullable=False)
     api_cache_size = Column(Integer, default=0, nullable=False)
+    # 工具调用为窗口增量，内存水位为瞬时态；JSON 避免为每个操作扩散大量稀疏列。
+    tool_calls = Column(JSON, nullable=True)
+    memory_watermark = Column(JSON, nullable=True)
 
 
 class LocalCommentStore(Base):

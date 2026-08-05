@@ -165,6 +165,8 @@ let memoryCache = {
         userPoolLoaded: false,  // 名单池是否成功下发过（同签名池：冷启动放行、运行期拒绝）
         // 下发的 OAuth 配置（null = 使用 env.OAUTH_CONFIG 兜底；下发后立即覆盖）
         oauthConfig: null,
+        // R2 控制由本地端下发；默认保持现有行为，兼容旧版 data-center。
+        r2Control: { writeEnabled: true, deleteEnabled: true },
         lastUpdate: 0
     },
     // env 兜底基线（启动时加载，永不被下发覆盖；下发只在其之上做增量合并）
@@ -217,6 +219,10 @@ let memoryCache = {
         upstream429: 0,     // 上游 429 次数
         status2xx: 0, status4xx: 0, status5xx: 0, // 响应状态码分布
     },
+    // Cloudflare binding 调用窗口增量；按 metrics.report 周期清零。
+    toolCalls: {},
+    // DO 最近一次随配置响应带回的调用与水位快照。
+    doMonitor: { toolCalls: {}, pendingRpc: 0, websocketConnections: 0 },
     lastMetricsReport: 0,
 };
 
@@ -224,6 +230,25 @@ let memoryCache = {
 function bumpMetric(key, delta = 1) {
     if (memoryCache.metrics[key] === undefined) return;
     memoryCache.metrics[key] += delta;
+}
+
+function bumpToolCall(operation, result = 'attempts') {
+    if (!memoryCache.toolCalls[operation]) {
+        memoryCache.toolCalls[operation] = { attempts: 0, success: 0, errors: 0 };
+    }
+    memoryCache.toolCalls[operation][result]++;
+}
+
+async function trackedToolCall(operation, call) {
+    bumpToolCall(operation);
+    try {
+        const result = await call();
+        bumpToolCall(operation, 'success');
+        return result;
+    } catch (e) {
+        bumpToolCall(operation, 'errors');
+        throw e;
+    }
 }
 
 // 数据中心集成配置（新架构：仅保留 Worker 标识与初始化标志，旧 HTTP 同步字段已废弃）
@@ -766,11 +791,11 @@ async function controlHubRpc(env, type, payload, timeoutMs) {
     try {
         const id = env.CONTROL_HUB.idFromName('control-hub');
         const stub = env.CONTROL_HUB.get(id);
-        const resp = await stub.fetch('https://control-hub/control/rpc', {
+        const resp = await trackedToolCall('doRpc', () => stub.fetch('https://control-hub/control/rpc', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ type, payload, timeoutMs: timeoutMs || 800 }),
-        });
+        }));
         if (!resp.ok) return null;
         return await resp.json();
     } catch (e) {
@@ -785,8 +810,21 @@ async function pullControlConfig(env) {
     try {
         const id = env.CONTROL_HUB.idFromName('control-hub');
         const stub = env.CONTROL_HUB.get(id);
-        const resp = await stub.fetch('https://control-hub/control/config');
+        const resp = await trackedToolCall('doConfig', () => stub.fetch('https://control-hub/control/config'));
         if (!resp.ok) return null;
+        try {
+            const incoming = JSON.parse(resp.headers.get('X-Control-Monitor') || '{}');
+            for (const [operation, values] of Object.entries(incoming.toolCalls || {})) {
+                const target = memoryCache.doMonitor.toolCalls[operation]
+                    || { attempts: 0, success: 0, errors: 0 };
+                for (const key of ['attempts', 'success', 'errors']) {
+                    target[key] += Number(values[key] || 0);
+                }
+                memoryCache.doMonitor.toolCalls[operation] = target;
+            }
+            memoryCache.doMonitor.pendingRpc = Number(incoming.pendingRpc || 0);
+            memoryCache.doMonitor.websocketConnections = Number(incoming.websocketConnections || 0);
+        } catch (_) { /* 监控头异常不影响配置拉取 */ }
         const cfg = await resp.json();
         applyRuntimeConfig(cfg);
         return cfg;
@@ -870,6 +908,13 @@ function applyRuntimeConfig(cfg) {
         _oauthConfigCache = null;
     }
 
+    if (cfg.r2_control && typeof cfg.r2_control === 'object') {
+        memoryCache.configCache.r2Control = {
+            writeEnabled: cfg.r2_control.writeEnabled !== false,
+            deleteEnabled: cfg.r2_control.deleteEnabled !== false,
+        };
+    }
+
     memoryCache.configCache.lastUpdate = Date.now();
 }
 
@@ -939,6 +984,29 @@ function buildConfigStatePayload() {
 // 组装运行指标快照；上报后清零累计型字段（窗口内增量），便于本地端按窗口落库
 function buildMetricsReportPayload(now) {
     const m = memoryCache.metrics;
+    const count = (v) => v && typeof v.size === 'number' ? v.size : 0;
+    const ipStatsCount = Object.keys(memoryCache.ipRequestStats || {}).length;
+    const memoryWatermark = {
+        api_cache: count(memoryCache.apiCache),
+        logs: memoryCache.logs.length,
+        rate_limit_counters: count(memoryCache.rateLimitCounts),
+        ip_stats: ipStatsCount,
+        oauth_token_cache: count(memoryCache.oauthTokenCache),
+        empty_search_counter: count(memoryCache.emptySearchCounter),
+        abuse_tracker: count(memoryCache.abuseTracker),
+        auth_fail_tracker: count(memoryCache.authFailTracker),
+        auth_ban_tracker: count(memoryCache.authBanTracker),
+        pending_requests: memoryCache.pendingRequests,
+        do_pending_rpc: memoryCache.doMonitor.pendingRpc || 0,
+        do_websocket_connections: memoryCache.doMonitor.websocketConnections || 0,
+    };
+    // 这是容器水位的保守估算，不冒充 Cloudflare 控制台的真实 isolate 内存。
+    memoryWatermark.estimated_bytes =
+        memoryWatermark.api_cache * 4096 + memoryWatermark.logs * 1024
+        + memoryWatermark.rate_limit_counters * 256 + memoryWatermark.ip_stats * 512
+        + memoryWatermark.oauth_token_cache * 512 + memoryWatermark.empty_search_counter * 192
+        + (memoryWatermark.abuse_tracker + memoryWatermark.auth_fail_tracker
+            + memoryWatermark.auth_ban_tracker) * 192;
     const payload = {
         worker_id: DATA_CENTER_CONFIG.workerId,
         timestamp: now,
@@ -946,6 +1014,8 @@ function buildMetricsReportPayload(now) {
         // 附带瞬时态：当前总请求数（不清零）与缓存规模，便于展示
         total_requests_lifetime: memoryCache.totalRequests,
         api_cache_size: memoryCache.apiCache.size,
+        tool_calls: { ...memoryCache.toolCalls, ...(memoryCache.doMonitor.toolCalls || {}) },
+        memory_watermark: memoryWatermark,
         // 附带本实例内存里合并后的配置摘要（诊断用）。
         // 与 DO storage 的 config.dump 互补：DO 是「下发存成了什么」，
         // 这里是「本实例实际在用什么」——env 基线与下发合并后的最终值。
@@ -959,6 +1029,8 @@ function buildMetricsReportPayload(now) {
         blockedIp: 0, blockedUa: 0, blockedAbuse: 0, invalidRoute: 0,
         upstream429: 0, status2xx: 0, status4xx: 0, status5xx: 0,
     };
+    memoryCache.toolCalls = {};
+    memoryCache.doMonitor.toolCalls = {};
     return payload;
 }
 
@@ -970,15 +1042,17 @@ function buildMetricsReportPayload(now) {
  * 从 R2 读取弹幕缓存
  * @returns {string|null} 缓存的响应文本，过期或不存在返回 null
  */
-async function r2GetComment(env, cacheKey) {
+async function r2GetComment(env, cacheKey, includeExpired = false) {
     if (!env.DANMAKU_CACHE) return null;
     try {
-        const obj = await env.DANMAKU_CACHE.get(cacheKey);
+        const obj = await trackedToolCall('r2Get', () => env.DANMAKU_CACHE.get(cacheKey));
         if (!obj) return null;
         const timestamp = parseInt(obj.customMetadata?.timestamp || '0');
-        if (Date.now() - timestamp > R2_CACHE_CONFIG.TTL) {
+        if (!includeExpired && Date.now() - timestamp > R2_CACHE_CONFIG.TTL) {
             // 已过期，异步删除不阻塞
-            env.DANMAKU_CACHE.delete(cacheKey).catch(() => {});
+            if (memoryCache.configCache.r2Control.deleteEnabled) {
+                trackedToolCall('r2Delete', () => env.DANMAKU_CACHE.delete(cacheKey)).catch(() => {});
+            }
             return null;
         }
         return await obj.text();
@@ -993,6 +1067,8 @@ async function r2GetComment(env, cacheKey) {
  */
 async function r2PutComment(env, cacheKey, data) {
     if (!env.DANMAKU_CACHE) return;
+    // 只关闭 R2 写入；本地 comment.archive 是独立任务，仍会正常持久化。
+    if (!memoryCache.configCache.r2Control.writeEnabled) return;
     try {
         const dataSize = typeof data === 'string' ? data.length : 0;
 
@@ -1002,10 +1078,10 @@ async function r2PutComment(env, cacheKey, data) {
             return;
         }
 
-        await env.DANMAKU_CACHE.put(cacheKey, data, {
+        await trackedToolCall('r2Put', () => env.DANMAKU_CACHE.put(cacheKey, data, {
             customMetadata: { timestamp: Date.now().toString() },
             httpMetadata: { contentType: 'application/json' },
-        });
+        }));
 
         // 写入成功后更新内存计数器
         memoryCache.r2WriteCount++;
@@ -1030,6 +1106,10 @@ async function r2PutComment(env, cacheKey, data) {
  */
 async function r2ScheduledCleanup(env) {
     if (!env.DANMAKU_CACHE) return;
+    if (!memoryCache.configCache.r2Control.deleteEnabled) {
+        console.log('ℹ️ R2 自动删除已由本地端关闭，跳过过期与容量清理');
+        return;
+    }
     const now = Date.now();
     let totalSize = 0;
     let liveObjects = [];
@@ -1039,12 +1119,12 @@ async function r2ScheduledCleanup(env) {
 
     // 单次遍历所有对象（cron 全局单实例，list 不会被重复触发）
     do {
-        const listed = await env.DANMAKU_CACHE.list({
+        const listed = await trackedToolCall('r2List', () => env.DANMAKU_CACHE.list({
             prefix: R2_CACHE_CONFIG.KEY_PREFIX,
             cursor,
             limit: 1000,
             include: ['customMetadata'],
-        });
+        }));
         for (const obj of listed.objects) {
             const timestamp = parseInt(obj.customMetadata?.timestamp || '0');
             if (timestamp > 0 && (now - timestamp > R2_CACHE_CONFIG.TTL)) {
@@ -1060,7 +1140,7 @@ async function r2ScheduledCleanup(env) {
 
     // 1. 删除过期对象（delete 免费，不算 A 类）
     for (const key of expiredKeys) {
-        await env.DANMAKU_CACHE.delete(key);
+        await trackedToolCall('r2Delete', () => env.DANMAKU_CACHE.delete(key));
     }
 
     console.log(`📊 R2 定时清理: 过期删除 ${expiredKeys.length} 个, 剩余 ${liveObjects.length} 个有效对象, 总大小 ${(totalSize / 1024 / 1024).toFixed(1)} MB`);
@@ -1080,7 +1160,7 @@ async function r2ScheduledCleanup(env) {
     let freedSize = 0;
     for (const obj of liveObjects) {
         if (totalSize - freedSize <= R2_CACHE_CONFIG.MAX_STORAGE_BYTES) break;
-        await env.DANMAKU_CACHE.delete(obj.key);
+        await trackedToolCall('r2Delete', () => env.DANMAKU_CACHE.delete(obj.key));
         freedSize += obj.size;
         deletedCount++;
     }
@@ -1106,7 +1186,7 @@ async function handleR2Rpc(env, type, payload) {
             if (!r2Key.startsWith(R2_CACHE_CONFIG.KEY_PREFIX)) {
                 return { hit: false, error: 'invalid_prefix' };
             }
-            const body = await r2GetComment(env, r2Key);
+            const body = await r2GetComment(env, r2Key, payload.include_expired === true);
             if (body === null) return { hit: false, r2_key: r2Key };
             return {
                 hit: true, r2_key: r2Key, body,
@@ -1115,13 +1195,13 @@ async function handleR2Rpc(env, type, payload) {
             };
         }
         if (type === 'r2.comment.list') {
-            const limit = Math.min(parseInt(payload.limit || '100'), 100);
-            const listed = await env.DANMAKU_CACHE.list({
+            const limit = Math.min(parseInt(payload.limit || '100'), 1000);
+            const listed = await trackedToolCall('r2List', () => env.DANMAKU_CACHE.list({
                 prefix: R2_CACHE_CONFIG.KEY_PREFIX,
                 cursor: payload.cursor || undefined,
                 limit,
                 include: ['customMetadata'],
-            });
+            }));
             return {
                 hit: true,
                 objects: listed.objects.map(o => ({
@@ -1200,7 +1280,8 @@ function periodicCleanup(env) {
     }
 
     // 每5分钟轮询一次 R2 过期清理（单实例内节流，多实例下 cron 兜底）
-    if (env?.DANMAKU_CACHE && (now - memoryCache.lastR2ExpireCleanup > R2_CACHE_CONFIG.EXPIRE_POLL_INTERVAL)) {
+    if (env?.DANMAKU_CACHE && memoryCache.configCache.r2Control.deleteEnabled
+        && (now - memoryCache.lastR2ExpireCleanup > R2_CACHE_CONFIG.EXPIRE_POLL_INTERVAL)) {
         memoryCache.lastR2ExpireCleanup = now;
         tasks.push(r2ScheduledCleanup(env).catch(e => console.log(`⚠️ R2 过期轮询失败: ${e.message}`)));
     }
@@ -1591,7 +1672,7 @@ function handleToolsRequest(request, env, urlObj) {
         const assetUrl = new URL(assetPath, request.url);
         const assetRequest = new Request(assetUrl.toString(), request);
 
-        return env.ASSETS.fetch(assetRequest).then(response => {
+        return trackedToolCall('assetsFetch', () => env.ASSETS.fetch(assetRequest)).then(response => {
             // 添加 CORS 和缓存头
             const newHeaders = new Headers(response.headers);
             newHeaders.set('Access-Control-Allow-Origin', '*');
@@ -1970,10 +2051,39 @@ export class ControlHub {
     this.env = env;
     // Worker 发起、等待本地端回包的 pending RPC：message_id -> {resolve, timer}
     this.pending = new Map();
+    this.toolCalls = {};
     // ping/pong 自动应答，不唤醒 DO
     try {
       this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
     } catch (e) { /* 兼容旧运行时 */ }
+  }
+
+  bumpTool(operation, result = 'attempts') {
+    if (!this.toolCalls[operation]) this.toolCalls[operation] = { attempts: 0, success: 0, errors: 0 };
+    this.toolCalls[operation][result]++;
+  }
+
+  async trackedTool(operation, call) {
+    this.bumpTool(operation);
+    try {
+      const result = await call();
+      this.bumpTool(operation, 'success');
+      return result;
+    } catch (e) {
+      this.bumpTool(operation, 'errors');
+      throw e;
+    }
+  }
+
+  sendTracked(ws, payload) {
+    this.bumpTool('doWsSend');
+    try {
+      ws.send(JSON.stringify(payload));
+      this.bumpTool('doWsSend', 'success');
+    } catch (e) {
+      this.bumpTool('doWsSend', 'errors');
+      throw e;
+    }
   }
 
   async fetch(request) {
@@ -1991,9 +2101,15 @@ export class ControlHub {
 
 
   async handleConfigGet() {
-    const cfg = await this.ctx.storage.get('runtime_config') || {};
+    const cfg = await this.trackedTool('doStorageGet', () => this.ctx.storage.get('runtime_config')) || {};
+    const monitor = {
+      toolCalls: this.toolCalls,
+      pendingRpc: this.pending.size,
+      websocketConnections: this.ctx.getWebSockets().length,
+    };
+    this.toolCalls = {};
     return new Response(JSON.stringify(cfg), {
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Control-Monitor': JSON.stringify(monitor) },
     });
   }
 
@@ -2034,7 +2150,7 @@ export class ControlHub {
       const timer = setTimeout(() => { this.pending.delete(id); resolve(null); }, timeout);
       this.pending.set(id, { resolve, timer });
       try {
-        sockets[0].send(JSON.stringify(msg));
+        this.sendTracked(sockets[0], msg);
       } catch (e) {
         clearTimeout(timer);
         this.pending.delete(id);
@@ -2064,14 +2180,14 @@ export class ControlHub {
     // 2. 本地端下发运行配置：合并写入 DO storage，Worker 实例按周期拉取应用
     if (msg.type === 'config.apply') {
       const incoming = msg.payload || {};
-      const existing = await this.ctx.storage.get('runtime_config') || {};
+      const existing = await this.trackedTool('doStorageGet', () => this.ctx.storage.get('runtime_config')) || {};
       const merged = { ...existing, ...incoming };
-      await this.ctx.storage.put('runtime_config', merged);
+      await this.trackedTool('doStoragePut', () => this.ctx.storage.put('runtime_config', merged));
       try {
-        ws.send(JSON.stringify({
+        this.sendTracked(ws, {
           id: msg.id, type: 'config.apply.result', timestamp: Date.now(),
           payload: { success: true, applied_at: Date.now(), keys: Object.keys(incoming) },
-        }));
+        });
       } catch (e) { /* 忽略发送失败 */ }
       return;
     }
@@ -2081,7 +2197,7 @@ export class ControlHub {
     // 注意 config.apply 用的是浅合并({...existing,...incoming})，旧键不会被删，
     // 所以这里可能看到已从后台删除的陈旧字段，那本身就是需要发现的问题。
     if (msg.type === 'config.dump') {
-      const cfg = await this.ctx.storage.get('runtime_config') || {};
+      const cfg = await this.trackedTool('doStorageGet', () => this.ctx.storage.get('runtime_config')) || {};
       // 密钥类字段脱敏：只回长度与前缀，避免明文经日志/MCP 外泄
       const maskSecret = (s) => {
         const v = String(s || '');
@@ -2120,10 +2236,10 @@ export class ControlHub {
         key_pool_count: Array.isArray(cfg.key_pool) ? cfg.key_pool.length : 0,
       };
       try {
-        ws.send(JSON.stringify({
+        this.sendTracked(ws, {
           id: msg.id, type: 'config.dump.result',
           timestamp: Date.now(), payload,
-        }));
+        });
       } catch (e) { /* 忽略发送失败 */ }
       return;
     }
@@ -2132,10 +2248,10 @@ export class ControlHub {
     if (msg.type === 'r2.comment.get' || msg.type === 'r2.comment.list') {
       const result = await handleR2Rpc(this.env, msg.type, msg.payload || {});
       try {
-        ws.send(JSON.stringify({
+        this.sendTracked(ws, {
           id: msg.id, type: msg.type + '.result',
           timestamp: Date.now(), payload: result,
-        }));
+        });
       } catch (e) { /* 忽略发送失败 */ }
     }
   }
@@ -2178,6 +2294,17 @@ export default {
   // Cron 定时触发（全局单实例）：R2 弹幕缓存清理
   async scheduled(event, env, ctx) {
     console.log(`⏰ [Cron] 触发 R2 定时清理: ${event.cron}`);
+    await initializeDataCenterConfig(env);
+    const config = await pullControlConfig(env);
+    // Cron 可能运行在新 isolate；有 ControlHub 却拉不到配置时不按默认值贸然删数据。
+    if (env.CONTROL_HUB && !config) {
+      console.log('⚠️ [Cron] 无法确认本地端 R2 删除开关，跳过本次清理');
+      return;
+    }
+    if (!memoryCache.configCache.r2Control.deleteEnabled) {
+      console.log('ℹ️ [Cron] R2 自动删除已关闭，跳过清理');
+      return;
+    }
     ctx.waitUntil(
       r2ScheduledCleanup(env).catch(e => console.log(`⚠️ [Cron] R2 清理失败: ${e.message}`))
     );
@@ -2640,14 +2767,43 @@ async function tryLocalApiCache(
     };
 }
 
+async function resolveForceOriginAlias(request, env, targetUrl, cacheContext, requestContext) {
+    const unchanged = { response: null, targetUrl, url: targetUrl.toString(), aliasRewritten: null };
+    const { apiPath, isMatchApi } = cacheContext;
+    if (!env.CONTROL_HUB || request.method !== 'GET' || isMatchApi
+        || (!apiPath.startsWith('/api/v2/search/anime')
+            && !apiPath.startsWith('/api/v2/search/episodes'))) return unchanged;
+    const cacheKey = buildLocalCacheKey(request.method, apiPath, targetUrl.searchParams);
+    const alias = await controlHubRpc(env, 'cache.get', {
+        cache_key: cacheKey, api_path: apiPath, method: request.method,
+        client_ip: requestContext.clientIP,
+        worker_request_id: request.headers.get('cf-ray') || '',
+        alias_only: true,
+    }, 1500);
+    if (!alias || alias.hit || !alias.alias_hit || !alias.canonical) return unchanged;
+    const keywordName = targetUrl.searchParams.has('keyword') ? 'keyword' : 'anime';
+    if (!targetUrl.searchParams.has(keywordName)) return unchanged;
+    const rewrittenUrl = new URL(targetUrl.toString());
+    const aliasRewritten = { from: alias.term || '', to: alias.canonical };
+    rewrittenUrl.searchParams.set(keywordName, alias.canonical);
+    console.log(`🔤 [${requestContext.clientIP}] 强制回源保留别名改写: ${aliasRewritten.from} → ${aliasRewritten.to}`);
+    return {
+        response: null, targetUrl: rewrittenUrl,
+        url: rewrittenUrl.toString(), aliasRewritten,
+    };
+}
+
+
 async function tryEdgeCaches(
     request, env, ctx, targetUrl, originalUrl,
     cacheContext, requestContext, narrowToEpisode
 ) {
     if (requestContext.forceOrigin) {
-        // 强制回源只跳过缓存读取；鉴权、配额、密钥池和成功后的缓存写入仍按原流程执行。
+        // 强制回源跳过所有缓存体，但搜索请求仍保留 approved 别名改写。
         console.log(`🔄 [${requestContext.clientIP}] X-HUIYUAN=1，跳过边缘缓存: ${cacheContext.apiPath}`);
-        return { response: null, targetUrl, url: originalUrl, aliasRewritten: null };
+        return resolveForceOriginAlias(
+            request, env, targetUrl, cacheContext, requestContext
+        );
     }
     const memoryResponse = tryMemoryApiCache(
         request, cacheContext, requestContext, narrowToEpisode

@@ -286,6 +286,17 @@ class ControlClient:
         cache_key = payload.get("cache_key", "")
         worker_request_id = payload.get("worker_request_id")
         client_ip = payload.get("client_ip")
+        # 强制回源仍需保留 approved 别名改写，但绝不能读取缓存体或触发实体拼装。
+        if payload.get("alias_only"):
+            extra = await self._resolve_alias(cache_key)
+            await self._send({
+                "id": msg_id, "type": "cache.get.result",
+                "timestamp": _ts(),
+                "payload": extra or {"hit": False},
+            })
+            self._audit("worker_to_local", "cache.get", "success",
+                        request_cache_key=cache_key)
+            return
         # prefetch 标记：内存未命中的主动预查，命中才有日志价值
         log_miss = not bool(payload.get("prefetch"))
         # allow_stale：Worker 回源配额耗尽时的降级查询，过期数据也返回
@@ -533,6 +544,8 @@ class ControlClient:
             worker_id, metrics,
             payload.get("total_requests_lifetime", 0),
             payload.get("api_cache_size", 0),
+            payload.get("tool_calls") or {},
+            payload.get("memory_watermark") or {},
         )
         await self._send({
             "id": msg_id, "type": "metrics.report.result",

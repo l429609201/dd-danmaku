@@ -700,7 +700,7 @@ class MediaMetaService:
         返回 None 的三种情况都意味着「Worker 按原词回源即可」：
         - cache_key 里没有搜索词（非搜索类请求）
         - 别名表里没有 approved 记录
-        - 找到的规范词归一化后与原词相同（替换没有意义，避免无效重试）
+        - 主标题与原词相同，且同作品没有其他 approved 上游标题可供改写
         """
         term = parse_search_term(cache_key)
         if not term:
@@ -738,20 +738,35 @@ class MediaMetaService:
             ).all()
             if m.title
         }
+        upstream_titles: Dict[str, MediaAlias] = {}
+        for alias_row in db.query(MediaAlias).filter(
+                MediaAlias.anime_id.in_(anime_ids),
+                MediaAlias.status == "approved",
+                MediaAlias.source == "dandanplay_titles",
+        ).order_by(MediaAlias.confidence.desc(), MediaAlias.id.desc()).all():
+            if normalize_alias(alias_row.alias) != norm:
+                upstream_titles.setdefault(alias_row.anime_id, alias_row)
+
         for r in rows:
             canonical = title_map.get(r.anime_id)
-            if not canonical:
-                continue
-            # 规范词和原词归一化后一致说明替换是空操作，跳过看下一个候选
-            if normalize_alias(canonical) == norm:
+            canonical_source = r.source
+            canonical_confidence = r.confidence
+            if canonical and normalize_alias(canonical) == norm:
+                # 主标题与搜索词相同但上游搜不到时，改用同作品已确认的 dandanplay 标题。
+                upstream_alias = upstream_titles.get(r.anime_id)
+                canonical = upstream_alias.alias if upstream_alias else None
+                if upstream_alias:
+                    canonical_source = upstream_alias.source
+                    canonical_confidence = upstream_alias.confidence
+            if not canonical or normalize_alias(canonical) == norm:
                 continue
             return {
                 "alias_hit": True,
                 "term": term,
                 "canonical": canonical,
                 "anime_id": r.anime_id,
-                "source": r.source,
-                "confidence": r.confidence,
+                "source": canonical_source,
+                "confidence": canonical_confidence,
             }
         return None
 

@@ -245,3 +245,41 @@ def test_polluted_bare_series_cache_is_replaced_with_empty(monkeypatch):
 
     assert result["headers"]["X-Cache-Source"] == "assembled-series"
     assert json.loads(result["body"])["animes"] == []
+
+
+def test_same_main_title_uses_other_approved_upstream_title():
+    from src.services_v2.media_meta_service import media_meta_service, normalize_alias
+
+    factory, engine = _session_factory()
+    session = factory()
+    main_title = "无职转生Ⅱ ～到了异世界就拿出真本事～ 第二部分"
+    upstream_title = "无职转生～到了异世界就拿出真本事～ 第二季 第二季度"
+    session.add_all([
+        MediaLibrary(
+            id=18104, anime_id="18104", title=main_title,
+            type_code="tvseries", type_desc="TV动画", episode_count=12,
+            source="search_anime",
+        ),
+        MediaAlias(
+            id=8970, anime_id="18104", alias=main_title,
+            alias_norm=normalize_alias(main_title),
+            alias_norm_ns=normalize_alias(main_title).replace(" ", ""),
+            source="manual", status="approved", confidence=100,
+        ),
+        MediaAlias(
+            id=8977, anime_id="18104", alias=upstream_title,
+            alias_norm=normalize_alias(upstream_title),
+            alias_norm_ns=normalize_alias(upstream_title).replace(" ", ""),
+            source="dandanplay_titles", status="approved", confidence=95,
+        ),
+    ])
+    session.commit()
+
+    result = media_meta_service.resolve_search_term(
+        session, f"GET:/api/v2/search/episodes?anime={main_title}"
+    )
+
+    assert result["anime_id"] == "18104"
+    assert result["canonical"] == upstream_title
+    session.close()
+    engine.dispose()

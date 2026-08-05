@@ -113,6 +113,22 @@ def _build_summary() -> dict:
         total_hits = mem_hit + r2_hit
         hit_rate = round(total_hits / (total_hits + miss) * 100, 1) if (total_hits + miss) > 0 else 0.0
 
+        metric_rows = db.query(
+            WorkerMetricsSnapshot.tool_calls,
+            WorkerMetricsSnapshot.memory_watermark,
+            WorkerMetricsSnapshot.snapshot_at,
+        ).filter(WorkerMetricsSnapshot.snapshot_at >= today_start).all()
+        tool_calls = {}
+        for calls, _, _ in metric_rows:
+            for operation, values in (calls or {}).items():
+                target = tool_calls.setdefault(operation, {"attempts": 0, "success": 0, "errors": 0})
+                for key in target:
+                    target[key] += int((values or {}).get(key, 0) or 0)
+        latest_memory = {}
+        if metric_rows:
+            latest = max(metric_rows, key=lambda row: row[2])
+            latest_memory = latest[1] or {}
+
         data = {
             "worker": {
                 "connected": node.connected if node else False,
@@ -145,6 +161,8 @@ def _build_summary() -> dict:
                 "status_4xx": s4xx,
                 "status_5xx": s5xx,
             },
+            "cloudflare_tools_today": tool_calls,
+            "worker_memory_latest": latest_memory,
             "totals": {
                 "cache_count": db.query(ApiResponseCache).count(),
                 "episode_links": db.query(EpisodeLink).count(),

@@ -127,6 +127,31 @@
         </div>
       </div>
 
+      <h2 class="section-title">Cloudflare 工具调用（今日）</h2>
+      <div class="cards" v-if="tools">
+        <div class="card" v-for="group in toolGroups" :key="group.name"
+             :class="group.errors > 0 ? 'card-warn' : 'card-accent'">
+          <div class="card-label">{{ group.name }}</div>
+          <div class="card-value">{{ group.attempts }}</div>
+          <div class="card-sub">成功 {{ group.success }} / 失败 {{ group.errors }}</div>
+          <div class="card-sub">{{ group.detail }}</div>
+        </div>
+      </div>
+
+      <h2 class="section-title">Worker 应用内存水位（最新快照）</h2>
+      <div class="cards" v-if="memoryWatermark">
+        <div class="card card-accent">
+          <div class="card-label">粗略估算</div>
+          <div class="card-value">{{ fmtBytes(memoryWatermark.estimated_bytes) }}</div>
+          <div class="card-sub">非真实 isolate 内存；真实值请查看 Cloudflare 控制台</div>
+        </div>
+        <div class="card"><div class="card-label">API 缓存</div><div class="card-value">{{ memoryWatermark.api_cache || 0 }}</div><div class="card-sub">日志 {{ memoryWatermark.logs || 0 }} 条</div></div>
+        <div class="card"><div class="card-label">限流 / IP</div><div class="card-value">{{ memoryWatermark.rate_limit_counters || 0 }}</div><div class="card-sub">IP 统计 {{ memoryWatermark.ip_stats || 0 }}</div></div>
+        <div class="card"><div class="card-label">OAuth / 空结果</div><div class="card-value">{{ memoryWatermark.oauth_token_cache || 0 }}</div><div class="card-sub">空结果计数 {{ memoryWatermark.empty_search_counter || 0 }}</div></div>
+        <div class="card"><div class="card-label">认证追踪</div><div class="card-value">{{ memoryWatermark.auth_fail_tracker || 0 }}</div><div class="card-sub">封禁 {{ memoryWatermark.auth_ban_tracker || 0 }} / 滥用 {{ memoryWatermark.abuse_tracker || 0 }}</div></div>
+        <div class="card"><div class="card-label">DO 水位</div><div class="card-value">{{ memoryWatermark.do_pending_rpc || 0 }}</div><div class="card-sub">WebSocket {{ memoryWatermark.do_websocket_connections || 0 }} / 请求中 {{ memoryWatermark.pending_requests || 0 }}</div></div>
+      </div>
+
       <!-- Worker 近 7 天趋势图 -->
       <div class="panel" style="margin-bottom: 24px;">
         <h2 class="panel-title">近 7 天 Worker 流量趋势</h2>
@@ -252,6 +277,24 @@ export default {
     let sysTimer = null    // 系统资源轮询定时器
 
     const wm = computed(() => (data.value ? data.value.worker_metrics_today : null))
+    const tools = computed(() => (data.value ? data.value.cloudflare_tools_today : null))
+    const memoryWatermark = computed(() => (data.value ? data.value.worker_memory_latest : null))
+    const toolGroups = computed(() => {
+      const src = tools.value || {}
+      const build = (name, items) => {
+        const rows = items.map(item => [item[1], src[item[0]] || {}])
+        const sum = key => rows.reduce((n, row) => n + Number(row[1][key] || 0), 0)
+        return {
+          name, attempts: sum('attempts'), success: sum('success'), errors: sum('errors'),
+          detail: rows.map(row => `${row[0]} ${Number(row[1].attempts || 0)}`).join(' / '),
+        }
+      }
+      return [
+        build('R2', [['r2Get', '读取'], ['r2Put', '写入'], ['r2List', '列表'], ['r2Delete', '删除']]),
+        build('Durable Object', [['doRpc', 'RPC'], ['doConfig', '配置'], ['doStorageGet', '存储读'], ['doStoragePut', '存储写'], ['doWsSend', 'WS发送']]),
+        build('Assets', [['assetsFetch', '静态资源']]),
+      ]
+    })
 
     // 运行健康度告警色：超阈值标黄，便于肉眼发现瓶颈
     const loopLagClass = computed(() => {
@@ -562,7 +605,7 @@ export default {
       Object.values(charts).forEach(c => c && c.dispose())
     })
     return {
-      loading, error, data, wm, geo, goto, fmt, fmtBytes,
+      loading, error, data, wm, tools, toolGroups, memoryWatermark, geo, goto, fmt, fmtBytes,
       trendChart, statusChart, blockChart, hitChart, mapChart,
       trendHasData, hasDist, hasBlocked, hasHit, geoAvailable, geoLibReady,
       api429Chart, uaTopChart, cacheSrcChart,

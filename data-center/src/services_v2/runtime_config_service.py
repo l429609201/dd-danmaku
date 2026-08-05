@@ -10,7 +10,7 @@ from typing import Any, Dict
 from sqlalchemy import or_
 
 from src.database import get_db_sync
-from src.models_v2 import IpRule, UaLimitRule
+from src.models_v2 import AppSetting, IpRule, UaLimitRule
 from src.models_v2.base import now
 from src.services_v2.control_client import control_client
 
@@ -107,6 +107,11 @@ class RuntimeConfigService:
                 "key_pool": key_pool,
                 "sign_key_pool": sign_key_pool,
                 "user_allow_pool": user_allow_pool,
+                # 默认开启以保持升级前行为；后台可独立关闭 R2 写入或自动删除。
+                "r2_control": {
+                    "writeEnabled": self._bool_setting(db, "r2_write_enabled", True),
+                    "deleteEnabled": self._bool_setting(db, "r2_delete_enabled", True),
+                },
             }
 
             # OAuth 配置：结构与 Worker 侧 env.OAUTH_CONFIG 一致。
@@ -123,6 +128,13 @@ class RuntimeConfigService:
             return payload
         finally:
             db.close()
+
+    @staticmethod
+    def _bool_setting(db, key: str, default: bool) -> bool:
+        row = db.query(AppSetting.value).filter(AppSetting.key == key).first()
+        if not row or row.value is None:
+            return default
+        return str(row.value).strip().lower() in ("1", "true", "yes", "on")
 
     async def push_to_worker(self) -> bool:
         """组装完整配置并通过长连接下发"""
