@@ -2423,16 +2423,26 @@ async function authorizeClientIdentity(request, apiPath, accessCheck, requestCon
         if (isAuthBanned(clientIP, clientUserId, uaConfig.type)) {
             return denyIdentity('认证失败拉黑期内', 'auth_banned');
         }
-        const markCheck = await verifyUserIdMark(
-            clientUserId, uaConfig.userGroupId,
-            memoryCache.configCache.userAllowPool,
-            memoryCache.configCache.userPoolLoaded
-        );
+        // 截断超长 userId，防止 WASM newString 分配超大缓冲区触发 memory access out of bounds
+        const safeUserId = typeof clientUserId === 'string' ? clientUserId.slice(0, 256) : '';
+        let markCheck;
+        try {
+            markCheck = await verifyUserIdMark(
+                safeUserId, uaConfig.userGroupId,
+                memoryCache.configCache.userAllowPool,
+                memoryCache.configCache.userPoolLoaded
+            );
+        } catch (wasmErr) {
+            // WASM RuntimeError（如 memory access out of bounds）不应崩掉整条请求；
+            // 记录警告后按"标识不符"处理，避免 trap 直接返回 500。
+            console.warn(`⚠️ [${clientIP}] verifyUserIdMark WASM 异常，按拒绝处理: ${wasmErr && wasmErr.message}`);
+            return denyIdentity('用户标识校验失败', 'wasm_error', true);
+        }
         if (!markCheck.ok) {
             return denyIdentity('用户标识校验失败', markCheck.reason, true);
         }
         const userCheck = verifyUserAllow(
-            clientUserId, uaConfig.userGroupId,
+            safeUserId, uaConfig.userGroupId,
             memoryCache.configCache.userAllowPool,
             memoryCache.configCache.userPoolLoaded
         );
@@ -2446,11 +2456,18 @@ async function authorizeClientIdentity(request, apiPath, accessCheck, requestCon
     }
 
     if (!uaConfig.signGroupId) return null;
-    const sigCheck = await verifyClientSignature(
-        request, apiPath, uaConfig.signGroupId,
-        memoryCache.configCache.signKeyPool,
-        memoryCache.configCache.signPoolLoaded
-    );
+    let sigCheck;
+    try {
+        sigCheck = await verifyClientSignature(
+            request, apiPath, uaConfig.signGroupId,
+            memoryCache.configCache.signKeyPool,
+            memoryCache.configCache.signPoolLoaded
+        );
+    } catch (wasmErr) {
+        // 同上：WASM trap 不崩请求，降级为签名失败
+        console.warn(`⚠️ [${clientIP}] verifyClientSignature WASM 异常，按签名失败处理: ${wasmErr && wasmErr.message}`);
+        sigCheck = { ok: false, reason: 'wasm_error' };
+    }
     if (sigCheck.reason === 'no_secret') {
         console.log(`⚠️ [签名校验] 签名组 ${uaConfig.signGroupId} 未找到或无密钥,冷启动放行(签名池尚未下发)`);
     }
