@@ -2,6 +2,9 @@
 wrangler.local.toml
 .dev.vars
 
+# 前端构建产物（Dockerfile 多阶段构建时生成，无需入库）
+data-center/web/dist/
+
 # Node.js
 node_modules/
 npm-debug.log*
