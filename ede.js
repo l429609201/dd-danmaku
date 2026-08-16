@@ -1,4 +1,4 @@
-﻿// ==UserScript==
+// ==UserScript==
 // @name         Emby danmaku extension - Emby style
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
@@ -151,6 +151,92 @@
         },
     };
 
+
+    // ------ 自定义API签名验证 start ------
+    // FIPS 180-4 标准的 SHA-256 算法的纯 JS 实现
+    const sha256Pure = (() => {
+        const K = [
+            0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+            0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+            0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+            0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+            0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+            0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+            0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+            0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+        ];
+        function rotr(x, n) { return (x >>> n) | (x << (32 - n)); }
+        return function (data) {
+            var bytes = new TextEncoder().encode(data);
+            var bitLen = bytes.length * 8;
+            var paddedLen = ((bytes.length + 9 + 63) >>> 6) << 6;
+            var buf = new Uint8Array(paddedLen);
+            buf.set(bytes);
+            buf[bytes.length] = 0x80;
+            var hi = Math.floor(bitLen / 0x100000000);
+            var lo = bitLen >>> 0;
+            var v = new DataView(buf.buffer, paddedLen - 8, 8);
+            v.setUint32(0, hi, false);
+            v.setUint32(4, lo, false);
+            var w = new Uint32Array(64);
+            var h = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+            for (var off = 0; off < paddedLen; off += 64) {
+                for (var i = 0; i < 16; i++) {
+                    w[i] = (buf[off + i * 4] << 24) | (buf[off + i * 4 + 1] << 16) | (buf[off + i * 4 + 2] << 8) | buf[off + i * 4 + 3];
+                }
+                for (var i = 16; i < 64; i++) {
+                    var s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+                    var s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+                    w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+                }
+                var a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+                for (var i = 0; i < 64; i++) {
+                    var S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+                    var ch = (e & f) ^ (~e & g);
+                    var t1 = (hh + S1 + ch + K[i] + w[i]) >>> 0;
+                    var S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+                    var maj = (a & b) ^ (a & c) ^ (b & c);
+                    var t2 = (S0 + maj) >>> 0;
+                    hh = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+                }
+                h[0] = (h[0] + a) >>> 0; h[1] = (h[1] + b) >>> 0; h[2] = (h[2] + c) >>> 0; h[3] = (h[3] + d) >>> 0;
+                h[4] = (h[4] + e) >>> 0; h[5] = (h[5] + f) >>> 0; h[6] = (h[6] + g) >>> 0; h[7] = (h[7] + hh) >>> 0;
+            }
+            var out = new Uint8Array(32);
+            var dv = new DataView(out.buffer);
+            for (var i = 0; i < 8; i++) dv.setUint32(i * 4, h[i], false);
+            return out;
+        };
+    })();
+
+    async function generateCustomApiSignature(appId, timestamp, path, appSecret) {
+        var data = appId + timestamp + path + appSecret;
+        var hashBuffer;
+        // 优先使用 crypto.subtle，网站为 HTTP 时降级为纯 JS 的 SHA-256
+        if (typeof crypto !== "undefined" && crypto.subtle && crypto.subtle.digest) {
+            try {
+                var dataUint8 = new TextEncoder().encode(data);
+                hashBuffer = await crypto.subtle.digest("SHA-256", dataUint8);
+            } catch (_) { hashBuffer = sha256Pure(data); }
+        } else { hashBuffer = sha256Pure(data); }
+        var hashArray = Array.from(new Uint8Array(hashBuffer));
+        return btoa(hashArray.map(function (b) { return String.fromCharCode(b); }).join(""));
+    }
+
+    async function buildCustomApiSignHeaders(appId, appSecret, url) {
+        if (!appId || !appSecret) return {};
+        try {
+            var ts = Math.floor(Date.now() / 1000);
+            var path = new URL(url).pathname;
+            var sig = await generateCustomApiSignature(appId, ts, path, appSecret);
+            var headers = { "X-AppId": appId, "X-Signature": sig, "X-Timestamp": String(ts) };
+            return headers;
+        } catch (e) {
+            try { logger.warn("[签名] 自定义API签名计算失败,本次不带签名", e && e.message); } catch (_) {}
+            return {};
+        }
+    }
+    // ------ 自定义API签名验证 end ------
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
         self: { version: '1.2.7', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
@@ -1306,12 +1392,13 @@
         return await ApiClient.getItem(ApiClient.getCurrentUserId(), id);
     }
 
-    async function fetchSearchEpisodes(anime, episode, prefix) {
+    async function fetchSearchEpisodes(anime, episode, prefix, appId, appSecret) {
         if (!anime) { throw new Error('anime is required'); }
 
         // 步骤1: 使用 /api/v2/search/anime 搜索动画
         const searchUrl = `${prefix}/search/anime?keyword=${encodeURIComponent(anime)}`;
-        const searchResult = await fetchJson(searchUrl)
+        const signHeaders = await buildCustomApiSignHeaders(appId, appSecret, searchUrl);
+        const searchResult = await fetchJson(searchUrl, Object.keys(signHeaders).length > 0 ? { headers: signHeaders } : {})
             .catch((error) => {
                 logger.error(`[API请求] /search/anime 查询失败: ${error.message}`);
                 return null;
@@ -1333,7 +1420,7 @@
             const animeItem = searchResult.animes[i];
             if (animeItem.bangumiId) {
                 bangumiPromises.push(
-                    fetchJson(`${prefix}/bangumi/${animeItem.bangumiId}`)
+                    (async () => { const bgUrl = `${prefix}/bangumi/${animeItem.bangumiId}`; const bgSignHeaders = await buildCustomApiSignHeaders(appId, appSecret, bgUrl); return fetchJson(bgUrl, Object.keys(bgSignHeaders).length > 0 ? { headers: bgSignHeaders } : {}); })()
                         .then(result => ({ index: i, result }))
                         .catch((error) => {
                             logger.debug(`[API请求] /bangumi/${animeItem.bangumiId} 查询失败: ${error.message}`);
@@ -2084,7 +2171,7 @@
         return list.length >= targetNum ? list[targetNum - 1] : null;
     }
 
-    async function fetchMatchApi(payload, prefix) {
+    async function fetchMatchApi(payload, prefix, appId, appSecret) {
         const url = `${prefix}/match`;
         // [优化] 合并 5 条 debug 日志为 1 条，避免模板字符串无谓计算
         // [脱敏] 官方源走 Worker 代理时不打印完整代理 URL/前缀,避免暴露代理端点;自定义源保留便于调试
@@ -2113,6 +2200,10 @@
                 logger.debug(`[API请求] match 跳过 X-User-Agent (自定义API)`);
             }
 
+            // [签名] 自定义API签名验证（有AppId/AppSecret时附加签名头）
+            if (appId && appSecret) {
+                Object.assign(requestHeaders, await buildCustomApiSignHeaders(appId, appSecret, url));
+            }
             // [签名] match 走 Worker 代理时同样附加签名头(是否校验由 Worker 按 UA 决定)
             if (ddSign.isProxiedOfficial(url)) {
                 Object.assign(requestHeaders, await ddSign.buildHeaders(url));
@@ -2157,14 +2248,18 @@
             return null; // 匹配失败时返回 null
         }
     }
-    async function fetchComment(episodeId, overridePrefix) {
+    async function fetchComment(episodeId, overridePrefix, appId, appSecret) {
          // [修复] 支持指定源：推理匹配时传入上一集使用的源，避免多源混淆
         const prefix = overridePrefix || window.ede.episode_info?.apiPrefix || dandanplayApi.prefix;
+        const commentAppId = appId || window.ede.episode_info?.apiAppId || '';
+        const commentAppSecret = appSecret || window.ede.episode_info?.apiAppSecret || '';
         const url = `${prefix}/comment/${episodeId}?withRelated=true&chConvert=${window.ede.chConvert}`;
 
         const startTime = performance.now(); // [Log] 开始计时
 
-        return fetchJson(url)   // 直接使用 fetchJson
+        // [签名] 自定义API签名头
+        const commentSignHeaders = await buildCustomApiSignHeaders(commentAppId, commentAppSecret, url);
+        return fetchJson(url, Object.keys(commentSignHeaders).length > 0 ? { headers: commentSignHeaders } : {})   // 直接使用 fetchJson
             .then((data) => {
                 const endTime = performance.now();
                 const duration = (endTime - startTime).toFixed(0);
@@ -3166,7 +3261,7 @@
         if (lsGetItem(lsKeys.useCustomApi.id) && customApiList.length > 0) {
             customApiList.forEach((item, index) => {
                 if (item.enabled) {
-                    apiConfigs[`custom_${index}`] = { name: item.name || `自定义源${index + 1}`, prefix: item.url, enabled: true };
+                    apiConfigs[`custom_${index}`] = { name: item.name || `自定义源${index + 1}`, prefix: item.url, enabled: true, appId: item.appId || "", appSecret: item.appSecret || "" };
                 }
             });
         }
@@ -3230,7 +3325,7 @@
 
                 // A. 尝试 /match 接口 (仅在启用时调用)
                 if (matchApiEnabled && matchPayload) {
-                const matchResult = await fetchMatchApi(matchPayload, config.prefix);
+                const matchResult = await fetchMatchApi(matchPayload, config.prefix, config.appId, config.appSecret);
 
                 // [黑名单] 对官方 API 的 match 结果应用分集黑名单过滤
                 if (apiKey === 'official' && matchResult?.animes?.length > 0) {
@@ -3316,7 +3411,7 @@
                             candidateSearchTitle = baseName;
                         }
 
-                        const animaInfo = await fetchSearchEpisodes(candidateSearchTitle, candidateEpisode, config.prefix);
+                        const animaInfo = await fetchSearchEpisodes(candidateSearchTitle, candidateEpisode, config.prefix, config.appId, config.appSecret);
 
                         // [黑名单] 对搜索结果应用黑名单过滤
                         if (animaInfo?.animes?.length > 0) {
@@ -3368,7 +3463,7 @@
                     }
                     // 降级：不带集数搜索
                     else {
-                        const animaInfo = await fetchSearchEpisodes(animeName, null, config.prefix);
+                        const animaInfo = await fetchSearchEpisodes(animeName, null, config.prefix, config.appId, config.appSecret);
 
                         // [黑名单] 对搜索结果应用黑名单过滤
                         if (animaInfo?.animes?.length > 0) {
@@ -3382,7 +3477,7 @@
                         else {
                             const seriesOrMovieInfo = await fatchEmbyItemInfo(seriesOrMovieId);
                             if (seriesOrMovieInfo?.OriginalTitle) {
-                                const animaInfoOriginal = await fetchSearchEpisodes(seriesOrMovieInfo.OriginalTitle, seasonEpisodeCandidates[0].episode, config.prefix);
+                                const animaInfoOriginal = await fetchSearchEpisodes(seriesOrMovieInfo.OriginalTitle, seasonEpisodeCandidates[0].episode, config.prefix, config.appId, config.appSecret);
 
                                 // [黑名单] 对搜索结果应用黑名单过滤
                                 if (animaInfoOriginal?.animes?.length > 0) {
@@ -3453,9 +3548,11 @@
                 // [修复] 使用上一集记录的源发起请求，避免多源环境下 episodeId 和源不匹配
                 const prevApiPrefix = previous_info.apiPrefix;
                 const prevApiName = previous_info.apiName || '';
+                const prevApiAppId = previous_info.apiAppId || '';
+                const prevApiAppSecret = previous_info.apiAppSecret || '';
                 logger.info(`[推理匹配] 检测到播放'${direction}'，episodeId: ${previousEpisodeId} → ${predictedEpisodeId}，源: ${prevApiName || '默认'}`);
 
-                const comments = await fetchComment(predictedEpisodeId, prevApiPrefix);
+                const comments = await fetchComment(predictedEpisodeId, prevApiPrefix, prevApiAppId, prevApiAppSecret);
                 if (comments && comments.length > 0) {
                     logger.info(`[推理匹配] 成功！episodeId: ${predictedEpisodeId}，弹幕数: ${comments.length}，源: ${prevApiName || '默认'}`);
                     const predictedEpisodeIndex = isNaN(currentEpisodeNumber) ? 0 : currentEpisodeNumber - 1;
@@ -3469,6 +3566,8 @@
                         animeTitle: previous_info.animeTitle,
                         animeOriginalTitle: previous_info.animeOriginalTitle || '',
                         imageUrl: previous_info.imageUrl,
+                        apiAppId: prevApiAppId,
+                        apiAppSecret: prevApiAppSecret,
                         seriesOrMovieId: seriesOrMovieId,
                         episodeIndex: predictedEpisodeIndex,
                         bgmEpisodeIndex: predictedBgmEpisodeIndex,
@@ -3546,7 +3645,7 @@
         }
 
         // [修正] 从 res 中解构出 apiPrefix 和 apiName
-        const { animeOriginalTitle, animaInfo, apiPrefix, apiName } = res;
+        const { animeOriginalTitle, animaInfo, apiPrefix, apiName, apiAppId, apiAppSecret } = res;
         let selectAnime_id = 1;
         if (animeId != -1) {
             for (let index = 0; index < animaInfo.animes.length; index++) {
@@ -3603,6 +3702,8 @@
             seriesOrMovieId: seriesOrMovieId,
             apiPrefix: apiPrefix, // [修正] 保存API前缀
             apiName: apiName, // [新增] 保存API名称
+            apiAppId: apiAppId || "", // [新增] 保存自定义API AppId
+            apiAppSecret: apiAppSecret || "", // [新增] 保存自定义API AppSecret
         };
         localStorage.setItem(unique_episode_key, JSON.stringify(episodeInfo));
         logger.info(`[匹配 #${matchId}] 匹配成功: ${episodeInfo.animeTitle} - ${episodeInfo.episodeTitle} (episodeId: ${episodeInfo.episodeId})`);
@@ -5364,9 +5465,11 @@
                     return;
                 }
                 if (url.endsWith('/')) url = url.slice(0, -1);
-                addCustomApiSource(name, url);
+                addCustomApiSource(name, url, appIdInput.value.trim(), appSecretInput.value.trim());
                 nameInput.value = '';
                 urlInput.value = '';
+                appIdInput.value = '';
+                appSecretInput.value = '';
                 renderSourceList();
                 embyToast({ text: '已添加弹幕源', secondaryText: name });
             };
@@ -5376,7 +5479,27 @@
                 if (e.key === 'Enter') addBtn.click();
             });
 
-            addForm.append(nameInput, urlInput, addBtn);
+            // 凭据行（可选）
+            const credRow = document.createElement('div');
+            credRow.style.cssText = 'display: flex; gap: 0.5em; width: 100%; align-items: center;';
+
+            const appIdInput = document.createElement('input');
+            appIdInput.setAttribute('is', 'emby-input');
+            appIdInput.className = classes.embyInput;
+            appIdInput.type = 'text';
+            appIdInput.placeholder = 'AppId (可选)';
+            appIdInput.style.cssText = 'flex: 1; min-width: 120px;';
+
+            const appSecretInput = document.createElement('input');
+            appSecretInput.setAttribute('is', 'emby-input');
+            appSecretInput.className = classes.embyInput;
+            appSecretInput.type = 'text';
+            appSecretInput.placeholder = 'AppSecret (可选)';
+            appSecretInput.style.cssText = 'flex: 1; min-width: 120px;';
+
+            credRow.append(appIdInput, appSecretInput);
+
+            addForm.append(nameInput, urlInput, credRow, addBtn);
             customApiContainer.append(addForm);
 
             // 列表容器
@@ -5408,7 +5531,7 @@
                     infoDiv.style.cssText = 'flex: 1; min-width: 0; overflow: hidden;';
                     const nameStyle = item.enabled ? 'font-weight:bold;' : 'font-weight:bold; color: #999;';
                     const urlStyle = 'font-size:0.8em; opacity:0.7; word-break: break-all; overflow: hidden; text-overflow: ellipsis;';
-                    infoDiv.innerHTML = `<div style="${nameStyle}">${item.name}</div><div style="${urlStyle}" title="${item.url}">${item.url}</div>`;
+                    infoDiv.innerHTML = `<div style="${nameStyle}">${item.name}${item.appId && item.appSecret ? " <span title=\"已配置AppId/AppSecret\" style=\"color:#52b54b;\">&#128274;</span>" : ""}</div><div style="${urlStyle}" title="${item.url}">${item.url}</div>`;
                     row.append(infoDiv);
 
                     // 编辑按钮
@@ -5442,7 +5565,19 @@
                             editUrlInput.style.cssText = editInputStyle + 'font-size:0.8em;opacity:0.85;';
 
                             infoDiv.innerHTML = '';
-                            infoDiv.append(editNameInput, editUrlInput);
+                            const editAppIdInput = document.createElement('input');
+                            editAppIdInput.type = 'text';
+                            editAppIdInput.value = item.appId || '';
+                            editAppIdInput.placeholder = 'AppId (可选)';
+                            editAppIdInput.style.cssText = editInputStyle + 'font-size:0.8em;opacity:0.7;margin-bottom:0.2em;';
+
+                            const editAppSecretInput = document.createElement('input');
+                            editAppSecretInput.type = 'text';
+                            editAppSecretInput.value = item.appSecret || '';
+                            editAppSecretInput.placeholder = 'AppSecret (可选)';
+                            editAppSecretInput.style.cssText = editInputStyle + 'font-size:0.8em;opacity:0.7;';
+
+                            infoDiv.append(editNameInput, editUrlInput, editAppIdInput, editAppSecretInput);
 
                             editNameInput.focus();
                             // 回车保存
@@ -5462,7 +5597,9 @@
                                 embyToast({ text: '请输入有效的URL（以 http:// 或 https:// 开头）' });
                                 return;
                             }
-                            updateCustomApiSource(index, newName, newUrl);
+                            const newAppId = inputs[2]?.value.trim() || '';
+                            const newAppSecret = inputs[3]?.value.trim() || '';
+                            updateCustomApiSource(index, newName, newUrl, newAppId, newAppSecret);
                             renderSourceList();
                             embyToast({ text: '已保存修改', secondaryText: newName });
                         }
@@ -7781,7 +7918,7 @@
         if (lsGetItem(lsKeys.useCustomApi.id) && customApiList.length > 0) {
             customApiList.forEach((item, index) => {
                 if (item.enabled) {
-                    apiConfigs[`custom_${index}`] = { name: item.name || `自定义源${index + 1}`, prefix: item.url, enabled: true };
+                    apiConfigs[`custom_${index}`] = { name: item.name || `自定义源${index + 1}`, prefix: item.url, enabled: true, appId: item.appId || "", appSecret: item.appSecret || "" };
                 }
             });
         }
@@ -7813,7 +7950,7 @@
             }
 
             try {
-                const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix);
+                const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix, config.appId, config.appSecret);
                 if (animaInfo && animaInfo.animes.length > 0) {
                     // [黑名单] 对搜索结果应用黑名单过滤
                     animaInfo.animes = applySearchBlacklist(animaInfo.animes, true, apiKey);
@@ -7822,6 +7959,8 @@
                     animaInfo.animes.forEach(anime => {
                         anime.apiPrefix = config.prefix;
                         anime.apiName = config.name;
+                        anime.apiAppId = config.appId || "";
+                        anime.apiAppSecret = config.appSecret || "";
                     });
                     return animaInfo.animes;
                 }
@@ -7944,7 +8083,8 @@
             const bangumiUrl = `${apiPrefix}/bangumi/${anime.bangumiId}`;
 
             try {
-                const bangumiResult = await fetchJson(bangumiUrl);
+                const bangumiSignHeaders = anime.apiAppId && anime.apiAppSecret ? await buildCustomApiSignHeaders(anime.apiAppId, anime.apiAppSecret, bangumiUrl) : {};
+                const bangumiResult = await fetchJson(bangumiUrl, Object.keys(bangumiSignHeaders).length > 0 ? { headers: bangumiSignHeaders } : {});
                 // [修复] 兼容多种返回格式：{ bangumi: { episodes } } 或 { episodes }
                 const eps = bangumiResult?.bangumi?.episodes || bangumiResult?.episodes;
                 const seas = bangumiResult?.bangumi?.seasons || bangumiResult?.seasons;
@@ -8029,7 +8169,9 @@
             animeOriginalTitle: '', 
             imageUrl: anime.imageUrl,
             apiPrefix: anime.apiPrefix, 
-            apiName: anime.apiName, 
+            apiName: anime.apiName,
+            apiAppId: anime.apiAppId || "",
+            apiAppSecret: anime.apiAppSecret || "",
             seriesOrMovieId: seriesOrMovieId,
         };
 
@@ -8709,7 +8851,9 @@
                 .map((url, index) => ({
                     name: `自定义源${index + 1}`,
                     url: url,
-                    enabled: true
+                    enabled: true,
+                    appId: "",
+                    appSecret: ""
                 }));
             lsSetItem(lsKeys.customApiList.id, list);
         }
@@ -8719,7 +8863,7 @@
             const oldPrefix = lsGetItem(lsKeys.customApiPrefix.id);
             // [修复] 旧配置迁移时校验 URL 格式，防止不完整 URL 导致 Worker 报错
             if (oldPrefix && oldPrefix.trim() && (oldPrefix.trim().startsWith('http://') || oldPrefix.trim().startsWith('https://'))) {
-                list.push({ name: '自定义源1', url: oldPrefix.trim(), enabled: true });
+                list.push({ name: '自定义源1', url: oldPrefix.trim(), enabled: true, appId: "", appSecret: "" });
                 lsSetItem(lsKeys.customApiList.id, list);
             }
         }
@@ -8737,7 +8881,7 @@
     /**
      * 添加自定义弹幕源
      */
-    function addCustomApiSource(name, url) {
+    function addCustomApiSource(name, url, appId, appSecret) {
         // [修复] 函数级别校验 URL 格式，防止非法 URL 进入配置
         if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
             console.warn('[dd-danmaku] 拒绝添加不合法的自定义源 URL:', url);
@@ -8746,7 +8890,7 @@
         const list = getCustomApiList();
         // 检查URL是否已存在
         if (!list.some(item => item.url === url)) {
-            list.push({ name: name || `自定义源${list.length + 1}`, url: url, enabled: true });
+            list.push({ name: name || `自定义源${list.length + 1}`, url: url, enabled: true, appId: appId || "", appSecret: appSecret || "" });
             lsSetItem(lsKeys.customApiList.id, list);
             // 同时更新旧配置（兼容性）
             if (list.length === 1) {
@@ -8801,11 +8945,13 @@
     /**
      * 更新自定义弹幕源信息
      */
-    function updateCustomApiSource(index, name, url) {
+    function updateCustomApiSource(index, name, url, appId, appSecret) {
         const list = getCustomApiList();
         if (index >= 0 && index < list.length) {
             list[index].name = name;
             list[index].url = url.endsWith('/') ? url.slice(0, -1) : url;
+            if (typeof appId !== 'undefined') list[index].appId = appId || '';
+            if (typeof appSecret !== 'undefined') list[index].appSecret = appSecret || '';
             lsSetItem(lsKeys.customApiList.id, list);
             const enabledUrls = list.filter(item => item.enabled).map(item => item.url);
             lsSetItem(lsKeys.customApiPrefix.id, enabledUrls[0] || '');
