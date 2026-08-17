@@ -11,7 +11,8 @@ API 响应缓存、实体索引与集数链接 ORM 模型（新架构核心）
 当 Redis 不可用时降级为 storage_mode=sql，response_body 落 SQL 冷备。
 """
 from sqlalchemy import (
-    BigInteger, Boolean, Column, DateTime, Integer, JSON, String, Text,
+    BigInteger, Boolean, Column, DateTime, Index, Integer, JSON, String, Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 
@@ -68,8 +69,12 @@ class ApiCacheAccessLog(Base):
     __tablename__ = "api_cache_access_logs"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    # cache_key 仅 LIKE '%x%' 模糊查（用不上索引），api_path 不做条件，去掉索引
-    cache_key = Column(String(700), nullable=False)
+    # cache_key 仅 LIKE '%x%' 模糊查（用不上索引），api_path 不做条件，去掉索引。
+    # 宽度 2000 而非 700：本表无索引，不受 InnoDB 3072 字节索引键上限约束
+    # （api_response_cache 的 cache_key 带 UNIQUE 索引，utf8mb4 下最多 768 字符）。
+    # 700 会被异常长的搜索词顶爆，触发 DataError 1406 且 bulk_insert 单事务
+    # 导致整批日志连坐丢失；截断又会让日志键与真实缓存键对不上、无法关联排查。
+    cache_key = Column(String(2000), nullable=False)
     api_path = Column(String(300), nullable=False)
     # upsert / hit / miss / stale_hit / expired / 429（按 access_type 过滤统计，保留）
     access_type = Column(String(50), index=True, nullable=False)
@@ -100,7 +105,11 @@ class ApiCacheRefreshTask(Base, TimestampMixin):
 
 
 class ApiResponseEntity(Base, TimestampMixin):
-    """响应实体索引表"""
+    """响应实体索引表
+
+    「化整为零」的落点：上游整季响应在此按 anime / bangumi / episode 拆成独立行，
+    后续可由 entity_assemble 反向「从零拼整」，避免带 episode=N 时每集各回源一次。
+    """
     __tablename__ = "api_response_entities"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -110,11 +119,24 @@ class ApiResponseEntity(Base, TimestampMixin):
     # title 仅 LIKE '%x%' 模糊查（用不上索引），api_path/cache_key 不做条件，去掉索引
     title = Column(String(500), nullable=True)
     episode_title = Column(String(500), nullable=True)
+    # episode 实体所属番剧 ID。显式存储而非从 episodeId 推算：
+    # 现网规律是 episodeId = animeId * 10000 + 集号，但超过 9999 集或特殊编号会破裂，
+    # 解析 /bangumi/{id} 时父级已带 animeId，直接取即可，不做算术反推。
+    anime_id = Column(String(100), nullable=True)
+    # 集号（上游 episodeNumber 原样保留字符串，可能是 "7" / "SP1" / "OVA"）
+    episode_number = Column(String(50), nullable=True)
     api_path = Column(String(300), nullable=False)
     cache_key = Column(String(700), nullable=False)
     raw_json = Column(JSON, nullable=True)
     first_seen_at = Column(DateTime, default=now, nullable=False)
     last_seen_at = Column(DateTime, default=now, index=True, nullable=False)
+
+    __table_args__ = (
+        # (entity_type, entity_id) 是业务唯一键，加约束防并发写入产生重复行
+        UniqueConstraint("entity_type", "entity_id", name="uq_are_type_id"),
+        # 拼装整季 / 取指定集的主查询路径
+        Index("ix_are_anime_ep", "entity_type", "anime_id", "episode_number"),
+    )
 
 
 class EpisodeLink(Base, TimestampMixin):
@@ -170,3 +192,88 @@ class MediaLibrary(Base, TimestampMixin):
     source = Column(String(50), index=True, nullable=True)
     first_seen_at = Column(DateTime, default=now, nullable=False)
     last_seen_at = Column(DateTime, default=now, index=True, nullable=False)
+
+
+
+class MediaExternalId(Base, TimestampMixin):
+    """番剧的外部平台 ID 索引（Bangumi.tv / AniDB / TMDB / IMDb / ...）
+
+    数据来源：dandanplay /bangumi/{id} 响应里的 onlineDatabases[]，
+    该数组已给出各平台完整 URL，正则提取 ID 即可，无需请求外部服务。
+
+    provider 刻意用自由文本而非 Enum：新增平台只写数据不改代码，
+    正则匹配不到的平台（如 Notify.moe）也照样入库，只留 external_url 不丢数据。
+    """
+    __tablename__ = "media_external_ids"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # dandanplay animeId，关联 media_library.anime_id
+    anime_id = Column(String(100), index=True, nullable=False)
+    # 平台标识：bangumi_tv / anidb / mal / tmdb / imdb / tvdb / anilist / ...
+    provider = Column(String(50), nullable=False)
+    # 从 URL 提取的 ID（617123 / tt39246964 / anime-planet 的 slug）；提取失败留空
+    external_id = Column(String(200), nullable=True)
+    # 原始 URL，前端直接跳转，也是提取失败时的兜底
+    external_url = Column(String(500), nullable=True)
+    # auto（脚本从 onlineDatabases 提取）/ manual（人工填写，增量脚本不覆盖）
+    source = Column(String(30), default="auto", nullable=False)
+    confidence = Column(Integer, default=0, nullable=False)
+
+    __table_args__ = (
+        # 一部番在同一平台只有一个 ID，加约束防并发写入产生重复行
+        UniqueConstraint("anime_id", "provider", name="uq_mei_anime_provider"),
+        # 反查路径：已知 TMDB ID 找对应的 dandanplay 条目
+        Index("ix_mei_provider_extid", "provider", "external_id"),
+    )
+
+
+class MediaAlias(Base, TimestampMixin):
+    """番剧别名表：统一承载所有来源的「别名 → animeId」映射
+
+    刻意不拆成两张表（官方别名 / 搜索词映射）——两者本质都是别名到
+    animeId 的映射，查询逻辑相同，用 source 区分来源、status 控制是否生效即可，
+    线上解析只查一张表。
+
+    只有 status=approved 参与线上解析；auto_match / bgm / tmdb 一律先 pending，
+    人工确认后才生效，避免算法误判直接影响线上搜索。
+    """
+    __tablename__ = "media_alias"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # 归属的 dandanplay animeId
+    anime_id = Column(String(100), index=True, nullable=False)
+    alias = Column(String(500), nullable=False)
+    # 归一化形式（NFKC + 小写 + 连续空白合一），线上查询走这列而非 alias
+    alias_norm = Column(String(500), nullable=False)
+    # 再去掉所有空白的形态：用户手输标题时空格位置随意
+    # （「无职转生Ⅱ ～…～」vs「无职转生ii～…～」），alias_norm 保留单个空格
+    # 会导致精确匹配失配。单独存一列并建索引，避免查询时用
+    # REPLACE() 导致全表扫描。alias_norm 不改动——它还承担唯一键与展示职责。
+    alias_norm_ns = Column(String(500), nullable=True)
+    # zh-Hans / zh-Hant / ja / ja-romaji / en / unknown
+    lang = Column(String(50), nullable=True)
+    # main（主标题）/ official / alias / search_keyword
+    title_type = Column(String(30), nullable=True)
+    # dandanplay_titles / cache_extract_1 / cache_extract_n / auto_match
+    # / bgm / tmdb / manual
+    source = Column(String(30), nullable=False)
+    # approved（线上生效）/ pending（待人工确认）/ rejected
+    status = Column(String(20), default="pending", nullable=False)
+    confidence = Column(Integer, default=0, nullable=False)
+    # 录入时该搜索词的命中次数，人工校验页按此降序（命中越多修好收益越大）
+    hit_snapshot = Column(Integer, default=0, nullable=False)
+    verified_by = Column(Integer, nullable=True)
+    # AI 给出的建议：{match_index, confidence, reason}，仅作人工判断参考
+    ai_suggestion = Column(JSON, nullable=True)
+    ai_called_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        # 同一别名不能重复挂到同一番剧上
+        UniqueConstraint("alias_norm", "anime_id", name="uq_ma_norm_anime"),
+        # 线上解析主查询路径：按归一化别名 + approved 状态查
+        Index("ix_ma_norm_status", "alias_norm", "status"),
+        # 空格差异兜底查询路径：精确匹配失配后按无空白形态 + approved 查
+        Index("ix_ma_normns_status", "alias_norm_ns", "status"),
+        # 人工校验页排序路径：pending 按命中数降序
+        Index("ix_ma_status_hit", "status", "hit_snapshot"),
+    )

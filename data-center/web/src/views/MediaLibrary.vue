@@ -57,6 +57,74 @@
             <div class="summary" v-if="detail.summary">{{ detail.summary }}</div>
           </div>
         </div>
+        <!-- 外部平台 ID：数据来自 bangumi 响应的 onlineDatabases[]，可人工补填 -->
+        <el-divider>外部平台 ID</el-divider>
+        <el-table :data="meta.external_ids" size="small" empty-text="暂无外部 ID">
+          <el-table-column prop="provider" label="平台" width="110" />
+          <el-table-column prop="external_id" label="ID" show-overflow-tooltip />
+          <el-table-column label="来源" width="70">
+            <template #default="{ row }">
+              <el-tag :type="row.source === 'manual' ? 'warning' : 'info'" size="small">
+                {{ row.source === 'manual' ? '手动' : '自动' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="110">
+            <template #default="{ row }">
+              <el-link v-if="row.external_url" type="primary" :href="row.external_url"
+                       target="_blank" rel="noreferrer">跳转</el-link>
+              <el-link type="danger" style="margin-left: 8px"
+                       @click="delExternalId(row.id)">删除</el-link>
+            </template>
+          </el-table-column>
+        </el-table>
+        <!-- provider 用 datalist 给建议但不限制，新增平台无需改代码 -->
+        <div class="add-row">
+          <el-input v-model="extForm.provider" placeholder="平台标识" size="small"
+                    list="provider-suggest" style="width: 130px" />
+          <datalist id="provider-suggest">
+            <option v-for="p in providerSuggest" :key="p" :value="p" />
+          </datalist>
+          <el-input v-model="extForm.external_id" placeholder="ID" size="small" style="width: 130px" />
+          <el-input v-model="extForm.external_url" placeholder="URL（可选）" size="small" style="flex: 1" />
+          <el-button size="small" type="primary" @click="saveExternalId">添加</el-button>
+        </div>
+
+        <!-- 别名：approved 参与线上搜索解析，pending 需人工确认 -->
+        <el-divider>别名（{{ meta.aliases.length }}）</el-divider>
+        <el-table :data="meta.aliases" size="small" max-height="30vh" empty-text="暂无别名">
+          <el-table-column prop="alias" label="别名" show-overflow-tooltip />
+          <el-table-column prop="lang" label="语言" width="90" />
+          <el-table-column prop="source" label="来源" width="130" show-overflow-tooltip />
+          <el-table-column label="状态" width="90">
+            <template #default="{ row }">
+              <el-tag :type="aliasTagType(row.status)" size="small">
+                {{ aliasStatusText(row.status) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="130">
+            <template #default="{ row }">
+              <template v-if="row.status === 'pending'">
+                <el-link type="success" @click="reviewAlias(row.id, true)">通过</el-link>
+                <el-link type="warning" style="margin-left: 6px"
+                         @click="reviewAlias(row.id, false)">拒绝</el-link>
+              </template>
+              <el-link type="danger" style="margin-left: 6px"
+                       @click="delAlias(row.id)">删除</el-link>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div class="add-row">
+          <el-input v-model="aliasForm.alias" placeholder="新增别名（提交即生效）"
+                    size="small" style="flex: 1" />
+          <el-select v-model="aliasForm.lang" size="small" style="width: 110px">
+            <el-option v-for="l in langOptions" :key="l.value"
+                       :label="l.label" :value="l.value" />
+          </el-select>
+          <el-button size="small" type="primary" @click="saveAlias">添加</el-button>
+        </div>
+
         <el-divider>分集状态</el-divider>
         <el-table :data="detail.episodes" size="small" max-height="50vh">
           <el-table-column prop="episode_number" label="集" width="60" />
@@ -93,6 +161,21 @@ export default {
     const rebuilding = ref(false)
     const drawerVisible = ref(false)
     const detail = ref(null)
+    // 外部 ID 与别名（与 detail 分开请求，抽屉打开时并发拉取）
+    const meta = ref({ external_ids: [], aliases: [] })
+    const extForm = ref({ provider: '', external_id: '', external_url: '' })
+    const aliasForm = ref({ alias: '', lang: 'zh-Hans' })
+    // provider 只作输入建议，不限制取值——新增平台无需改代码
+    const providerSuggest = ['bangumi_tv', 'anidb', 'mal', 'anilist', 'tmdb',
+      'imdb', 'tvdb', 'anisearch', 'animeplanet', 'bilibili']
+    const langOptions = [
+      { label: '简体', value: 'zh-Hans' },
+      { label: '繁体', value: 'zh-Hant' },
+      { label: '日语', value: 'ja' },
+      { label: '罗马字', value: 'ja-romaji' },
+      { label: '英语', value: 'en' },
+      { label: '未知', value: 'unknown' },
+    ]
 
     const load = async () => {
       loading.value = true
@@ -110,9 +193,70 @@ export default {
     // 切换每页数量：重置到第一页再加载
     const onSizeChange = (s) => { pageSize.value = s; page.value = 1; load() }
 
+    // 拉取外部 ID 与别名；失败不阻塞抽屉展示（属增值信息）
+    const loadMeta = async (animeId) => {
+      try {
+        const res = await apiV2(`/media/meta/${animeId}`)
+        meta.value = res.data || { external_ids: [], aliases: [] }
+      } catch (e) { meta.value = { external_ids: [], aliases: [] } }
+    }
+
     const openDetail = async (animeId) => {
-      try { const res = await apiV2(`/media/${animeId}`); detail.value = res.data; drawerVisible.value = true }
-      catch (e) { ElMessage.error(e.message) }
+      try {
+        const res = await apiV2(`/media/${animeId}`)
+        detail.value = res.data
+        drawerVisible.value = true
+        // 重置新增表单，避免上一个番剧的残留输入
+        extForm.value = { provider: '', external_id: '', external_url: '' }
+        aliasForm.value = { alias: '', lang: 'zh-Hans' }
+        await loadMeta(animeId)
+      } catch (e) { ElMessage.error(e.message) }
+    }
+
+    // 别名状态的展示映射：approved 已生效 / pending 待确认 / rejected 已拒绝
+    const aliasStatusText = (s) => (
+      s === 'approved' ? '已生效' : s === 'pending' ? '待确认' : '已拒绝')
+    const aliasTagType = (s) => (
+      s === 'approved' ? 'success' : s === 'pending' ? 'warning' : 'info')
+
+    const saveExternalId = async () => {
+      if (!extForm.value.provider) { ElMessage.warning('请填写平台标识'); return }
+      try {
+        await apiV2(`/media/meta/${detail.value.anime_id}/external-id`,
+          { method: 'PUT', body: JSON.stringify(extForm.value) })
+        ElMessage.success('已保存')
+        extForm.value = { provider: '', external_id: '', external_url: '' }
+        await loadMeta(detail.value.anime_id)
+      } catch (e) { ElMessage.error(e.message) }
+    }
+    const delExternalId = async (rowId) => {
+      try {
+        await apiV2(`/media/meta/external-id/${rowId}`, { method: 'DELETE' })
+        await loadMeta(detail.value.anime_id)
+      } catch (e) { ElMessage.error(e.message) }
+    }
+    const saveAlias = async () => {
+      if (!aliasForm.value.alias) { ElMessage.warning('请填写别名'); return }
+      try {
+        await apiV2(`/media/meta/${detail.value.anime_id}/alias`,
+          { method: 'PUT', body: JSON.stringify(aliasForm.value) })
+        ElMessage.success('已保存')
+        aliasForm.value = { alias: '', lang: 'zh-Hans' }
+        await loadMeta(detail.value.anime_id)
+      } catch (e) { ElMessage.error(e.message) }
+    }
+    const reviewAlias = async (rowId, approve) => {
+      try {
+        await apiV2(`/media/meta/alias/${rowId}/review`,
+          { method: 'PUT', body: JSON.stringify({ approve }) })
+        await loadMeta(detail.value.anime_id)
+      } catch (e) { ElMessage.error(e.message) }
+    }
+    const delAlias = async (rowId) => {
+      try {
+        await apiV2(`/media/meta/alias/${rowId}`, { method: 'DELETE' })
+        await loadMeta(detail.value.anime_id)
+      } catch (e) { ElMessage.error(e.message) }
     }
     // 封面背景样式：有图用图，无图显示占位底色（详情抽屉用）
     const coverStyle = (url) => (url
@@ -134,7 +278,10 @@ export default {
 
     onMounted(load)
     return { items, total, page, pageSize, keyword, onlyMissing, loading, rebuilding,
-      drawerVisible, detail, Search, Refresh, reload, onPage, onSizeChange, openDetail, coverStyle, onImgError, rebuild }
+      drawerVisible, detail, Search, Refresh, reload, onPage, onSizeChange, openDetail, coverStyle, onImgError, rebuild,
+      meta, extForm, aliasForm, providerSuggest, langOptions,
+      aliasStatusText, aliasTagType,
+      saveExternalId, delExternalId, saveAlias, reviewAlias, delAlias }
   }
 }
 </script>
@@ -195,4 +342,7 @@ export default {
 .meta-row { margin-bottom: 8px; color: #606266; }
 .meta-row b { color: #909399; margin-right: 8px; font-weight: 500; }
 .summary { margin-top: 10px; color: #909399; line-height: 1.6; max-height: 96px; overflow: auto; }
+
+/* 外部 ID / 别名的行内新增表单 */
+.add-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
 </style>

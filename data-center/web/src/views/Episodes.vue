@@ -190,7 +190,8 @@ export default {
     }
     const saveFix = async () => {
       try {
-        const { id, local_title, ...body } = form.value
+        const { id, ...body } = form.value
+        delete body.local_title
         await apiV2(`/episodes/links/${id}`, { method: 'PUT', body })
         ElMessage.success('修正成功'); fixVisible.value = false; load(); loadStats()
       } catch (e) { ElMessage.error(e.message) }

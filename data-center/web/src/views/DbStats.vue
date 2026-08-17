@@ -90,23 +90,32 @@
       <!-- 表清单 -->
       <div class="panel">
         <h2 class="panel-title">表统计</h2>
-        <table class="data-table">
-          <thead><tr><th>表名</th><th>行数</th><th>占用</th><th>占比</th></tr></thead>
-          <tbody>
-            <tr v-for="t in data.sql.tables" :key="t.name">
-              <td class="key">{{ t.name }}</td>
-              <td>{{ t.row_count.toLocaleString() }}</td>
-              <td>{{ fmtBytes(t.size_bytes) }}</td>
-              <td>
-                <div class="ratio-wrap">
-                  <div class="ratio-bar" :style="{ width: t.size_ratio + '%' }"></div>
-                  <span class="ratio-text">{{ t.size_ratio }}%</span>
-                </div>
-              </td>
-            </tr>
-            <tr v-if="!data.sql.tables.length"><td colspan="4" class="empty">暂无表数据</td></tr>
-          </tbody>
-        </table>
+        <p class="muted forecast-note">容量预测基于过去 24 小时写入速率、当前平均行大小和实际保留天数，仅用于运维预警。</p>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>表名</th><th>行数</th><th>占用</th><th>占比</th><th>24h 新增</th><th>日增长</th><th>保留期</th><th>预计稳态占用</th></tr></thead>
+            <tbody>
+              <tr v-for="t in data.sql.tables" :key="t.name" :class="{ 'forecast-row': t.forecast_available }">
+                <td class="key">{{ t.name }}</td>
+                <td>{{ t.row_count.toLocaleString() }}</td>
+                <td>{{ fmtBytes(t.size_bytes) }}</td>
+                <td>
+                  <div class="ratio-wrap">
+                    <div class="ratio-bar" :style="{ width: t.size_ratio + '%' }"></div>
+                    <span class="ratio-text">{{ t.size_ratio }}%</span>
+                  </div>
+                </td>
+                <td>{{ t.forecast_available ? t.rows_24h.toLocaleString() : '—' }}</td>
+                <td>{{ t.forecast_available ? fmtBytes(t.daily_growth_bytes) + '/天' : '—' }}</td>
+                <td>{{ t.forecast_available ? t.retention_days + ' 天' : '—' }}</td>
+                <td :class="{ warn: t.forecast_ratio > 1.5 }" :title="t.forecast_available ? '按当前写入速率和保留期估算' : ''">
+                  {{ t.forecast_available ? fmtBytes(t.projected_retained_bytes) : '—' }}
+                </td>
+              </tr>
+              <tr v-if="!data.sql.tables.length"><td colspan="8" class="empty">暂无表数据</td></tr>
+            </tbody>
+          </table>
+        </div>
         <div v-if="data.sql.dialect === 'sqlite' && data.sql.total_size_bytes === 0" class="muted hint">
           提示：SQLite 未编译 dbstat 扩展时无法统计单表字节，仅显示行数。
         </div>
@@ -189,6 +198,13 @@ export default {
 .ratio-wrap { position: relative; background: #f0f0f0; border-radius: 4px; height: 18px; min-width: 120px; }
 .ratio-bar { background: #1677ff; height: 100%; border-radius: 4px; max-width: 100%; }
 .ratio-text { position: absolute; left: 8px; top: 0; font-size: 11px; line-height: 18px; color: #333; }
+
+.table-scroll { overflow-x: auto; }
+.forecast-note { margin: -6px 0 12px; }
+.forecast-row { background: #fcfdff; }
+.data-table td.warn { color: #cf1322; font-weight: 600; }
+.data-table th { white-space: nowrap; }
+
 .empty { text-align: center; color: #999; padding: 20px; }
 .kv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
 .kv { display: flex; justify-content: space-between; padding: 10px 12px; background: #fafafa; border-radius: 6px; font-size: 13px; }

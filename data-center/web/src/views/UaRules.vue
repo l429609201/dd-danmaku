@@ -16,7 +16,7 @@
       <table class="data-table">
         <thead><tr>
           <th>ua_key</th><th>UA 匹配</th><th>最大请求</th><th>窗口(ms)</th>
-          <th>路径限流</th><th>签名组</th><th>用户组</th><th>启用</th><th>操作</th>
+          <th>路径限流</th><th>回源配额</th><th>签名组</th><th>用户组</th><th>启用</th><th>操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="r in items" :key="r.id">
@@ -25,8 +25,10 @@
             <td>{{ r.max_requests || '无限制' }}</td>
             <td>{{ r.window_ms }}</td>
             <td>{{ (r.path_limits && r.path_limits.length) || 0 }} 条</td>
+            <!-- 回源配额概览：关闭时只显示「关」，开启时汇总时/天上限与路径条数 -->
+            <td class="msg">{{ originSummary(r) }}</td>
             <td>{{ r.sign_group_id || '关' }}</td>
-          <td>{{ r.user_group_id || '关' }}</td>
+            <td>{{ r.user_group_id || '关' }}</td>
             <td>{{ r.enabled ? '是' : '否' }}</td>
             <td class="actions">
               <button class="link" @click="openEdit(r)">编辑</button>
@@ -34,7 +36,7 @@
               <button class="link danger" @click="del(r.id)">删除</button>
             </td>
           </tr>
-          <tr v-if="!items.length"><td colspan="7" class="empty">暂无规则</td></tr>
+          <tr v-if="!items.length"><td colspan="10" class="empty">暂无规则</td></tr>
         </tbody>
       </table>
       <Pager :page="page" :page-size="pageSize" :total="total" @update:page="goPage" />
@@ -56,6 +58,31 @@
           </div>
           <button class="btn" style="margin-top:8px" @click="addPathLimit">+ 添加路径限流</button>
         </div>
+        <div class="form-item">
+          <label class="check">
+            <input type="checkbox" v-model="form.origin_limit_enabled" />
+            启用回源配额（仅统计真正打上游的请求，缓存命中不计数）
+          </label>
+        </div>
+        <template v-if="form.origin_limit_enabled">
+          <div class="form-item">
+            <label>回源每小时上限（-1 无限制）</label>
+            <input v-model.number="form.origin_max_per_hour" type="number" class="input full" />
+          </div>
+          <div class="form-item">
+            <label>回源每天上限（-1 无限制）</label>
+            <input v-model.number="form.origin_max_per_day" type="number" class="input full" />
+          </div>
+          <div class="form-item">
+            <label>回源路径配额（按路径单独限每小时回源数）</label>
+            <div v-for="(pl, i) in form.origin_path_limits" :key="i" class="path-row">
+              <input v-model="pl.path" class="input" placeholder="路径前缀，如 /api/v2/comment/" style="flex:1" />
+              <input v-model.number="pl.maxRequestsPerHour" type="number" class="input" placeholder="每小时上限" style="width:120px" />
+              <button class="link danger" @click="removeOriginPathLimit(i)">删除</button>
+            </div>
+            <button class="btn" style="margin-top:8px" @click="addOriginPathLimit">+ 添加回源路径配额</button>
+          </div>
+        </template>
         <div class="form-item">
           <label>签名密钥组（选择即对该 UA 启用签名验证；不选=不启用）</label>
           <select v-model="form.sign_group_id" class="input full">
@@ -125,7 +152,10 @@ export default {
     const creating = ref(false)
     const editId = ref(null)
     const form = reactive({ ua_key: '', user_agent: '', max_requests: 0, window_ms: 60000, path_limits: [],
-      sign_group_id: '', user_group_id: '' })
+      sign_group_id: '', user_group_id: '',
+      // 回源配额：默认关闭，与旧规则行为保持一致
+      origin_limit_enabled: false, origin_max_per_hour: -1,
+      origin_max_per_day: -1, origin_path_limits: [] })
     const signGroups = ref([])
     const userGroups = ref([])
     // JSON 导入相关
@@ -166,6 +196,10 @@ export default {
       form.ua_key = ''; form.user_agent = ''; form.max_requests = 0
       form.window_ms = 60000; form.path_limits = []; form.sign_group_id = ''
       form.user_group_id = ''
+      form.origin_limit_enabled = false
+      form.origin_max_per_hour = -1
+      form.origin_max_per_day = -1
+      form.origin_path_limits = []
     }
     const openCreate = () => { editId.value = null; resetForm(); showCreate.value = true }
     const openEdit = (r) => {
@@ -180,16 +214,31 @@ export default {
       }))
       form.sign_group_id = r.sign_group_id || ''
       form.user_group_id = r.user_group_id || ''
+      form.origin_limit_enabled = !!r.origin_limit_enabled
+      // -1 表示无限制，不能用 || 兜底（会把 -1 当假值？不会，但 0 会被吞成 -1，这里显式判空）
+      form.origin_max_per_hour = r.origin_max_per_hour ?? -1
+      form.origin_max_per_day = r.origin_max_per_day ?? -1
+      form.origin_path_limits = (r.origin_path_limits || []).map(p => ({
+        path: p.path || '', maxRequestsPerHour: p.maxRequestsPerHour || 0,
+      }))
       showCreate.value = true
     }
     const addPathLimit = () => { form.path_limits.push({ path: '', maxRequestsPerHour: 0 }) }
     const removePathLimit = (i) => { form.path_limits.splice(i, 1) }
+    const addOriginPathLimit = () => { form.origin_path_limits.push({ path: '', maxRequestsPerHour: 0 }) }
+    const removeOriginPathLimit = (i) => { form.origin_path_limits.splice(i, 1) }
 
     // 新增或编辑提交（按 editId 区分）
     const submit = async () => {
       if (!form.ua_key) { msg.value = '请填写 ua_key'; return }
       // 过滤空路径行
       const pathLimits = form.path_limits.filter(p => p.path && p.path.trim())
+      const originPathLimits = form.origin_path_limits.filter(p => p.path && p.path.trim())
+      // v-model.number 在输入框清空时会得到空串，直接提交会被后端 Optional[int] 校验拒绝（422）。
+      // 归一成 -1（Worker 侧 -1 即无限制），避免用户清空输入后保存整体失败
+      const numOr = (v, dft) => (v === '' || v === null || v === undefined || Number.isNaN(v)) ? dft : v
+      const originPerHour = numOr(form.origin_max_per_hour, -1)
+      const originPerDay = numOr(form.origin_max_per_day, -1)
       creating.value = true
       try {
         if (editId.value) {
@@ -197,12 +246,19 @@ export default {
             user_agent: form.user_agent, max_requests: form.max_requests,
             window_ms: form.window_ms, path_limits: pathLimits,
             sign_group_id: form.sign_group_id,
-          user_group_id: form.user_group_id,
+            user_group_id: form.user_group_id,
+            origin_limit_enabled: form.origin_limit_enabled,
+            origin_max_per_hour: originPerHour,
+            origin_max_per_day: originPerDay,
+            origin_path_limits: originPathLimits,
           }
           const res = await apiV2(`/ua-rules/${editId.value}`, { method: 'PUT', body })
           msg.value = res.message || '更新成功'
         } else {
-          const body = { ...form, path_limits: pathLimits }
+          const body = {
+            ...form, path_limits: pathLimits, origin_path_limits: originPathLimits,
+            origin_max_per_hour: originPerHour, origin_max_per_day: originPerDay,
+          }
           const res = await apiV2('/ua-rules', { method: 'POST', body })
           msg.value = res.message || '创建成功'
         }
@@ -263,11 +319,24 @@ export default {
     // 跳转到指定页（含上下页/输入跳转）
     const goPage = (p) => { page.value = p; load() }
 
+    // 列表页「回源配额」列摘要：未开启显示「关」，
+    // 开启则汇总时/天上限与路径配额条数。-1 与空值统一按「无限制」展示，
+    // 与后端 -1 = 不限制的语义一致（见 runtime_config_service 下发逻辑）
+    const originSummary = (r) => {
+      if (!r || !r.origin_limit_enabled) return '关'
+      const fmt = (v) => (v === null || v === undefined || v === -1) ? '∞' : v
+      const parts = [`时 ${fmt(r.origin_max_per_hour)}`, `天 ${fmt(r.origin_max_per_day)}`]
+      const n = (r.origin_path_limits && r.origin_path_limits.length) || 0
+      if (n > 0) parts.push(`路径 ${n} 条`)
+      return parts.join(' / ')
+    }
+
     onMounted(() => { load(); loadSignGroups(); loadUserGroups() })
     return { items, total, page, pageSize, keyword, msg, showCreate, creating, editId, form, signGroups, userGroups,
       showImport, importText, replaceAll, importing, importError,
-      load, openCreate, openEdit, addPathLimit, removePathLimit, submit, toggle, del, resync, goPage,
-      openImport, doImport, exportJson }
+      load, openCreate, openEdit, addPathLimit, removePathLimit,
+      addOriginPathLimit, removeOriginPathLimit, submit, toggle, del, resync, goPage,
+      openImport, doImport, exportJson, originSummary }
   }
 }
 </script>

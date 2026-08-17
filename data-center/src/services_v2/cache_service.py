@@ -5,6 +5,7 @@
 - 响应体（response_body）默认写 Redis，SQL 只保存 redis_key + 元数据；
 - Redis 不可用时降级为 SQL 存储 body（storage_mode=sql）。
 """
+import asyncio
 import hashlib
 import json
 import logging
@@ -17,6 +18,7 @@ from src.models_v2 import ApiResponseCache, ApiCacheAccessLog
 from src.models_v2.base import now
 from src.services_v2.redis_cache import redis_cache
 from src.services_v2.access_log_buffer import access_log_buffer
+from src.utils.cache_key_display import pretty_cache_key
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +144,8 @@ class CacheService:
         else:
             # 双保险：脏响应（空结果/success:false/errorCode!=0）拒绝落库
             if not is_clean_cache_body(api_path, body):
-                logger.info(f"🧹 拒绝缓存脏响应: {api_path} (cache_key={cache_key})")
+                logger.info(f"🧹 拒绝缓存脏响应: {api_path} "
+                            f"(cache_key={pretty_cache_key(cache_key)})")
                 return False
         body_hash = record.get("body_hash") or f"sha256:{_sha256(body)}"
         body_size = len(body.encode("utf-8")) if body else 0
@@ -232,17 +235,33 @@ class CacheService:
     async def get(self, cache_key: str,
                   worker_request_id: Optional[str] = None,
                   client_ip: Optional[str] = None,
-                  log_miss: bool = True) -> Optional[Dict[str, Any]]:
+                  log_miss: bool = True,
+                  allow_stale: bool = False) -> Optional[Dict[str, Any]]:
         """读取本地缓存。log_miss=False 时不写 miss/expired 访问日志
         （主动预查场景调用频繁，避免 access_logs 暴涨）。
+
+        allow_stale=True 时连过期数据也返回（响应里带 stale 标记）。
+        用于 Worker 回源配额耗尽的降级：过期数据胜过直接报错。
 
         高并发关键：同步 DB 段放线程池，redis await 留在事件循环，避免阻塞。"""
         import asyncio
         client_ip = (client_ip or None)
         # ① 同步 DB 查询段（线程池）：查 row，返回字段快照 + 状态
         snap = await asyncio.to_thread(
-            self._get_lookup, cache_key, worker_request_id, client_ip, log_miss)
+            self._get_lookup, cache_key, worker_request_id, client_ip, log_miss,
+            allow_stale)
         if snap is None or not snap.get("found"):
+            # EMPTY: 是 Worker 专用的负缓存探测键，不是普通响应缓存键。
+            # 探测未命中必须直接返回 miss；若继续实体拼装，Worker 会把拼装出的
+            # 正常非空响应误判成“空结果负缓存”，并在别名解析前直接返回。
+            if cache_key.startswith("EMPTY:"):
+                return None
+            # 整体 cache_key 未命中，但实体表里可能已有拼装素材。
+            # 典型场景：带 episode=N 的查询，集号进了 cache_key 导致每集一个 key，
+            # 而整季明细早已按集拆进 api_response_entities。
+            assembled = await self._try_assemble(cache_key, worker_request_id, client_ip)
+            if assembled:
+                return assembled
             return None
         if snap.get("expired"):
             return None
@@ -267,20 +286,128 @@ class CacheService:
             await redis_cache.set(snap["redis_key"], body,
                                   ttl=settings.CACHE_STALE_MAX_AGE_SECONDS)
 
+        # 旧的整季响应缓存可能只含一个季度；本地媒体库已拥有同系列更多季度时，
+        # 返回派生的多季度结果，但不覆盖原始上游缓存，避免混淆数据来源。
+        series_body = await self._try_series_override(
+            cache_key, body, worker_request_id, client_ip)
+        if series_body is not None:
+            return series_body
+
         # ③ 同步 DB 更新段（线程池）：命中计数 + stale 标记 + 访问日志
         stale = await asyncio.to_thread(
             self._get_touch, cache_key, redis_hit,
             worker_request_id, client_ip)
+        # served_stale：本次是靠 allow_stale 才放行的过期数据，
+        # 与 stale（仅超过 refresh_after、尚未真正过期）区分开
+        served_stale = bool(snap.get("served_stale"))
         return {
             "hit": True,
             "status": snap["status_code"],
             "headers": snap["response_headers_json"] or {},
             "body": body,
             "cached_at": snap["fetched_at_ms"],
-            "stale": stale,
+            "stale": stale or served_stale,
+            "served_stale": served_stale,
+            # 空结果负缓存：调用方可据此再给一次别名改写的机会
+            "is_empty": bool(snap.get("is_empty")),
         }
 
-    def _get_lookup(self, cache_key, worker_request_id, client_ip, log_miss):
+
+    async def _try_series_override(self, cache_key: str, cached_body: str,
+                                   worker_request_id, client_ip):
+        """用本地系列数据修正旧缓存：优先补全多季度，并拦截唯一高季度误匹配。"""
+        if "/api/v2/search/episodes" not in cache_key or "episode=" in cache_key:
+            return None
+        try:
+            from src.services_v2.entity_assemble import parse_search_key
+            from src.services_v2.alias_external_service import alias_external_service
+            cond = parse_search_key(cache_key)
+            if not cond or cond["kind"] != "episodes":
+                return None
+            result = await asyncio.to_thread(
+                alias_external_service.search_by_keyword, cond["title"])
+            animes = result.get("animes") if isinstance(result, dict) else None
+
+            try:
+                cached_animes = (json.loads(cached_body) or {}).get("animes") or []
+                cached_count = len(cached_animes)
+            except Exception:
+                cached_animes = []
+                cached_count = 0
+            if isinstance(animes, list) and len(animes) >= 2 and len(animes) > cached_count:
+                body = json.dumps({
+                    "hasMore": False, "animes": animes,
+                    "errorCode": 0, "success": True,
+                }, ensure_ascii=False)
+            else:
+                from src.services_v2.media_meta_service import is_single_high_season_match
+                cached_title = str(cached_animes[0].get("animeTitle") or "") \
+                    if cached_count == 1 and isinstance(cached_animes[0], dict) else ""
+                # 已缓存的上游模糊结果若只是唯一高季度，不能冒充裸系列搜索结果。
+                if not is_single_high_season_match(cond["title"], cached_title):
+                    return None
+                body = json.dumps({
+                    "hasMore": False, "animes": [], "errorCode": 0,
+                    "success": True, "errorMessage": "",
+                }, ensure_ascii=False)
+            api_path = cache_key.split("?", 1)[0].split(":", 1)[-1]
+            await asyncio.to_thread(
+                self._log_async, cache_key, api_path, "assembled",
+                worker_request_id, client_ip)
+            logger.info(
+                f"🧩 本地系列语义覆盖旧缓存: {pretty_cache_key(cache_key)} "
+                f"({cached_count} → {len(animes)} 季)")
+            return {
+                "hit": True, "status": 200,
+                "headers": {"X-Cache-Source": "assembled-series"},
+                "body": body, "cached_at": 0, "stale": False,
+                "assembled": True,
+            }
+        except Exception as e:
+            logger.warning(f"⚠️ 多季度拼装异常（继续使用原缓存）: {e}")
+            return None
+
+    async def _try_assemble(self, cache_key: str, worker_request_id, client_ip):
+        """cache_key 未命中时，尝试从实体表拼装等价响应。
+
+        拼装成功等于省掉一次回源。开关 entity_assemble_enabled 默认开，
+        出现字段差异等问题时可关掉立即回到纯回源路径。
+        拼装结果不写 api_response_cache——它是派生数据，
+        写回去会和上游真实响应混在一起，难以区分来源。
+        """
+        import asyncio
+        if not getattr(settings, "ENTITY_ASSEMBLE_ENABLED", True):
+            return None
+        try:
+            from src.services_v2.entity_assemble import entity_assemble_service
+            result = await asyncio.to_thread(
+                entity_assemble_service.try_assemble, cache_key)
+        except Exception as e:
+            logger.warning(f"⚠️ 实体拼装异常（转回源）: {e}")
+            return None
+        if not result:
+            return None
+        api_path = cache_key.split("?", 1)[0].split(":", 1)[-1]
+        await asyncio.to_thread(
+            self._log_async, cache_key, api_path, "assembled",
+            worker_request_id, client_ip)
+        # 打解码后的中文：cache_key 原文是 URL 编码，且原先的 [:120] 会把
+        # 编码序列切一半（日志里出现 %E8%83%BD%E5 这种断尾）
+        logger.info(f"🧩 实体拼装命中（{result['mode']}）省去回源: "
+                    f"{pretty_cache_key(cache_key)}")
+        return {
+            "hit": True,
+            "status": 200,
+            # 标记来源，便于在 Worker 日志与前端区分拼装响应
+            "headers": {"X-Cache-Source": f"assembled-{result['mode']}"},
+            "body": result["body"],
+            "cached_at": 0,
+            "stale": False,
+            "assembled": True,
+        }
+
+    def _get_lookup(self, cache_key, worker_request_id, client_ip, log_miss,
+                    allow_stale: bool = False):
         """get 段①：同步查 row，返回字段快照（不跨线程持有 ORM 对象）"""
         db = get_db_sync()
         try:
@@ -293,18 +420,25 @@ class CacheService:
                               worker_request_id=worker_request_id, client_ip=client_ip)
                 return {"found": False}
             current = now()
-            if row.expire_at and current > row.expire_at:
+            is_expired = bool(row.expire_at and current > row.expire_at)
+            # allow_stale：回源配额已耗尽时的降级档。过期数据也比直接报错强，
+            # 照常返回并打 stale 标记，由调用方决定怎么呈现。
+            if is_expired and not allow_stale:
                 if log_miss:
                     self._log(db, cache_key, row.api_path, "expired",
                               worker_request_id=worker_request_id, client_ip=client_ip)
                 return {"found": True, "expired": True}
             return {
                 "found": True, "expired": False,
+                "served_stale": is_expired,
                 "storage_mode": row.storage_mode, "redis_key": row.redis_key,
                 "response_body": row.response_body, "api_path": row.api_path,
                 "status_code": row.status_code,
                 "response_headers_json": row.response_headers_json,
                 "fetched_at_ms": int(row.fetched_at.timestamp() * 1000) if row.fetched_at else 0,
+                # 负缓存标记要透出：调用方据此决定是否尝试别名改写回源
+                # （空结果 + 有 approved 别名 → 换规范词回源比返回空结果强）
+                "is_empty": bool(row.is_empty),
             }
         except Exception as e:
             logger.error(f"❌ cache.get 查询失败: {e}")

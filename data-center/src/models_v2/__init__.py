@@ -15,10 +15,12 @@ from src.models_v2.control import (
 from src.models_v2.cache import (
     ApiResponseCache, ApiCacheAccessLog, ApiCacheRefreshTask,
     ApiResponseEntity, EpisodeLink, MediaLibrary,
+    MediaExternalId, MediaAlias,
 )
 from src.models_v2.monitoring import (
     IpRule, IpRequestStatCurrent, IpRequestStatSnapshot,
-    UaLimitRule, WorkerRequestLog, WorkerMetricsSnapshot, LocalCommentStore,
+    UaLimitRule, WorkerLogDailyStat,
+    WorkerMetricsSnapshot, LocalCommentStore,
     CleanupPolicy, AppKeyPool, WorkerKeyState, IpGeoCache, SignKeyPool,
     UserAllowPool, OAuthConfig,
 )
@@ -43,12 +45,15 @@ __all__ = [
     "ApiResponseEntity",
     "EpisodeLink",
     "MediaLibrary",
+    # 外部平台 ID / 别名
+    "MediaExternalId",
+    "MediaAlias",
     # 监控 / 访问控制
     "IpRule",
     "IpRequestStatCurrent",
     "IpRequestStatSnapshot",
     "UaLimitRule",
-    "WorkerRequestLog",
+    "WorkerLogDailyStat",
     "WorkerMetricsSnapshot",
     "LocalCommentStore",
     "CleanupPolicy",

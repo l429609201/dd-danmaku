@@ -18,7 +18,9 @@ class MetricsService:
     """Worker 指标快照落库"""
 
     def ingest_report(self, worker_id: str, metrics: Dict[str, Any],
-                      total_lifetime: int = 0, api_cache_size: int = 0) -> bool:
+                      total_lifetime: int = 0, api_cache_size: int = 0,
+                      tool_calls: Dict[str, Any] | None = None,
+                      memory_watermark: Dict[str, Any] | None = None) -> bool:
         """落库一次 metrics.report 快照"""
         if metrics is None:
             return False
@@ -50,6 +52,8 @@ class MetricsService:
                 status_5xx=_int("status5xx"),
                 total_requests_lifetime=int(total_lifetime or 0),
                 api_cache_size=int(api_cache_size or 0),
+                tool_calls=tool_calls or {},
+                memory_watermark=memory_watermark or {},
             )
             db.add(row)
             db.commit()

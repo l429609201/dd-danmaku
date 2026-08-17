@@ -6,6 +6,13 @@
 // 部署时与本文件一起上传）。公开仓库看不到验证算法/旁路细节。
 // 构建产物由 sign-verify-src/ 经 javascript-obfuscator 混淆生成。
 import { verifyClientSignature, verifyUserAllow, verifyUserIdMark } from './sign_verify.js';
+import { tryLocalSearchFallback } from './local_search_fallback.mjs';
+
+// 缓存判定保持在主脚本内：现网支持单文件热更新，避免新增模块未同步时整条请求链异常。
+function classifyLocalCache(local) {
+    if (!local?.hit || !local.body) return 'miss';
+    return local.stale === true ? 'refresh' : 'serve';
+}
 
 // 允许访问的主机名列表
 const hostlist = { 'api.dandanplay.net': null };
@@ -87,7 +94,7 @@ function normalizeSearchKeyword(kw) {
 
 // R2 弹幕缓存配置
 const R2_CACHE_CONFIG = {
-    TTL: 12 * 60 * 60 * 1000,              // 12小时过期
+    TTL: 24 * 60 * 60 * 1000,              // 24小时过期
     MAX_STORAGE_BYTES: 9 * 1024 * 1024 * 1024, // 9GB 阈值
     KEY_PREFIX: 'comment/',                 // R2 key 前缀
     EXPIRE_POLL_INTERVAL: 5 * 60 * 1000,   // 过期轮询间隔：5分钟（请求路径被动清理）
@@ -158,6 +165,8 @@ let memoryCache = {
         userPoolLoaded: false,  // 名单池是否成功下发过（同签名池：冷启动放行、运行期拒绝）
         // 下发的 OAuth 配置（null = 使用 env.OAUTH_CONFIG 兜底；下发后立即覆盖）
         oauthConfig: null,
+        // R2 控制由本地端下发；默认保持现有行为，兼容旧版 data-center。
+        r2Control: { writeEnabled: true, deleteEnabled: true },
         lastUpdate: 0
     },
     // env 兜底基线（启动时加载，永不被下发覆盖；下发只在其之上做增量合并）
@@ -210,6 +219,10 @@ let memoryCache = {
         upstream429: 0,     // 上游 429 次数
         status2xx: 0, status4xx: 0, status5xx: 0, // 响应状态码分布
     },
+    // Cloudflare binding 调用窗口增量；按 metrics.report 周期清零。
+    toolCalls: {},
+    // DO 最近一次随配置响应带回的调用与水位快照。
+    doMonitor: { toolCalls: {}, pendingRpc: 0, websocketConnections: 0 },
     lastMetricsReport: 0,
 };
 
@@ -217,6 +230,25 @@ let memoryCache = {
 function bumpMetric(key, delta = 1) {
     if (memoryCache.metrics[key] === undefined) return;
     memoryCache.metrics[key] += delta;
+}
+
+function bumpToolCall(operation, result = 'attempts') {
+    if (!memoryCache.toolCalls[operation]) {
+        memoryCache.toolCalls[operation] = { attempts: 0, success: 0, errors: 0 };
+    }
+    memoryCache.toolCalls[operation][result]++;
+}
+
+async function trackedToolCall(operation, call) {
+    bumpToolCall(operation);
+    try {
+        const result = await call();
+        bumpToolCall(operation, 'success');
+        return result;
+    } catch (e) {
+        bumpToolCall(operation, 'errors');
+        throw e;
+    }
 }
 
 // 数据中心集成配置（新架构：仅保留 Worker 标识与初始化标志，旧 HTTP 同步字段已废弃）
@@ -282,6 +314,105 @@ function getMemoryLogs(limit = 100) {
 // 🔄 内存频率限制
 // ========================================
 
+/**
+ * 回源配额检查（与入口的请求限流是两套独立计数）
+ *
+ * 为什么要单独一层：入口的 checkAccess 统计「客户端打 Worker 的次数」，
+ * 缓存命中也会计数——可是命中根本没碰上游。而真正稀缺的是弹弹play 的
+ * 付费配额。所以这里只在缓存全部 miss、即将真的打上游时才递增，
+ * 让上游配额只被真实回源消耗。
+ *
+ * 计数键前缀 origin- 与请求侧隔离，复用同一个 rateLimitCounts Map
+ * 和它的清理逻辑，不新增内存结构。
+ *
+ * @returns {{allowed:boolean, reason?:string, count?:number, limit?:number|string}}
+ */
+function checkOriginQuota(clientIP, uaConfig, apiPath) {
+    // 未配置或开关关闭 => 不限（旧库新列为空时行为与改动前一致）
+    if (!uaConfig || !uaConfig.originLimitEnabled) {
+        return { allowed: true, reason: 'origin_limit_disabled' };
+    }
+
+    const uaType = uaConfig.type || 'unknown';
+    const perHour = uaConfig.originMaxRequestsPerHour;
+    const perDay = uaConfig.originMaxRequestsPerDay;
+
+    console.log(`🌐 [${clientIP}] 回源配额检查: UA=${uaType} path=${apiPath}`);
+
+    // ① 路径级配额优先：命中某个路径模式时用它的值覆盖小时上限
+    let effectiveHourly = perHour;
+    let matchedPath = '';
+    const originPathLimits = uaConfig.originPathLimits;
+    if (Array.isArray(originPathLimits)) {
+        for (const pl of originPathLimits) {
+            const p = pl && (pl.path || pl.pathPattern);
+            if (p && apiPath.includes(p)) {
+                const v = pickLimitValue(
+                    pl.maxRequestsPerHour,
+                    pl.originMaxRequestsPerHour
+                );
+                if (v !== undefined) {
+                    effectiveHourly = v;
+                    matchedPath = p;
+                }
+                break;
+            }
+        }
+    }
+
+    // ② 小时窗口检查
+    if (effectiveHourly !== undefined && effectiveHourly !== null) {
+        const suffix = matchedPath ? `-path-${matchedPath}` : '';
+        const r = checkMemoryRateLimit(clientIP, `origin-${uaType}${suffix}`, {
+            windowMs: 3600000,
+            maxRequestsPerHour: effectiveHourly,
+        });
+        if (!r.allowed) {
+            return {
+                allowed: false,
+                reason: `回源配额超限(小时): ${r.count}/${r.limit}`,
+                count: r.count,
+                limit: r.limit,
+            };
+        }
+    }
+
+    // ③ 天窗口检查（UTC+8 自然日，与弹弹play 配额重置时区一致）
+    if (perDay !== undefined && perDay !== null) {
+        const r = checkMemoryRateLimit(clientIP, `origin-day-${uaType}`, {
+            windowMs: 86400000,
+            maxRequestsPerHour: perDay,
+        });
+        if (!r.allowed) {
+            return {
+                allowed: false,
+                reason: `回源配额超限(当日): ${r.count}/${r.limit}`,
+                count: r.count,
+                limit: r.limit,
+            };
+        }
+    }
+
+    return { allowed: true };
+}
+
+/**
+ * 按优先级取第一个「已配置」的限流值。
+ *
+ * 存在的意义：限流值 0 是合法配置（表示无限制），但 0 在 JS 里是 falsy，
+ * 用 `a || b` 取值会把它当未配置而跳到兜底值上。本函数只跳过
+ * undefined / null，确保本地端下发的 0 能原样生效。
+ *
+ * @param {...(number|undefined|null)} values 按优先级排列的候选值
+ * @returns {number|undefined} 第一个非空值，全为空时返回 undefined
+ */
+function pickLimitValue(...values) {
+    for (const v of values) {
+        if (v !== undefined && v !== null) return v;
+    }
+    return undefined;
+}
+
 // 内存频率限制检查
 function checkMemoryRateLimit(clientIP, uaType, limits) {
     const now = Date.now();
@@ -304,14 +435,22 @@ function checkMemoryRateLimit(clientIP, uaType, limits) {
     const counter = memoryCache.rateLimitCounts.get(key);
     const windowDuration = limits.windowMs || 60000; // 默认1分钟窗口
 
-    // 正确获取最大请求数，支持-1表示无限制
-    let maxRequests = limits.hourlyLimit || limits.maxRequestsPerHour;
-    if (maxRequests === undefined || maxRequests === null) {
-        maxRequests = limits.maxRequests || 100; // 兼容旧字段名
-    }
+    // 取最大请求数：按 hourlyLimit → maxRequestsPerHour → maxRequests 优先级回退。
+    // 必须用显式判空而非 ||，否则配置值 0 会被当 falsy 跳过（这正是
+    // 「下发 maxRequests=0 却出现 100/小时」的根因）。
+    let maxRequests = pickLimitValue(
+        limits.hourlyLimit,
+        limits.maxRequestsPerHour,
+        limits.maxRequests // 兼容旧字段名
+    );
 
-    // 如果是-1，表示无限制
-    const isUnlimited = maxRequests === -1;
+    // 配置里没有任何限制字段 => 不限流。
+    // 这里过去兜底成硬编码 100，等于静默篡改本地端配置，已移除。
+    const isUnlimited =
+        maxRequests === undefined ||
+        maxRequests === null ||
+        maxRequests === -1 ||
+        maxRequests === 0; // 0 与 -1 同义，均表示无限制（与 UI 文案一致）
 
     console.log(`   - 窗口持续时间: ${windowDuration}ms (${Math.round(windowDuration/1000)}秒)`);
     console.log(`   - 最大请求数: ${isUnlimited ? '无限制' : maxRequests}`);
@@ -540,6 +679,29 @@ function isTrueEmptySearch(apiPath, responseText) {
     return Array.isArray(data.animes) && data.animes.length === 0;
 }
 
+// 裸系列词若被上游模糊搜索成唯一的第二季及以上条目，按空结果处理。
+// 明确带季号的搜索、多季度结果和普通精确标题均保持原响应。
+function suppressMisleadingBareSeries(apiPath, targetUrl, responseText) {
+    if (!apiPath.startsWith('/api/v2/search/episodes') || !responseText) return responseText;
+    const search = normalizeSearchKeyword(targetUrl.searchParams.get('anime') || '');
+    if (!search || /第\s*[二三四五六七八九十0-9]+\s*季/i.test(search)) return responseText;
+    let data;
+    try { data = JSON.parse(responseText); } catch (_) { return responseText; }
+    if (!data || !Array.isArray(data.animes) || data.animes.length !== 1) return responseText;
+    const title = normalizeSearchKeyword(data.animes[0]?.animeTitle || '');
+    const chinese = title.match(/^(.*?)\s*第\s*([二三四五六七八九十0-9]+)\s*季(?:\s.*)?$/i);
+    const roman = title.match(/^(.*?)\s+(viii|vii|iii|vi|iv|ii|ix|x|v)$/i);
+    const match = chinese || roman;
+    if (!match || normalizeSearchKeyword(match[1]) !== search) return responseText;
+    const cn = { 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+    const romans = { ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10 };
+    const seasonMark = String(match[2] || '').toLowerCase();
+    const season = Number(seasonMark) || cn[seasonMark] || romans[seasonMark] || 0;
+    if (season < 2) return responseText;
+    return JSON.stringify({ hasMore: false, animes: [], errorCode: 0, success: true, errorMessage: '' });
+}
+
+
 // 空结果计数：同一归一化键累计 +1，返回是否达阈值。窗口过期或超上限时重置/清理。
 function bumpEmptySearchCount(normKey) {
     const now = Date.now();
@@ -570,17 +732,70 @@ function buildLocalCacheKey(method, apiPath, searchParams) {
     return sorted ? `${method}:${apiPath}?${sorted}` : `${method}:${apiPath}`;
 }
 
+// 从整季 /search/episodes 响应里抽出指定集，保持上游同构结构。
+// 抽不到（集号不存在/结构异常）返回 null，由调用方回退为原样返回整季，
+// 不因抽取失败而让请求失败。
+function extractEpisodeFromSeason(responseText, epNo) {
+    if (!responseText || !epNo) return null;
+    let data;
+    try {
+        data = JSON.parse(responseText);
+    } catch (_) {
+        return null;
+    }
+    if (!data || !Array.isArray(data.animes)) return null;
+
+    const want = String(epNo).trim();
+    const wantNum = Number(want);
+    // 多季场景：animes 每项各带自己的 episodes，需逐项过滤后保留命中的项，
+    // 与本地端 entity_assemble 的 _assemble_episodes 行为保持一致
+    const picked = [];
+    for (const anime of data.animes) {
+        if (!anime || !Array.isArray(anime.episodes)) continue;
+        const animeId = String(anime.animeId || '');
+        const hit = anime.episodes.filter(ep => {
+            if (!ep) return false;
+            // 上游集号字段形态不统一：episodeNumber 优先，缺失则从 episodeTitle 里取「第N话」
+            let n = ep.episodeNumber;
+            if (n === undefined || n === null || n === '') {
+                const m = /第\s*(\d+)\s*[话集]/.exec(ep.episodeTitle || '');
+                n = m ? m[1] : null;
+            }
+            // 末级兜底：从 episodeId 剥掉 animeId 前缀得集号（97710007 - 9771 → 0007 → 7）。
+            // 与本地端 entity_service._episode_entity 同策略：必须校验前缀匹配，
+            // 不写死「后 4 位」——集数超 9999 或 animeId 位数不同时该假设会破裂。
+            if (n === null && animeId && /^\d+$/.test(animeId)) {
+                const epId = String(ep.episodeId || '');
+                if (epId.startsWith(animeId)) {
+                    const suffix = epId.slice(animeId.length);
+                    if (suffix && /^\d+$/.test(suffix)) n = String(Number(suffix));
+                }
+            }
+            if (n === null) return false;
+            const s = String(n).trim();
+            // 数值比较兜住 '07' 与 '7' 这类补零差异
+            return s === want || (Number.isFinite(wantNum) && Number(s) === wantNum);
+        });
+        if (hit.length > 0) {
+            // 番剧其余字段（animeId/animeTitle/type/imageUrl 等）原样保留，只替换 episodes
+            picked.push({ ...anime, episodes: hit });
+        }
+    }
+    if (picked.length === 0) return null;
+    return JSON.stringify({ ...data, animes: picked });
+}
+
 // 通过 ControlHub DO 向本地端发起 RPC；DO 不可用/超时返回 null，不阻塞主流程
 async function controlHubRpc(env, type, payload, timeoutMs) {
     if (!env.CONTROL_HUB) return null;
     try {
         const id = env.CONTROL_HUB.idFromName('control-hub');
         const stub = env.CONTROL_HUB.get(id);
-        const resp = await stub.fetch('https://control-hub/control/rpc', {
+        const resp = await trackedToolCall('doRpc', () => stub.fetch('https://control-hub/control/rpc', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ type, payload, timeoutMs: timeoutMs || 800 }),
-        });
+        }));
         if (!resp.ok) return null;
         return await resp.json();
     } catch (e) {
@@ -595,8 +810,21 @@ async function pullControlConfig(env) {
     try {
         const id = env.CONTROL_HUB.idFromName('control-hub');
         const stub = env.CONTROL_HUB.get(id);
-        const resp = await stub.fetch('https://control-hub/control/config');
+        const resp = await trackedToolCall('doConfig', () => stub.fetch('https://control-hub/control/config'));
         if (!resp.ok) return null;
+        try {
+            const incoming = JSON.parse(resp.headers.get('X-Control-Monitor') || '{}');
+            for (const [operation, values] of Object.entries(incoming.toolCalls || {})) {
+                const target = memoryCache.doMonitor.toolCalls[operation]
+                    || { attempts: 0, success: 0, errors: 0 };
+                for (const key of ['attempts', 'success', 'errors']) {
+                    target[key] += Number(values[key] || 0);
+                }
+                memoryCache.doMonitor.toolCalls[operation] = target;
+            }
+            memoryCache.doMonitor.pendingRpc = Number(incoming.pendingRpc || 0);
+            memoryCache.doMonitor.websocketConnections = Number(incoming.websocketConnections || 0);
+        } catch (_) { /* 监控头异常不影响配置拉取 */ }
         const cfg = await resp.json();
         applyRuntimeConfig(cfg);
         return cfg;
@@ -680,6 +908,13 @@ function applyRuntimeConfig(cfg) {
         _oauthConfigCache = null;
     }
 
+    if (cfg.r2_control && typeof cfg.r2_control === 'object') {
+        memoryCache.configCache.r2Control = {
+            writeEnabled: cfg.r2_control.writeEnabled !== false,
+            deleteEnabled: cfg.r2_control.deleteEnabled !== false,
+        };
+    }
+
     memoryCache.configCache.lastUpdate = Date.now();
 }
 
@@ -749,6 +984,29 @@ function buildConfigStatePayload() {
 // 组装运行指标快照；上报后清零累计型字段（窗口内增量），便于本地端按窗口落库
 function buildMetricsReportPayload(now) {
     const m = memoryCache.metrics;
+    const count = (v) => v && typeof v.size === 'number' ? v.size : 0;
+    const ipStatsCount = Object.keys(memoryCache.ipRequestStats || {}).length;
+    const memoryWatermark = {
+        api_cache: count(memoryCache.apiCache),
+        logs: memoryCache.logs.length,
+        rate_limit_counters: count(memoryCache.rateLimitCounts),
+        ip_stats: ipStatsCount,
+        oauth_token_cache: count(memoryCache.oauthTokenCache),
+        empty_search_counter: count(memoryCache.emptySearchCounter),
+        abuse_tracker: count(memoryCache.abuseTracker),
+        auth_fail_tracker: count(memoryCache.authFailTracker),
+        auth_ban_tracker: count(memoryCache.authBanTracker),
+        pending_requests: memoryCache.pendingRequests,
+        do_pending_rpc: memoryCache.doMonitor.pendingRpc || 0,
+        do_websocket_connections: memoryCache.doMonitor.websocketConnections || 0,
+    };
+    // 这是容器水位的保守估算，不冒充 Cloudflare 控制台的真实 isolate 内存。
+    memoryWatermark.estimated_bytes =
+        memoryWatermark.api_cache * 4096 + memoryWatermark.logs * 1024
+        + memoryWatermark.rate_limit_counters * 256 + memoryWatermark.ip_stats * 512
+        + memoryWatermark.oauth_token_cache * 512 + memoryWatermark.empty_search_counter * 192
+        + (memoryWatermark.abuse_tracker + memoryWatermark.auth_fail_tracker
+            + memoryWatermark.auth_ban_tracker) * 192;
     const payload = {
         worker_id: DATA_CENTER_CONFIG.workerId,
         timestamp: now,
@@ -756,6 +1014,8 @@ function buildMetricsReportPayload(now) {
         // 附带瞬时态：当前总请求数（不清零）与缓存规模，便于展示
         total_requests_lifetime: memoryCache.totalRequests,
         api_cache_size: memoryCache.apiCache.size,
+        tool_calls: { ...memoryCache.toolCalls, ...(memoryCache.doMonitor.toolCalls || {}) },
+        memory_watermark: memoryWatermark,
         // 附带本实例内存里合并后的配置摘要（诊断用）。
         // 与 DO storage 的 config.dump 互补：DO 是「下发存成了什么」，
         // 这里是「本实例实际在用什么」——env 基线与下发合并后的最终值。
@@ -769,6 +1029,8 @@ function buildMetricsReportPayload(now) {
         blockedIp: 0, blockedUa: 0, blockedAbuse: 0, invalidRoute: 0,
         upstream429: 0, status2xx: 0, status4xx: 0, status5xx: 0,
     };
+    memoryCache.toolCalls = {};
+    memoryCache.doMonitor.toolCalls = {};
     return payload;
 }
 
@@ -780,15 +1042,17 @@ function buildMetricsReportPayload(now) {
  * 从 R2 读取弹幕缓存
  * @returns {string|null} 缓存的响应文本，过期或不存在返回 null
  */
-async function r2GetComment(env, cacheKey) {
+async function r2GetComment(env, cacheKey, includeExpired = false) {
     if (!env.DANMAKU_CACHE) return null;
     try {
-        const obj = await env.DANMAKU_CACHE.get(cacheKey);
+        const obj = await trackedToolCall('r2Get', () => env.DANMAKU_CACHE.get(cacheKey));
         if (!obj) return null;
         const timestamp = parseInt(obj.customMetadata?.timestamp || '0');
-        if (Date.now() - timestamp > R2_CACHE_CONFIG.TTL) {
+        if (!includeExpired && Date.now() - timestamp > R2_CACHE_CONFIG.TTL) {
             // 已过期，异步删除不阻塞
-            env.DANMAKU_CACHE.delete(cacheKey).catch(() => {});
+            if (memoryCache.configCache.r2Control.deleteEnabled) {
+                trackedToolCall('r2Delete', () => env.DANMAKU_CACHE.delete(cacheKey)).catch(() => {});
+            }
             return null;
         }
         return await obj.text();
@@ -803,6 +1067,8 @@ async function r2GetComment(env, cacheKey) {
  */
 async function r2PutComment(env, cacheKey, data) {
     if (!env.DANMAKU_CACHE) return;
+    // 只关闭 R2 写入；本地 comment.archive 是独立任务，仍会正常持久化。
+    if (!memoryCache.configCache.r2Control.writeEnabled) return;
     try {
         const dataSize = typeof data === 'string' ? data.length : 0;
 
@@ -812,10 +1078,10 @@ async function r2PutComment(env, cacheKey, data) {
             return;
         }
 
-        await env.DANMAKU_CACHE.put(cacheKey, data, {
+        await trackedToolCall('r2Put', () => env.DANMAKU_CACHE.put(cacheKey, data, {
             customMetadata: { timestamp: Date.now().toString() },
             httpMetadata: { contentType: 'application/json' },
-        });
+        }));
 
         // 写入成功后更新内存计数器
         memoryCache.r2WriteCount++;
@@ -840,6 +1106,10 @@ async function r2PutComment(env, cacheKey, data) {
  */
 async function r2ScheduledCleanup(env) {
     if (!env.DANMAKU_CACHE) return;
+    if (!memoryCache.configCache.r2Control.deleteEnabled) {
+        console.log('ℹ️ R2 自动删除已由本地端关闭，跳过过期与容量清理');
+        return;
+    }
     const now = Date.now();
     let totalSize = 0;
     let liveObjects = [];
@@ -849,12 +1119,12 @@ async function r2ScheduledCleanup(env) {
 
     // 单次遍历所有对象（cron 全局单实例，list 不会被重复触发）
     do {
-        const listed = await env.DANMAKU_CACHE.list({
+        const listed = await trackedToolCall('r2List', () => env.DANMAKU_CACHE.list({
             prefix: R2_CACHE_CONFIG.KEY_PREFIX,
             cursor,
             limit: 1000,
             include: ['customMetadata'],
-        });
+        }));
         for (const obj of listed.objects) {
             const timestamp = parseInt(obj.customMetadata?.timestamp || '0');
             if (timestamp > 0 && (now - timestamp > R2_CACHE_CONFIG.TTL)) {
@@ -870,7 +1140,7 @@ async function r2ScheduledCleanup(env) {
 
     // 1. 删除过期对象（delete 免费，不算 A 类）
     for (const key of expiredKeys) {
-        await env.DANMAKU_CACHE.delete(key);
+        await trackedToolCall('r2Delete', () => env.DANMAKU_CACHE.delete(key));
     }
 
     console.log(`📊 R2 定时清理: 过期删除 ${expiredKeys.length} 个, 剩余 ${liveObjects.length} 个有效对象, 总大小 ${(totalSize / 1024 / 1024).toFixed(1)} MB`);
@@ -890,7 +1160,7 @@ async function r2ScheduledCleanup(env) {
     let freedSize = 0;
     for (const obj of liveObjects) {
         if (totalSize - freedSize <= R2_CACHE_CONFIG.MAX_STORAGE_BYTES) break;
-        await env.DANMAKU_CACHE.delete(obj.key);
+        await trackedToolCall('r2Delete', () => env.DANMAKU_CACHE.delete(obj.key));
         freedSize += obj.size;
         deletedCount++;
     }
@@ -916,7 +1186,7 @@ async function handleR2Rpc(env, type, payload) {
             if (!r2Key.startsWith(R2_CACHE_CONFIG.KEY_PREFIX)) {
                 return { hit: false, error: 'invalid_prefix' };
             }
-            const body = await r2GetComment(env, r2Key);
+            const body = await r2GetComment(env, r2Key, payload.include_expired === true);
             if (body === null) return { hit: false, r2_key: r2Key };
             return {
                 hit: true, r2_key: r2Key, body,
@@ -925,13 +1195,13 @@ async function handleR2Rpc(env, type, payload) {
             };
         }
         if (type === 'r2.comment.list') {
-            const limit = Math.min(parseInt(payload.limit || '100'), 100);
-            const listed = await env.DANMAKU_CACHE.list({
+            const limit = Math.min(parseInt(payload.limit || '100'), 1000);
+            const listed = await trackedToolCall('r2List', () => env.DANMAKU_CACHE.list({
                 prefix: R2_CACHE_CONFIG.KEY_PREFIX,
                 cursor: payload.cursor || undefined,
                 limit,
                 include: ['customMetadata'],
-            });
+            }));
             return {
                 hit: true,
                 objects: listed.objects.map(o => ({
@@ -1010,7 +1280,8 @@ function periodicCleanup(env) {
     }
 
     // 每5分钟轮询一次 R2 过期清理（单实例内节流，多实例下 cron 兜底）
-    if (env?.DANMAKU_CACHE && (now - memoryCache.lastR2ExpireCleanup > R2_CACHE_CONFIG.EXPIRE_POLL_INTERVAL)) {
+    if (env?.DANMAKU_CACHE && memoryCache.configCache.r2Control.deleteEnabled
+        && (now - memoryCache.lastR2ExpireCleanup > R2_CACHE_CONFIG.EXPIRE_POLL_INTERVAL)) {
         memoryCache.lastR2ExpireCleanup = now;
         tasks.push(r2ScheduledCleanup(env).catch(e => console.log(`⚠️ R2 过期轮询失败: ${e.message}`)));
     }
@@ -1401,7 +1672,7 @@ function handleToolsRequest(request, env, urlObj) {
         const assetUrl = new URL(assetPath, request.url);
         const assetRequest = new Request(assetUrl.toString(), request);
 
-        return env.ASSETS.fetch(assetRequest).then(response => {
+        return trackedToolCall('assetsFetch', () => env.ASSETS.fetch(assetRequest)).then(response => {
             // 添加 CORS 和缓存头
             const newHeaders = new Headers(response.headers);
             newHeaders.set('Access-Control-Allow-Origin', '*');
@@ -1711,7 +1982,15 @@ async function handleOAuthRequest(request, env, urlObj) {
                 return oauthJson({ error: 'Token 接口返回非 JSON', status: res.status, body: text.slice(0, 300) }, 502);
             }
             if (!data.access_token) {
-                addMemoryLog('WARN', 'OAuth 刷新失败', { provider, status: res.status });
+                // 记录上游返回的错误码与描述：此前只记 status，导致日志里全是无信息的 400，
+                // 无法区分 invalid_grant(令牌失效/已被轮换消费) 与配置错误(invalid_client 等)。
+                // data 中不含 access_token（此分支的前提），只白名单取错误字段，避免带出敏感值。
+                addMemoryLog('WARN', 'OAuth 刷新失败', {
+                    provider,
+                    status: res.status,
+                    upstreamError: data.error || '',
+                    upstreamDesc: String(data.error_description || '').slice(0, 200),
+                });
                 return oauthJson({ error: '刷新失败', detail: data }, 400);
             }
             addMemoryLog('INFO', 'OAuth 刷新成功', { provider });
@@ -1772,10 +2051,39 @@ export class ControlHub {
     this.env = env;
     // Worker 发起、等待本地端回包的 pending RPC：message_id -> {resolve, timer}
     this.pending = new Map();
+    this.toolCalls = {};
     // ping/pong 自动应答，不唤醒 DO
     try {
       this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
     } catch (e) { /* 兼容旧运行时 */ }
+  }
+
+  bumpTool(operation, result = 'attempts') {
+    if (!this.toolCalls[operation]) this.toolCalls[operation] = { attempts: 0, success: 0, errors: 0 };
+    this.toolCalls[operation][result]++;
+  }
+
+  async trackedTool(operation, call) {
+    this.bumpTool(operation);
+    try {
+      const result = await call();
+      this.bumpTool(operation, 'success');
+      return result;
+    } catch (e) {
+      this.bumpTool(operation, 'errors');
+      throw e;
+    }
+  }
+
+  sendTracked(ws, payload) {
+    this.bumpTool('doWsSend');
+    try {
+      ws.send(JSON.stringify(payload));
+      this.bumpTool('doWsSend', 'success');
+    } catch (e) {
+      this.bumpTool('doWsSend', 'errors');
+      throw e;
+    }
   }
 
   async fetch(request) {
@@ -1793,9 +2101,15 @@ export class ControlHub {
 
 
   async handleConfigGet() {
-    const cfg = await this.ctx.storage.get('runtime_config') || {};
+    const cfg = await this.trackedTool('doStorageGet', () => this.ctx.storage.get('runtime_config')) || {};
+    const monitor = {
+      toolCalls: this.toolCalls,
+      pendingRpc: this.pending.size,
+      websocketConnections: this.ctx.getWebSockets().length,
+    };
+    this.toolCalls = {};
     return new Response(JSON.stringify(cfg), {
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Control-Monitor': JSON.stringify(monitor) },
     });
   }
 
@@ -1836,7 +2150,7 @@ export class ControlHub {
       const timer = setTimeout(() => { this.pending.delete(id); resolve(null); }, timeout);
       this.pending.set(id, { resolve, timer });
       try {
-        sockets[0].send(JSON.stringify(msg));
+        this.sendTracked(sockets[0], msg);
       } catch (e) {
         clearTimeout(timer);
         this.pending.delete(id);
@@ -1866,14 +2180,14 @@ export class ControlHub {
     // 2. 本地端下发运行配置：合并写入 DO storage，Worker 实例按周期拉取应用
     if (msg.type === 'config.apply') {
       const incoming = msg.payload || {};
-      const existing = await this.ctx.storage.get('runtime_config') || {};
+      const existing = await this.trackedTool('doStorageGet', () => this.ctx.storage.get('runtime_config')) || {};
       const merged = { ...existing, ...incoming };
-      await this.ctx.storage.put('runtime_config', merged);
+      await this.trackedTool('doStoragePut', () => this.ctx.storage.put('runtime_config', merged));
       try {
-        ws.send(JSON.stringify({
+        this.sendTracked(ws, {
           id: msg.id, type: 'config.apply.result', timestamp: Date.now(),
           payload: { success: true, applied_at: Date.now(), keys: Object.keys(incoming) },
-        }));
+        });
       } catch (e) { /* 忽略发送失败 */ }
       return;
     }
@@ -1883,7 +2197,7 @@ export class ControlHub {
     // 注意 config.apply 用的是浅合并({...existing,...incoming})，旧键不会被删，
     // 所以这里可能看到已从后台删除的陈旧字段，那本身就是需要发现的问题。
     if (msg.type === 'config.dump') {
-      const cfg = await this.ctx.storage.get('runtime_config') || {};
+      const cfg = await this.trackedTool('doStorageGet', () => this.ctx.storage.get('runtime_config')) || {};
       // 密钥类字段脱敏：只回长度与前缀，避免明文经日志/MCP 外泄
       const maskSecret = (s) => {
         const v = String(s || '');
@@ -1922,10 +2236,10 @@ export class ControlHub {
         key_pool_count: Array.isArray(cfg.key_pool) ? cfg.key_pool.length : 0,
       };
       try {
-        ws.send(JSON.stringify({
+        this.sendTracked(ws, {
           id: msg.id, type: 'config.dump.result',
           timestamp: Date.now(), payload,
-        }));
+        });
       } catch (e) { /* 忽略发送失败 */ }
       return;
     }
@@ -1934,10 +2248,10 @@ export class ControlHub {
     if (msg.type === 'r2.comment.get' || msg.type === 'r2.comment.list') {
       const result = await handleR2Rpc(this.env, msg.type, msg.payload || {});
       try {
-        ws.send(JSON.stringify({
+        this.sendTracked(ws, {
           id: msg.id, type: msg.type + '.result',
           timestamp: Date.now(), payload: result,
-        }));
+        });
       } catch (e) { /* 忽略发送失败 */ }
     }
   }
@@ -1957,12 +2271,14 @@ export default {
       return await handleRequest(request, env, ctx);
     } catch (e) {
       // 顶层兜底：任何未捕获异常都返回 JSON，避免 Cloudflare 1101（Worker threw exception）
-      console.error(`❌ Worker 顶层异常: ${e && e.stack ? e.stack : e}`);
+      const errorDetail = String(e && e.stack ? e.stack : (e && e.message ? e.message : e));
+      console.error(`❌ Worker 顶层异常: ${errorDetail}`);
       try {
         addMemoryLog('ERROR', 'Worker 顶层异常', {
           path: (() => { try { return new URL(request.url).pathname; } catch (_) { return ''; } })(),
           method: request.method,
-          message: String(e && e.message ? e.message : e),
+          // 后端日志服务会持久化 responseBody；不要再只写未映射的 data.message，否则根因会丢失。
+          responseBody: truncateBody(errorDetail),
         });
       } catch (_) { /* 日志失败不阻塞 */ }
       return new Response(JSON.stringify({
@@ -1978,6 +2294,17 @@ export default {
   // Cron 定时触发（全局单实例）：R2 弹幕缓存清理
   async scheduled(event, env, ctx) {
     console.log(`⏰ [Cron] 触发 R2 定时清理: ${event.cron}`);
+    await initializeDataCenterConfig(env);
+    const config = await pullControlConfig(env);
+    // Cron 可能运行在新 isolate；有 ControlHub 却拉不到配置时不按默认值贸然删数据。
+    if (env.CONTROL_HUB && !config) {
+      console.log('⚠️ [Cron] 无法确认本地端 R2 删除开关，跳过本次清理');
+      return;
+    }
+    if (!memoryCache.configCache.r2Control.deleteEnabled) {
+      console.log('ℹ️ [Cron] R2 自动删除已关闭，跳过清理');
+      return;
+    }
     ctx.waitUntil(
       r2ScheduledCleanup(env).catch(e => console.log(`⚠️ [Cron] R2 清理失败: ${e.message}`))
     );
@@ -1985,21 +2312,1003 @@ export default {
 };
 
 
+function parseProxyTarget(urlObj) {
+    // 仅解析代理目标，不记录日志/指标；调用方继续决定具体拒绝响应。
+    let url = urlObj.href.replace(urlObj.origin + '/cors/', '').trim();
+    if (0 !== url.indexOf('https://') && 0 === url.indexOf('https:')) {
+        url = url.replace('https:/', 'https://');
+    } else if (0 !== url.indexOf('http://') && 0 === url.indexOf('http:')) {
+        url = url.replace('http:/', 'http://');
+    }
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        return { url, targetUrl: null, error: 'invalid_protocol' };
+    }
+    try {
+        return { url, targetUrl: new URL(url), error: null };
+    } catch (_) {
+        return { url, targetUrl: null, error: 'invalid_url' };
+    }
+}
+
+function prepareEpisodeRequest(request, targetUrl, originalUrl) {
+    let strippedEpisode = null;
+    if (request.method === 'GET'
+        && targetUrl.pathname.startsWith('/api/v2/search/episodes')
+        && targetUrl.searchParams.has('episode')) {
+        const epRaw = (targetUrl.searchParams.get('episode') || '').trim();
+        // movie/sp 等非纯数字值沿用上游语义，不做整季缓存归并。
+        if (/^\d+$/.test(epRaw)) {
+            // 只有确实剥离 episode 时才克隆并序列化；其他请求保留原始 URL/cache key。
+            const preparedUrl = new URL(targetUrl.toString());
+            preparedUrl.searchParams.delete('episode');
+            strippedEpisode = epRaw;
+            return { targetUrl: preparedUrl, url: preparedUrl.toString(), strippedEpisode };
+        }
+    }
+    return { targetUrl, url: originalUrl, strippedEpisode };
+}
+
+
+function createRequestContext(request) {
+    // 入口共享字段集中生成，避免后续阶段各自重复解析并产生口径差异。
+    return {
+        clientIP: request.headers.get('CF-Connecting-IP') ||
+                  request.headers.get('X-Forwarded-For') ||
+                  request.headers.get('X-Real-IP') ||
+                  'unknown',
+        reqStartMs: Date.now(),
+        clientUserId: request.headers.get('X-Ddd-User') || '',
+        // 仅严格值 1 启用；缺失、0 或其他值均保持默认缓存策略。
+        forceOrigin: request.headers.get('X-HUIYUAN') === '1',
+        reqBodyText: null,
+    };
+}
+
+async function readRequestBodyText(request) {
+    // 请求流只能消费一次；GET/HEAD 与无 body 请求保持原先的 null 语义。
+    if (request.method === 'GET' || request.method === 'HEAD' || !request.body) return null;
+    try {
+        return await request.text();
+    } catch (_) {
+        return null;
+    }
+}
+
+async function authorizeClientIdentity(request, apiPath, accessCheck, requestContext) {
+    // 仅处理 UA 绑定的用户/签名身份校验；频率限制仍由 checkAccess 负责。
+    const uaConfig = accessCheck.uaConfig;
+    if (!uaConfig) return null;
+    const { clientIP, clientUserId, reqStartMs, reqBodyText } = requestContext;
+
+    const denyIdentity = (logName, reason, countFailure = false) => {
+        bumpMetric('blockedUa'); bumpMetric('status4xx');
+        let banned = false;
+        let failCount = 0;
+        if (countFailure) {
+            const result = recordAuthFail(clientIP, clientUserId, uaConfig.type);
+            banned = result.banned;
+            failCount = result.count;
+            const who = `用户: ${clientUserId || '空'}, UA: ${uaConfig.type || '空'}`;
+            if (banned) {
+                bumpMetric('blockedAbuse');
+                console.log(`⛔ [${clientIP}] ${logName} 累计 ${failCount} 次，已拉黑 ${BAN_HOURS_AUTH_FAIL} 小时 (${who})`);
+            } else if (failCount > 0) {
+                console.log(`⚠️ [${clientIP}] ${logName} 第 ${failCount}/${ABUSE_CONFIG.AUTH_FAIL_MAX_ATTEMPTS} 次 (${who})`);
+            }
+        }
+        const body = JSON.stringify({
+            status: 401,
+            type: '签名校验',
+            message: '签名验证失败',
+        });
+        addMemoryLog('warn', logName, {
+            ip: clientIP, method: request.method, path: apiPath,
+            responseStatus: 401,
+            userAgent: request.headers.get('X-User-Agent') || '',
+            userId: clientUserId, uaType: uaConfig.type || '', reason,
+            banned, failCount, banHours: banned ? BAN_HOURS_AUTH_FAIL : 0,
+            durationMs: Date.now() - reqStartMs,
+            responseBytes: body.length,
+            requestBody: truncateBody(reqBodyText),
+            responseBody: truncateBody(body),
+        });
+        console.log(`🚫 [${clientIP}] ${logName}: ${reason}, 路径=${apiPath}`);
+        return new Response(body, {
+            status: 401,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        });
+    };
+
+    if (uaConfig.userGroupId) {
+        if (isAuthBanned(clientIP, clientUserId, uaConfig.type)) {
+            return denyIdentity('认证失败拉黑期内', 'auth_banned');
+        }
+        // 截断超长 userId，防止 WASM newString 分配超大缓冲区触发 memory access out of bounds
+        const safeUserId = typeof clientUserId === 'string' ? clientUserId.slice(0, 256) : '';
+        let markCheck;
+        try {
+            markCheck = await verifyUserIdMark(
+                safeUserId, uaConfig.userGroupId,
+                memoryCache.configCache.userAllowPool,
+                memoryCache.configCache.userPoolLoaded
+            );
+        } catch (wasmErr) {
+            // WASM RuntimeError（如 memory access out of bounds）不应崩掉整条请求；
+            // 记录警告后按"标识不符"处理，避免 trap 直接返回 500。
+            console.warn(`⚠️ [${clientIP}] verifyUserIdMark WASM 异常，按拒绝处理: ${wasmErr && wasmErr.message}`);
+            return denyIdentity('用户标识校验失败', 'wasm_error', true);
+        }
+        if (!markCheck.ok) {
+            return denyIdentity('用户标识校验失败', markCheck.reason, true);
+        }
+        const userCheck = verifyUserAllow(
+            safeUserId, uaConfig.userGroupId,
+            memoryCache.configCache.userAllowPool,
+            memoryCache.configCache.userPoolLoaded
+        );
+        if (userCheck.reason === 'user_group_missing') {
+            console.log(`⚠️ [用户名过滤] 用户组 ${uaConfig.userGroupId} 未找到,冷启动放行(名单池尚未下发)`);
+        }
+        if (!userCheck.ok) {
+            return denyIdentity('用户名校验失败', userCheck.reason, true);
+        }
+        console.log(`✅ [${clientIP}] 用户名校验通过 (UA: ${uaConfig.type})`);
+    }
+
+    if (!uaConfig.signGroupId) return null;
+    let sigCheck;
+    try {
+        sigCheck = await verifyClientSignature(
+            request, apiPath, uaConfig.signGroupId,
+            memoryCache.configCache.signKeyPool,
+            memoryCache.configCache.signPoolLoaded
+        );
+    } catch (wasmErr) {
+        // 同上：WASM trap 不崩请求，降级为签名失败
+        console.warn(`⚠️ [${clientIP}] verifyClientSignature WASM 异常，按签名失败处理: ${wasmErr && wasmErr.message}`);
+        sigCheck = { ok: false, reason: 'wasm_error' };
+    }
+    if (sigCheck.reason === 'no_secret') {
+        console.log(`⚠️ [签名校验] 签名组 ${uaConfig.signGroupId} 未找到或无密钥,冷启动放行(签名池尚未下发)`);
+    }
+    if (!sigCheck.ok) {
+        bumpMetric('blockedUa'); bumpMetric('status4xx');
+        const body = JSON.stringify({ status: 401, type: '签名校验', message: '签名验证失败' });
+        addMemoryLog('warn', '签名校验失败', {
+            ip: clientIP, method: request.method, path: apiPath,
+            responseStatus: 401,
+            userAgent: request.headers.get('X-User-Agent') || '',
+            userId: clientUserId, uaType: uaConfig.type || '', reason: sigCheck.reason,
+            durationMs: Date.now() - reqStartMs,
+            responseBytes: body.length,
+            requestBody: truncateBody(reqBodyText), responseBody: truncateBody(body),
+        });
+        console.log(`🚫 [${clientIP}] 签名校验失败: ${sigCheck.reason}, 路径=${apiPath}`);
+        return new Response(body, {
+            status: 401,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        });
+    }
+    console.log(`✅ [${clientIP}] 签名校验通过 (UA: ${uaConfig.type})`);
+    return null;
+}
+
+async function authorizeRequest(request, apiPath, requestContext, skipRateLimit) {
+    const { clientIP, clientUserId, reqStartMs, reqBodyText } = requestContext;
+    console.log(`🔍 [${clientIP}] 开始访问控制检查，目标路径: ${apiPath}`);
+    // 白名单只跳过频率限制，UA 识别及其绑定的身份校验仍须执行。
+    const accessCheck = await checkAccess(
+        request, apiPath, reqStartMs, reqBodyText, clientUserId, skipRateLimit
+    );
+    if (!accessCheck.allowed) {
+        const userAgent = request.headers.get('X-User-Agent') || '';
+        // 对外只使用配置名称和打码 IP，原始 UA/IP 仅写内部日志。
+        const uaLabel = accessCheck.uaName || accessCheck.uaConfig?.type || '未识别';
+        const errorMessage = `IP:${maskIp(clientIP)} UA:${uaLabel} 消息：${accessCheck.reason}`;
+        console.log(`🚫 [${clientIP}] 访问被拒绝: ${errorMessage}, 路径=${apiPath}`);
+        bumpMetric('blockedUa'); bumpMetric('status4xx');
+        const body = JSON.stringify({
+            status: accessCheck.status,
+            type: '访问控制',
+            message: errorMessage,
+        });
+        addMemoryLog('warn', '访问控制拦截', {
+            ip: clientIP, method: request.method, path: apiPath,
+            responseStatus: accessCheck.status, userAgent, userId: clientUserId,
+            reason: accessCheck.reason, durationMs: Date.now() - reqStartMs,
+            responseBytes: body.length,
+            requestBody: truncateBody(reqBodyText), responseBody: truncateBody(body),
+        });
+        return {
+            accessCheck,
+            response: new Response(body, {
+                status: accessCheck.status,
+                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+            }),
+        };
+    }
+
+    console.log(`✅ [${clientIP}] 访问控制检查通过，继续处理请求`);
+    console.log(`   - UA类型: ${accessCheck.uaConfig?.type || 'unknown'}`);
+    console.log(`   - 目标路径: ${apiPath}`);
+    const identityDenied = await authorizeClientIdentity(
+        request, apiPath, accessCheck, requestContext
+    );
+    return { accessCheck, response: identityDenied };
+}
+
+function createCacheContext(request, apiPath, url, reqBodyText) {
+    const isMatchApi = apiPath.startsWith('/api/v2/match');
+    let matchBodyText = null;
+    let matchFileName = '';
+    let matchPayloadObj = null;
+    if (isMatchApi && request.method === 'POST' && reqBodyText !== null) {
+        try {
+            matchBodyText = reqBodyText;
+            const payload = JSON.parse(matchBodyText);
+            matchPayloadObj = payload && typeof payload === 'object' ? payload : null;
+            matchFileName = payload && typeof payload.fileName === 'string'
+                ? payload.fileName.trim() : '';
+        } catch (_) { /* 非 JSON 的 match 请求保持不可缓存 */ }
+    }
+    const patterns = [
+        '/api/v2/search/anime', '/api/v2/search/episodes',
+        '/api/v2/bangumi/', '/api/v2/match',
+    ];
+    const isCacheable = (request.method === 'GET' && patterns.some(p => apiPath.startsWith(p)))
+        || (isMatchApi && request.method === 'POST' && !!matchFileName);
+    const isCommentApi = request.method === 'GET' && apiPath.startsWith('/api/v2/comment/');
+    const memCacheKey = isMatchApi && matchFileName
+        ? `api_cache_match_${matchFileName}` : `api_cache_${url}`;
+    const matchCacheKey = matchFileName
+        ? `POST:/api/v2/match?fileName=${encodeURIComponent(matchFileName)}` : null;
+    return {
+        apiPath, isMatchApi, matchBodyText, matchFileName, matchPayloadObj,
+        matchCacheKey, isCacheable, isCommentApi, memCacheKey,
+    };
+}
+
+async function tryCommentEdgeCache(request, env, ctx, targetUrl, cacheContext, requestContext) {
+    if (!cacheContext.isCommentApi) return null;
+    const { apiPath } = cacheContext;
+    const { clientIP, clientUserId, reqStartMs, reqBodyText } = requestContext;
+    const episodeId = apiPath.replace('/api/v2/comment/', '').split('?')[0];
+    const r2Key = R2_CACHE_CONFIG.KEY_PREFIX + episodeId;
+    const cachedData = await r2GetComment(env, r2Key);
+    if (cachedData) {
+        console.log(`📦 [${clientIP}] R2弹幕缓存命中: ${apiPath}`);
+        bumpMetric('r2CacheHits'); bumpMetric('totalResponses');
+        bumpMetric('status2xx'); bumpMetric('bytesOut', cachedData.length || 0);
+        addMemoryLog('INFO', 'R2弹幕缓存命中', {
+            ip: clientIP, path: apiPath,
+            query: targetUrl.searchParams.get('episodeId') || '',
+            method: request.method,
+            userAgent: request.headers.get('X-User-Agent') || '',
+            userId: clientUserId, responseStatus: 200, cacheSource: 'R2',
+            durationMs: Date.now() - reqStartMs,
+            responseBytes: cachedData.length || 0,
+            requestBody: truncateBody(reqBodyText), responseBody: truncateBody(cachedData),
+        });
+        return new Response(cachedData, {
+            status: 200,
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+                'X-Cache': 'HIT-R2',
+            },
+        });
+    }
+    if (!env.CONTROL_HUB) return null;
+
+    const local = await controlHubRpc(env, 'comment.get', { episode_id: episodeId }, 1500);
+    if (!local || !local.hit || !local.body) return null;
+    console.log(`📦 [${clientIP}] 本地端弹幕兜底命中: ${episodeId} (${local.comment_count}条)`);
+    bumpMetric('r2CacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
+    bumpMetric('bytesOut', local.body.length || 0);
+    addMemoryLog('INFO', '本地端弹幕兜底命中', {
+        ip: clientIP, path: apiPath,
+        query: targetUrl.searchParams.get('episodeId') || '',
+        method: request.method,
+        userAgent: request.headers.get('X-User-Agent') || '',
+        userId: clientUserId, responseStatus: 200, cacheSource: 'LOCAL-COMMENT',
+        durationMs: Date.now() - reqStartMs,
+        responseBytes: local.body.length || 0,
+        requestBody: truncateBody(reqBodyText), responseBody: truncateBody(local.body),
+    });
+    // 本地持久化命中后异步回填 R2，不阻塞当前响应。
+    const r2Promise = r2PutComment(env, r2Key, local.body).catch(() => {});
+    if (ctx && ctx.waitUntil) ctx.waitUntil(r2Promise);
+    return new Response(local.body, {
+        status: 200,
+        headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'X-Cache': 'HIT-LOCAL-COMMENT',
+        },
+    });
+}
+
+function tryMemoryApiCache(request, cacheContext, requestContext, narrowToEpisode) {
+    if (!cacheContext.isCacheable) return null;
+    const { apiPath, memCacheKey } = cacheContext;
+    const { clientIP, clientUserId, reqStartMs, reqBodyText } = requestContext;
+    const cached = memoryCache.apiCache.get(memCacheKey);
+    if (!cached || Date.now() - cached.timestamp >= MEMORY_LIMITS.API_CACHE_TTL) return null;
+
+    console.log(`📦 [${clientIP}] 内存缓存命中: ${apiPath}`);
+    const body = narrowToEpisode(cached.data);
+    const age = Math.round((Date.now() - cached.timestamp) / 1000);
+    bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
+    bumpMetric('bytesOut', body && body.length ? body.length : 0);
+    addMemoryLog('INFO', '内存缓存命中', {
+        ip: clientIP, path: apiPath, method: request.method,
+        userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId,
+        responseStatus: 200, cacheSource: 'MEM', cacheAge: `${age}s`,
+        durationMs: Date.now() - reqStartMs,
+        responseBytes: body && body.length ? body.length : 0,
+        requestBody: truncateBody(reqBodyText), responseBody: truncateBody(body),
+    });
+    return new Response(body, {
+        status: 200,
+        headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'X-Cache': 'HIT',
+            'X-Cache-Age': age.toString(),
+        },
+    });
+}
+
+async function tryNegativeSearchCache(request, env, targetUrl, cacheContext, requestContext) {
+    const unchanged = { response: null, targetUrl, url: targetUrl.toString(), aliasRewritten: null };
+    if (!cacheContext.isCacheable || !env.CONTROL_HUB || request.method !== 'GET') return unchanged;
+    const { apiPath } = cacheContext;
+    if (!apiPath.startsWith('/api/v2/search/anime')
+        && !apiPath.startsWith('/api/v2/search/episodes')) return unchanged;
+
+    const rawKeyword = targetUrl.searchParams.get('anime')
+        || targetUrl.searchParams.get('keyword') || '';
+    const normalized = normalizeSearchKeyword(rawKeyword);
+    if (!normalized) return unchanged;
+    const { clientIP, clientUserId, reqStartMs, reqBodyText } = requestContext;
+    const emptyKey = `EMPTY:${apiPath}?anime=${encodeURIComponent(normalized)}`;
+    const negative = await controlHubRpc(env, 'cache.get', {
+        cache_key: emptyKey, api_path: apiPath, method: request.method,
+        client_ip: clientIP, worker_request_id: request.headers.get('cf-ray') || '',
+    }, 1500);
+    if (negative && negative.hit && negative.is_empty === true && negative.body) {
+        console.log(`🕳️ [${clientIP}] 空结果负缓存命中，直接返回空: ${normalized}`);
+        bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
+        addMemoryLog('INFO', '空结果负缓存命中', {
+            ip: clientIP, path: apiPath, query: normalized, method: request.method,
+            userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId,
+            responseStatus: 200, cacheSource: 'LOCAL-EMPTY',
+            durationMs: Date.now() - reqStartMs,
+            responseBytes: negative.body.length || 0,
+            requestBody: truncateBody(reqBodyText), responseBody: truncateBody(negative.body),
+        });
+        unchanged.response = new Response(negative.body, {
+            status: 200,
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+                'X-Cache': 'HIT-EMPTY',
+            },
+        });
+        return unchanged;
+    }
+    if (!negative || negative.hit || !negative.alias_hit || !negative.canonical) return unchanged;
+    const keywordName = targetUrl.searchParams.has('keyword') ? 'keyword' : 'anime';
+    if (!targetUrl.searchParams.has(keywordName)) return unchanged;
+    const rewrittenUrl = new URL(targetUrl.toString());
+    const aliasRewritten = { from: negative.term || normalized, to: negative.canonical };
+    rewrittenUrl.searchParams.set(keywordName, negative.canonical);
+    console.log(`🔤 [${clientIP}] 别名改写搜索词: ${aliasRewritten.from} → ${aliasRewritten.to}`);
+    return {
+        response: null, targetUrl: rewrittenUrl,
+        url: rewrittenUrl.toString(), aliasRewritten,
+    };
+}
+
+async function tryLocalApiCache(
+    request, env, targetUrl, cacheContext, requestContext, narrowToEpisode
+) {
+    const unchanged = { response: null, targetUrl, url: targetUrl.toString(), aliasRewritten: null };
+    const { apiPath, isMatchApi, matchCacheKey, memCacheKey } = cacheContext;
+    if (!cacheContext.isCacheable || !env.CONTROL_HUB
+        || !shouldUseLocalCache(apiPath, request.method)) return unchanged;
+    const { clientIP, clientUserId, reqStartMs, reqBodyText } = requestContext;
+    const localCacheKey = isMatchApi
+        ? matchCacheKey : buildLocalCacheKey(request.method, apiPath, targetUrl.searchParams);
+    const local = await controlHubRpc(env, 'cache.get', {
+        cache_key: localCacheKey, api_path: apiPath, method: request.method,
+        client_ip: clientIP, worker_request_id: request.headers.get('cf-ray') || '',
+        prefetch: true,
+    }, 1500);
+    const localPolicy = classifyLocalCache(local);
+    if (localPolicy === 'refresh') {
+        // stale 只作为回源失败时的兜底；普通请求必须继续回源，避免旧数据被续上内存 TTL。
+        console.log(`🔄 [${clientIP}] 本地端缓存已进入刷新期，继续回源: ${apiPath}`);
+    }
+    if (localPolicy === 'serve') {
+        // 只透传本地端生成的来源标记，不透传全部 RPC 响应头，避免内部字段意外暴露。
+        const localSource = String(
+            local.headers?.['X-Cache-Source'] || local.headers?.['x-cache-source'] || ''
+        );
+        const cacheSource = localSource === 'assembled-series'
+            ? 'LOCAL-ASSEMBLED-SERIES'
+            : (localSource.startsWith('assembled-episodes')
+                ? 'LOCAL-ASSEMBLED-EPISODES' : 'LOCAL');
+        const logMessage = cacheSource === 'LOCAL'
+            ? '本地端缓存命中' : '本地端组装缓存命中';
+        console.log(`📦 [${clientIP}] ${logMessage}: ${apiPath}`);
+        bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
+        // 新鲜缓存回填整季原文，裁剪仅用于本次响应。
+        memoryCache.apiCache.set(memCacheKey, { data: local.body, timestamp: Date.now() });
+        const body = narrowToEpisode(local.body);
+        bumpMetric('bytesOut', body.length || 0);
+        addMemoryLog('INFO', logMessage, {
+            ip: clientIP, path: apiPath,
+            query: targetUrl.searchParams.get('anime')
+                || targetUrl.searchParams.get('keyword') || '',
+            method: request.method,
+            userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId,
+            responseStatus: local.status || 200,
+            cacheSource, stale: false,
+            durationMs: Date.now() - reqStartMs, responseBytes: body.length || 0,
+            requestBody: truncateBody(reqBodyText), responseBody: truncateBody(body),
+        });
+        const responseHeaders = {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'X-Cache': 'HIT-LOCAL',
+        };
+        if (localSource) responseHeaders['X-Cache-Source'] = localSource;
+        unchanged.response = new Response(body, {
+            status: local.status || 200,
+            headers: responseHeaders,
+        });
+        return unchanged;
+    }
+    if (!local || local.hit || !local.alias_hit || !local.canonical
+        || request.method !== 'GET' || isMatchApi) return unchanged;
+    const keywordName = targetUrl.searchParams.has('keyword') ? 'keyword' : 'anime';
+    if (!targetUrl.searchParams.has(keywordName)) return unchanged;
+    const rewrittenUrl = new URL(targetUrl.toString());
+    const aliasRewritten = { from: local.term || '', to: local.canonical };
+    rewrittenUrl.searchParams.set(keywordName, local.canonical);
+    console.log(`🔤 [${clientIP}] 别名改写搜索词: ${aliasRewritten.from} → ${aliasRewritten.to}`);
+    return {
+        response: null, targetUrl: rewrittenUrl,
+        url: rewrittenUrl.toString(), aliasRewritten,
+    };
+}
+
+async function resolveForceOriginAlias(request, env, targetUrl, cacheContext, requestContext) {
+    const unchanged = { response: null, targetUrl, url: targetUrl.toString(), aliasRewritten: null };
+    const { apiPath, isMatchApi } = cacheContext;
+    if (!env.CONTROL_HUB || request.method !== 'GET' || isMatchApi
+        || (!apiPath.startsWith('/api/v2/search/anime')
+            && !apiPath.startsWith('/api/v2/search/episodes'))) return unchanged;
+    const cacheKey = buildLocalCacheKey(request.method, apiPath, targetUrl.searchParams);
+    const alias = await controlHubRpc(env, 'cache.get', {
+        cache_key: cacheKey, api_path: apiPath, method: request.method,
+        client_ip: requestContext.clientIP,
+        worker_request_id: request.headers.get('cf-ray') || '',
+        alias_only: true,
+    }, 1500);
+    if (!alias || alias.hit || !alias.alias_hit || !alias.canonical) return unchanged;
+    const keywordName = targetUrl.searchParams.has('keyword') ? 'keyword' : 'anime';
+    if (!targetUrl.searchParams.has(keywordName)) return unchanged;
+    const rewrittenUrl = new URL(targetUrl.toString());
+    const aliasRewritten = { from: alias.term || '', to: alias.canonical };
+    rewrittenUrl.searchParams.set(keywordName, alias.canonical);
+    console.log(`🔤 [${requestContext.clientIP}] 强制回源保留别名改写: ${aliasRewritten.from} → ${aliasRewritten.to}`);
+    return {
+        response: null, targetUrl: rewrittenUrl,
+        url: rewrittenUrl.toString(), aliasRewritten,
+    };
+}
+
+
+async function tryEdgeCaches(
+    request, env, ctx, targetUrl, originalUrl,
+    cacheContext, requestContext, narrowToEpisode
+) {
+    if (requestContext.forceOrigin) {
+        // 强制回源跳过所有缓存体，但搜索请求仍保留 approved 别名改写。
+        console.log(`🔄 [${requestContext.clientIP}] X-HUIYUAN=1，跳过边缘缓存: ${cacheContext.apiPath}`);
+        return resolveForceOriginAlias(
+            request, env, targetUrl, cacheContext, requestContext
+        );
+    }
+    const memoryResponse = tryMemoryApiCache(
+        request, cacheContext, requestContext, narrowToEpisode
+    );
+    if (memoryResponse) {
+        return { response: memoryResponse, targetUrl, url: originalUrl, aliasRewritten: null };
+    }
+
+    let currentUrl = targetUrl;
+    let url = originalUrl;
+    let aliasRewritten = null;
+    const negative = await tryNegativeSearchCache(
+        request, env, currentUrl, cacheContext, requestContext
+    );
+    if (negative.response) return negative;
+    if (negative.aliasRewritten) {
+        currentUrl = negative.targetUrl;
+        url = negative.url;
+        aliasRewritten = negative.aliasRewritten;
+    }
+
+    const local = await tryLocalApiCache(
+        request, env, currentUrl, cacheContext, requestContext, narrowToEpisode
+    );
+    if (local.response) return local;
+    if (local.aliasRewritten) {
+        currentUrl = local.targetUrl;
+        url = local.url;
+        aliasRewritten = local.aliasRewritten;
+    }
+
+    const commentResponse = await tryCommentEdgeCache(
+        request, env, ctx, currentUrl, cacheContext, requestContext
+    );
+    return { response: commentResponse, targetUrl: currentUrl, url, aliasRewritten };
+}
+
+async function tryOriginQuotaFallback(
+    request, env, targetUrl, accessCheck, cacheContext, requestContext, narrowToEpisode
+) {
+    const { apiPath, isMatchApi, matchCacheKey } = cacheContext;
+    const { clientIP, clientUserId, reqStartMs, reqBodyText } = requestContext;
+    const quota = checkOriginQuota(clientIP, accessCheck.uaConfig, apiPath);
+    if (quota.allowed) return null;
+    console.log(`🚫 [${clientIP}] 回源配额超限: ${quota.reason} (${quota.count}/${quota.limit})`);
+
+    if (env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)) {
+        const staleKey = isMatchApi
+            ? matchCacheKey : buildLocalCacheKey(request.method, apiPath, targetUrl.searchParams);
+        const stale = await controlHubRpc(env, 'cache.get', {
+            cache_key: staleKey, api_path: apiPath, method: request.method,
+            client_ip: clientIP, worker_request_id: request.headers.get('cf-ray') || '',
+            prefetch: true, allow_stale: true,
+        }, 1500);
+        if (stale && stale.hit && stale.body) {
+            bumpMetric('totalResponses'); bumpMetric('status2xx');
+            const body = narrowToEpisode(stale.body);
+            addMemoryLog('WARN', '回源配额超限-返回过期缓存', {
+                ip: clientIP, path: apiPath, method: request.method,
+                userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId,
+                responseStatus: 200, cacheSource: 'STALE-QUOTA',
+                durationMs: Date.now() - reqStartMs, responseBytes: body.length,
+                responseBody: truncateBody(body),
+            });
+            return new Response(body, {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                    'X-Cache': 'HIT-STALE-QUOTA',
+                },
+            });
+        }
+    }
+
+    const body = JSON.stringify({
+        errorCode: 429, success: false,
+        errorMessage: '回源请求已达配额上限，请稍后再试',
+    });
+    addMemoryLog('WARN', '回源配额超限', {
+        ip: clientIP, path: apiPath,
+        userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId,
+        reason: quota.reason, durationMs: Date.now() - reqStartMs,
+        responseBytes: body.length,
+        requestBody: truncateBody(reqBodyText), responseBody: truncateBody(body),
+    });
+    bumpMetric('totalResponses'); bumpMetric('status4xx');
+    return new Response(body, {
+        status: 200,
+        headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'X-Cache': 'ORIGIN-QUOTA-EXCEEDED',
+        },
+    });
+}
+
+async function tryKeyPoolFallback(
+    request, env, targetUrl, apiGroup, uaKey, cacheContext, requestContext
+) {
+    const { apiPath } = cacheContext;
+    const { clientIP, clientUserId, reqStartMs, reqBodyText } = requestContext;
+    console.log(`🚫 [${clientIP}] 接口 ${apiGroup} 所有密钥已限流`);
+    if (env.CONTROL_HUB
+        && (apiPath === '/api/v2/search/episodes' || apiPath === '/api/v2/search/anime')) {
+        const rawKeyword = targetUrl.searchParams.get('anime')
+            || targetUrl.searchParams.get('keyword') || '';
+        const normalized = normalizeSearchKeyword(rawKeyword);
+        if (normalized) {
+            console.log(`🔄 [${clientIP}] 密钥池耗尽，尝试本地别名兜底: ${normalized}`);
+            const fallback = await tryLocalSearchFallback({
+                keyword: normalized,
+                rpc: (type, payload, timeoutMs) => controlHubRpc(env, type, payload, timeoutMs),
+                extraHeaders: { 'X-Key-Pool': 'EXHAUSTED' },
+            });
+            if (fallback) {
+                console.log(`✅ [${clientIP}] 密钥池耗尽时本地别名兜底命中: ${fallback.count} 个作品`);
+                bumpMetric('totalResponses'); bumpMetric('status2xx');
+                addMemoryLog('INFO', '密钥池耗尽-别名兜底命中', {
+                    ip: clientIP, path: apiPath, query: normalized, method: request.method,
+                    userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId,
+                    responseStatus: 200, cacheSource: 'LOCAL-ALIAS-FALLBACK',
+                    durationMs: Date.now() - reqStartMs, responseBytes: fallback.body.length,
+                    requestBody: truncateBody(reqBodyText), responseBody: truncateBody(fallback.body),
+                });
+                return fallback.response;
+            }
+            console.log(`ℹ️ [${clientIP}] 密钥池耗尽且本地别名无匹配或不可用，返回 429`);
+        }
+    }
+
+    const body = JSON.stringify({
+        errorCode: 429, success: false,
+        errorMessage: '当前接口所有密钥已达调用配额上限，请稍后再试',
+    });
+    addMemoryLog('warn', '密钥全限流', {
+        ip: clientIP, path: apiPath, apiGroup, uaKey, userId: clientUserId,
+        durationMs: Date.now() - reqStartMs, responseBytes: body.length,
+        requestBody: truncateBody(reqBodyText), responseBody: truncateBody(body),
+    });
+    bumpMetric('upstream429'); bumpMetric('status4xx');
+    return new Response(body, {
+        status: 200,
+        headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'X-Cache': 'KEY-POOL-EXHAUSTED',
+        },
+    });
+}
+
+async function forwardWithKey(
+    request, url, keyObj, forwardHeaders, cacheContext, requestContext
+) {
+    const { apiPath, matchBodyText } = cacheContext;
+    const { clientIP, reqBodyText } = requestContext;
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = await generateSignature(
+        keyObj.appId, timestamp, apiPath, keyObj.appSecret
+    );
+    const headers = {
+        ...forwardHeaders,
+        'X-AppId': keyObj.appId,
+        'X-Signature': signature,
+        'X-Timestamp': timestamp,
+        'X-Auth': '1',
+    };
+    // 配置了转发 UA 时必须先删除原小写键，避免同一请求出现两个 User-Agent。
+    if (keyObj.forwardUa) {
+        delete headers['user-agent'];
+        headers['User-Agent'] = keyObj.forwardUa;
+    }
+    // 该函数位于模块作用域，不能读取 handleRequest 内的局部 ACCESS_CONFIG；按当前运行配置判断日志开关。
+    if (getAccessConfig().logging.enabled) {
+        console.log(`📤 [${clientIP}] 转发请求头(key=${keyObj.id}):`, JSON.stringify(headers, null, 2));
+    }
+
+    const fetchInit = { headers, method: request.method };
+    // GET/HEAD 携带 body 会导致 Worker fetch 抛错；其他方法复用已预读文本以支持安全转发。
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+        fetchInit.body = matchBodyText !== null
+            ? matchBodyText : (reqBodyText !== null ? reqBodyText : request.body);
+    }
+    const response = await fetch(url, fetchInit);
+    const responseText = await response.text();
+    let errorCode = 0;
+    try {
+        const body = JSON.parse(responseText);
+        if (body && typeof body.errorCode === 'number') errorCode = body.errorCode;
+    } catch (_) { /* 非 JSON 响应沿用 HTTP 状态判断 */ }
+    return {
+        response, responseText, errorCode,
+        limited: response.status === 429 || errorCode === 429,
+    };
+}
+
+async function forwardUpstream(
+    request, url, selectedKey, apiGroup, uaKey, cacheContext, requestContext
+) {
+    const { clientIP } = requestContext;
+    const forwardHeaders = {};
+    for (const [key, value] of request.headers.entries()) {
+        const lowerKey = key.toLowerCase();
+        if (key !== 'X-User-Agent' && key !== 'X-Challenge-Response'
+            && lowerKey !== 'x-huiyuan' && !lowerKey.startsWith('x-ddd-')) {
+            forwardHeaders[key] = value;
+        }
+    }
+
+    let finalKey = selectedKey;
+    let result = await forwardWithKey(
+        request, url, finalKey, forwardHeaders, cacheContext, requestContext
+    );
+    console.log(`📥 [${clientIP}] dandanplay API响应状态:`, result.response.status, result.response.statusText);
+    if (result.limited) {
+        markKeyLimited(finalKey.id, apiGroup);
+        // 仅 GET 可自动换钥，避免重复提交有副作用的请求。
+        if (request.method === 'GET') {
+            const retryKey = selectKey(uaKey, apiGroup);
+            if (retryKey && retryKey.id !== finalKey.id) {
+                console.log(`🔁 [${clientIP}] 密钥 ${finalKey.id} 限流，切换到 ${retryKey.id} 重试`);
+                finalKey = retryKey;
+                result = await forwardWithKey(
+                    request, url, finalKey, forwardHeaders, cacheContext, requestContext
+                );
+                console.log(`📥 [${clientIP}] 重试响应状态:`, result.response.status, result.response.statusText);
+                if (result.limited) markKeyLimited(finalKey.id, apiGroup);
+            } else {
+                console.log(`ℹ️ [${clientIP}] 无其他可用密钥，不重试`);
+            }
+        }
+    }
+    return { ...result, selectedKey: finalKey };
+}
+
+async function tryUpstreamRateLimitFallback(env, targetUrl, result, cacheContext, requestContext) {
+    if (!result.limited) return result;
+    const { apiPath } = cacheContext;
+    const { clientIP } = requestContext;
+    console.log(`🚫 [${clientIP}] 检测到上游限流 (HTTP ${result.response.status}, errorCode=${result.errorCode})`);
+    if (!env.CONTROL_HUB
+        || (apiPath !== '/api/v2/search/episodes' && apiPath !== '/api/v2/search/anime')) {
+        return result;
+    }
+    const rawKeyword = targetUrl.searchParams.get('anime')
+        || targetUrl.searchParams.get('keyword') || '';
+    const normalized = normalizeSearchKeyword(rawKeyword);
+    if (!normalized) return result;
+    console.log(`🔄 [${clientIP}] 尝试本地端别名兜底: ${normalized}`);
+    const fallback = await tryLocalSearchFallback({
+        keyword: normalized,
+        rpc: (type, payload, timeoutMs) => controlHubRpc(env, type, payload, timeoutMs),
+        extraHeaders: { 'X-Upstream-Status': '429' },
+    });
+    if (!fallback) {
+        console.log(`ℹ️ [${clientIP}] 本地端别名无匹配或不可用，保持 429 响应`);
+        return result;
+    }
+    console.log(`✅ [${clientIP}] 本地端别名兜底命中: ${fallback.count} 条结果`);
+    return {
+        ...result,
+        response: fallback.response,
+        responseText: fallback.body,
+        limited: false,
+    };
+}
+
+function recordUpstreamResponse(
+    request, targetUrl, selectedKey, upstreamResult, cacheContext, requestContext
+) {
+    const { apiPath, isCacheable, isCommentApi, matchBodyText } = cacheContext;
+    const { clientIP, clientUserId, reqStartMs, reqBodyText } = requestContext;
+    const { response, responseText, errorCode, limited } = upstreamResult;
+    bumpMetric('totalResponses');
+    if (isCacheable || isCommentApi) bumpMetric('cacheMiss');
+    if (limited) { bumpMetric('upstream429'); bumpMetric('status4xx'); }
+    else if (response.status >= 200 && response.status < 300) bumpMetric('status2xx');
+    else if (response.status >= 400 && response.status < 500) bumpMetric('status4xx');
+    else if (response.status >= 500) bumpMetric('status5xx');
+
+    addMemoryLog(limited ? 'WARN' : 'INFO', 'API请求处理', {
+        ip: clientIP, method: request.method, path: apiPath,
+        query: targetUrl.searchParams.get('anime') || targetUrl.searchParams.get('keyword') || '',
+        userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId,
+        responseStatus: response.status, cacheSource: limited ? 'UPSTREAM-429' : 'MISS',
+        upstreamStatus: errorCode || response.status,
+        keyId: selectedKey ? selectedKey.id : '', durationMs: Date.now() - reqStartMs,
+        responseBytes: responseText ? responseText.length : 0,
+        requestBody: truncateBody(matchBodyText !== null ? matchBodyText : reqBodyText),
+        responseBody: truncateBody(responseText), timestamp: Date.now(),
+    });
+    if (responseText) bumpMetric('bytesOut', responseText.length);
+
+    // 弹幕响应只打印条数，避免完整 comments 数组撑爆 Worker 日志。
+    if (apiPath.startsWith('/api/v2/comment/')) {
+        try {
+            const parsed = JSON.parse(responseText);
+            if (parsed && Array.isArray(parsed.comments)) {
+                console.log(`📄 [${clientIP}] dandanplay API响应内容: (路径=${apiPath}) 弹幕数量=${parsed.comments.length}, comments数组内容已省略`);
+            } else {
+                console.log(`📄 [${clientIP}] dandanplay API响应内容:`, responseText);
+            }
+        } catch (_) {
+            console.log(`📄 [${clientIP}] dandanplay API响应内容 (非JSON):`, responseText);
+        }
+    } else {
+        console.log(`📄 [${clientIP}] dandanplay API响应内容:`, responseText);
+    }
+}
+
+function writeUpstreamCaches(
+    request, env, ctx, targetUrl, response, responseText, cacheContext, requestContext
+) {
+    if (response.status !== 200) return;
+    const {
+        apiPath, isCacheable, isCommentApi, isMatchApi, matchFileName,
+        matchPayloadObj, matchBodyText, matchCacheKey, memCacheKey,
+    } = cacheContext;
+    const { clientIP } = requestContext;
+    if (isCacheable) {
+        if (!isCacheableResponseBody(apiPath, responseText)) {
+            // 只有真实空搜索累计到阈值后才写负缓存，失败响应不能污染缓存。
+            if (env.CONTROL_HUB && isTrueEmptySearch(apiPath, responseText)) {
+                const rawKeyword = targetUrl.searchParams.get('anime')
+                    || targetUrl.searchParams.get('keyword') || '';
+                const normalized = normalizeSearchKeyword(rawKeyword);
+                if (normalized && bumpEmptySearchCount(`${apiPath}|${normalized}`)) {
+                    const payload = {
+                        cache_key: `EMPTY:${apiPath}?anime=${encodeURIComponent(normalized)}`,
+                        source: 'dandanplay', method: request.method, api_path: apiPath,
+                        client_ip: clientIP, query: { anime: normalized }, status: 200,
+                        headers: { 'content-type': 'application/json' }, body: responseText,
+                        is_empty: true, ttl: EMPTY_CACHE_CONFIG.TTL_SECONDS,
+                    };
+                    const task = controlHubRpc(env, 'cache.upsert', payload, 3000)
+                        .catch(e => console.log(`⚠️ [${clientIP}] 空结果负缓存上报失败: ${e.message}`));
+                    if (ctx && ctx.waitUntil) ctx.waitUntil(task);
+                    console.log(`🕳️ [${clientIP}] 空结果达阈值，已转负缓存: ${normalized}`);
+                } else {
+                    console.log(`🧹 [${clientIP}] 空搜索结果计数中，未达阈值: ${normalized || apiPath}`);
+                }
+            } else {
+                console.log(`🧹 [${clientIP}] 响应无有效数据或为失败响应，跳过缓存: ${apiPath}`);
+            }
+            return;
+        }
+
+        memoryCache.apiCache.set(memCacheKey, { data: responseText, timestamp: Date.now() });
+        console.log(`📦 [${clientIP}] 内存缓存已存入: ${apiPath} (TTL: 2h)`);
+        if (env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)) {
+            const payload = {
+                cache_key: isMatchApi
+                    ? matchCacheKey : buildLocalCacheKey(request.method, apiPath, targetUrl.searchParams),
+                source: 'dandanplay', method: request.method, api_path: apiPath,
+                client_ip: clientIP,
+                // match 键只用文件名，但保存完整匹配上下文供本地端追溯。
+                query: isMatchApi
+                    ? (matchPayloadObj || { fileName: matchFileName })
+                    : Object.fromEntries(targetUrl.searchParams.entries()),
+                status: 200, headers: { 'content-type': 'application/json' }, body: responseText,
+            };
+            if (isMatchApi && matchBodyText !== null) payload.request_body = matchBodyText;
+            const task = controlHubRpc(env, 'cache.upsert', payload, 3000)
+                .catch(e => console.log(`⚠️ [${clientIP}] cache.upsert 失败: ${e.message}`));
+            if (ctx && ctx.waitUntil) ctx.waitUntil(task);
+        }
+        return;
+    }
+
+    if (!isCommentApi) return;
+    try {
+        const parsed = JSON.parse(responseText);
+        if (!parsed || !Array.isArray(parsed.comments) || parsed.comments.length === 0) {
+            console.log(`📦 [${clientIP}] 弹幕为空，跳过R2缓存: ${apiPath}`);
+            return;
+        }
+        const episodeId = apiPath.replace('/api/v2/comment/', '').split('?')[0];
+        const r2Key = R2_CACHE_CONFIG.KEY_PREFIX + episodeId;
+        const r2Task = r2PutComment(env, r2Key, responseText)
+            .then(() => console.log(`📦 [${clientIP}] R2弹幕缓存已存入: ${r2Key} (${parsed.comments.length}条弹幕, TTL: 12h)`))
+            .catch(e => console.log(`⚠️ [${clientIP}] R2弹幕缓存存入失败: ${e.message}`));
+        if (ctx && ctx.waitUntil) ctx.waitUntil(r2Task);
+        if (env.CONTROL_HUB) {
+            const archiveTask = controlHubRpc(env, 'comment.archive', {
+                episode_id: episodeId, body: responseText, source: 'origin',
+            }, 3000).catch(e => console.log(`⚠️ [${clientIP}] comment.archive 失败: ${e.message}`));
+            if (ctx && ctx.waitUntil) ctx.waitUntil(archiveTask);
+        }
+    } catch (e) {
+        console.log(`⚠️ [${clientIP}] 弹幕响应解析失败，跳过R2缓存: ${e.message}`);
+    }
+}
+
+async function tryPersistentRateLimitFallback(
+    request, env, targetUrl, cacheContext, requestContext, narrowToEpisode
+) {
+    const { apiPath, isMatchApi, matchFileName, matchCacheKey, isCommentApi } = cacheContext;
+    const { clientIP } = requestContext;
+    if (env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)
+        && !(isMatchApi && !matchFileName)) {
+        const cacheKey = isMatchApi
+            ? matchCacheKey : buildLocalCacheKey(request.method, apiPath, targetUrl.searchParams);
+        console.log(`🛟 [${clientIP}] 上游限流，尝试本地缓存兜底: ${cacheKey}`);
+        const cached = await controlHubRpc(env, 'cache.get', {
+            cache_key: cacheKey, api_path: apiPath, method: request.method,
+            client_ip: clientIP, worker_request_id: request.headers.get('cf-ray') || '',
+            // 上游 429 时允许读取超过 expire_at 的本地数据，保证旧数据兜底可用。
+            allow_stale: true,
+        }, 1500);
+        if (cached && cached.hit && cached.body) {
+            console.log(`✅ [${clientIP}] 命中本地兜底缓存${cached.stale ? '(stale)' : ''}: ${cacheKey}`);
+            return new Response(narrowToEpisode(cached.body), {
+                status: cached.status || 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                    'X-Cache': 'HIT-LOCAL-STALE',
+                    'X-Upstream-Status': '429',
+                },
+            });
+        }
+        console.log(`ℹ️ [${clientIP}] 本地无可用兜底缓存，原样返回 429`);
+    }
+
+    if (!isCommentApi || !env.CONTROL_HUB) return null;
+    const episodeId = apiPath.replace('/api/v2/comment/', '').split('?')[0];
+    console.log(`🛟 [${clientIP}] 弹幕上游限流，尝试本地端弹幕兜底: ${episodeId}`);
+    const local = await controlHubRpc(env, 'comment.get', { episode_id: episodeId }, 1500);
+    if (local && local.hit && local.body) {
+        console.log(`✅ [${clientIP}] 命中本地端弹幕兜底: ${episodeId} (${local.comment_count}条)`);
+        return new Response(local.body, {
+            status: 200,
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+                'X-Cache': 'HIT-LOCAL-COMMENT',
+                'X-Upstream-Status': '429',
+            },
+        });
+    }
+    console.log(`ℹ️ [${clientIP}] 本地端无弹幕兜底，原样返回 429`);
+    return null;
+}
+
+function finalizeUpstreamResponse(
+    response, responseText, cacheContext, aliasRewritten, strippedEpisode, narrowToEpisode
+) {
+    const headers = new Headers(response.headers);
+    headers.set('Access-Control-Allow-Origin', '*');
+    // 返回体可能经过系列保护或单集裁剪，禁止沿用上游原始 Content-Length。
+    if (cacheContext.isCacheable) headers.delete('Content-Length');
+    if (cacheContext.isCacheable || cacheContext.isCommentApi) headers.set('X-Cache', 'MISS');
+    // 缓存保留整季原文，仅对返回客户端的副本裁集，并移除失效的 Content-Length。
+    const body = narrowToEpisode(responseText);
+    if (body !== responseText) {
+        headers.delete('Content-Length');
+        headers.set('X-Episode-Extracted', strippedEpisode);
+    }
+    if (aliasRewritten) {
+        headers.set('X-Alias-Rewritten', encodeURIComponent(aliasRewritten.to));
+    }
+    return new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+    });
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 async function handleRequest(request, env, ctx) {
     // 定期清理内存 + R2 过期轮询
     const r2CleanupPromise = periodicCleanup(env);
     if (r2CleanupPromise && ctx?.waitUntil) ctx.waitUntil(r2CleanupPromise);
 
-    // 获取客户端IP
-    const clientIP = request.headers.get('CF-Connecting-IP') ||
-                     request.headers.get('X-Forwarded-For') ||
-                     request.headers.get('X-Real-IP') ||
-                     'unknown';
-
-    // 在 handleRequest 入口记录起始时间，所有路径共享
-    const reqStartMs = Date.now();
-    // 客户端用户标识（ede.js 无条件签名，每次请求都带 X-Ddd-User）；供所有日志记录，方便按用户标识
-    const clientUserId = request.headers.get('X-Ddd-User') || '';
+    const requestContext = createRequestContext(request);
+    const { clientIP, reqStartMs, clientUserId } = requestContext;
     const cl = parseInt(request.headers.get('Content-Length') || '0', 10);
     if (cl > 0) bumpMetric('bytesIn', cl);
 
@@ -2014,7 +3323,7 @@ async function handleRequest(request, env, ctx) {
             headers: {
                 'Access-Control-Allow-Origin': '*',
                 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Agent, X-User-Agent, X-Challenge-Response, X-Ddd-User, X-Ddd-Ts, X-Ddd-Sign',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization, User-Agent, X-User-Agent, X-Challenge-Response, X-Ddd-User, X-Ddd-Ts, X-Ddd-Sign, X-HUIYUAN',
             },
         });
     }
@@ -2056,13 +3365,9 @@ async function handleRequest(request, env, ctx) {
         return handleOAuthRequest(request, env, urlObj);
     }
 
-    // 统一预读请求体（GET/HEAD 无 body 跳过）：供日志记录 + 后续转发复用。
-    // 流只能读一次，这里读成文本后，match/其他 POST 转发时用文本重建 body。
-    // 放在 tools/control/oauth 早退路由之后，这些路由不需要 body。
-    let reqBodyText = null;
-    if (request.method !== 'GET' && request.method !== 'HEAD' && request.body) {
-        try { reqBodyText = await request.text(); } catch (_) { /* 读取失败留 null */ }
-    }
+    // tools/control/oauth 早退后再预读，避免无关路由被提前消费请求流。
+    requestContext.reqBodyText = await readRequestBodyText(request);
+    const reqBodyText = requestContext.reqBodyText;
 
     // IP 访问控制：白名单优先，命中则跳过黑名单与限流
     // clientIP已在函数开头声明
@@ -2141,16 +3446,12 @@ async function handleRequest(request, env, ctx) {
 
     // TG机器人功能已移除
 
-    // 提取目标URL和API路径
-    let url = urlObj.href.replace(urlObj.origin + '/cors/', '').trim();
-    if (0 !== url.indexOf('https://') && 0 === url.indexOf('https:')) {
-        url = url.replace('https:/', 'https://');
-    } else if (0 !== url.indexOf('http://') && 0 === url.indexOf('http:')) {
-        url = url.replace('http:/', 'http://');
-    }
+    // 提取目标 URL；错误响应、滥用计数和日志仍由主流程按原顺序处理。
+    const targetParse = parseProxyTarget(urlObj);
+    let url = targetParse.url;
 
     // 防御：如果提取出的 url 不是合法的完整 URL（缺少协议/域名），直接返回 400
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    if (targetParse.error === 'invalid_protocol') {
         // 记录非法路由命中：同一 IP 1 小时内累计超阈值 → 临时封禁该 IP 1 小时
         const justBanned = recordInvalidRoute(clientIP);
         bumpMetric('invalidRoute');
@@ -2211,10 +3512,7 @@ async function handleRequest(request, env, ctx) {
         });
     }
 
-    let tUrlObj;
-    try {
-        tUrlObj = new URL(url);
-    } catch (e) {
+    if (targetParse.error === 'invalid_url') {
         // URL 解析失败时返回明确的错误信息，而非让 Worker 抛异常
         return new Response(JSON.stringify({
             status: 400,
@@ -2225,359 +3523,65 @@ async function handleRequest(request, env, ctx) {
             headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
     }
+    let tUrlObj = targetParse.targetUrl;
     if (!(tUrlObj.hostname in hostlist)) {
         return Forbidden(tUrlObj);
     }
 
-    // 访问控制检查，传递正确的API路径
-    console.log(`🔍 [${clientIP}] 开始访问控制检查，目标路径: ${tUrlObj.pathname}`);
+    // ========================================
+    // 🎯 指定集数搜索：剥离 episode 转全季回源
+    // ========================================
+    // 缓存与上游统一使用整季 URL，最终响应再按原集号裁剪。
+    const episodeRequest = prepareEpisodeRequest(request, tUrlObj, url);
+    tUrlObj = episodeRequest.targetUrl;
+    url = episodeRequest.url;
+    const strippedEpisode = episodeRequest.strippedEpisode;
+    if (strippedEpisode) {
+        console.log(`🎯 [${clientIP}] 指定集数搜索转全季回源: episode=${strippedEpisode} 已剥离`);
+    }
+    // 别名改写记录：只用于日志与响应头标记，便于排查规范词改写。
+    let aliasRewritten = null;
 
-    // 白名单 IP 传 skipRateLimit=true：免限流但仍走 UA 识别。
-    // 此前白名单直接短路返回不带 uaConfig 的对象，导致后续
-    // 用户标识/签名校验（条件都是 accessCheck.uaConfig）被整体绕过。
-    const accessCheck = await checkAccess(
-        request, tUrlObj.pathname, reqStartMs, reqBodyText, clientUserId, ipWhitelisted
+    // 出口统一收口：把整季响应裁成客户端要的那一集。
+    // 缓存里始终存整季，只在返回瞬间裁剪，因此不影响缓存复用。
+    // 抽不到就原样返回整季——客户端能自行找集，比报错好。
+    const narrowToEpisode = (text) => {
+        if (!strippedEpisode || !text) return text;
+        const picked = extractEpisodeFromSeason(text, strippedEpisode);
+        if (picked) {
+            console.log(`🎯 [${clientIP}] 已从整季抽取 episode=${strippedEpisode}`);
+            return picked;
+        }
+        console.log(`⚠️ [${clientIP}] 整季中未找到 episode=${strippedEpisode}，返回完整结果`);
+        return text;
+    };
+
+    // 访问频率、用户归属/名单和客户端签名按既有顺序统一收口。
+    const authorization = await authorizeRequest(
+        request, tUrlObj.pathname, requestContext, ipWhitelisted
     );
-    if (!accessCheck.allowed) {
-        const userAgent = request.headers.get('X-User-Agent') || '';
-        const errorMessage = `IP:${clientIP} UA:${userAgent} 消息：${accessCheck.reason}`;
-
-        console.log(`🚫 [${clientIP}] 访问被拒绝: ${errorMessage}, 路径=${tUrlObj.pathname}`);
-        bumpMetric('blockedUa'); bumpMetric('status4xx');
-        const acBody = JSON.stringify({
-            status: accessCheck.status,
-            type: "访问控制",
-            message: errorMessage
-        });
-        // 记录访问控制拦截日志，便于日志页排查（此前仅 console，未落库）
-        addMemoryLog('warn', '访问控制拦截', {
-            ip: clientIP,
-            method: request.method,
-            path: tUrlObj.pathname,
-            responseStatus: accessCheck.status,
-            userAgent,
-            userId: clientUserId,
-            reason: accessCheck.reason,
-            durationMs: Date.now() - reqStartMs,
-            responseBytes: acBody.length,
-            requestBody: truncateBody(reqBodyText),
-            responseBody: truncateBody(acBody),
-        });
-
-        return new Response(acBody, {
-            status: accessCheck.status,
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-        });
-    }
-
-    // 访问控制检查通过
-    console.log(`✅ [${clientIP}] 访问控制检查通过，继续处理请求`);
-    console.log(`   - UA类型: ${accessCheck.uaConfig?.type || 'unknown'}`);
-    console.log(`   - 目标路径: ${tUrlObj.pathname}`);
-
-    if (accessCheck.uaConfig) {
-        const _uaCfg = accessCheck.uaConfig;
-        const denyAsSign = (logName, reason, ban = false) => {
-            bumpMetric('blockedUa'); bumpMetric('status4xx');
-            let banned = false;
-            let failCount = 0;
-            if (ban) {
-                // 三元组计数：IP + 用户标识 + 来源UA
-                const r = recordAuthFail(clientIP, clientUserId, _uaCfg.type);
-                banned = r.banned;
-                failCount = r.count;
-                const who = `用户: ${clientUserId || '空'}, UA: ${_uaCfg.type || '空'}`;
-                if (banned) {
-                    bumpMetric('blockedAbuse');
-                    console.log(`⛔ [${clientIP}] ${logName} 累计 ${failCount} 次，已拉黑 ${BAN_HOURS_AUTH_FAIL} 小时 (${who})`);
-                } else if (failCount > 0) {
-                    console.log(`⚠️ [${clientIP}] ${logName} 第 ${failCount}/${ABUSE_CONFIG.AUTH_FAIL_MAX_ATTEMPTS} 次 (${who})`);
-                }
-            }
-            const body = JSON.stringify({
-                status: 401,
-                type: '签名校验',
-                message: '签名验证失败',
-            });
-            addMemoryLog('warn', logName, {
-                ip: clientIP,
-                method: request.method,
-                path: tUrlObj.pathname,
-                responseStatus: 401,
-                userAgent: request.headers.get('X-User-Agent') || '',
-                userId: clientUserId,
-                uaType: _uaCfg.type || '',
-                reason,
-                banned,
-                failCount,
-                banHours: banned ? BAN_HOURS_AUTH_FAIL : 0,
-                durationMs: Date.now() - reqStartMs,
-                responseBytes: body.length,
-                requestBody: truncateBody(reqBodyText),
-                responseBody: truncateBody(body),
-            });
-            console.log(`🚫 [${clientIP}] ${logName}: ${reason}, 路径=${tUrlObj.pathname}`);
-            return new Response(body, {
-                status: 401,
-                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-            });
-        };
-
-        if (_uaCfg.userGroupId) {
-            if (isAuthBanned(clientIP, clientUserId, _uaCfg.type)) {
-                return denyAsSign('认证失败拉黑期内', 'auth_banned', false);
-            }
- 
-
-            const markCheck = await verifyUserIdMark(
-                clientUserId, _uaCfg.userGroupId,
-                memoryCache.configCache.userAllowPool,
-                memoryCache.configCache.userPoolLoaded
-            );
-            if (!markCheck.ok) {
-                return denyAsSign('用户标识校验失败', markCheck.reason, true);
-            }
-
-            // ② 用户名单精确匹配（名单留空 = 不限制具体用户，只靠上面的归属校验把关）
-            const userCheck = verifyUserAllow(
-                clientUserId, _uaCfg.userGroupId,
-                memoryCache.configCache.userAllowPool,
-                memoryCache.configCache.userPoolLoaded
-            );
-            if (userCheck.reason === 'user_group_missing') {
-                console.log(`⚠️ [用户名过滤] 用户组 ${_uaCfg.userGroupId} 未找到,冷启动放行(名单池尚未下发)`);
-            }
-            if (!userCheck.ok) {
-                return denyAsSign('用户名校验失败', userCheck.reason, true);
-            }
-            console.log(`✅ [${clientIP}] 用户名校验通过 (UA: ${_uaCfg.type})`);
-        }
-    }
-
-    // ========================================
-    // 🔏 客户端签名校验(按 UA 开关 signRequired 决定是否校验)
-    // ========================================
-    // 客户端(ede.js)无条件签名,此处仅当该 UA 规则绑定了签名组(signGroupId)时才强制校验。
-    // 白名单 IP 与未绑定签名组的 UA 不校验,保证灰度与兜底安全。
-    if (accessCheck.uaConfig && accessCheck.uaConfig.signGroupId) {
-        // 签名池从 memoryCache 传入（验证逻辑在独立混淆模块，不直接访问全局）
-        // signPoolLoaded：签名池是否已下发过，决定 no_secret 放行(冷启动)还是拒绝(运行期)
-        const sigCheck = await verifyClientSignature(
-            request, tUrlObj.pathname, accessCheck.uaConfig.signGroupId,
-            memoryCache.configCache.signKeyPool,
-            memoryCache.configCache.signPoolLoaded
-        );
-        if (sigCheck.reason === 'no_secret') {
-            console.log(`⚠️ [签名校验] 签名组 ${accessCheck.uaConfig.signGroupId} 未找到或无密钥,冷启动放行(签名池尚未下发)`);
-        }
-        if (!sigCheck.ok) {
-            bumpMetric('blockedUa'); bumpMetric('status4xx');
-            // 对外只回笼统提示，不暴露具体失败原因（缺头/时间戳/签名不匹配等）；
-            // 具体 reason 仅记录到内部日志与 console，便于排查而不泄露给客户端
-            const sigBody = JSON.stringify({
-                status: 401,
-                type: '签名校验',
-                message: '签名验证失败',
-            });
-            addMemoryLog('warn', '签名校验失败', {
-                ip: clientIP,
-                method: request.method,
-                path: tUrlObj.pathname,
-                responseStatus: 401,
-                userAgent: request.headers.get('X-User-Agent') || '',
-                userId: clientUserId,
-                uaType: accessCheck.uaConfig.type || '',
-                reason: sigCheck.reason,
-                durationMs: Date.now() - reqStartMs,
-                responseBytes: sigBody.length,
-                requestBody: truncateBody(reqBodyText),
-                responseBody: truncateBody(sigBody),
-            });
-            console.log(`🚫 [${clientIP}] 签名校验失败: ${sigCheck.reason}, 路径=${tUrlObj.pathname}`);
-            return new Response(sigBody, {
-                status: 401,
-                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-            });
-        }
-        console.log(`✅ [${clientIP}] 签名校验通过 (UA: ${accessCheck.uaConfig.type})`);
-    }
+    if (authorization.response) return authorization.response;
+    const accessCheck = authorization.accessCheck;
 
     // ========================================
     // 📦 缓存策略判断
     // ========================================
     const apiPath = tUrlObj.pathname;
-    const isMatchApi = apiPath.startsWith('/api/v2/match');
+    const cacheContext = createCacheContext(request, apiPath, url, reqBodyText);
 
-    // match 是 POST，参数在 body 里。转发前先把 body 读成文本（流只能读一次），
-    // 解析出 fileName 作为缓存键的唯一依据（fileHash/fileSize 多变，不纳入键）。
-    // matchBodyText 同时用于重建转发 body，避免流被消费后无法转发。
-    // matchBodyText 复用入口预读的 reqBodyText（流已在入口消费，不能再读）
-    let matchBodyText = null;
-    let matchFileName = '';
-    let matchPayloadObj = null;  // 完整 match 请求参数（fileName/fileHash/fileSize/videoDuration/matchMode），随缓存一并保存
-    if (isMatchApi && request.method === 'POST' && reqBodyText !== null) {
-        try {
-            matchBodyText = reqBodyText;
-            const mp = JSON.parse(matchBodyText);
-            matchPayloadObj = (mp && typeof mp === 'object') ? mp : null;
-            matchFileName = (mp && typeof mp.fileName === 'string') ? mp.fileName.trim() : '';
-        } catch (_) { /* body 非 JSON 或读取失败：matchFileName 留空，不缓存 */ }
-    }
+    const edgeCache = await tryEdgeCaches(
+        request, env, ctx, tUrlObj, url,
+        cacheContext, requestContext, narrowToEpisode
+    );
+    if (edgeCache.response) return edgeCache.response;
+    tUrlObj = edgeCache.targetUrl;
+    url = edgeCache.url;
+    if (edgeCache.aliasRewritten) aliasRewritten = edgeCache.aliasRewritten;
 
-    // match 专用缓存键：仅用 fileName，同一集视频缓存键恒定，429 必命中兜底
-    const matchCacheKeyOf = () => matchFileName
-        ? `POST:/api/v2/match?fileName=${encodeURIComponent(matchFileName)}`
-        : null;
-
-    // 内存缓存：搜索、番剧、匹配、搜索分集
-    const memoryCachePatterns = ['/api/v2/search/anime', '/api/v2/search/episodes', '/api/v2/bangumi/', '/api/v2/match'];
-    // GET 接口按路径判定；match(POST) 仅在成功解析出 fileName 时才视为可缓存
-    const isCacheable = (request.method === 'GET' && memoryCachePatterns.some(p => apiPath.startsWith(p)))
-        || (isMatchApi && request.method === 'POST' && !!matchFileName);
-    // R2 缓存：弹幕接口
-    const isCommentApi = request.method === 'GET' && apiPath.startsWith('/api/v2/comment/');
-    // 内存缓存键：match 用 fileName 区分（POST 的 url 无 query，否则不同文件会脏命中）
-    const memCacheKey = (isMatchApi && matchFileName)
-        ? `api_cache_match_${matchFileName}`
-        : `api_cache_${url}`;
-
-    // --- 内存缓存命中检查 ---
-    if (isCacheable) {
-        const cacheKey = memCacheKey;
-        const cached = memoryCache.apiCache.get(cacheKey);
-
-        if (cached && (Date.now() - cached.timestamp < MEMORY_LIMITS.API_CACHE_TTL)) {
-            console.log(`📦 [${clientIP}] 内存缓存命中: ${apiPath}`);
-            // 指标：内存缓存命中 + 出流量 + 响应/2xx
-            bumpMetric('memCacheHits'); bumpMetric('totalResponses');
-            bumpMetric('status2xx');
-            bumpMetric('bytesOut', (cached.data && cached.data.length) ? cached.data.length : 0);
-            addMemoryLog('INFO', '内存缓存命中', {
-                ip: clientIP,
-                path: apiPath,
-                method: request.method,
-                userAgent: request.headers.get('X-User-Agent') || '',
-                userId: clientUserId,
-                responseStatus: 200,
-                cacheSource: 'MEM',
-                cacheAge: Math.round((Date.now() - cached.timestamp) / 1000) + 's',
-                durationMs: Date.now() - reqStartMs,
-                responseBytes: (cached.data && cached.data.length) ? cached.data.length : 0,
-                responseBody: truncateBody(cached.data),
-            });
-            return new Response(cached.data, {
-                status: 200,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*',
-                    'X-Cache': 'HIT',
-                    'X-Cache-Age': Math.round((Date.now() - cached.timestamp) / 1000).toString()
-                }
-            });
-        }
-
-        // 空结果负缓存命中检查：仅 search 接口，用归一化搜索词键。
-        // 命中且未过期 → 直接返回当初的空响应，不打上游（挡重复无效搜索）。
-        if (env.CONTROL_HUB && request.method === 'GET'
-            && (apiPath.startsWith('/api/v2/search/anime') || apiPath.startsWith('/api/v2/search/episodes'))) {
-            const rawKw = tUrlObj.searchParams.get('anime') || tUrlObj.searchParams.get('keyword') || '';
-            const normKw = normalizeSearchKeyword(rawKw);
-            if (normKw) {
-                const emptyKey = `EMPTY:${apiPath}?anime=${encodeURIComponent(normKw)}`;
-                const neg = await controlHubRpc(env, 'cache.get', {
-                    cache_key: emptyKey, api_path: apiPath, method: request.method,
-                    client_ip: clientIP, worker_request_id: request.headers.get('cf-ray') || '',
-                }, 1500);
-                if (neg && neg.hit && neg.body) {
-                    console.log(`🕳️ [${clientIP}] 空结果负缓存命中，直接返回空: ${normKw}`);
-                    bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
-                    addMemoryLog('INFO', '空结果负缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: 200, cacheSource: 'LOCAL-EMPTY', durationMs: Date.now() - reqStartMs, responseBytes: neg.body ? neg.body.length : 0, responseBody: truncateBody(neg.body) });
-                    return new Response(neg.body, {
-                        status: 200,
-                        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-Cache': 'HIT-EMPTY' },
-                    });
-                }
-            }
-        }
-
-        // 内存未命中：先查本地端缓存，命中则直接返回，避免每次都打弹弹触发 429
-        // match(POST) 用 fileName 专用键；其他 GET 用 query 键
-        if (env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)) {
-            const localCacheKey = isMatchApi
-                ? matchCacheKeyOf()
-                : buildLocalCacheKey(request.method, apiPath, tUrlObj.searchParams);
-            const local = await controlHubRpc(env, 'cache.get', {
-                cache_key: localCacheKey,
-                api_path: apiPath,
-                method: request.method,
-                client_ip: clientIP,
-                worker_request_id: request.headers.get('cf-ray') || '',
-                prefetch: true,
-            }, 1500);
-            if (local && local.hit && local.body) {
-                console.log(`📦 [${clientIP}] 本地端缓存命中${local.stale ? '(stale)' : ''}: ${apiPath}`);
-                bumpMetric('memCacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
-                bumpMetric('bytesOut', local.body.length || 0);
-                // 命中即回填本实例内存，降低后续同 key 的 DO RPC
-                memoryCache.apiCache.set(cacheKey, { data: local.body, timestamp: Date.now() });
-                addMemoryLog('INFO', '本地端缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: local.status || 200, cacheSource: local.stale ? 'LOCAL-STALE' : 'LOCAL', stale: !!local.stale, durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0, responseBody: truncateBody(local.body) });
-                return new Response(local.body, {
-                    status: local.status || 200,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*',
-                        'X-Cache': local.stale ? 'HIT-LOCAL-STALE' : 'HIT-LOCAL',
-                    }
-                });
-            }
-        }
-    }
-
-    // --- R2 弹幕缓存命中检查 ---
-    if (isCommentApi) {
-        // Key 只用 episodeId，如 /api/v2/comment/12345 → comment/12345
-        const episodeId = apiPath.replace('/api/v2/comment/', '').split('?')[0];
-        const r2Key = R2_CACHE_CONFIG.KEY_PREFIX + episodeId;
-        const cachedData = await r2GetComment(env, r2Key);
-        if (cachedData) {
-            console.log(`📦 [${clientIP}] R2弹幕缓存命中: ${apiPath}`);
-            // 指标：R2 命中 + 出流量 + 响应/2xx
-            bumpMetric('r2CacheHits'); bumpMetric('totalResponses');
-            bumpMetric('status2xx');
-            bumpMetric('bytesOut', (cachedData && cachedData.length) ? cachedData.length : 0);
-            addMemoryLog('INFO', 'R2弹幕缓存命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: 200, cacheSource: 'R2', durationMs: Date.now() - reqStartMs, responseBytes: cachedData ? cachedData.length : 0, responseBody: truncateBody(cachedData) });
-            return new Response(cachedData, {
-                status: 200,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*',
-                    'X-Cache': 'HIT-R2',
-                }
-            });
-        }
-
-        // R2 无对象：查本地端兜底持久化（架构B），命中则回填 R2 并返回
-        if (env.CONTROL_HUB) {
-            const local = await controlHubRpc(env, 'comment.get', { episode_id: episodeId }, 1500);
-            if (local && local.hit && local.body) {
-                console.log(`📦 [${clientIP}] 本地端弹幕兜底命中: ${episodeId} (${local.comment_count}条)`);
-                bumpMetric('r2CacheHits'); bumpMetric('totalResponses'); bumpMetric('status2xx');
-                bumpMetric('bytesOut', local.body.length || 0);
-                addMemoryLog('INFO', '本地端弹幕兜底命中', { ip: clientIP, path: apiPath, method: request.method, userAgent: request.headers.get('X-User-Agent') || '', userId: clientUserId, responseStatus: 200, cacheSource: 'LOCAL-COMMENT', durationMs: Date.now() - reqStartMs, responseBytes: local.body ? local.body.length : 0, responseBody: truncateBody(local.body) });
-                // 回填 R2 一级缓存，下次走边缘
-                const r2Promise = r2PutComment(env, r2Key, local.body).catch(() => {});
-                if (ctx && ctx.waitUntil) ctx.waitUntil(r2Promise);
-                return new Response(local.body, {
-                    status: 200,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*',
-                        'X-Cache': 'HIT-LOCAL-COMMENT',
-                    }
-                });
-            }
-        }
-    }
+    const quotaFallback = await tryOriginQuotaFallback(
+        request, env, tUrlObj, accessCheck, cacheContext, requestContext, narrowToEpisode
+    );
+    if (quotaFallback) return quotaFallback;
 
     // ========================================
     // 🔑 密钥池选择：按 ua_key + 接口分组挑选可用密钥
@@ -2591,22 +3595,9 @@ async function handleRequest(request, env, ctx) {
     let selectedKey = selectKey(uaKey, apiGroup);
 
     if (!selectedKey) {
-        // 全部密钥该接口已限流：缓存已在前面查过，直接返回流控
-        console.log(`🚫 [${clientIP}] 接口 ${apiGroup} 所有密钥已限流，返回流控`);
-        const exhaustBody = JSON.stringify({
-            errorCode: 429, success: false,
-            errorMessage: '当前接口所有密钥已达调用配额上限，请稍后再试',
-        });
-        addMemoryLog('warn', '密钥全限流', { ip: clientIP, path: apiPath, apiGroup, uaKey, userId: clientUserId, durationMs: Date.now() - reqStartMs, responseBytes: exhaustBody.length, requestBody: truncateBody(reqBodyText), responseBody: truncateBody(exhaustBody) });
-        bumpMetric('upstream429'); bumpMetric('status4xx');
-        return new Response(exhaustBody, {
-            status: 200,
-            headers: {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*',
-                'X-Cache': 'KEY-POOL-EXHAUSTED',
-            },
-        });
+        return tryKeyPoolFallback(
+            request, env, tUrlObj, apiGroup, uaKey, cacheContext, requestContext
+        );
     }
 
     // 增加待同步请求计数
@@ -2625,306 +3616,46 @@ async function handleRequest(request, env, ctx) {
         console.log(`🔐 [${clientIP}] API路径: ${apiPath}`);
     }
 
-    // 构建转发请求的头部，排除自定义头
-    const forwardHeaders = {};
-    for (const [key, value] of request.headers.entries()) {
-        // 排除自定义头，只转发标准头(含本插件签名/身份头 X-Ddd-*,不污染上游请求)
-        const lk = key.toLowerCase();
-        if (key !== 'X-User-Agent' && key !== 'X-Challenge-Response'
-            && !lk.startsWith('x-ddd-')) {
-            forwardHeaders[key] = value;
+    let upstreamResult = await forwardUpstream(
+        request, url, selectedKey, apiGroup, uaKey, cacheContext, requestContext
+    );
+    selectedKey = upstreamResult.selectedKey;
+    if (upstreamResult.limited) {
+        // 已有旧缓存时优先按原缓存键兜底；没有旧缓存才继续尝试别名等其他 429 兜底。
+        const persistentFallback = await tryPersistentRateLimitFallback(
+            request, env, tUrlObj, cacheContext, requestContext, narrowToEpisode
+        );
+        if (persistentFallback) {
+            recordUpstreamResponse(
+                request, tUrlObj, selectedKey, upstreamResult, cacheContext, requestContext
+            );
+            return persistentFallback;
         }
     }
+    upstreamResult = await tryUpstreamRateLimitFallback(
+        env, tUrlObj, upstreamResult, cacheContext, requestContext
+    );
+    const response = upstreamResult.response;
+    // 上游裸系列模糊成唯一高季度时先规范为空结果，后续日志、缓存与客户端保持同一口径。
+    upstreamResult.responseText = suppressMisleadingBareSeries(
+        cacheContext.apiPath, tUrlObj, upstreamResult.responseText
+    );
+    const responseText = upstreamResult.responseText;
+    const isUpstreamRateLimited = upstreamResult.limited;
+    recordUpstreamResponse(
+        request, tUrlObj, selectedKey, upstreamResult, cacheContext, requestContext
+    );
 
-    // 用指定密钥签名并转发；返回 { response, responseText, errorCode, limited }
-    const doForwardWithKey = async (keyObj) => {
-        const ts = Math.floor(Date.now() / 1000);
-        const sig = await generateSignature(keyObj.appId, ts, apiPath, keyObj.appSecret);
-        const headers = {
-            ...forwardHeaders,
-            "X-AppId": keyObj.appId,
-            "X-Signature": sig,
-            "X-Timestamp": ts,
-            "X-Auth": "1",
-        };
-        // 密钥配置了 forwardUa 则覆盖 User-Agent；留空则保持请求者原 UA。
-        // forwardHeaders 来自 headers.entries()（key 为小写），先删小写键再设标准键，避免重复头
-        if (keyObj.forwardUa) {
-            delete headers['user-agent'];
-            headers['User-Agent'] = keyObj.forwardUa;
-        }
-        if (ACCESS_CONFIG.logging.enabled) {
-            console.log(`📤 [${clientIP}] 转发请求头(key=${keyObj.id}):`, JSON.stringify(headers, null, 2));
-        }
-        // GET/HEAD 不能带 body，否则 fetch 抛 TypeError（Worker 1101）
-        const fetchInit = { headers, method: request.method };
-        if (request.method !== 'GET' && request.method !== 'HEAD') {
-            // match body 已预读为 matchBodyText；其他 POST 用 reqBodyText（已提前读取），
-            // 两者都是文本，支持限流切换密钥时的安全重试
-            fetchInit.body = (matchBodyText !== null) ? matchBodyText : (reqBodyText !== null ? reqBodyText : request.body);
-        }
-        const resp = await fetch(url, fetchInit);
-        const text = await resp.text();
-        let ec = 0;
-        try {
-            const _peek = JSON.parse(text);
-            if (_peek && typeof _peek.errorCode === 'number') ec = _peek.errorCode;
-        } catch (_) { /* 非 JSON 忽略 */ }
-        return { response: resp, responseText: text, errorCode: ec, limited: resp.status === 429 || ec === 429 };
-    };
-
-    // 首次转发
-    const upstreamStart = Date.now();
-    let fwd = await doForwardWithKey(selectedKey);
-    console.log(`📥 [${clientIP}] dandanplay API响应状态:`, fwd.response.status, fwd.response.statusText);
-
-    // 🔁 撞限流：标记当前密钥该接口，立即尝试切换一次（仅 GET 无 body 时安全重试）
-    if (fwd.limited) {
-        markKeyLimited(selectedKey.id, apiGroup);
-        const canRetry = request.method === 'GET';
-        if (canRetry) {
-            const retryKey = selectKey(uaKey, apiGroup);
-            if (retryKey && retryKey.id !== selectedKey.id) {
-                console.log(`🔁 [${clientIP}] 密钥 ${selectedKey.id} 限流，切换到 ${retryKey.id} 重试`);
-                selectedKey = retryKey;
-                fwd = await doForwardWithKey(retryKey);
-                console.log(`📥 [${clientIP}] 重试响应状态:`, fwd.response.status, fwd.response.statusText);
-                if (fwd.limited) markKeyLimited(retryKey.id, apiGroup);
-            } else {
-                console.log(`ℹ️ [${clientIP}] 无其他可用密钥，不重试`);
-            }
-        }
+    if (!isUpstreamRateLimited) {
+        writeUpstreamCaches(
+            request, env, ctx, tUrlObj, response, responseText, cacheContext, requestContext
+        );
     }
 
-    let response = fwd.response;
-    const responseText = fwd.responseText;
-    const upstreamErrorCode = fwd.errorCode;
-    const isUpstreamRateLimited = fwd.limited;
-    if (isUpstreamRateLimited) {
-        console.log(`🚫 [${clientIP}] 检测到上游限流 (HTTP ${response.status}, errorCode=${upstreamErrorCode})`);
-    }
-
-    // 指标：回源响应（可缓存请求走到这里即未命中）+ 状态码分布 + 429
-    bumpMetric('totalResponses');
-    if (isCacheable || isCommentApi) bumpMetric('cacheMiss');
-    if (isUpstreamRateLimited) { bumpMetric('upstream429'); bumpMetric('status4xx'); }
-    else if (response.status >= 200 && response.status < 300) bumpMetric('status2xx');
-    else if (response.status >= 400 && response.status < 500) bumpMetric('status4xx');
-    else if (response.status >= 500) bumpMetric('status5xx');
-
-    // 记录API请求到内存日志（含缓存来源/密钥/上游状态/耗时/响应字节/请求响应体，便于排查）
-    addMemoryLog(isUpstreamRateLimited ? 'WARN' : 'INFO', 'API请求处理', {
-        ip: clientIP,
-        method: request.method,
-        path: apiPath,
-        userAgent: request.headers.get('X-User-Agent') || '',
-        userId: clientUserId,
-        responseStatus: response.status,
-        cacheSource: isUpstreamRateLimited ? 'UPSTREAM-429' : 'MISS',
-        upstreamStatus: upstreamErrorCode || response.status,
-        keyId: selectedKey ? selectedKey.id : '',
-        durationMs: Date.now() - reqStartMs,
-        responseBytes: responseText ? responseText.length : 0,
-        // 请求体：match 用 matchBodyText，其他 POST 用 reqBodyText，截断到 4 KB
-        requestBody: truncateBody(matchBodyText !== null ? matchBodyText : reqBodyText),
-        // 响应体：截断到 4 KB（弹幕响应可达数百 KB，全量会撑爆 log.report）
-        responseBody: truncateBody(responseText),
-        timestamp: Date.now()
-    });
-
-    // 指标：出流量（回源响应体字节）
-    if (responseText) bumpMetric('bytesOut', responseText.length);
-    // 新增：根据API路径选择性地记录响应内容，避免日志超限
-    if (apiPath.startsWith('/api/v2/comment/')) {
-        try {
-            const jsonResponse = JSON.parse(responseText);
-            if (jsonResponse && Array.isArray(jsonResponse.comments)) {
-                console.log(`📄 [${clientIP}] dandanplay API响应内容: (路径=${apiPath}) 弹幕数量=${jsonResponse.comments.length}, comments数组内容已省略`);
-            } else {
-                console.log(`📄 [${clientIP}] dandanplay API响应内容:`, responseText);
-            }
-        } catch (e) {
-            // 如果不是有效的JSON，则记录原始文本
-            console.log(`📄 [${clientIP}] dandanplay API响应内容 (非JSON):`, responseText);
-        }
-    } else {
-        console.log(`📄 [${clientIP}] dandanplay API响应内容:`, responseText);
-    }
-
-    // ========================================
-    // 📦 缓存存入
-    // ========================================
-    if (response.status === 200 && !isUpstreamRateLimited) {
-        if (isCacheable) {
-            // 脏响应过滤：空结果/success:false/errorCode!=0 一律不缓存，避免污染
-            if (!isCacheableResponseBody(apiPath, responseText)) {
-                // 空结果负缓存：仅对「真实空搜索」（非 429/失败）做累计计数，
-                // 同一归一化搜索词达阈值后转本地端负缓存，挡重复无效搜索。
-                if (env.CONTROL_HUB && isTrueEmptySearch(apiPath, responseText)) {
-                    const rawKw = tUrlObj.searchParams.get('anime') || tUrlObj.searchParams.get('keyword') || '';
-                    const normKw = normalizeSearchKeyword(rawKw);
-                    if (normKw && bumpEmptySearchCount(`${apiPath}|${normKw}`)) {
-                        // 达阈值：上报本地端负缓存（键用归一化搜索词，跨大小写/空格聚合）
-                        const emptyKey = `EMPTY:${apiPath}?anime=${encodeURIComponent(normKw)}`;
-                        const emptyPayload = {
-                            cache_key: emptyKey,
-                            source: 'dandanplay',
-                            method: request.method,
-                            api_path: apiPath,
-                            client_ip: clientIP,
-                            query: { anime: normKw },
-                            status: 200,
-                            headers: { 'content-type': 'application/json' },
-                            body: responseText,
-                            is_empty: true,
-                            ttl: EMPTY_CACHE_CONFIG.TTL_SECONDS,
-                        };
-                        const p = controlHubRpc(env, 'cache.upsert', emptyPayload, 3000)
-                            .catch(e => console.log(`⚠️ [${clientIP}] 空结果负缓存上报失败: ${e.message}`));
-                        if (ctx && ctx.waitUntil) ctx.waitUntil(p);
-                        console.log(`🕳️ [${clientIP}] 空结果达阈值，已转负缓存: ${normKw}`);
-                    } else {
-                        console.log(`🧹 [${clientIP}] 空搜索结果计数中，未达阈值: ${normKw || apiPath}`);
-                    }
-                } else {
-                    console.log(`🧹 [${clientIP}] 响应无有效数据或为失败响应，跳过缓存: ${apiPath}`);
-                }
-            } else {
-            // 内存缓存：搜索/番剧/匹配/分集（match 用 fileName 专用键）
-            const cacheKey = memCacheKey;
-            memoryCache.apiCache.set(cacheKey, {
-                data: responseText,
-                timestamp: Date.now()
-            });
-            console.log(`📦 [${clientIP}] 内存缓存已存入: ${apiPath} (TTL: 2h)`);
-
-            // 同时异步推送到本地端 cache.upsert（不阻塞响应；本地端做 429 兜底数据源）
-            if (env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)) {
-                // match(POST) 用 fileName 专用键与 query，其他 GET 用 URL query
-                const localCacheKey = isMatchApi
-                    ? matchCacheKeyOf()
-                    : buildLocalCacheKey(request.method, apiPath, tUrlObj.searchParams);
-                const upsertPayload = {
-                    cache_key: localCacheKey,
-                    source: 'dandanplay',
-                    method: request.method,
-                    api_path: apiPath,
-                    client_ip: clientIP,
-                    // match：缓存键只用 fileName，但完整请求参数(fileHash/fileSize/
-                    // videoDuration/matchMode)一并保存，保留当初匹配上下文
-                    query: isMatchApi
-                        ? (matchPayloadObj || { fileName: matchFileName })
-                        : Object.fromEntries(tUrlObj.searchParams.entries()),
-                    status: 200,
-                    headers: { 'content-type': 'application/json' },
-                    body: responseText,
-                };
-                // match 原始请求体也存入，供本地端 request_body_json 落库
-                if (isMatchApi && matchBodyText !== null) {
-                    upsertPayload.request_body = matchBodyText;
-                }
-                const upsertPromise = controlHubRpc(env, 'cache.upsert', upsertPayload, 3000)
-                    .catch(e => console.log(`⚠️ [${clientIP}] cache.upsert 失败: ${e.message}`));
-                if (ctx && ctx.waitUntil) ctx.waitUntil(upsertPromise);
-            }
-            }
-        } else if (isCommentApi) {
-            // R2 缓存：弹幕接口，只缓存有弹幕的响应
-            try {
-                const parsed = JSON.parse(responseText);
-                if (parsed && Array.isArray(parsed.comments) && parsed.comments.length > 0) {
-                    const episodeId = apiPath.replace('/api/v2/comment/', '').split('?')[0];
-                    const r2Key = R2_CACHE_CONFIG.KEY_PREFIX + episodeId;
-                    // 用 ctx.waitUntil 保活，确保 Worker 返回响应后 R2 写入仍能完成
-                    const r2Promise = r2PutComment(env, r2Key, responseText).then(() => {
-                        console.log(`📦 [${clientIP}] R2弹幕缓存已存入: ${r2Key} (${parsed.comments.length}条弹幕, TTL: 12h)`);
-                    }).catch(e => {
-                        console.log(`⚠️ [${clientIP}] R2弹幕缓存存入失败: ${e.message}`);
-                    });
-                    if (ctx && ctx.waitUntil) ctx.waitUntil(r2Promise);
-
-                    // 架构B：同时归档到本地端兜底持久化（以弹幕条数为准更新）
-                    if (env.CONTROL_HUB) {
-                        const archivePromise = controlHubRpc(env, 'comment.archive', {
-                            episode_id: episodeId,
-                            body: responseText,
-                            source: 'origin',
-                        }, 3000).catch(e => console.log(`⚠️ [${clientIP}] comment.archive 失败: ${e.message}`));
-                        if (ctx && ctx.waitUntil) ctx.waitUntil(archivePromise);
-                    }
-                } else {
-                    console.log(`📦 [${clientIP}] 弹幕为空，跳过R2缓存: ${apiPath}`);
-                }
-            } catch (e) {
-                console.log(`⚠️ [${clientIP}] 弹幕响应解析失败，跳过R2缓存: ${e.message}`);
-            }
-        }
-    }
-
-    // ========================================
-    // 🛟 上游 429 限流：尝试本地缓存兜底
-    // ========================================
-    if (isUpstreamRateLimited && env.CONTROL_HUB && shouldUseLocalCache(apiPath, request.method)
-        && !(isMatchApi && !matchFileName)) {
-        // match(POST) 用 fileName 专用键；其他 GET 用 query 键
-        const localCacheKey = isMatchApi
-            ? matchCacheKeyOf()
-            : buildLocalCacheKey(request.method, apiPath, tUrlObj.searchParams);
-        console.log(`🛟 [${clientIP}] 上游限流，尝试本地缓存兜底: ${localCacheKey}`);
-        const cached = await controlHubRpc(env, 'cache.get', {
-            cache_key: localCacheKey,
-            api_path: apiPath,
-            method: request.method,
-            client_ip: clientIP,
-            worker_request_id: request.headers.get('cf-ray') || '',
-        }, 1500);
-        if (cached && cached.hit && cached.body) {
-            console.log(`✅ [${clientIP}] 命中本地兜底缓存${cached.stale ? '(stale)' : ''}: ${localCacheKey}`);
-            return new Response(cached.body, {
-                status: cached.status || 200,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*',
-                    'X-Cache': 'HIT-LOCAL-STALE',
-                    'X-Upstream-Status': '429',
-                },
-            });
-        }
-        console.log(`ℹ️ [${clientIP}] 本地无可用兜底缓存，原样返回 429`);
-    }
-
-    // 上游 429 且为弹幕接口：查本地端弹幕兜底持久化（R2 可能也无对象）
-    if (isUpstreamRateLimited && isCommentApi && env.CONTROL_HUB) {
-        const episodeId = apiPath.replace('/api/v2/comment/', '').split('?')[0];
-        console.log(`🛟 [${clientIP}] 弹幕上游限流，尝试本地端弹幕兜底: ${episodeId}`);
-        const local = await controlHubRpc(env, 'comment.get', { episode_id: episodeId }, 1500);
-        if (local && local.hit && local.body) {
-            console.log(`✅ [${clientIP}] 命中本地端弹幕兜底: ${episodeId} (${local.comment_count}条)`);
-            return new Response(local.body, {
-                status: 200,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*',
-                    'X-Cache': 'HIT-LOCAL-COMMENT',
-                    'X-Upstream-Status': '429',
-                },
-            });
-        }
-        console.log(`ℹ️ [${clientIP}] 本地端无弹幕兜底，原样返回 429`);
-    }
-
-    // 重新创建Response对象（因为body已经被读取）
-    const responseHeaders = new Headers(response.headers);
-    responseHeaders.set('Access-Control-Allow-Origin', '*');
-    if (isCacheable || isCommentApi) {
-        responseHeaders.set('X-Cache', 'MISS');
-    }
-
-    return new Response(responseText, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: responseHeaders
-    });
+    return finalizeUpstreamResponse(
+        response, responseText, cacheContext,
+        aliasRewritten, strippedEpisode, narrowToEpisode
+    );
 }
 
 // 批量同步管理函数
@@ -3116,6 +3847,42 @@ async function generateSignature(appId, timestamp, path, appSecret) {
 // 验证逻辑已抽到独立混淆模块 sign_verify.js（顶部 import），公开仓库不含细节。
 // 调用见 verifyClientSignature(request, apiPath, signGroupId, signKeyPool)。
 
+/**
+ * IP 中间段打码，仅用于对外响应；服务端日志始终保留完整 IP 以便排查。
+ * IPv4：保留首尾段     38.207.184.219            → 38.*.*.219
+ * IPv6：保留首两组+末组 2001:db8:85a3::1319:7348  → 2001:db8:*:*:*:7348
+ * 含端口 / IPv4-mapped / 无法识别的值一律走保守分支，不泄露中间信息。
+ */
+function maskIp(ip) {
+    if (!ip || typeof ip !== 'string') return 'unknown';
+    const raw = ip.trim();
+    if (!raw || raw === 'unknown') return 'unknown';
+
+    // X-Forwarded-For 可能是 "a, b, c"，只取第一跳（真实客户端）
+    const first = raw.split(',')[0].trim();
+    // 去掉 IPv6 字面量方括号与端口，如 [::1]:8080
+    let addr = first.replace(/^\[/, '').replace(/\](:\d+)?$/, '');
+
+    // IPv4（可能带端口 1.2.3.4:5678）
+    const v4 = addr.split(':')[0];
+    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4)) {
+        const p = v4.split('.');
+        return `${p[0]}.*.*.${p[3]}`;
+    }
+
+    // IPv6：按组处理，:: 先展开成显式空组再打码
+    if (addr.includes(':')) {
+        const parts = addr.split(':');
+        if (parts.length <= 3) return '*:*:*';          // 过短，无法安全保留
+        const head = parts.slice(0, 2).join(':');
+        const tail = parts[parts.length - 1] || '*';
+        const midCount = Math.max(parts.length - 3, 1);
+        return `${head}:${'*:'.repeat(midCount)}${tail}`;
+    }
+
+    return '*';  // 既非 v4 也非 v6，整体隐藏
+}
+
 // 新增：访问控制检查函数
 // reqStartMs 由 handleRequest 传入（用于日志耗时统计），缺省则以当前时间兜底
 // reqBodyText 为预读的请求体文本（用于限流日志记录请求体）
@@ -3158,12 +3925,15 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
             console.log(`⏭️ [${clientIP}] 白名单 IP，UA 未匹配也放行`);
             return { allowed: true, reason: 'ip_whitelisted_ua_unmatched' };
         }
-        return { allowed: false, reason: '禁止访问的UA', status: 403 };
+        // uaName 供外层拼错误消息用：此处 UA 未匹配任何配置，没有名称可用，
+        // 给固定占位，避免外层回退到原始 UA（原始 UA 含密钥片段）。
+        return { allowed: false, reason: '禁止访问的UA', status: 403, uaName: '未识别' };
     }
 
     console.log(`✅ [${clientIP}] UA识别成功: ${uaConfig.type}`);
     console.log(`   - 匹配的UA配置: ${JSON.stringify(uaConfig)}`);
-    console.log(`   - 最大请求数: ${uaConfig.maxRequests || 'N/A'}`);
+    // 0/-1 语义为无限制，直接输出原值避免 || 把 0 显示成 N/A 干扰排查
+    console.log(`   - 最大请求数: ${uaConfig.maxRequests === undefined || uaConfig.maxRequests === null ? 'N/A' : uaConfig.maxRequests}`);
     console.log(`   - 时间窗口: ${uaConfig.windowMs || 'N/A'}ms`);
 
     // 2. 基于内存的频率限制（全局限制）
@@ -3190,7 +3960,12 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
             requestBody: truncateBody(reqBodyText),
         });
 
-        return { allowed: false, reason: rateLimitCheck.reason, status: 429 };
+        // 带上 uaConfig / uaName：外层错误消息要显示配置名称而非原始 UA，
+        // 原始 UA 形如 "misaka10876/&7Y4c#4#"，后半段是校验密钥，不能对外回显。
+        return {
+            allowed: false, reason: rateLimitCheck.reason, status: 429,
+            uaConfig, uaName: uaConfig.type
+        };
     }
 
     console.log(`📊 [${clientIP}] 频率限制检查结果: 通过 (${rateLimitCheck.count}/${rateLimitCheck.limit})`);
@@ -3202,13 +3977,15 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
         for (const [pathPattern, pathLimit] of Object.entries(uaConfig.pathSpecificLimits)) {
             console.log(`   - 检查路径模式: ${pathPattern} (当前路径: ${apiPath})`);
             if (apiPath.includes(pathPattern)) {
-                console.log(`   - 路径匹配! 应用路径特定限制: ${pathLimit.maxRequestsPerHour || 50}/小时`);
+                // 路径上限同样用显式判空取值：0 表示该路径不限，不能被 || 兜底成 50
+                const pathHourly = pickLimitValue(pathLimit.maxRequestsPerHour);
+                console.log(`   - 路径匹配! 应用路径特定限制: ${pathHourly === undefined || pathHourly === 0 || pathHourly === -1 ? '无限制' : pathHourly + '/小时'}`);
                 // 使用IP+UA类型+路径的组合作为限制键，确保每个IP在每个UA类型下的每个路径都有独立的限制
                 const pathRateLimitCheck = checkMemoryRateLimit(
                     clientIP,
                     `${uaConfig.type}-path-${pathPattern}`,
                     {
-                        maxRequests: pathLimit.maxRequestsPerHour || 50,
+                        maxRequests: pathHourly,
                         windowMs: 60 * 60 * 1000 // 1小时窗口
                     }
                 );
@@ -3232,7 +4009,8 @@ async function checkAccess(request, targetApiPath, reqStartMs = Date.now(), reqB
                     return {
                         allowed: false,
                         reason: `路径 ${pathPattern} 频率限制: ${pathRateLimitCheck.reason}`,
-                        status: 429
+                        status: 429,
+                        uaConfig, uaName: uaConfig.type
                     };
                 }
                 console.log(`📊 [${clientIP}] 路径限制 [${pathPattern}]: 通过 (${pathRateLimitCheck.count}/${pathRateLimitCheck.limit})`);

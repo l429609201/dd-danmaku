@@ -13,6 +13,18 @@ from src.services_v2.entity_service import (
     entity_index_service, EntityIndexService,
     episode_link_service, EpisodeLinkService,
 )
+from src.services_v2.media_meta_service import (
+    media_meta_service, MediaMetaService,
+)
+from src.services_v2.alias_supplement_service import (
+    alias_supplement_service, AliasSupplementService,
+)
+from src.services_v2.alias_ai_service import (
+    alias_ai_service, AliasAiService,
+)
+from src.services_v2.alias_external_service import (
+    alias_external_service, AliasExternalService,
+)
 
 __all__ = [
     "redis_cache", "RedisCacheService",
@@ -22,4 +34,9 @@ __all__ = [
     "cleanup_service", "CleanupService",
     "entity_index_service", "EntityIndexService",
     "episode_link_service", "EpisodeLinkService",
+    # 媒体外部 ID / 别名
+    "media_meta_service", "MediaMetaService",
+    "alias_supplement_service", "AliasSupplementService",
+    "alias_ai_service", "AliasAiService",
+    "alias_external_service", "AliasExternalService",
 ]

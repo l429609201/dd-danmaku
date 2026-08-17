@@ -47,6 +47,41 @@
       <p class="tip" v-else>目录：{{ stats ? stats.dir : '—' }}。超上限时按"最久未使用"自动删除。</p>
     </div>
 
+    <!-- R2 控制：关闭 R2 写入不影响本地端归档 -->
+    <div class="panel">
+      <h2 class="panel-title">R2 缓存控制</h2>
+      <div class="cfg-row">
+        <label class="cfg-item switch-item">
+          <input type="checkbox" v-model="r2WriteEnabled" />
+          允许写入 R2
+        </label>
+        <label class="cfg-item switch-item danger-switch">
+          <input type="checkbox" v-model="r2DeleteEnabled" />
+          允许自动删除 R2
+        </label>
+        <button class="btn btn-primary" :disabled="busy" @click="saveR2Control">保存并下发</button>
+      </div>
+      <p class="tip">关闭 R2 写入后，本地端仍会持续归档弹幕；关闭自动删除后，过期与容量清理均停止。</p>
+
+      <div class="r2-summary" v-if="r2Task">
+        <div><b>{{ r2Task.objects || 0 }}</b><span>R2 对象</span></div>
+        <div><b>{{ fmtBytes(r2Task.total_bytes) }}</b><span>扫描大小</span></div>
+        <div><b>{{ r2Task.saved || 0 }}</b><span>已存本地</span></div>
+        <div><b>{{ r2Task.errors || 0 }}</b><span>失败</span></div>
+      </div>
+      <div class="cfg-row">
+        <button class="btn" :disabled="r2Task && r2Task.running" @click="startR2Task('scan')">扫描 R2 存量</button>
+        <button class="btn btn-primary" :disabled="r2Task && r2Task.running" @click="startR2Task('sync')">同步全部到本地</button>
+        <span class="task-status" v-if="r2Task">{{ r2Task.message }}</span>
+      </div>
+      <div class="progress" v-if="r2Task && r2Task.running">
+        <div class="progress-bar" :style="{ width: r2Progress + '%' }"></div>
+      </div>
+      <p class="tip" v-if="r2Task && r2Task.mode === 'sync'">
+        已处理 {{ r2Task.processed || 0 }} / {{ r2Task.objects || 0 }}；跳过 {{ r2Task.skipped || 0 }}；当前 {{ r2Task.current_episode_id || '—' }}。同步仅复制，不删除 R2。
+      </p>
+    </div>
+
     <!-- 条目列表 -->
     <div class="panel">
       <div class="list-head">
@@ -116,7 +151,7 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { apiV2 } from '../utils/api.js'
 import Pager from '../components/Pager.vue'
 
@@ -133,6 +168,9 @@ export default {
     const sort = ref('created_at')
     const maxGb = ref(5)
     const unlimited = ref(false)
+    const r2WriteEnabled = ref(true)
+    const r2DeleteEnabled = ref(true)
+    const r2Task = ref(null)
     const msg = ref('')
     const busy = ref(false)
     const detail = ref(null)
@@ -142,6 +180,11 @@ export default {
     const loadingMore = ref(false)
     const hasMore = ref(false)
     const PREVIEW_PAGE = 100
+    let r2Timer = null
+    const r2Progress = computed(() => {
+      if (!r2Task.value || !r2Task.value.objects) return 0
+      return Math.min(100, Math.round((r2Task.value.processed || 0) / r2Task.value.objects * 100))
+    })
 
     const loadStats = async () => {
       try {
@@ -149,6 +192,14 @@ export default {
         stats.value = res.data
         maxGb.value = Math.round((res.data.max_bytes / 1024 / 1024 / 1024) * 10) / 10
         unlimited.value = !!res.data.unlimited
+        const ctl = res.data.r2_control || {}
+        r2WriteEnabled.value = ctl.write_enabled !== false
+        r2DeleteEnabled.value = ctl.delete_enabled !== false
+        r2Task.value = res.data.r2_task || null
+        // 页面刷新后若后台任务仍在运行，恢复进度轮询。
+        if (r2Task.value && r2Task.value.running && !r2Timer) {
+          r2Timer = setInterval(pollR2Task, 1000)
+        }
       } catch (e) { msg.value = e.message }
     }
     const load = async () => {
@@ -173,6 +224,34 @@ export default {
         msg.value = unlimited.value ? '已开启永久保存' : '已关闭永久保存'
         loadStats()
       } catch (e) { msg.value = e.message; unlimited.value = !unlimited.value /* 失败回滚 */ }
+    }
+    const saveR2Control = async () => {
+      busy.value = true
+      try {
+        const res = await apiV2('/comment-store/r2-control', {
+          method: 'PUT',
+          body: { write_enabled: r2WriteEnabled.value, delete_enabled: r2DeleteEnabled.value },
+        })
+        msg.value = res.message
+      } catch (e) { msg.value = e.message } finally { busy.value = false }
+    }
+    const pollR2Task = async () => {
+      try {
+        const res = await apiV2('/comment-store/r2-task')
+        r2Task.value = res.data
+        if (res.data && !res.data.running && r2Timer) {
+          clearInterval(r2Timer); r2Timer = null
+          loadStats(); load()
+        }
+      } catch (e) { msg.value = e.message }
+    }
+    const startR2Task = async (mode) => {
+      try {
+        const res = await apiV2(`/comment-store/r2-${mode}`, { method: 'POST' })
+        msg.value = res.message
+        r2Task.value = res.data
+        if (res.success && !r2Timer) r2Timer = setInterval(pollR2Task, 1000)
+      } catch (e) { msg.value = e.message }
     }
     const doCleanup = async () => {
       busy.value = true
@@ -241,8 +320,10 @@ export default {
     }
 
     onMounted(() => { loadStats(); load() })
+    onUnmounted(() => { if (r2Timer) clearInterval(r2Timer) })
     return { stats, items, total, page, pageSize, keyword, sort, maxGb, unlimited, msg, busy, detail,
-      preview, previewBox, loadingMore, hasMore,
+      r2WriteEnabled, r2DeleteEnabled, r2Task, r2Progress,
+      preview, previewBox, loadingMore, hasMore, startR2Task, saveR2Control,
       reload, goPage, saveMax, saveUnlimited, doCleanup, doClearAll, del, view, onPreviewScroll,
       cmtTime, cmtText, fmt, fmtBytes }
   },
@@ -266,6 +347,15 @@ export default {
 .cfg-item { display: flex; align-items: center; gap: 8px; color: #555; }
 .cfg-item.perm { cursor: pointer; font-weight: 500; color: #d46b08; }
 .cfg-item.perm input { width: 16px; height: 16px; cursor: pointer; }
+.switch-item { cursor: pointer; font-weight: 500; }
+.switch-item input { width: 16px; height: 16px; cursor: pointer; }
+.danger-switch { color: #d46b08; }
+.r2-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 14px 0; }
+.r2-summary div { padding: 12px; border-radius: 8px; background: #f7f9fc; }
+.r2-summary b { display: block; font-size: 20px; color: #333; }
+.r2-summary span, .task-status { font-size: 12px; color: #888; }
+.progress { height: 8px; background: #eef1f5; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+.progress-bar { height: 100%; background: #1677ff; transition: width .25s ease; }
 .list-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .search { display: flex; gap: 8px; }
 .num { width: 80px; padding: 5px 8px; border: 1px solid #d9d9d9; border-radius: 6px; text-align: center; }

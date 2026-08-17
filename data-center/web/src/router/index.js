@@ -50,6 +50,12 @@ const routes = [
         meta: { title: '媒体库' }
       },
       {
+        path: 'alias-review',
+        name: 'AliasReview',
+        component: () => import('../views/AliasReview.vue'),
+        meta: { title: '别名校验' }
+      },
+      {
         path: 'ip-rules',
         name: 'IpRules',
         component: () => import('../views/IpRules.vue'),

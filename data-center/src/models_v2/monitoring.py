@@ -4,10 +4,10 @@
 - IpRule                 IP 黑白名单规则（下发给 Worker）
 - IpRequestStatCurrent   IP 请求统计当前累计（Worker 周期上报 upsert）
 - IpRequestStatSnapshot  IP 请求统计周期快照（用于趋势）
-- WorkerRequestLog       Worker 请求/拦截日志（实时日志数据源）
+- WorkerLogDailyStat     Worker 日志按日聚合计数（仪表盘洞察数据源）
 """
 from sqlalchemy import (
-    BigInteger, Boolean, Column, DateTime, Integer, JSON, String, Text,
+    BigInteger, Boolean, Column, DateTime, Integer, JSON, String,
     UniqueConstraint,
 )
 
@@ -85,40 +85,47 @@ class UaLimitRule(Base, TimestampMixin):
     # 实例 ID 校验参数已移入 UserAllowPool（通过 user_group_id 引用）
     # 删除本表的 instance_brand_mark / instance_obf_key，保持与签名组对称
 
+    # ---------- 回源限流（origin_*）----------
+    # 与上面的「请求限流」是两回事：上面限「客户端打 Worker 的频率」，
+    # 这里限「Worker 真正回源打弹弹play 的次数」——后者才对应付费配额。
+    # 缓存命中不会走到回源检查，所以命中不再消耗上游配额。
+    # 计数维度：UA + IP（与请求侧一致），-1 表示无限制。
+    origin_limit_enabled = Column(Boolean, default=False, nullable=False)
+    origin_max_per_hour = Column(Integer, nullable=True)
+    origin_max_per_day = Column(Integer, nullable=True)
+    # 回源侧路径级配额，结构同 path_limits_json：[{"path": "...", "maxRequestsPerHour": 50}]
+    origin_path_limits_json = Column(JSON, nullable=True)
 
-class WorkerRequestLog(Base):
-    """Worker 请求/拦截日志（实时日志数据源）"""
-    __tablename__ = "worker_request_logs"
+
+class WorkerLogDailyStat(Base):
+    """Worker 日志按日聚合计数（仪表盘「运维洞察」数据源）
+
+    背景：明细日志已迁到轮转 JSONL 文件（worker_request_logs 表停写），
+    但仪表盘的缓存来源分布 / 429 分布 / UA Top 仍需聚合数据。
+    扫文件做统计每次要读上百 MB，秒级延迟；而这些统计只需要计数，
+    因此单独建计数表：内存累加 + 周期 upsert，一天只有几十行。
+
+    表结构用「日期 + 维度类型 + 维度值」三元组而非为每个维度建独立表：
+    新增统计维度只要多一种 dim_type，不必改表结构。
+    dim_type 取值：cache_source / api_429 / ua_type / level
+    """
+    __tablename__ = "worker_log_daily_stats"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    worker_id = Column(String(100), index=True, nullable=True)
-    client_ip = Column(String(64), index=True, nullable=True)
-    method = Column(String(10), nullable=True)
-    path = Column(String(500), index=True, nullable=True)
-    status = Column(Integer, index=True, nullable=True)
-    ua_type = Column(String(100), index=True, nullable=True)
-    # 缓存来源：MEM / LOCAL / R2 / MISS / KEY-POOL 等（便于排查命中链路）
-    cache_source = Column(String(20), index=True, nullable=True)
-    # 上游响应状态（软限流时记录真实 errorCode）
-    upstream_status = Column(Integer, nullable=True)
-    # 本次请求使用的密钥 id（密钥池调度排查）
-    key_id = Column(String(64), nullable=True)
-    # 客户端用户标识（X-Ddd-User，来自客户端签名头，用于按用户标识/过滤）
-    # 长度 255：上报的是**混淆后**的标识（`品牌:GUID` 经 hex 编码后约 96 字符），
-    # 原 64 会溢出导致整批日志落库失败（见 database_patches._patch_widen_client_user_id）
-    client_user_id = Column(String(255), index=True, nullable=True)
-    # 请求处理耗时（毫秒）
-    duration_ms = Column(Integer, nullable=True)
-    # 响应体字节数（缓存命中/回源均记录，拦截类为 None）
-    response_bytes = Column(Integer, nullable=True)
-    # 请求体内容（POST/PUT 截断至 4 KB，GET 为 None）
-    request_body = Column(Text, nullable=True)
-    # 响应体内容（截断至 4 KB，拦截类早退路径为 None）
-    response_body = Column(Text, nullable=True)
-    # INFO / WARN / ERROR
-    level = Column(String(20), index=True, nullable=False, default="INFO")
-    message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=now, index=True, nullable=False)
+    # 统计日期（YYYY-MM-DD，本地时区），按日聚合便于「当日」口径查询
+    stat_date = Column(String(10), index=True, nullable=False)
+    # 维度类型：cache_source / api_429 / ua_type / level
+    dim_type = Column(String(30), index=True, nullable=False)
+    # 维度值：如 MEM / LOCAL / search_episodes / misaka10876/v1.0.0
+    dim_value = Column(String(200), nullable=False)
+    count = Column(BigInteger, default=0, nullable=False)
+    updated_at = Column(DateTime, default=now, onupdate=now, nullable=False)
+
+    __table_args__ = (
+        # 同一天同一维度只有一行，作为 upsert 的冲突键
+        UniqueConstraint("stat_date", "dim_type", "dim_value",
+                         name="uq_wlds_date_dim"),
+    )
 
 
 class WorkerMetricsSnapshot(Base):
@@ -154,6 +161,9 @@ class WorkerMetricsSnapshot(Base):
     # 瞬时态
     total_requests_lifetime = Column(BigInteger, default=0, nullable=False)
     api_cache_size = Column(Integer, default=0, nullable=False)
+    # 工具调用为窗口增量，内存水位为瞬时态；JSON 避免为每个操作扩散大量稀疏列。
+    tool_calls = Column(JSON, nullable=True)
+    memory_watermark = Column(JSON, nullable=True)
 
 
 class LocalCommentStore(Base):

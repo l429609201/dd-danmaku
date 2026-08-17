@@ -209,7 +209,7 @@ async def list_access_logs(
 ):
     """缓存访问日志（含 429 兜底记录）
 
-    该表增长最快，total 走截断 COUNT + 短 TTL 缓存；查询放线程池。
+    所有访问类型全量保存；total 走截断 COUNT + 短 TTL 缓存，查询放线程池。
     """
     return await asyncio.to_thread(
         _query_access_logs, cache_key, access_type, with_total, page, page_size,

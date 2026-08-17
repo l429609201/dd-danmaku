@@ -1,8 +1,10 @@
 """
 Dashboard 概览接口：聚合关键指标
 """
+import asyncio
 import logging
 from datetime import timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 
@@ -72,7 +74,7 @@ def _build_summary() -> dict:
             ControlNode.last_seen_at.desc()
         ).first()
 
-        # 今日 429 兜底命中数
+        # 今日缓存命中与 429 兜底命中数；访问日志全量保存，直接计数。
         stale_hits = db.query(ApiCacheAccessLog).filter(
             ApiCacheAccessLog.access_type == "stale_hit",
             ApiCacheAccessLog.created_at >= today_start,
@@ -111,6 +113,22 @@ def _build_summary() -> dict:
         total_hits = mem_hit + r2_hit
         hit_rate = round(total_hits / (total_hits + miss) * 100, 1) if (total_hits + miss) > 0 else 0.0
 
+        metric_rows = db.query(
+            WorkerMetricsSnapshot.tool_calls,
+            WorkerMetricsSnapshot.memory_watermark,
+            WorkerMetricsSnapshot.snapshot_at,
+        ).filter(WorkerMetricsSnapshot.snapshot_at >= today_start).all()
+        tool_calls = {}
+        for calls, _, _ in metric_rows:
+            for operation, values in (calls or {}).items():
+                target = tool_calls.setdefault(operation, {"attempts": 0, "success": 0, "errors": 0})
+                for key in target:
+                    target[key] += int((values or {}).get(key, 0) or 0)
+        latest_memory = {}
+        if metric_rows:
+            latest = max(metric_rows, key=lambda row: row[2])
+            latest_memory = latest[1] or {}
+
         data = {
             "worker": {
                 "connected": node.connected if node else False,
@@ -143,6 +161,8 @@ def _build_summary() -> dict:
                 "status_4xx": s4xx,
                 "status_5xx": s5xx,
             },
+            "cloudflare_tools_today": tool_calls,
+            "worker_memory_latest": latest_memory,
             "totals": {
                 "cache_count": db.query(ApiResponseCache).count(),
                 "episode_links": db.query(EpisodeLink).count(),
@@ -333,58 +353,22 @@ async def dashboard_db_stats(_: LocalUser = Depends(get_current_user)):
 
 
 @router.get("/insights")
-def dashboard_insights(hours: int = 24, _: LocalUser = Depends(get_current_user)):
-    """运维洞察：基于 worker_request_logs 聚合
+async def dashboard_insights(date: Optional[str] = None,
+                             _: LocalUser = Depends(get_current_user)):
+    """运维洞察（当日口径）：读 worker_log_daily_stats 按日聚合计数
     - 缓存来源分布（MEM/LOCAL/R2/MISS/限流）
     - 各接口（按 path 前缀归一）429 限流分布
     - UA 来源 Top10
+
+    数据源从 worker_request_logs 明细聚合改为按日计数表：
+    明细已迁到轮转 JSONL 文件（原表 3.2 GB 撑爆数据库），
+    扫文件做统计要读上百 MB，而这些面板只需要计数。
+    口径由「最近 N 小时」改为「当日」（本地时区 0 点起），
+    date 参数可选，格式 YYYY-MM-DD，缺省为今天。
     """
-    from src.models_v2 import WorkerRequestLog
-    hours = max(1, min(hours, 168))
-    db = get_db_sync()
-    try:
-        start = now() - timedelta(hours=hours)
-        base = db.query(WorkerRequestLog).filter(
-            WorkerRequestLog.created_at >= start)
-
-        # 缓存来源分布
-        src_rows = db.query(
-            WorkerRequestLog.cache_source, func.count()
-        ).filter(WorkerRequestLog.created_at >= start,
-                 WorkerRequestLog.cache_source.isnot(None)
-                 ).group_by(WorkerRequestLog.cache_source).all()
-        cache_sources = [{"source": s or "未知", "count": c} for s, c in src_rows]
-
-        # 各接口 429 分布（cache_source 含 429，或 upstream_status=429）
-        grp = {"search_anime": "/api/v2/search/anime",
-               "search_episodes": "/api/v2/search/episodes",
-               "bangumi": "/api/v2/bangumi/", "comment": "/api/v2/comment/",
-               "match": "/api/v2/match"}
-        api_429 = []
-        for key, prefix in grp.items():
-            cnt = base.filter(
-                WorkerRequestLog.path.like(f"{prefix}%"),
-                WorkerRequestLog.upstream_status == 429,
-            ).count()
-            api_429.append({"api_group": key, "count": cnt})
-
-        # UA 来源 Top10
-        ua_rows = db.query(
-            WorkerRequestLog.ua_type, func.count()
-        ).filter(WorkerRequestLog.created_at >= start,
-                 WorkerRequestLog.ua_type.isnot(None)
-                 ).group_by(WorkerRequestLog.ua_type
-                            ).order_by(func.count().desc()).limit(10).all()
-        ua_top = [{"ua_type": u or "未知", "count": c} for u, c in ua_rows]
-
-        return ApiResult(data={
-            "hours": hours,
-            "cache_sources": cache_sources,
-            "api_429": api_429,
-            "ua_top": ua_top,
-        })
-    finally:
-        db.close()
+    from src.services_v2.worker_log_stats_service import worker_log_stats_service
+    data = await asyncio.to_thread(worker_log_stats_service.query_day, date)
+    return ApiResult(data=data)
 
 
 @router.get("/ip-geo")

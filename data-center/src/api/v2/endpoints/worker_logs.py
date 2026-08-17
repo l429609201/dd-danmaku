@@ -1,23 +1,26 @@
 """
 Worker 请求日志接口（S7）
 
-- GET /worker-logs          历史日志分页
-- GET /worker-logs/{log_id} 单条详情（含请求/响应体）
-- GET /worker-logs/stream   SSE 实时日志（单进程 uvicorn 下有效）
+- GET /worker-logs        日志检索（分页 + 筛选，数据源为轮转 JSONL 文件）
+- GET /worker-logs/files  轮转文件列表（供前端切换查看历史文件）
+- GET /worker-logs/stream SSE 实时日志（单进程 uvicorn 下有效）
+
+存储从 worker_request_logs 表改为轮转文件：原表现网 3.2 GB / 58 万行，
+大字段（request_body / response_body）撑爆数据库且清理跟不上写入。
+明细走文件，聚合统计走 worker_log_daily_stats 计数表。
 """
 import asyncio
 import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 
 from src.api.v2.deps import get_current_user
-from src.api.v2.pagination import build_cache_key, compute_total
 from src.api.v2.schemas import ApiResult, PageResult
-from src.database import get_db_sync
-from src.models_v2 import WorkerRequestLog, LocalUser
+from src.models_v2 import LocalUser
+from src.services_v2.worker_log_file_service import worker_log_file_service
 from src.services_v2.worker_log_service import worker_log_service
 
 logger = logging.getLogger(__name__)
@@ -26,102 +29,56 @@ router = APIRouter()
 
 @router.get("")
 async def list_logs(
-    worker_id: Optional[str] = None,
+    file: Optional[str] = None,
     level: Optional[str] = None,
     keyword: Optional[str] = None,
     ip: Optional[str] = None,
     ua: Optional[str] = None,
     user_id: Optional[str] = None,
-    with_total: bool = True,
+    status: Optional[int] = None,
     page: int = 1, page_size: int = Query(50, le=200),
     _: LocalUser = Depends(get_current_user),
 ):
-    """Worker 请求日志分页查询（支持按 path 关键词、client_ip、X-UA、用户ID 过滤）
+    """Worker 日志检索（数据源为轮转 JSONL 文件，倒序：最新在前）
 
-    性能说明：
-    - total 走截断 COUNT + 短 TTL 缓存，翻页不再重复全表扫描；
-      前端翻页时可传 with_total=false 完全跳过。
-    - 列表不返回 request_body / response_body（Text 大字段），
-      展开行时调 GET /worker-logs/{id} 按需拉取。
-    - 同步 DB 查询整体放线程池，避免阻塞事件循环。
+    与原 SQL 版的差异：
+    - file 指定查哪个轮转文件（缺省为当前 worker.log）；
+      跨文件需前端切换，避免一次扫完 200 MB。
+    - keyword 跨字段搜（path/query/message/请求体/响应体），
+      原先只搜 path。
+    - total 是本文件内匹配数，扫描超上限时 total_estimated=true。
+    - 请求/响应体直接随列表返回：文件里本就带着，不必再走详情接口。
+    - 文件 IO 放线程池，避免阻塞事件循环。
     """
-    return await asyncio.to_thread(
-        _query_logs, worker_id, level, keyword, ip, ua, user_id,
-        with_total, page, page_size,
+    res = await asyncio.to_thread(
+        worker_log_file_service.search,
+        file, level, keyword, ip, ua, user_id, status, page, page_size,
+    )
+    items = res["items"]
+    for it in items:
+        # 前端展开行判断用；文件里已带 body，无需按需加载
+        it["has_body"] = bool(it.get("request_body") or it.get("response_body"))
+    return PageResult(
+        total=res["total"], items=items,
+        total_estimated=res["total_estimated"],
     )
 
 
-def _query_logs(worker_id, level, keyword, ip, ua, user_id,
-                with_total, page, page_size) -> PageResult:
-    """日志分页查询（同步，供线程池调用）"""
-    db = get_db_sync()
-    try:
-        q = db.query(WorkerRequestLog)
-        if worker_id:
-            q = q.filter(WorkerRequestLog.worker_id == worker_id)
-        if level:
-            q = q.filter(WorkerRequestLog.level == level.upper())
-        if keyword:
-            q = q.filter(WorkerRequestLog.path.like(f"%{keyword}%"))
-        # 按客户端 IP 模糊搜索，支持部分匹配（如网段前缀）
-        if ip:
-            q = q.filter(WorkerRequestLog.client_ip.like(f"%{ip}%"))
-        # 按 X-UA（客户端 X-User-Agent，存于 ua_type 列）模糊搜索
-        if ua:
-            q = q.filter(WorkerRequestLog.ua_type.like(f"%{ua}%"))
-        # 按客户端用户标识（X-Ddd-User）模糊搜索
-        if user_id:
-            q = q.filter(WorkerRequestLog.client_user_id.like(f"%{user_id}%"))
+@router.get("/files")
+async def list_log_files(_: LocalUser = Depends(get_current_user)):
+    """轮转文件列表：返回体积、行数与首末时间，供前端单文件切换。
 
-        ck = build_cache_key("worker_logs", worker_id, level, keyword, ip, ua, user_id)
-        total, estimated = compute_total(db, q, ck, with_total)
-
-        rows = q.order_by(WorkerRequestLog.created_at.desc()) \
-                .offset((page - 1) * page_size).limit(page_size).all()
-        items = [{
-            "id": r.id, "worker_id": r.worker_id, "client_ip": r.client_ip,
-            "method": r.method, "path": r.path, "status": r.status,
-            "ua_type": r.ua_type, "level": r.level, "message": r.message,
-            "cache_source": r.cache_source, "upstream_status": r.upstream_status,
-            "key_id": r.key_id, "client_user_id": r.client_user_id,
-            "duration_ms": r.duration_ms,
-            "response_bytes": r.response_bytes,
-            # 是否有请求/响应体（前端据此决定展开行是否可点、要不要拉详情）；
-            # 体本身不在列表返回，避免单次响应几 MB 拖慢页面
-            "has_body": bool(r.request_body or r.response_body),
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-        } for r in rows]
-        return PageResult(total=total, items=items, total_estimated=estimated)
-    finally:
-        db.close()
-
-
-@router.get("/detail/{log_id}")
-async def get_log_detail(log_id: int, _: LocalUser = Depends(get_current_user)):
-    """单条日志详情：返回请求体与响应体（列表已剔除大字段，展开行时调用）
-
-    注意路径为 /detail/{id} 而非 /{id}，避免与 /stream 静态路径冲突。
+    worker.log 为当前写入文件，worker.log.1 ~ .10 编号越大越旧；
+    元信息在服务层按文件身份缓存，当前文件追加时仅扫描新增字节。
     """
-    def _fetch():
-        db = get_db_sync()
-        try:
-            r = db.query(WorkerRequestLog).filter(
-                WorkerRequestLog.id == log_id
-            ).first()
-            if not r:
-                return None
-            return {
-                "id": r.id,
-                "request_body": r.request_body,
-                "response_body": r.response_body,
-                "response_bytes": r.response_bytes,
-            }
-        finally:
-            db.close()
+    files = await asyncio.to_thread(worker_log_file_service.list_files)
+    return ApiResult(data={"files": files})
 
-    data = await asyncio.to_thread(_fetch)
-    if data is None:
-        raise HTTPException(status_code=404, detail="日志不存在")
+
+@router.get("/stats")
+async def log_file_stats(_: LocalUser = Depends(get_current_user)):
+    """日志文件写入状态：累计写入条数、目录、各轮转文件体积"""
+    data = await asyncio.to_thread(worker_log_file_service.stats)
     return ApiResult(data=data)
 
 

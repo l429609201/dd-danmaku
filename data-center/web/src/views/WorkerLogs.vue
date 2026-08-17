@@ -3,12 +3,24 @@
     <h1 class="app-page__title">Worker 日志</h1>
 
     <div class="app-toolbar">
+      <el-select v-model="selectedFile" placeholder="当前日志文件" style="width: 320px"
+                 popper-class="worker-log-file-popper" @change="reload">
+        <el-option v-for="f in files" :key="f.name" :label="fileLabel(f)" :value="f.name">
+          <div class="log-file-option">
+            <div class="log-file-option__main">
+              <span>{{ f.name }}</span>
+              <span class="log-file-option__stats">{{ f.size_mb }} MB · {{ f.line_count || 0 }} 行</span>
+            </div>
+            <div class="log-file-option__range">{{ fileRange(f) }}</div>
+          </div>
+        </el-option>
+      </el-select>
       <el-select v-model="level" placeholder="全部级别" clearable style="width: 130px" @change="reload">
         <el-option label="INFO" value="INFO" />
         <el-option label="WARN" value="WARN" />
         <el-option label="ERROR" value="ERROR" />
       </el-select>
-      <el-input v-model="keyword" placeholder="搜索 path" clearable style="width: 180px" @keyup.enter="reload" @clear="reload" />
+      <el-input v-model="keyword" placeholder="关键词（跨字段搜）" clearable style="width: 200px" @keyup.enter="reload" @clear="reload" />
       <el-input v-model="ipSearch" placeholder="搜索 IP" clearable style="width: 160px" @keyup.enter="reload" @clear="reload" />
       <el-input v-model="uaSearch" placeholder="搜索 X-UA" clearable style="width: 170px" @keyup.enter="reload" @clear="reload" />
       <el-input v-model="userIdSearch" placeholder="搜索 用户ID" clearable style="width: 150px" @keyup.enter="reload" @clear="reload" />
@@ -23,12 +35,16 @@
                 :row-class-name="rowClass"
                 row-key="_uid"
                 @expand-change="onExpand">
-        <!-- 展开行：显示请求体 & 响应体。
-             列表接口已不返回大字段，首次展开时按需拉 /worker-logs/detail/{id} -->
+        <!-- 展开行：文件列表接口已随行返回请求体与响应体，无需二次请求。 -->
         <el-table-column type="expand">
           <template #default="{ row }">
             <div v-if="row._bodyLoading" class="body-empty">加载请求/响应体…</div>
-            <div v-else-if="row.request_body || row.response_body" class="body-expand">
+            <div v-else class="body-expand">
+              <!-- 搜索词：GET 请求的参数在 URL query 而非 body，单独展示便于排查 -->
+              <div v-if="row.query" class="body-block">
+                <span class="body-label">搜索词</span>
+                <pre class="body-pre">{{ row.query }}</pre>
+              </div>
               <div v-if="row.request_body" class="body-block">
                 <span class="body-label">请求体</span>
                 <pre class="body-pre" :key="(prettyJson ? 'p' : 'r') + '-req'">{{ renderBody(row.request_body) }}</pre>
@@ -37,8 +53,10 @@
                 <span class="body-label">响应体</span>
                 <pre class="body-pre" :key="(prettyJson ? 'p' : 'r') + '-resp'">{{ renderBody(row.response_body) }}</pre>
               </div>
+              <div v-if="!row.query && !row.request_body && !row.response_body" class="body-empty">
+                该条日志无搜索词/请求体/响应体（拦截类早退路径）
+              </div>
             </div>
-            <div v-else class="body-empty">该条日志无请求/响应体（拦截类早退路径）</div>
           </template>
         </el-table-column>
         <el-table-column label="时间" width="180">
@@ -110,6 +128,8 @@ export default {
   setup() {
     const tableRef = ref(null)     // el-table 组件引用
     const items = ref([])
+    const files = ref([])          // 轮转文件列表
+    const selectedFile = ref('')   // 当前选中的文件（空=当前 worker.log）
     const level = ref('')
     const keyword = ref('')
     const ipSearch = ref('')       // 按客户端 IP 搜索
@@ -123,22 +143,43 @@ export default {
     const PAGE_SIZE = 50
     const page = ref(1)            // 当前已加载页码
     const hasMore = ref(true)      // 是否还有下一页
+    const totalEstimated = ref(false) // total 是否为估算值（文件扫描被截断）
     let abortCtrl = null
+
+    // 加载轮转文件列表
+    const loadFiles = async () => {
+      try {
+        const res = await apiV2('/worker-logs/files')
+        files.value = res.data?.files || []
+        // 默认选中当前文件
+        if (files.value.length > 0 && !selectedFile.value) {
+          selectedFile.value = files.value[0].name
+        }
+      } catch (e) {
+        ElMessage.warning('文件列表加载失败: ' + e.message)
+      }
+    }
 
     // 统一拉取某一页，append=false 时替换（首次/查询），true 时追加（滚动加载）
     const fetchPage = async (targetPage, append) => {
       const q = new URLSearchParams({ page: targetPage, page_size: PAGE_SIZE })
-      // 本页用无限滚动、不展示总条数，故跳过后端 COUNT（大表上 COUNT 是主要耗时）
-      q.set('with_total', 'false')
+      // 新接口：日志在轮转文件里，selectedFile 指定查哪个文件
+      if (selectedFile.value) q.set('file', selectedFile.value)
       if (level.value) q.set('level', level.value)
       if (keyword.value) q.set('keyword', keyword.value)
       if (ipSearch.value) q.set('ip', ipSearch.value)
       if (uaSearch.value) q.set('ua', uaSearch.value)
       if (userIdSearch.value) q.set('user_id', userIdSearch.value)
       const res = await apiV2(`/worker-logs?${q.toString()}`)
-      // 每条加唯一 _uid，防止 el-table row-key 因 id 缺失把全部行当同一行
-      const mapped = (res.items || []).map(item => ({
-        ...item, _uid: item.id ? `db-${item.id}` : `r-${Math.random().toString(36).slice(2)}`
+      // total_estimated=true 时显示「约 N 条」
+      totalEstimated.value = res.total_estimated || false
+      // 每条加唯一 _uid，防止 el-table row-key 因 id 缺失把全部行当同一行；
+      // 文件里的日志没有数据库 id，用时间戳+随机数生成
+      const mapped = (res.items || []).map((item, idx) => ({
+        ...item,
+        _uid: item.id ? `db-${item.id}` : `f-${targetPage}-${idx}-${Date.now()}`,
+        // body 已随列表返回，标记已加载
+        _bodyLoaded: true,
       }))
       items.value = append ? items.value.concat(mapped) : mapped
       page.value = targetPage
@@ -146,24 +187,10 @@ export default {
       hasMore.value = mapped.length >= PAGE_SIZE
     }
 
-    // 展开行时按需拉取请求/响应体：列表接口已不返回这两个大字段，
-    // 避免单页响应几 MB 拖慢加载。同一行只拉一次（_bodyLoaded 标记）。
-    const onExpand = async (row, expanded) => {
-      if (!expanded || !row || !row.id) return
-      if (row._bodyLoaded || row._bodyLoading) return
-      if (!row.has_body) { row._bodyLoaded = true; return }
-      row._bodyLoading = true
-      try {
-        const res = await apiV2(`/worker-logs/detail/${row.id}`)
-        const d = res.data || res || {}
-        row.request_body = d.request_body || ''
-        row.response_body = d.response_body || ''
-        row._bodyLoaded = true
-      } catch (e) {
-        ElMessage.error(`请求/响应体加载失败: ${e.message}`)
-      } finally {
-        row._bodyLoading = false
-      }
+    // 展开行：body 已随列表返回（文件存储无列宽限制），不再按需加载。
+    // 保留空函数以免模板报错，实际不做任何操作。
+    const onExpand = async () => {
+      // 旧逻辑已废弃：body 在 fetchPage 时已标记 _bodyLoaded=true
     }
 
     // 安全 URL 解码：path/cache_key 里的中文被 Worker encodeURIComponent 编码过，
@@ -231,7 +258,7 @@ export default {
               item._live = true
               // 实时流本身已带 body，无需再走详情接口
               item._bodyLoaded = true
-              item.has_body = !!(item.request_body || item.response_body)
+              item.has_body = !!(item.request_body || item.response_body || item.query)
               items.value.unshift(item)
               if (items.value.length > 200) items.value.pop()
             } catch { /* 忽略心跳 */ }
@@ -262,6 +289,10 @@ export default {
       'LOCAL-STALE': '本地缓存(过期)',
       'LOCAL-COMMENT': '本地弹幕兜底',
       'LOCAL-EMPTY': '空结果负缓存',
+      'LOCAL-ALIAS-FALLBACK': '本地别名兜底',
+      'LOCAL-ASSEMBLED-SERIES': '本地系列组装',
+      'LOCAL-ASSEMBLED-EPISODES': '本地分集组装',
+      'STALE-QUOTA': '配额超限旧缓存',
       'R2': 'R2缓存',
       'MISS': '未命中(回源)',
       'UPSTREAM-429': '上游限流',
@@ -284,6 +315,12 @@ export default {
     }
     const rowClass = ({ row }) => (row._live ? 'live-row' : '')
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
+    // 文件选择始终限定单个轮转文件；标签给出体积与行数，避免误解为跨文件搜索。
+    const fileLabel = (file) => `${file.name} · ${file.size_mb}MB · ${file.line_count || 0}行`
+    const fileRange = (file) => {
+      if (!file.first_at && !file.last_at) return '暂无有效日志时间'
+      return `${fmt(file.first_at)} ～ ${fmt(file.last_at)}`
+    }
 
     // 表格已取消高度限制，改为监听整个页面滚动：接近页面底部（剩余 <120px）时加载下一页
     const onScroll = () => {
@@ -292,6 +329,7 @@ export default {
     }
 
     onMounted(async () => {
+      await loadFiles()  // 先加载文件列表
       await reload()
       await nextTick()
       window.addEventListener('scroll', onScroll, { passive: true })
@@ -314,13 +352,22 @@ export default {
       if (abortCtrl) abortCtrl.abort()
       window.removeEventListener('scroll', onScroll)
     })
-    return { items, tableRef, level, keyword, ipSearch, uaSearch, userIdSearch, loading, loadingMore, hasMore, streaming, prettyJson, expandedRows, Search,
-      reload, loadMore, toggleStream, levelType, sourceType, sourceLabel, rowClass, fmtBytes, fmtJson, renderBody, fmt, onExpand, decodeText }
+    return { items, tableRef, files, selectedFile, level, keyword, ipSearch, uaSearch, userIdSearch,
+      loading, loadingMore, hasMore, totalEstimated, streaming, prettyJson, expandedRows, Search,
+      reload, loadMore, toggleStream, levelType, sourceType, sourceLabel, rowClass, fmtBytes, fmtJson,
+      renderBody, fmt, fileLabel, fileRange, onExpand, decodeText }
   }
 }
 </script>
 
 <style scoped>
+.log-file-option { width: 280px; line-height: 1.35; padding: 3px 0; }
+.log-file-option__main { display: flex; justify-content: space-between; gap: 12px; }
+.log-file-option__stats { color: var(--el-text-color-secondary); font-size: 12px; white-space: nowrap; }
+.log-file-option__range { color: var(--el-text-color-placeholder); font-size: 11px; }
+
+:global(.worker-log-file-popper .el-select-dropdown__item) { height: auto; line-height: normal; padding-top: 5px; padding-bottom: 5px; }
+
 :deep(.live-row) { background: #f6ffed; }
 .body-expand { padding: 12px 20px; background: #fafafa; border-top: 1px solid #f0f0f0; }
 .body-block { margin-bottom: 14px; }

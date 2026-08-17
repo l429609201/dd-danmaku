@@ -14,7 +14,7 @@ from sqlalchemy import inspect
 from src.database import get_db_sync
 from src.models_v2 import (
     ApiCacheAccessLog, ApiResponseCache, AppSetting,
-    ControlMessage, RuntimeEvent, WorkerRequestLog, WorkerMetricsSnapshot,
+    ControlMessage, RuntimeEvent, WorkerMetricsSnapshot,
     IpRequestStatSnapshot, IpRequestStatCurrent, ApiCacheRefreshTask,
     IpRule,
     CleanupPolicy,
@@ -31,7 +31,7 @@ TABLE_REGISTRY = {
     "api_cache_access_logs": (ApiCacheAccessLog, "created_at", "缓存访问日志", True, False),
     "control_messages": (ControlMessage, "created_at", "长连接消息审计", True, False),
     "runtime_events": (RuntimeEvent, "created_at", "运行事件日志", True, False),
-    "worker_request_logs": (WorkerRequestLog, "created_at", "Worker 请求日志", True, False),
+    # worker_request_logs 已迁到轮转 JSONL 文件（worker.log），表已被删表补丁清理
     "worker_metrics_snapshot": (WorkerMetricsSnapshot, "snapshot_at", "Worker 指标快照", True, False),
     "ip_request_stats_snapshot": (IpRequestStatSnapshot, "snapshot_at", "IP 统计快照", True, False),
     "api_cache_refresh_task": (ApiCacheRefreshTask, "created_at", "已完成的刷新任务", True, False),
@@ -46,10 +46,10 @@ TABLE_REGISTRY = {
 
 # 默认策略：table_key -> (默认启用, 默认保留天数)
 DEFAULT_POLICY = {
-    "api_cache_access_logs": (True, 30),
+    "api_cache_access_logs": (True, 14),
     "control_messages": (True, 30),
     "runtime_events": (True, 30),
-    "worker_request_logs": (True, 7),
+    # worker_request_logs 已删除，不再清理
     "worker_metrics_snapshot": (True, 30),
     "ip_request_stats_snapshot": (True, 7),
     "api_cache_refresh_task": (True, 14),
@@ -195,10 +195,11 @@ class CleanupService:
         while True:
             db = get_db_sync()
             try:
-                # 子查询取一批主键，再按主键删除（兼容 MySQL/SQLite/PG）
+                # 按时间、主键稳定取最老的一批；配合 (created_at, id) 复合索引，
+                # 避免百万行表每轮清理都全表扫描并 filesort。
                 pk = inspect(model).primary_key[0]
                 ids = [r[0] for r in db.query(pk).filter(field < cutoff)
-                       .limit(batch).all()]
+                       .order_by(field.asc(), pk.asc()).limit(batch).all()]
                 if not ids:
                     break
                 deleted = db.query(model).filter(pk.in_(ids)) \

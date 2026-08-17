@@ -15,9 +15,13 @@ from pydantic import BaseModel
 
 from src.api.v2.deps import get_current_user, require_operator
 from src.api.v2.schemas import ApiResult, PageResult
-from src.models_v2 import LocalUser
+from src.models_v2 import AppSetting, LocalUser
+from src.database import get_db_sync
+from src.models_v2.base import now
 from src.services_v2.comment_store_service import comment_store_service, DANMAKU_DIR
 from src.services_v2.db_stats_service import collect_comment_store_stats
+from src.services_v2.r2_sync_service import r2_sync_service
+from src.services_v2.runtime_config_service import runtime_config_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,6 +32,24 @@ class MaxBytesUpdate(BaseModel):
     max_gb: float
 
 
+class R2ControlUpdate(BaseModel):
+    """R2 写入与自动删除开关。"""
+    write_enabled: bool
+    delete_enabled: bool
+
+
+def _r2_control() -> dict:
+    db = get_db_sync()
+    try:
+        rows = {r.key: r.value for r in db.query(AppSetting).filter(
+            AppSetting.key.in_(["r2_write_enabled", "r2_delete_enabled"])).all()}
+        enabled = lambda key: str(rows.get(key, "true")).lower() in ("1", "true", "yes", "on")
+        return {"write_enabled": enabled("r2_write_enabled"),
+                "delete_enabled": enabled("r2_delete_enabled")}
+    finally:
+        db.close()
+
+
 @router.get("/stats")
 async def store_stats(_: LocalUser = Depends(get_current_user)):
     """弹幕存储统计概览 + 当前目录 + 永久保存开关状态"""
@@ -36,7 +58,60 @@ async def store_stats(_: LocalUser = Depends(get_current_user)):
     data["dir"] = DANMAKU_DIR
     # 永久保存开关状态：开启时前端禁用上限、不触发 LRU
     data["unlimited"] = await asyncio.to_thread(comment_store_service.is_unlimited)
+    data["r2_control"] = await asyncio.to_thread(_r2_control)
+    data["r2_task"] = r2_sync_service.status()
     return ApiResult(data=data)
+
+
+@router.put("/r2-control")
+async def update_r2_control(body: R2ControlUpdate,
+                            _: LocalUser = Depends(require_operator)):
+    """保存 R2 开关并立即下发；关闭写入不影响本地 comment.archive。"""
+    db = get_db_sync()
+    try:
+        for key, value, description in [
+            ("r2_write_enabled", body.write_enabled, "是否允许 Worker 写入 R2 弹幕缓存"),
+            ("r2_delete_enabled", body.delete_enabled, "是否允许 Worker 自动删除 R2 对象"),
+        ]:
+            row = db.query(AppSetting).filter(AppSetting.key == key).first()
+            if not row:
+                row = AppSetting(key=key, value_type="bool", description=description)
+                db.add(row)
+            row.value = "true" if value else "false"
+            row.updated_at = now()
+        db.commit()
+    finally:
+        db.close()
+    pushed = await runtime_config_service.push_to_worker()
+    return ApiResult(
+        # 配置已持久化即为成功；Worker 离线仅作为下发状态提示，重连后全量配置会补发。
+        success=True,
+        message="R2 开关已保存并下发" if pushed else "开关已保存，但 Worker 当前未连接或下发失败",
+        data={"write_enabled": body.write_enabled,
+              "delete_enabled": body.delete_enabled, "pushed": pushed},
+    )
+
+
+@router.get("/r2-task")
+async def r2_task_status(_: LocalUser = Depends(get_current_user)):
+    return ApiResult(data=r2_sync_service.status())
+
+
+@router.post("/r2-scan")
+async def scan_r2(_: LocalUser = Depends(require_operator)):
+    started = r2_sync_service.start("scan")
+    return ApiResult(success=started,
+                     message="已开始扫描 R2" if started else "已有 R2 任务正在运行",
+                     data=r2_sync_service.status())
+
+
+@router.post("/r2-sync")
+async def sync_r2_to_local(_: LocalUser = Depends(require_operator)):
+    """复制 R2 全部 comment 对象到本地；不删除 R2。"""
+    started = r2_sync_service.start("sync")
+    return ApiResult(success=started,
+                     message="已开始复制 R2 存量到本地" if started else "已有 R2 任务正在运行",
+                     data=r2_sync_service.status())
 
 
 class UnlimitedUpdate(BaseModel):

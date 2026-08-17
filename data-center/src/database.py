@@ -98,13 +98,27 @@ async def ensure_compatible_schema():
 
 
 async def apply_db_patches():
-    """执行数据库特殊补丁（数据回填/索引/一次性修正等）。
+    """执行带历史记录的数据库特殊补丁。
 
-    补丁逻辑集中在 database_patches.py，单补丁失败不中断启动。
+    普通补丁只在首次成功检查时运行；不可逆补丁默认关闭，需显式开关。
     """
     try:
-        from src.database_patches import apply_patches
-        apply_patches(engine)
+        from src.config import settings
+        from src.db_patches import (
+            DESTRUCTIVE_PATCHES,
+            PATCHES,
+            apply_patch_registry,
+        )
+
+        patches = list(PATCHES)
+        if settings.ALLOW_DESTRUCTIVE_DB_PATCHES:
+            logger.warning("⚠️ 已开启不可逆数据库补丁；请确认已完成备份")
+            patches.extend(DESTRUCTIVE_PATCHES)
+        apply_patch_registry(
+            engine,
+            patches,
+            allow_destructive=settings.ALLOW_DESTRUCTIVE_DB_PATCHES,
+        )
     except Exception as e:
         # 补丁入口本身异常也不阻断启动（补丁是兜底修正，非关键路径）
         logger.error(f"❌ 数据库补丁入口执行异常（已跳过）: {e}")
@@ -131,6 +145,24 @@ async def init_app_settings():
             "cleanup_runtime_event_retention_days": ("30", "int", "运行事件保留天数", False),
             "cleanup_expired_cache_enabled": ("false", "bool", "是否删除过期响应缓存空壳", False),
             "cleanup_expired_cache_retention_days": ("90", "int", "过期响应缓存空壳额外保留天数", False),
+            # 别名自动补充任务（增量提取缓存词 + 生成空结果词候选）
+            "alias_supplement_enabled": ("true", "bool", "是否启用别名自动补充任务", False),
+            "alias_supplement_interval_seconds": ("3600", "int", "别名补充任务执行间隔（秒）", False),
+            "alias_supplement_extract_cache": ("true", "bool", "是否增量提取有结果搜索词为别名", False),
+            "alias_supplement_auto_match": ("true", "bool", "是否为空结果词自动生成候选", False),
+            "alias_supplement_candidate_limit": ("200", "int", "每轮生成候选的最大扫描条数", False),
+            # AI 辅助：仅给 pending 候选打分供人工参考，不自动上线
+            "alias_ai_enabled": ("false", "bool", "是否启用 AI 辅助别名匹配", False),
+            "alias_ai_base_url": ("https://api.openai.com/v1", "string", "AI 接口地址（OpenAI 兼容）", False),
+            "alias_ai_api_key": ("", "secret", "AI 接口 API Key", True),
+            "alias_ai_model": ("gpt-4o-mini", "string", "AI 模型名", False),
+            "alias_ai_max_calls_per_run": ("50", "int", "每轮最多调用 AI 次数（控费）", False),
+            "alias_ai_skip_confidence": ("80", "int", "算法置信度高于此值则跳过 AI", False),
+            # 外部源别名补充（阶段 8）：本地匹配不到时才用，产出仍是 pending
+            "alias_external_enabled": ("false", "bool", "是否启用外部源（TMDB/BGM）别名补充", False),
+            "alias_external_provider": ("tmdb", "string", "外部源：tmdb 或 bgm", False),
+            "alias_tmdb_api_key": ("", "secret", "TMDB API Key（选 tmdb 时必填）", True),
+            "alias_external_max_calls": ("30", "int", "每轮最多请求外部源次数", False),
         }
 
         db = SessionLocal()

@@ -31,6 +31,11 @@ def _brief(r: UaLimitRule) -> dict:
         "sign_group_id": getattr(r, "sign_group_id", None) or "",
         # 用户名过滤与实例 ID 校验（空=不启用对应校验）
         "user_group_id": getattr(r, "user_group_id", None) or "",
+        # 回源限流（限真正打上游的次数，缓存命中不消耗）
+        "origin_limit_enabled": bool(getattr(r, "origin_limit_enabled", False)),
+        "origin_max_per_hour": getattr(r, "origin_max_per_hour", None),
+        "origin_max_per_day": getattr(r, "origin_max_per_day", None),
+        "origin_path_limits": getattr(r, "origin_path_limits_json", None) or [],
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
 
@@ -55,6 +60,15 @@ def _to_worker_object(rows) -> dict:
         # 用户允许名单组 / 实例 ID 校验参数（导出时保留，便于整体迁移）
         if getattr(r, "user_group_id", None):
             cfg["userGroupId"] = r.user_group_id
+        # 回源限流：导出时保留，便于整体迁移（关闭状态不写，保持导出精简）
+        if getattr(r, "origin_limit_enabled", False):
+            cfg["originLimitEnabled"] = True
+            if getattr(r, "origin_max_per_hour", None) is not None:
+                cfg["originMaxRequestsPerHour"] = r.origin_max_per_hour
+            if getattr(r, "origin_max_per_day", None) is not None:
+                cfg["originMaxRequestsPerDay"] = r.origin_max_per_day
+            if getattr(r, "origin_path_limits_json", None):
+                cfg["originPathLimits"] = r.origin_path_limits_json
         # 同时保留 maxRequests/windowMs，兼容旧消费方
         cfg["maxRequests"] = r.max_requests
         cfg["windowMs"] = r.window_ms
@@ -109,6 +123,10 @@ async def create_rule(body: UaRuleCreate, _: LocalUser = Depends(require_operato
             path_limits_json=body.path_limits or [], enabled=body.enabled,
             sign_group_id=(body.sign_group_id.strip() or None) if body.sign_group_id else None,
             user_group_id=(body.user_group_id.strip() or None) if body.user_group_id else None,
+            origin_limit_enabled=bool(body.origin_limit_enabled),
+            origin_max_per_hour=body.origin_max_per_hour,
+            origin_max_per_day=body.origin_max_per_day,
+            origin_path_limits_json=body.origin_path_limits or [],
         )
         db.add(rule)
         db.commit()
@@ -145,6 +163,15 @@ async def update_rule(rule_id: int, body: UaRuleUpdate,
         # 以下三项同样以「空串 => None => 不启用该校验」的语义处理
         if body.user_group_id is not None:
             rule.user_group_id = body.user_group_id.strip() or None
+        # 回源限流四项，各自独立可改
+        if body.origin_limit_enabled is not None:
+            rule.origin_limit_enabled = bool(body.origin_limit_enabled)
+        if body.origin_max_per_hour is not None:
+            rule.origin_max_per_hour = body.origin_max_per_hour
+        if body.origin_max_per_day is not None:
+            rule.origin_max_per_day = body.origin_max_per_day
+        if body.origin_path_limits is not None:
+            rule.origin_path_limits_json = body.origin_path_limits
         rule.updated_at = now()
         db.commit()
         db.refresh(rule)
@@ -269,6 +296,21 @@ async def import_rules(body: UaRuleImport, _: LocalUser = Depends(require_operat
                     return None
 
                 row.user_group_id = _pick("userGroupId", "user_group_id")
+
+                # 回源限流导入：开关缺省 False，保证旧格式 JSON 导入后行为不变
+                _org_en = it.get("originLimitEnabled")
+                if _org_en is None:
+                    _org_en = it.get("origin_limit_enabled")
+                row.origin_limit_enabled = bool(_org_en)
+                row.origin_max_per_hour = _pick_int(
+                    it.get("originMaxRequestsPerHour", it.get("origin_max_per_hour"))
+                )
+                row.origin_max_per_day = _pick_int(
+                    it.get("originMaxRequestsPerDay", it.get("origin_max_per_day"))
+                )
+                row.origin_path_limits_json = (
+                    it.get("originPathLimits") or it.get("origin_path_limits") or []
+                )
                 row.updated_at = now()
             db.commit()
             return created, updated, errors

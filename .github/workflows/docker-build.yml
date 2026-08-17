@@ -5,17 +5,72 @@ on:
     branches: [ main, master, test ]
     paths:
       - 'data-center/**'
+      - 'worker/**'
+      - '.github/workflows/docker-build.yml'
   pull_request:
     branches: [ main, master, test ]
     paths:
       - 'data-center/**'
+      - 'worker/**'
+      - '.github/workflows/docker-build.yml'
 
 env:
-  REGISTRY: docker.io
-  IMAGE_NAME: ${{ github.repository }}
+  DOCKERHUB_IMAGE: docker.io/${{ github.repository }}
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  quality:
+    name: Test and lint
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: pip
+        cache-dependency-path: data-center/requirements/*.txt
+
+    - name: Install Python test dependencies
+      working-directory: data-center
+      run: pip install -r requirements/test.txt
+
+    - name: Check Python and run tests
+      working-directory: data-center
+      env:
+        DATABASE_URL: sqlite://
+        CONFIG_PATH: /tmp/dd-danmaku-test
+      run: |
+        python -m compileall -q src
+        python -m pytest -q
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: npm
+        cache-dependency-path: data-center/web/package-lock.json
+
+    - name: Check Worker
+      working-directory: worker
+      run: |
+        node --check cf_worker.js
+        node --test tests/*.test.mjs
+
+    - name: Install frontend dependencies
+      working-directory: data-center/web
+      run: npm ci
+
+    - name: Lint and build frontend
+      working-directory: data-center/web
+      run: |
+        npm run lint:check
+        npm run build
+
   build:
+    needs: quality
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,15 +87,25 @@ jobs:
       if: github.event_name != 'pull_request'
       uses: docker/login-action@v3
       with:
-        registry: ${{ env.REGISTRY }}
+        registry: docker.io
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Log in to GitHub Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Extract metadata
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.IMAGE_NAME }}
+        images: |
+          ${{ env.DOCKERHUB_IMAGE }}
+          ${{ env.GHCR_IMAGE }}
         tags: |
           type=ref,event=branch
           type=ref,event=pr
@@ -72,7 +137,8 @@ jobs:
         
         services:
           data-center:
-            image: ${{ env.IMAGE_NAME }}:latest
+            # 部署文件继续使用 Docker Hub；同一构建也会同步发布到 GHCR。
+            image: ${{ env.DOCKERHUB_IMAGE }}:latest
             container_name: danmu-data-center
             ports:
               - "7759:7759"
