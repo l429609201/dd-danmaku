@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.2.8
+// @version      1.2.9
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -36,343 +36,38 @@
     // note01: 部分 AndroidTV 仅支持最高 ES9 (支持 webview 内核版本 60 以上)
     // note02: url 禁止使用相对路径,非 web 环境的根路径为文件路径,非 http
 
+    // ─── 自定义 API 服务器类型识别 ─────────────────────────────────────────────
 
-    const ddSign = {
-        _instance: null,
-        _loading: null,
-        _failed: false,
-        _failedAt: 0,
-
-        get _wasmUrl() {
-            return requireSparkMD5Path.replace(/\/tools\/.*$/, '/tools/sign.wasm');
+    /** 
+     * 访问自定义API Get {URL}/api/v2/version 接口，获取弹幕服务器相关信息
+     * 接口响应示例：
+     * {
+     *   "success": true,
+     *   "errorCode": 0,
+     *   "errorMessage": "",
+     *   "serverName": "Misaka_Danmu_Server",
+     *   "version": "2.8.7",
+     *   "serverTime": "2026-08-19T14:51:34.838892"
+     * }
+     * 用于验证弹幕服务器类型，通过serverName匹配来判断
+     * 已知服务器类型表，按 serverName 匹配。
+     * badge: 展示在列表行的小卡片文字
+     * color: 卡片背景色
+     * supportsAsync: 是否支持 async=1 异步弹幕轮询接口，https://docs.misaka10876.top/类dandanplay接口#v2-7-0-改动
+     */
+    const knownApiServers = [
+        {
+            serverName: 'Misaka_Danmu_Server',
+            badge: '御坂弹幕库',
+            color: '#7b5ea7',
+            supportsAsync: true,  // 支持 async=1 异步弹幕轮询接口 
         },
+        // 如需支持更多服务器类型，在此追加即可
+    ];
 
-        async _ensure() {
-            if (this._instance) return this._instance;
-            const RETRY_COOLDOWN_MS = 3000;
-            if (this._failed) {
-                if (Date.now() - this._failedAt < RETRY_COOLDOWN_MS) return null;
-                this._failed = false;
-                try { logger.info('[签名] wasm 加载冷却期结束，尝试重新加载'); } catch (_) {}
-            }
-            // 已有正在进行中的加载，等待其完成
-            if (this._loading) return this._loading;
-            const imports = { env: { abort: () => { throw new Error('wasm abort'); } } };
-            this._loading = (async () => {
-                // 优先使用 instantiateStreaming（浏览器更友好，无需先转 ArrayBuffer）
-                if (typeof WebAssembly.instantiateStreaming === 'function') {
-                    try {
-                        const resp = await fetch(this._wasmUrl);
-                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-                        const { instance } = await WebAssembly.instantiateStreaming(resp, imports);
-                        this._instance = instance.exports;
-                        try { logger.info('[签名] wasm 加载成功 (streaming)'); } catch (_) {}
-                        return this._instance;
-                    } catch (streamErr) {
-                        // streaming 失败（如 CSP / Content-Type 不匹配），回退到 arrayBuffer 方式
-                        try { logger.warn('[签名] streaming 失败，回退 arrayBuffer:', streamErr && (streamErr.message || streamErr)); } catch (_) {}
-                    }
-                }
-                // 回退：先下载字节再实例化
-                const resp2 = await fetch(this._wasmUrl);
-                if (!resp2.ok) throw new Error('HTTP ' + resp2.status);
-                const bytes = await resp2.arrayBuffer();
-                const { instance } = await WebAssembly.instantiate(bytes, imports);
-                this._instance = instance.exports;
-                try { logger.info('[签名] wasm 加载成功 (arrayBuffer)'); } catch (_) {}
-                return this._instance;
-            })();
-            try {
-                return await this._loading;
-            } catch (e) {
-                this._failed = true;
-                this._failedAt = Date.now();
-                // 打完整错误对象，方便排查 CSP / 网络 / 实例化具体原因
-                try { logger.warn('[签名] wasm 加载失败，3s后将重试:', e); } catch (_) {}
-                return null;
-            } finally {
-                this._loading = null;
-            }
-        },
-
-        /**
-         * 预热加载：在页面初始化时主动触发一次 wasm 加载，
-         * 避免首次业务请求时 wasm 还未就绪导致签名头缺失。
-         * 失败时静默，_ensure 的重试机制会在后续请求时接管。
-         */
-        warmup() {
-            if (this._instance || this._loading) return;
-            try { logger.info('[签名] wasm 预热加载开始'); } catch (_) {}
-            this._ensure().then(inst => {
-                if (!inst) {
-                    // 预热失败，3s 后再试一次（此时冷却也结束了）
-                    setTimeout(() => this._ensure(), 3500);
-                }
-            }).catch(() => {});
-        },
-
-        _writeStr(ex, str) {
-            const ptr = ex.__new(str.length << 1, 2); 
-            const mem = new Uint16Array(ex.memory.buffer, ptr, str.length);
-            for (let i = 0; i < str.length; i++) mem[i] = str.charCodeAt(i);
-            return ptr;
-        },
-        _readStr(ex, ptr) {
-            const len = new Uint32Array(ex.memory.buffer, ptr - 4, 1)[0] >>> 1;
-            const mem = new Uint16Array(ex.memory.buffer, ptr, len);
-            let s = '';
-            for (let i = 0; i < len; i++) s += String.fromCharCode(mem[i]);
-            return s;
-        },
-
-        async compute(userId, ts, path) {
-            const ex = await this._ensure();
-            if (!ex) return null;
-            try {
-                const raw = `${userId}:${ts}:${path}`;
-                const p = ex.__pin ? ex.__pin(this._writeStr(ex, raw)) : this._writeStr(ex, raw);
-                const rp = ex.sign(p);
-                const out = this._readStr(ex, rp);
-                if (ex.__unpin) ex.__unpin(p);
-                return out;
-            } catch (e) {
-                try { logger.warn('[签名] 计算异常,本次不带签名', e && e.message); } catch (_) {}
-                return null;
-            }
-        },
-
-        _obfUser: null,
-        _obfUserSrc: '',
-        async userMark() {
-            let uid = '';
-            try { uid = (typeof ApiClient !== 'undefined' && ApiClient.getCurrentUserId) ? (ApiClient.getCurrentUserId() || '') : ''; } catch (_) {}
-            if (!uid) return '';
-            if (this._obfUser && this._obfUserSrc === uid) return this._obfUser;
-
-            const ex = await this._ensure();
-            if (!ex || !ex.obfuscateUser) return uid;
-            try {
-                const p = ex.__pin ? ex.__pin(this._writeStr(ex, uid)) : this._writeStr(ex, uid);
-                const out = this._readStr(ex, ex.obfuscateUser(p));
-                if (ex.__unpin) ex.__unpin(p);
-                if (!out) return uid;
-                this._obfUserSrc = uid;
-                this._obfUser = out;
-                return out;
-            } catch (e) {
-                try { logger.warn('[签名] 异常,回退原始ID', e && e.message); } catch (_) {}
-                return uid;
-            }
-        },
-
-        async buildHeaders(url) {
-            const userId = await this.userMark();
-            const ts = Math.floor(Date.now() / 1000);
-            let path = '';
-            try {
-                const real = url.replace(corsProxy, '');
-                path = new URL(real).pathname;
-            } catch (_) {
-                const m = url.match(/\/api\/v2\/[^?]*/);
-                path = m ? m[0] : '';
-            }
-            const sig = await this.compute(userId, ts, path);
-            if (!sig) return {};
-            return { 'X-Ddd-User': String(userId), 'X-Ddd-Ts': String(ts), 'X-Ddd-Sign': sig };
-        },
-
-        isProxiedOfficial(url) {
-            return typeof url === 'string' && !!corsProxy && url.startsWith(corsProxy);
-        },
-
-        /**
-         * wasm 自检：主动验证 wasm 是否可正常加载并运行
-         * 在浏览器控制台执行 window.ddSign.selfTest() 即可诊断
-         * 返回 { ok: boolean, detail: string }
-         */
-        async selfTest() {
-            const log = (msg) => { try { logger.info('[签名自检] ' + msg); } catch (_) { console.log('[签名自检] ' + msg); } };
-            const warn = (msg) => { try { logger.warn('[签名自检] ' + msg); } catch (_) { console.warn('[签名自检] ' + msg); } };
-
-            log('开始...');
-            log('wasm URL: (已隐藏)');
-            log('WebAssembly 支持: ' + (typeof WebAssembly !== 'undefined' ? '✓' : '✗ 不支持'));
-
-            if (typeof WebAssembly === 'undefined') {
-                warn('当前环境不支持 WebAssembly，签名功能不可用');
-                return { ok: false, detail: 'WebAssembly 不支持' };
-            }
-
-            // 强制重新加载（忽略缓存实例，直接测fetch+instantiate）
-            log('正在 fetch wasm 文件...');
-            let bytes;
-            try {
-                const resp = await fetch(this._wasmUrl);
-                log('fetch 响应状态: ' + resp.status + ' ' + resp.statusText);
-                if (!resp.ok) {
-                    warn('fetch 失败: HTTP ' + resp.status);
-                    return { ok: false, detail: 'fetch HTTP ' + resp.status };
-                }
-                bytes = await resp.arrayBuffer();
-                log('fetch 成功，文件大小: ' + bytes.byteLength + ' 字节');
-            } catch (e) {
-                warn('fetch 异常: ' + (e && e.message));
-                return { ok: false, detail: 'fetch 异常: ' + (e && e.message) };
-            }
-
-            // 尝试实例化
-            log('正在 WebAssembly.instantiate...');
-            let exports;
-            try {
-                const { instance } = await WebAssembly.instantiate(bytes, {
-                    env: { abort: () => { throw new Error('wasm abort'); } },
-                });
-                exports = instance.exports;
-                log('instantiate 成功，导出函数: ' + Object.keys(exports).join(', '));
-            } catch (e) {
-                warn('instantiate 失败: ' + (e && e.message));
-                return { ok: false, detail: 'instantiate 失败: ' + (e && e.message) };
-            }
-
-            // 检查必要导出
-            const required = ['sign', 'obfuscateUser', '__new'];
-            for (const fn of required) {
-                if (typeof exports[fn] !== 'function') {
-                    warn('缺少导出函数: ' + fn);
-                    return { ok: false, detail: '缺少导出: ' + fn };
-                }
-            }
-            log('必要导出函数检查通过: ' + required.join(', '));
-
-            // 试算一次签名
-            log('正在试算签名...');
-            try {
-                const testRaw = 'testUser:1234567890:/api/v2/match';
-                const pRaw = exports.__pin ? exports.__pin(this._writeStr(exports, testRaw)) : this._writeStr(exports, testRaw);
-                const pSig = exports.sign(pRaw);
-                const sig = this._readStr(exports, pSig);
-                if (exports.__unpin) exports.__unpin(pRaw);
-                log('sign() 试算结果: ' + sig.substring(0, 20) + '...(长度' + sig.length + ')');
-                if (!sig || sig.length < 10) {
-                    warn('sign() 返回结果异常');
-                    return { ok: false, detail: 'sign() 结果异常' };
-                }
-            } catch (e) {
-                warn('sign() 调用异常: ' + (e && e.message));
-                return { ok: false, detail: 'sign() 异常: ' + (e && e.message) };
-            }
-
-            // 试算一次用户混淆
-            log('正在试算 obfuscateUser...');
-            try {
-                const testUid = 'test-user-id';
-                const pUid = exports.__pin ? exports.__pin(this._writeStr(exports, testUid)) : this._writeStr(exports, testUid);
-                const pObf = exports.obfuscateUser(pUid);
-                const obf = this._readStr(exports, pObf);
-                if (exports.__unpin) exports.__unpin(pUid);
-                log('obfuscateUser() 试算结果: ' + obf.substring(0, 20) + '...(长度' + obf.length + ')');
-            } catch (e) {
-                warn('obfuscateUser() 调用异常: ' + (e && e.message));
-                return { ok: false, detail: 'obfuscateUser() 异常: ' + (e && e.message) };
-            }
-
-            log('✅ 自检全部通过，wasm 工作正常');
-            log('当前实例状态: _instance=' + (this._instance ? '已加载' : '未加载') + ' _failed=' + this._failed);
-            return { ok: true, detail: 'wasm 工作正常' };
-        },
-    };
-    // 方便在控制台直接调用：window.ddSign.selfTest()
-    window.ddSign = ddSign;
-
-
-    // ------ 自定义API签名验证 start ------
-    // FIPS 180-4 标准的 SHA-256 算法的纯 JS 实现
-    const sha256Pure = (() => {
-        const K = [
-            0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-            0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-            0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-            0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-            0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-            0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-            0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-            0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
-        ];
-        function rotr(x, n) { return (x >>> n) | (x << (32 - n)); }
-        return function (data) {
-            var bytes = new TextEncoder().encode(data);
-            var bitLen = bytes.length * 8;
-            var paddedLen = ((bytes.length + 9 + 63) >>> 6) << 6;
-            var buf = new Uint8Array(paddedLen);
-            buf.set(bytes);
-            buf[bytes.length] = 0x80;
-            var hi = Math.floor(bitLen / 0x100000000);
-            var lo = bitLen >>> 0;
-            var v = new DataView(buf.buffer, paddedLen - 8, 8);
-            v.setUint32(0, hi, false);
-            v.setUint32(4, lo, false);
-            var w = new Uint32Array(64);
-            var h = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
-            for (var off = 0; off < paddedLen; off += 64) {
-                for (var i = 0; i < 16; i++) {
-                    w[i] = (buf[off + i * 4] << 24) | (buf[off + i * 4 + 1] << 16) | (buf[off + i * 4 + 2] << 8) | buf[off + i * 4 + 3];
-                }
-                for (var i = 16; i < 64; i++) {
-                    var s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
-                    var s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
-                    w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
-                }
-                var a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
-                for (var i = 0; i < 64; i++) {
-                    var S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
-                    var ch = (e & f) ^ (~e & g);
-                    var t1 = (hh + S1 + ch + K[i] + w[i]) >>> 0;
-                    var S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
-                    var maj = (a & b) ^ (a & c) ^ (b & c);
-                    var t2 = (S0 + maj) >>> 0;
-                    hh = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
-                }
-                h[0] = (h[0] + a) >>> 0; h[1] = (h[1] + b) >>> 0; h[2] = (h[2] + c) >>> 0; h[3] = (h[3] + d) >>> 0;
-                h[4] = (h[4] + e) >>> 0; h[5] = (h[5] + f) >>> 0; h[6] = (h[6] + g) >>> 0; h[7] = (h[7] + hh) >>> 0;
-            }
-            var out = new Uint8Array(32);
-            var dv = new DataView(out.buffer);
-            for (var i = 0; i < 8; i++) dv.setUint32(i * 4, h[i], false);
-            return out;
-        };
-    })();
-
-    async function generateCustomApiSignature(appId, timestamp, path, appSecret) {
-        var data = appId + timestamp + path + appSecret;
-        var hashBuffer;
-        // 优先使用 crypto.subtle，网站为 HTTP 时降级为纯 JS 的 SHA-256
-        if (typeof crypto !== "undefined" && crypto.subtle && crypto.subtle.digest) {
-            try {
-                var dataUint8 = new TextEncoder().encode(data);
-                hashBuffer = await crypto.subtle.digest("SHA-256", dataUint8);
-            } catch (_) { hashBuffer = sha256Pure(data); }
-        } else { hashBuffer = sha256Pure(data); }
-        var hashArray = Array.from(new Uint8Array(hashBuffer));
-        return btoa(hashArray.map(function (b) { return String.fromCharCode(b); }).join(""));
-    }
-
-    async function buildCustomApiSignHeaders(appId, appSecret, url) {
-        if (!appId || !appSecret) return {};
-        try {
-            var ts = Math.floor(Date.now() / 1000);
-            var path = new URL(url).pathname;
-            var sig = await generateCustomApiSignature(appId, ts, path, appSecret);
-            var headers = { "X-AppId": appId, "X-Signature": sig, "X-Timestamp": String(ts) };
-            return headers;
-        } catch (e) {
-            try { logger.warn("[签名] 自定义API签名计算失败,本次不带签名", e && e.message); } catch (_) {}
-            return {};
-        }
-    }
-    // ------ 自定义API签名验证 end ------
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.2.8', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.2.9', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -530,8 +225,29 @@
         sentiment_very_satisfied: 'sentiment_very_satisfied',
         check: 'check',
         edit: 'edit',
-        layers_clear: 'layers_clear',  
+        layers_clear: 'layers_clear',
     };
+
+    // 弹幕设置按钮自定义图标：圆形大框装"弹"字 + 右下角小齿轮角标
+    const danmakuSettingIconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="2em" height="2em" fill="currentColor" style="vertical-align:middle;display:inline-block">'
+        // 外圆圈
+        + '<circle cx="11" cy="11" r="9.5" fill="none" stroke="currentColor" stroke-width="1.5"/>'
+        // "弹"字，居中
+        + '<text x="11" y="11" text-anchor="middle" dominant-baseline="central" font-size="10" font-weight="bold" font-family="sans-serif" fill="currentColor">弹</text>'
+        // 右下角齿轮角标（viewBox 原始 24×24，缩放到 10×10 放在右下角）
+        + '<g transform="translate(13.5,13.5) scale(0.42)">'
+        + '<path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58'
+        + 'c0.18-0.14,0.23-0.41,0.12-0.61l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96'
+        + 'c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81C14.36,2.57,14.16,2.4,13.92,2.4H10.08'
+        + 'c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33'
+        + 'c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58'
+        + 'C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58c-0.18,0.14-0.23,0.41-0.12,0.61'
+        + 'l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54'
+        + 'c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54'
+        + 'c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32'
+        + 'c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z'
+        + 'M12,15.6c-1.98,0-3.6-1.62-3.6-3.6s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/>'
+        + '</g></svg>';
     // 此 id 等同于 danmakuTabOpts 内的弹幕信息的 id
     const currentDanmakuInfoContainerId = 'danmakuTab2';
     const tabIframeId = 'danmakuTab5';
@@ -889,9 +605,10 @@
         episodeOffsetRulesDiv: 'episodeOffsetRulesDiv',
     };
     // 播放界面下方按钮
+    // danmakuSwitchBtn 以"弹"文字替代图标，加载中由 CSS @keyframes 旋转动效提示状态
     const mediaBtnOpts = [
-        { id: eleIds.danmakuSwitchBtn, label: '弹幕开关', iconKey: iconKeys.comment, onClick: doDanmakuSwitch },
-        { label: '弹幕设置', iconKey: iconKeys.setting, onClick: createDialog },
+        { id: eleIds.danmakuSwitchBtn, label: '弹幕开关', danmakuTextBtn: true, onClick: doDanmakuSwitch },
+        { label: '弹幕设置', svgHtml: danmakuSettingIconSvg, onClick: createDialog },
     ];
     const customeUrlMsg1 = '限弹弹 play API 兼容结构';
     const customeUrl = {
@@ -1035,7 +752,7 @@
         // prettier-ignore
         // 注意: 原版使用 this 作为全局对象，但在严格模式下 this 为 undefined，改用 window 确保兼容性
         logger.info('[弹幕引擎] 使用内联模式加载 Danmaku 库 (非 CustomCssJS 环境)');
-        !function(t,e){"object"==typeof exports&&"undefined"!=typeof module?module.exports=e():false && "function"==typeof define&&define.amd?define(e):(t="undefined"!=typeof globalThis?globalThis:t||self).Danmaku=e()}(window,(function(){"use strict";var t=function(){if("undefined"==typeof document)return"transform";for(var t=["oTransform","msTransform","mozTransform","webkitTransform","transform"],e=document.createElement("div").style,i=0;i<t.length;i++)if(t[i]in e)return t[i];return"transform"}();function e(t){var e=document.createElement("div");if(e.style.cssText="position:absolute;","function"==typeof t.render){var i=t.render();if(i instanceof HTMLElement)return e.appendChild(i),e}if(e.textContent=t.text,t.style)for(var n in t.style)e.style[n]=t.style[n];return e}var i={name:"dom",init:function(){var t=document.createElement("div");return t.style.cssText="overflow:hidden;white-space:nowrap;transform:translateZ(0);",t},clear:function(t){for(var e=t.lastChild;e;)t.removeChild(e),e=t.lastChild},resize:function(t,e,i){t.style.width=e+"px",t.style.height=i+"px"},framing:function(){},setup:function(t,i){var n=document.createDocumentFragment(),s=0,r=null;for(s=0;s<i.length;s++)(r=i[s]).node=r.node||e(r),n.appendChild(r.node);for(i.length&&t.appendChild(n),s=0;s<i.length;s++)(r=i[s]).width=r.width||r.node.offsetWidth,r.height=r.height||r.node.offsetHeight},render:function(e,i){i.node.style[t]="translate("+i.x+"px,"+i.y+"px)"},remove:function(t,e){t.removeChild(e.node),this.media||(e.node=null)}},n="undefined"!=typeof window&&window.devicePixelRatio||1,s=Object.create(null);function r(t,e){if("function"==typeof t.render){var i=t.render();if(i instanceof HTMLCanvasElement)return t.width=i.width,t.height=i.height,i}var r=document.createElement("canvas"),h=r.getContext("2d"),o=t.style||{};o.font=o.font||"10px sans-serif",o.textBaseline=o.textBaseline||"bottom";var a=1*o.lineWidth;for(var d in a=a>0&&a!==1/0?Math.ceil(a):1*!!o.strokeStyle,h.font=o.font,t.width=t.width||Math.max(1,Math.ceil(h.measureText(t.text).width)+2*a),t.height=t.height||Math.ceil(function(t,e){if(s[t])return s[t];var i=12,n=t.match(/(\d+(?:\.\d+)?)(px|%|em|rem)(?:\s*\/\s*(\d+(?:\.\d+)?)(px|%|em|rem)?)?/);if(n){var r=1*n[1]||10,h=n[2],o=1*n[3]||1.2,a=n[4];"%"===h&&(r*=e.container/100),"em"===h&&(r*=e.container),"rem"===h&&(r*=e.root),"px"===a&&(i=o),"%"===a&&(i=r*o/100),"em"===a&&(i=r*o),"rem"===a&&(i=e.root*o),void 0===a&&(i=r*o)}return s[t]=i,i}(o.font,e))+2*a,r.width=t.width*n,r.height=t.height*n,h.scale(n,n),o)h[d]=o[d];var u=0;switch(o.textBaseline){case"top":case"hanging":u=a;break;case"middle":u=t.height>>1;break;default:u=t.height-a}return o.strokeStyle&&h.strokeText(t.text,a,u),h.fillText(t.text,a,u),r}function h(t){return 1*window.getComputedStyle(t,null).getPropertyValue("font-size").match(/(.+)px/)[1]}var o={name:"canvas",init:function(t){var e=document.createElement("canvas");return e.context=e.getContext("2d"),e._fontSize={root:h(document.getElementsByTagName("html")[0]),container:h(t)},e},clear:function(t,e){t.context.clearRect(0,0,t.width,t.height);for(var i=0;i<e.length;i++)e[i].canvas=null},resize:function(t,e,i){t.width=e*n,t.height=i*n,t.style.width=e+"px",t.style.height=i+"px"},framing:function(t){t.context.clearRect(0,0,t.width,t.height)},setup:function(t,e){for(var i=0;i<e.length;i++){var n=e[i];n.canvas=r(n,t._fontSize)}},render:function(t,e){t.context.drawImage(e.canvas,e.x*n,e.y*n)},remove:function(t,e){e.canvas=null}},a=("undefined"!=typeof window&&(window.requestAnimationFrame||window.mozRequestAnimationFrame||window.webkitRequestAnimationFrame)||function(t){return setTimeout(t,50/3)}).bind(window),d=("undefined"!=typeof window&&(window.cancelAnimationFrame||window.mozCancelAnimationFrame||window.webkitCancelAnimationFrame)||clearTimeout).bind(window);function u(t,e,i){for(var n=0,s=0,r=t.length;s<r-1;)i>=t[n=s+r>>1][e]?s=n:r=n;return t[s]&&i<t[s][e]?s:r}function m(t){return/^(ltr|top|bottom)$/i.test(t)?t.toLowerCase():"rtl"}function c(){var t=9007199254740991;return[{range:0,time:-t,width:t,height:0},{range:t,time:t,width:0,height:0}]}function l(t){t.ltr=c(),t.rtl=c(),t.top=c(),t.bottom=c()}function f(){return void 0!==window.performance&&window.performance.now?window.performance.now():Date.now()}function p(t){var e=this,i=this.media?this.media.currentTime:f()/1e3,n=this.media?this.media.playbackRate:1;function s(t,s){if("top"===s.mode||"bottom"===s.mode)return i-t.time<e._.duration;var r=(e._.width+t.width)*(i-t.time)*n/e._.duration;if(t.width>r)return!0;var h=e._.duration+t.time-i,o=e._.width+s.width,a=e.media?s.time:s._utc,d=o*(i-a)*n/e._.duration,u=e._.width-d;return h>e._.duration*u/(e._.width+s.width)}for(var r=this._.space[t.mode],h=0,o=0,a=1;a<r.length;a++){var d=r[a],u=t.height;if("top"!==t.mode&&"bottom"!==t.mode||(u+=d.height),d.range-d.height-r[h].range>=u){o=a;break}s(d,t)&&(h=a)}var m=r[h].range,c={range:m+t.height,time:this.media?t.time:t._utc,width:t.width,height:t.height};return r.splice(h+1,o-h-1,c),"bottom"===t.mode?this._.height-t.height-m%this._.height:m%(this._.height-t.height)}function g(){if(!this._.visible||!this._.paused)return this;if(this._.paused=!1,this.media)for(var t=0;t<this._.runningList.length;t++){var e=this._.runningList[t];e._utc=f()/1e3-(this.media.currentTime-e.time)}var i=this,n=function(t,e,i,n){return function(s){t(this._.stage);var r=(s||f())/1e3,h=this.media?this.media.currentTime:r,o=this.media?this.media.playbackRate:1,a=null,d=0,u=0;for(u=this._.runningList.length-1;u>=0;u--)a=this._.runningList[u],h-(d=this.media?a.time:a._utc)>this._.duration&&(n(this._.stage,a),this._.runningList.splice(u,1));for(var m=[];this._.position<this.comments.length&&(a=this.comments[this._.position],!((d=this.media?a.time:a._utc)>=h));)h-d>this._.duration||(this.media&&(a._utc=r-(this.media.currentTime-a.time)),m.push(a)),++this._.position;for(e(this._.stage,m),u=0;u<m.length;u++)(a=m[u]).y=p.call(this,a),this._.runningList.push(a);for(u=0;u<this._.runningList.length;u++){a=this._.runningList[u];var c=(this._.width+a.width)*(r-a._utc)*o/this._.duration;"ltr"===a.mode&&(a.x=c-a.width),"rtl"===a.mode&&(a.x=this._.width-c),"top"!==a.mode&&"bottom"!==a.mode||(a.x=this._.width-a.width>>1),i(this._.stage,a)}}}(this._.engine.framing.bind(this),this._.engine.setup.bind(this),this._.engine.render.bind(this),this._.engine.remove.bind(this));return this._.requestID=a((function t(e){n.call(i,e),i._.requestID=a(t)})),this}function _(){return!this._.visible||this._.paused||(this._.paused=!0,d(this._.requestID),this._.requestID=0),this}function v(){if(!this.media)return this;this.clear(),l(this._.space);var t=u(this.comments,"time",this.media.currentTime);return this._.position=Math.max(0,t-1),this}function w(t){t.play=g.bind(this),t.pause=_.bind(this),t.seeking=v.bind(this),this.media.addEventListener("play",t.play),this.media.addEventListener("pause",t.pause),this.media.addEventListener("playing",t.play),this.media.addEventListener("waiting",t.pause),this.media.addEventListener("seeking",t.seeking)}function y(t){this.media.removeEventListener("play",t.play),this.media.removeEventListener("pause",t.pause),this.media.removeEventListener("playing",t.play),this.media.removeEventListener("waiting",t.pause),this.media.removeEventListener("seeking",t.seeking),t.play=null,t.pause=null,t.seeking=null}function x(t){this._={},this.container=t.container||document.createElement("div"),this.media=t.media,this._.visible=!0,this.engine=(t.engine||"DOM").toLowerCase(),this._.engine="canvas"===this.engine?o:i,this._.requestID=0,this._.speed=Math.max(0,t.speed)||144,this._.duration=4,this.comments=t.comments||[],this.comments.sort((function(t,e){return t.time-e.time}));for(var e=0;e<this.comments.length;e++)this.comments[e].mode=m(this.comments[e].mode);return this._.runningList=[],this._.position=0,this._.paused=!0,this.media&&(this._.listener={},w.call(this,this._.listener)),this._.stage=this._.engine.init(this.container),this._.stage.style.cssText+="position:relative;pointer-events:none;",this.resize(),this.container.appendChild(this._.stage),this._.space={},l(this._.space),this.media&&this.media.paused||(v.call(this),g.call(this)),this}function b(){if(!this.container)return this;for(var t in _.call(this),this.clear(),this.container.removeChild(this._.stage),this.media&&y.call(this,this._.listener),this)Object.prototype.hasOwnProperty.call(this,t)&&(this[t]=null);return this}var L=["mode","time","text","render","style"];function T(t){if(!t||"[object Object]"!==Object.prototype.toString.call(t))return this;for(var e={},i=0;i<L.length;i++)void 0!==t[L[i]]&&(e[L[i]]=t[L[i]]);if(e.text=(e.text||"").toString(),e.mode=m(e.mode),e._utc=f()/1e3,this.media){var n=0;void 0===e.time?(e.time=this.media.currentTime,n=this._.position):(n=u(this.comments,"time",e.time))<this._.position&&(this._.position+=1),this.comments.splice(n,0,e)}else this.comments.push(e);return this}function E(){return this._.visible?this:(this._.visible=!0,this.media&&this.media.paused||(v.call(this),g.call(this)),this)}function k(){return this._.visible?(_.call(this),this.clear(),this._.visible=!1,this):this}function C(){return this._.engine.clear(this._.stage,this._.runningList),this._.runningList=[],this}function z(){return this._.width=this.container.offsetWidth,this._.height=this.container.offsetHeight,this._.engine.resize(this._.stage,this._.width,this._.height),this._.duration=this._.width/this._.speed,this}var D={get:function(){return this._.speed},set:function(t){return"number"!=typeof t||isNaN(t)||!isFinite(t)||t<=0?this._.speed:(this._.speed=t,this._.width&&(this._.duration=this._.width/t),t)}};function M(t){t&&x.call(this,t)}return M.prototype.destroy=function(){return b.call(this)},M.prototype.emit=function(t){return T.call(this,t)},M.prototype.show=function(){return E.call(this)},M.prototype.hide=function(){return k.call(this)},M.prototype.clear=function(){return C.call(this)},M.prototype.resize=function(){return z.call(this)},Object.defineProperty(M.prototype,"speed",D),M}));
+        !function(t,e){"object"==typeof exports&&"undefined"!=typeof module?module.exports=e():false && "function"==typeof define&&define.amd?define(e):(t="undefined"!=typeof globalThis?globalThis:t||self).Danmaku=e()}(window,(function(){"use strict";var t=function(){if("undefined"==typeof document)return"transform";for(var t=["oTransform","msTransform","mozTransform","webkitTransform","transform"],e=document.createElement("div").style,i=0;i<t.length;i++)if(t[i]in e)return t[i];return"transform"}();function e(t){var e=document.createElement("div");if(e.style.cssText="position:absolute;","function"==typeof t.render){var i=t.render();if(i instanceof HTMLElement)return e.appendChild(i),e}if(e.textContent=t.text,t.style)for(var n in t.style)e.style[n]=t.style[n];return e}var i={name:"dom",init:function(){var t=document.createElement("div");return t.style.cssText="overflow:hidden;white-space:nowrap;transform:translateZ(0);",t},clear:function(t){for(var e=t.lastChild;e;)t.removeChild(e),e=t.lastChild},resize:function(t,e,i){t.style.width=e+"px",t.style.height=i+"px"},framing:function(){},setup:function(t,i){var n=document.createDocumentFragment(),s=0,r=null;for(s=0;s<i.length;s++)(r=i[s]).node=r.node||e(r),n.appendChild(r.node);for(i.length&&t.appendChild(n),s=0;s<i.length;s++)(r=i[s]).width=r.width||r.node.offsetWidth,r.height=r.height||r.node.offsetHeight},render:function(e,i){i.node.style[t]="translate("+i.x+"px,"+i.y+"px)"},remove:function(t,e){t.removeChild(e.node),this.media||(e.node=null)}},n="undefined"!=typeof window&&window.devicePixelRatio||1,s=Object.create(null);function r(t,e){if("function"==typeof t.render){var i=t.render();if(i instanceof HTMLCanvasElement)return t.width=i.width,t.height=i.height,i}var r=document.createElement("canvas"),h=r.getContext("2d"),o=t.style||{};o.font=o.font||"10px sans-serif",o.textBaseline=o.textBaseline||"bottom";var a=1*o.lineWidth;for(var d in a=a>0&&a!==1/0?Math.ceil(a):1*!!o.strokeStyle,h.font=o.font,t.width=t.width||Math.max(1,Math.ceil(h.measureText(t.text).width)+2*a),t.height=t.height||Math.ceil(function(t,e){if(s[t])return s[t];var i=12,n=t.match(/(\d+(?:\.\d+)?)(px|%|em|rem)(?:\s*\/\s*(\d+(?:\.\d+)?)(px|%|em|rem)?)?/);if(n){var r=1*n[1]||10,h=n[2],o=1*n[3]||1.2,a=n[4];"%"===h&&(r*=e.container/100),"em"===h&&(r*=e.container),"rem"===h&&(r*=e.root),"px"===a&&(i=o),"%"===a&&(i=r*o/100),"em"===a&&(i=r*o),"rem"===a&&(i=e.root*o),void 0===a&&(i=r*o)}return s[t]=i,i}(o.font,e))+2*a,r.width=t.width*n,r.height=t.height*n,h.scale(n,n),o)h[d]=o[d];var u=0;switch(o.textBaseline){case"top":case"hanging":u=a;break;case"middle":u=t.height>>1;break;default:u=t.height-a}return o.strokeStyle&&h.strokeText(t.text,a,u),h.fillText(t.text,a,u),r}function h(t){return 1*window.getComputedStyle(t,null).getPropertyValue("font-size").match(/(.+)px/)[1]}var o={name:"canvas",init:function(t){var e=document.createElement("canvas");return e.context=e.getContext("2d"),e._fontSize={root:h(document.getElementsByTagName("html")[0]),container:h(t)},e},clear:function(t,e){t.context.clearRect(0,0,t.width,t.height);for(var i=0;i<e.length;i++)e[i].canvas=null},resize:function(t,e,i){t.width=e*n,t.height=i*n,t.style.width=e+"px",t.style.height=i+"px"},framing:function(t){t.context.clearRect(0,0,t.width,t.height)},setup:function(t,e){for(var i=0;i<e.length;i++){var n=e[i];n.canvas=r(n,t._fontSize)}},render:function(t,e){t.context.drawImage(e.canvas,e.x*n,e.y*n)},remove:function(t,e){e.canvas=null}},a=("undefined"!=typeof window&&(window.requestAnimationFrame||window.mozRequestAnimationFrame||window.webkitRequestAnimationFrame)||function(t){return setTimeout(t,50/3)}).bind(window),d=("undefined"!=typeof window&&(window.cancelAnimationFrame||window.mozCancelAnimationFrame||window.webkitCancelAnimationFrame)||clearTimeout).bind(window);function u(t,e,i){for(var n=0,s=0,r=t.length;s<r-1;)i>=t[n=s+r>>1][e]?s=n:r=n;return t[s]&&i<t[s][e]?s:r}function m(t){return/^(ltr|top|bottom)$/i.test(t)?t.toLowerCase():"rtl"}function c(){var t=9007199254740991;return[{range:0,time:-t,width:t,height:0},{range:t,time:t,width:0,height:0}]}function l(t){t.ltr=c(),t.rtl=c(),t.top=c(),t.bottom=c()}function f(){return void 0!==window.performance&&window.performance.now?window.performance.now():Date.now()}function p(t){var e=this,i=this.media?this.media.currentTime:f()/1e3,n=this.media?this.media.playbackRate:1;function s(t,s){if("top"===s.mode||"bottom"===s.mode)return i-t.time<e._.duration;var r=(e._.width+t.width)*(i-t.time)*n/e._.duration;if(t.width>r)return!0;var h=e._.duration+t.time-i,o=e._.width+s.width,a=e.media?s.time:s._utc,d=o*(i-a)*n/e._.duration,u=e._.width-d;return h>e._.duration*u/(e._.width+s.width)}for(var r=this._.space[t.mode],h=0,o=0,a=1;a<r.length;a++){var d=r[a],u=t.height;if("top"!==t.mode&&"bottom"!==t.mode||(u+=d.height),d.range-d.height-r[h].range>=u){o=a;break}s(d,t)&&(h=a)}var m=r[h].range,c={range:m+t.height,time:this.media?t.time:t._utc,width:t.width,height:t.height};return r.splice(h+1,o-h-1,c),"bottom"===t.mode?this._.height-t.height-m%this._.height:m%(this._.height-t.height)}function g(){if(!this._.visible||!this._.paused)return this;if(this._.paused=!1,this.media)for(var t=0;t<this._.runningList.length;t++){var e=this._.runningList[t];e._utc=f()/1e3-(this.media.currentTime-e.time)}var i=this,n=function(t,e,i,n){return function(s){t(this._.stage);var r=(s||f())/1e3,h=this.media?this.media.currentTime:r,o=this.media?this.media.playbackRate:1,a=null,d=0,u=0;for(u=this._.runningList.length-1;u>=0;u--)a=this._.runningList[u],h-(d=this.media?a.time:a._utc)>this._.duration&&(n(this._.stage,a),this._.runningList.splice(u,1));for(var m=[];this._.position<this.comments.length&&(a=this.comments[this._.position],!((d=this.media?a.time:a._utc)>=h));)h-d>this._.duration||(this.media&&(a._utc=r-(this.media.currentTime-a.time)),m.push(a)),++this._.position;for(e(this._.stage,m),u=0;u<m.length;u++)(a=m[u]).y=p.call(this,a),this._.runningList.push(a);for(u=0;u<this._.runningList.length;u++){a=this._.runningList[u];var c=(this._.width+a.width)*(r-a._utc)*o/this._.duration;"ltr"===a.mode&&(a.x=c-a.width),"rtl"===a.mode&&(a.x=this._.width-c),"top"!==a.mode&&"bottom"!==a.mode||(a.x=this._.width-a.width>>1),i(this._.stage,a)}}}(this._.engine.framing.bind(this),this._.engine.setup.bind(this),this._.engine.render.bind(this),this._.engine.remove.bind(this));return this._.requestID=a((function t(e){n.call(i,e),i._.requestID=a(t)})),this}function _(){return!this._.visible||this._.paused||(this._.paused=!0,d(this._.requestID),this._.requestID=0),this}function v(){if(!this.media)return this;this.clear(),l(this._.space);var t=u(this.comments,"time",this.media.currentTime-this._.duration);return this._.position=Math.max(0,t),this}function w(t){t.play=g.bind(this),t.pause=_.bind(this),t.seeking=v.bind(this),this.media.addEventListener("play",t.play),this.media.addEventListener("pause",t.pause),this.media.addEventListener("playing",t.play),this.media.addEventListener("waiting",t.pause),this.media.addEventListener("seeking",t.seeking)}function y(t){this.media.removeEventListener("play",t.play),this.media.removeEventListener("pause",t.pause),this.media.removeEventListener("playing",t.play),this.media.removeEventListener("waiting",t.pause),this.media.removeEventListener("seeking",t.seeking),t.play=null,t.pause=null,t.seeking=null}function x(t){this._={},this.container=t.container||document.createElement("div"),this.media=t.media,this._.visible=!0,this.engine=(t.engine||"DOM").toLowerCase(),this._.engine="canvas"===this.engine?o:i,this._.requestID=0,this._.speed=Math.max(0,t.speed)||144,this._.duration=4,this.comments=t.comments||[],this.comments.sort((function(t,e){return t.time-e.time}));for(var e=0;e<this.comments.length;e++)this.comments[e].mode=m(this.comments[e].mode);return this._.runningList=[],this._.position=0,this._.paused=!0,this.media&&(this._.listener={},w.call(this,this._.listener)),this._.stage=this._.engine.init(this.container),this._.stage.style.cssText+="position:relative;pointer-events:none;",this.resize(),this.container.appendChild(this._.stage),this._.space={},l(this._.space),this.media&&this.media.paused||(v.call(this),g.call(this)),this}function b(){if(!this.container)return this;for(var t in _.call(this),this.clear(),this.container.removeChild(this._.stage),this.media&&y.call(this,this._.listener),this)Object.prototype.hasOwnProperty.call(this,t)&&(this[t]=null);return this}var L=["mode","time","text","render","style"];function T(t){if(!t||"[object Object]"!==Object.prototype.toString.call(t))return this;for(var e={},i=0;i<L.length;i++)void 0!==t[L[i]]&&(e[L[i]]=t[L[i]]);if(e.text=(e.text||"").toString(),e.mode=m(e.mode),e._utc=f()/1e3,this.media){var n=0;void 0===e.time?(e.time=this.media.currentTime,n=this._.position):(n=u(this.comments,"time",e.time))<this._.position&&(this._.position+=1),this.comments.splice(n,0,e)}else this.comments.push(e);return this}function E(){return this._.visible?this:(this._.visible=!0,this.media&&this.media.paused||(v.call(this),g.call(this)),this)}function k(){return this._.visible?(_.call(this),this.clear(),this._.visible=!1,this):this}function C(){return this._.engine.clear(this._.stage,this._.runningList),this._.runningList=[],this}function z(){return this._.width=this.container.offsetWidth,this._.height=this.container.offsetHeight,this._.engine.resize(this._.stage,this._.width,this._.height),this._.duration=this._.width/this._.speed,this}var D={get:function(){return this._.speed},set:function(t){return"number"!=typeof t||isNaN(t)||!isFinite(t)||t<=0?this._.speed:(this._.speed=t,this._.width&&(this._.duration=this._.width/t),t)}};function M(t){t&&x.call(this,t)}return M.prototype.destroy=function(){return b.call(this)},M.prototype.emit=function(t){return T.call(this,t)},M.prototype.show=function(){return E.call(this)},M.prototype.hide=function(){return k.call(this)},M.prototype.clear=function(){return C.call(this)},M.prototype.resize=function(){return z.call(this)},Object.defineProperty(M.prototype,"speed",D),M}));
         /* eslint-enable */
         // 内联加载后立即验证
         if (typeof window.Danmaku !== 'undefined') {
@@ -1499,26 +1216,41 @@
                 // 手动模拟无鼠标步骤为浏览器页签打开后不要动鼠标,仅使用键盘操作
                 wrapper = getByClass(classes.videoOsdBottomButtonsTopRight, wrapper);
             }
-            // 在老客户端上存在右侧按钮,在右侧按钮前添加
-            const rightButtons = getByClass(classes.videoOsdBottomButtonsRight, wrapper);
             const menubar = document.createElement('div');
             menubar.id = eleIds.danmakuCtr;
-            if (!window.ede.episode_info) {
-                menubar.style.opacity = 0.5;
-            }
-            if (rightButtons) {
+            // [修改] 三路插入策略：
+            // 1. Web端美化CSS场景：topright容器存在（position:absolute脱离flex流），prepend插入其内部使弹幕按钮排在字幕等按钮左侧
+            // 2. 官方客户端场景：有 rightButtons（.videoOsdBottom-buttons-right），insertBefore插在其前面
+            // 3. 降级：都没有时 append 到末尾并 margin-left:auto 推到最右
+            const toprightWrapper = getByClass(classes.videoOsdBottomButtonsTopRight,
+                wrapper.closest('.videoOsdBottom-maincontrols') || wrapper.parentElement || wrapper);
+            const rightButtons = getByClass(classes.videoOsdBottomButtonsRight, wrapper);
+            if (toprightWrapper) {
+                toprightWrapper.prepend(menubar);
+            } else if (rightButtons) {
+                menubar.style.marginLeft = '';
                 wrapper.insertBefore(menubar, rightButtons);
             } else {
+                menubar.style.marginLeft = 'auto';
                 wrapper.append(menubar);
             }
             mediaBtnOpts.forEach(opt => {
                 menubar.appendChild(embyButton(opt, opt.onClick));
             });
-            // [修复] 初始化时检查弹幕开关状态，确保按钮图标与实际状态一致
-            const danmakuEnabled = lsGetItem(lsKeys.switch.id);
+            // [修复] 按钮创建完成后，检查是否有 loadDanmaku 提前触发的 pending 加载环状态，有则补激活
+            if (window.ede && window.ede._pendingLoadingRing) {
+                const { progress, tip } = window.ede._pendingLoadingRing;
+                window.ede._pendingLoadingRing = null;
+                ddSetLoadingRing(progress, tip);
+            }
+            // [修改] 每次进入播放页强制重置弹幕开关为开启状态，避免上次关闭状态被持久化
+            lsSetItem(lsKeys.switch.id, true);
+            const danmakuEnabled = true;
             const osdDanmakuSwitchBtn = getById(eleIds.danmakuSwitchBtn);
-            if (osdDanmakuSwitchBtn && osdDanmakuSwitchBtn.firstChild) {
-                osdDanmakuSwitchBtn.firstChild.innerHTML = danmakuEnabled ? iconKeys.comment : iconKeys.comments_disabled;
+            if (osdDanmakuSwitchBtn) {
+                // danmakuTextBtn 模式：只改内层颜色透明度，不影响整体按钮 opacity（避免加载环被压暗）
+                const inner = osdDanmakuSwitchBtn.querySelector('.dd-btn-inner');
+                if (inner) inner.style.opacity = danmakuEnabled ? '1' : '0.4';
             }
             logger.info('播放器弹幕UI初始化完成');
         }, 0);
@@ -2369,16 +2101,76 @@
         const commentAppSecret = appSecret || window.ede.episode_info?.apiAppSecret || '';
         // [兼容] 规范化 prefix：兜底处理缓存中遗留的旧格式（如缺少 /api/v2 的 dandanplay 地址）
         const prefix = normalizeCustomApiPrefix(rawPrefix, commentAppId, commentAppSecret);
-        const url = `${prefix}/comment/${episodeId}?withRelated=true&chConvert=${window.ede.chConvert}`;
+
+        // [v2.7.0] 仅当当前源对应的 serverName 在 knownApiServers 中配置了 supportsAsync:true 时，
+        // 才追加 async=1 参数，避免向不支持异步接口的服务器发送无效参数
+        const supportsAsyncPoll = (() => {
+            const list = getCustomApiList();
+            const normalize = u => (u || '').replace(/\/$/, '');
+            const matchedItem = list.find(i => normalize(i.url) === normalize(rawPrefix));
+            if (!matchedItem || !matchedItem.serverName) return false;
+            const server = knownApiServers.find(s => s.serverName === matchedItem.serverName);
+            return !!(server && server.supportsAsync);
+        })();
+        const url = `${prefix}/comment/${episodeId}?withRelated=true&chConvert=${window.ede.chConvert}${supportsAsyncPoll ? '&async=1' : ''}`;
 
         const startTime = performance.now(); // [Log] 开始计时
 
-        // [签名] 自定义API签名头
+        // [签名] 自定义API签名头（按原始 /comment URL 签名，不含 async 参数影响 path）
         const commentSignHeaders = await buildCustomApiSignHeaders(commentAppId, commentAppSecret, url);
-        return fetchJson(url, Object.keys(commentSignHeaders).length > 0 ? { headers: commentSignHeaders } : {})   // 直接使用 fetchJson
-            .then((data) => {
+        const fetchOpts = Object.keys(commentSignHeaders).length > 0
+            ? { headers: commentSignHeaders, timeoutMs: 100000 }
+            : { timeoutMs: 100000 };
+
+        // [v2.7.0] 轮询异步任务：/taskcomment/{taskId}
+        // 无次数与时间上限，持续轮询直到 completed / failed，间隔 1s
+        const pollTask = async (taskId) => {
+            const taskUrl = `${prefix}/taskcomment/${taskId}`;
+            const pollInterval = 1000; // 每次间隔 1s
+            let i = 0;
+            while (true) {
+                await new Promise(r => setTimeout(r, pollInterval));
+                i++;
+                let taskData = null;
+                try {
+                    const taskSignHeaders = await buildCustomApiSignHeaders(commentAppId, commentAppSecret, taskUrl);
+                    taskData = await fetchJson(taskUrl, Object.keys(taskSignHeaders).length > 0 ? { headers: taskSignHeaders } : {});
+                } catch (_) {}
+                if (!taskData) {
+                    // 请求失败：更新圆环为 indeterminate，描述置空
+                    ddSetLoadingRing(-1, '');
+                    continue;
+                }
+                const progress = typeof taskData.progress === 'number' ? taskData.progress : -1;
+                const desc = taskData.description ? taskData.description : '';
+                logger.debug(`[异步弹幕] 轮询 #${i} taskId=${taskId} status=${taskData.status} progress=${progress}`);
+                // 更新圆环进度，描述直接传给 ddSetLoadingRing（tooltip 渲染时自己读进度）
+                ddSetLoadingRing(progress, desc || '正在获取弹幕…');
+                if (taskData.status === 'completed') {
+                    // 任务完成，再取一次正式弹幕（不带 async=1，直接拿结果）
+                    const finalUrl = `${prefix}/comment/${episodeId}?withRelated=true&chConvert=${window.ede.chConvert}`;
+                    const finalSignHeaders = await buildCustomApiSignHeaders(commentAppId, commentAppSecret, finalUrl);
+                    return fetchJson(finalUrl, Object.keys(finalSignHeaders).length > 0 ? { headers: finalSignHeaders } : {});
+                }
+                if (taskData.status === 'failed') {
+                    logger.warn(`[异步弹幕] 任务失败 taskId=${taskId}`);
+                    return null;
+                }
+            }
+        };
+
+        return fetchJson(url, fetchOpts)
+            .then(async (data) => {
                 const endTime = performance.now();
                 const duration = (endTime - startTime).toFixed(0);
+
+                // [v2.7.0] 仅在本次请求携带了 async=1 的情况下，才尝试进入异步轮询模式。
+                // 严格判断：status === 'pending' && taskId 有值，避免服务器返回空弹幕但无 taskId 时被误判。
+                if (supportsAsyncPoll && data && data.status === 'pending' && data.taskId) {
+                    logger.info(`[API请求] comment 返回异步任务 taskId=${data.taskId}，开始轮询, 耗时: ${duration}ms`);
+                    data = await pollTask(data.taskId);
+                    if (!data) return null;
+                }
 
                  // 兼容不同 API 的返回格式：
                 // - 标准格式: { comments: [...] }
@@ -2623,7 +2415,6 @@
     let { method = 'GET' } = opts;
     if (method === 'GET' && body) method = 'POST';
 
-    // 判断是否为弹弹play API，用于决定是否发送 X-User-Agent
     const isDandanplayApi = url.includes('api.dandanplay.net') || url.includes('dandanplay');
     const shouldSendUserAgent = isDandanplayApi;
 
@@ -2633,7 +2424,6 @@
     if (body) {
         requestHeaders['Content-Type'] = 'application/json';
     }
-    // Bangumi 官方 API 的 CORS 预检不允许 X-User-Agent，浏览器会发送原生 User-Agent。
     if (shouldSendUserAgent) {
         requestHeaders['X-User-Agent'] = userAgent;
     }
@@ -2641,21 +2431,20 @@
     if (token) requestHeaders.Authorization = `Bearer ${token}`;
     if (headers) Object.assign(requestHeaders, headers);
 
-    // [签名] 走本插件 Worker 代理的官方源请求,无条件附加签名头(是否校验由 Worker 按 UA 决定)
     if (ddSign.isProxiedOfficial(url)) {
         Object.assign(requestHeaders, await ddSign.buildHeaders(url));
     }
 
     const requestBody = body ? JSON.stringify(body) : null;
 
-    // 统一生命周期管理：可中止的请求
+
     const controller = new AbortController();
-    const timeoutMs = 30000;
+    const timeoutMs = opts.timeoutMs || 30000;
     let timeoutFired = false;
     const timeoutId = setTimeout(() => {
         timeoutFired = true;
         controller.abort();
-    }, timeoutMs); // 30s 超时
+    }, timeoutMs);
 
     if (opts.signal) {
         if (opts.signal.aborted) {
@@ -3618,6 +3407,11 @@
         const { _episode_key, animeId, episode, seriesOrMovieId, animeName } = itemInfoMap;
 
         logger.info(`[匹配 #${matchId}] 开始获取弹幕: ${animeName} 第${episode}集`);
+        // [新增] 搜索开始时立即更新 OSD 和 tooltip 标题，告知用户正在搜索哪部内容
+        setOsdDanmakuText(`正在搜索弹幕：${animeName}`);
+        if (window.ede) { window.ede._danmakuLoadTitle = `正在搜索弹幕：${animeName}`; }
+        // [修复] 搜索阶段也激活圆环旋转（indeterminate 模式），搜索完成后由后续流程清除或更新
+        ddSetLoadingRing(-1, '');
 
         // 下一集/上一集推理逻辑：
         // - 条件1: is_auto=true（仅 INIT/CHECK 类型触发，RELOAD/REFRESH/SEARCH 不推理）
@@ -4243,6 +4037,9 @@
             }
             logger.info('开始加载新弹幕，已清除上一集 UI');
             // =========== [修改结束] ===========
+
+            // 加载开始：显示圆形加载环（indeterminate 模式），tip 留空避免影响 tooltip 显示
+            ddSetLoadingRing(-1, '');
         }
 
         // 注意：这里不再设置 window.ede.loading = true，因为并发时无法准确控制
@@ -4261,6 +4058,9 @@
                     return;
                 }
 
+                // [新增] 拿到视频信息后立即更新 OSD：正在搜索弹幕
+                setOsdDanmakuText(`正在搜索弹幕：${itemInfoMap.animeName}`);
+
                 getCommentsByPluginApi(window.ede.itemId)
                 .then((comments) => {
                     if (comments && comments.length > 0) {
@@ -4268,6 +4068,8 @@
                             // 只有当全局 ID 依然匹配时，才做后续 UI 更新
                             if (window.ede && window.ede.lastLoadId === currentSessionId) {
                                 logger.info('服务端Danmu插件弹幕加载就位');
+                                // [修复] plugin xml 分支加载完成后清除加载环
+                                ddClearLoadingRing();
                                 const danmakuCtrEle = getById(eleIds.danmakuCtr);
                                 if (danmakuCtrEle && danmakuCtrEle.style.opacity !== '1') {
                                     danmakuCtrEle.style.opacity = '1';
@@ -4280,6 +4082,8 @@
                         }).catch((error) => {
                             logger.error(error);
                             logger.error('使用服务端Danmu插件弹幕创建Danmaku实例时出错');
+                            // [修复] 创建失败也要清除加载环
+                            ddClearLoadingRing();
                         });
                     }
                     throw new Error('从服务端Danmu插件获取弹幕失败，尝试在线加载...');
@@ -4349,6 +4153,8 @@
                                     logger.debug(err);
                                 });
                         } else {
+                            // [新增] 调用弹幕接口前更新状态卡片提示
+                            setOsdDanmakuText('弹幕：正在获取弹幕');
                             // return 确保外层链等待 fetchComment 及 createDanmaku 全部完成，
                             // 避免 loading=false 和按钮透明度恢复早于弹幕到位
                             return fetchComment(episodeId).then((comments) => {
@@ -4387,6 +4193,8 @@
                     addExtComments(key, val);
                 })
                 window.ede.loading = false;
+                // 加载完成：清除圆形加载环
+                ddClearLoadingRing();
                 const danmakuCtrEle = getById(eleIds.danmakuCtr);
                 if (danmakuCtrEle && danmakuCtrEle.style.opacity !== '1') {
                     danmakuCtrEle.style.opacity = '1';
@@ -4394,6 +4202,8 @@
             })
             .catch((err) => {
                 logger.debug(err);
+                // 加载失败：也清除圆形加载环，避免一直转
+                ddClearLoadingRing();
             });
     }
 
@@ -5565,7 +5375,7 @@
                 inputRow2.style.display = keyAuthOn ? 'flex' : 'none';
             };
 
-            addBtn.onclick = () => {
+            addBtn.onclick = async () => {
                 const name = nameInput.value.trim();
                 let url = urlInput.value.trim();
                 if (!name || !url) {
@@ -5583,13 +5393,24 @@
                     embyToast({ text: '开启自定义key后，请填写 AppId 和 AppSecret' });
                     return;
                 }
-                addCustomApiSource(name, url, appId, appSecret);
+                // 添加时异步检测服务器类型（不阻塞，失败静默）
+                addBtn.disabled = true;
+                addBtn.innerHTML = '<i class="md-icon">hourglass_empty</i> 检测中…';
+                let serverMeta = null;
+                try { serverMeta = await detectApiServerType(url); } catch (_) {}
+                addBtn.disabled = false;
+                addBtn.innerHTML = '<i class="md-icon">check</i> 添加';
+                addCustomApiSource(name, url, appId, appSecret, serverMeta);
                 nameInput.value = '';
                 urlInput.value = '';
                 appIdInput.value = '';
                 appSecretInput.value = '';
                 renderSourceList();
-                embyToast({ text: '已添加弹幕源', secondaryText: name });
+                const knownInfo = serverMeta && knownApiServers.find(s => s.serverName === serverMeta.serverName);
+                embyToast({
+                    text: '已添加弹幕源',
+                    secondaryText: knownInfo ? `${knownInfo.badge} v${serverMeta.version}` : name,
+                });
             };
 
             // 回车添加
@@ -5637,7 +5458,12 @@
                     const urlStyle = 'font-size:0.8em; opacity:0.7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
                     // 只展示域名+端口部分，完整地址保留在 title 供 hover 查看
                     const urlOrigin = (() => { try { return new URL(item.url).origin; } catch { return item.url; } })();
-                    infoDiv.innerHTML = `<div style="${nameStyle}">${item.name}${item.appId && item.appSecret ? " <span title=\"已配置AppId/AppSecret\" style=\"color:#52b54b;\">&#128274;</span>" : ""}</div><div style="${urlStyle}" title="${item.url}">${urlOrigin}</div>`;
+                    // 服务器类型小卡片：匹配到已知 serverName 时展示
+                    const knownServerInfo = item.serverName ? knownApiServers.find(s => s.serverName === item.serverName) : null;
+                    const serverBadgeHtml = knownServerInfo
+                        ? ` <span title="${item.serverName}" style="display:inline-block;font-size:0.72em;font-weight:normal;padding:0.08em 0.45em;border-radius:3px;background:${knownServerInfo.color};color:#fff;vertical-align:middle;margin-left:0.3em;">${knownServerInfo.badge}${item.serverVersion ? ' v' + item.serverVersion : ''}</span>`
+                        : '';
+                    infoDiv.innerHTML = `<div style="${nameStyle}">${item.name}${item.appId && item.appSecret ? " <span title=\"已配置AppId/AppSecret\" style=\"color:#52b54b;\">&#128274;</span>" : ""}${serverBadgeHtml}</div><div style="${urlStyle}" title="${item.url}">${urlOrigin}</div>`;
                     row.append(infoDiv);
 
                     // 编辑按钮
@@ -5648,7 +5474,7 @@
                     editBtn.title = '编辑';
                     editBtn.style.cssText = 'padding: 0.2em; flex-shrink: 0;';
                     let isEditing = false;
-                    editBtn.onclick = () => {
+                    editBtn.onclick = async () => {
                         if (!isEditing) {
                             // 进入编辑模式：替换 infoDiv 内容为输入框
                             isEditing = true;
@@ -5767,7 +5593,7 @@
                             // 保存编辑：display 控制在父行 div 上，通过父元素判断认证开关是否开启
                             const inputs = infoDiv.querySelectorAll('input');
                             const newName = inputs[0]?.value.trim();
-                            const newUrl = inputs[1]?.value.trim();
+                            let newUrl = inputs[1]?.value.trim();
                             if (!newName || !newUrl) {
                                 embyToast({ text: '名称和地址不能为空' });
                                 return;
@@ -5776,10 +5602,22 @@
                                 embyToast({ text: '请输入有效的URL（以 http:// 或 https:// 开头）' });
                                 return;
                             }
+                            if (newUrl.endsWith('/')) newUrl = newUrl.slice(0, -1);
                             // 认证开关关闭时父行 display 为 none，此时传空字符串清除认证
                             const newAppId = (inputs[2]?.parentElement?.style.display !== 'none' && inputs[2]?.value.trim()) || '';
                             const newAppSecret = (inputs[3]?.parentElement?.style.display !== 'none' && inputs[3]?.value.trim()) || '';
-                            updateCustomApiSource(index, newName, newUrl, newAppId, newAppSecret);
+                            // URL 变更，或 URL 未变但之前没有检测到 serverName → 重新检测
+                            const urlChanged = newUrl !== item.url;
+                            const needDetect = urlChanged || !item.serverName;
+                            editBtn.disabled = true;
+                            editBtn.innerHTML = '<i class="md-icon">hourglass_empty</i>';
+                            let newServerMeta = undefined;
+                            if (needDetect) {
+                                try { newServerMeta = await detectApiServerType(newUrl); } catch (_) { newServerMeta = null; }
+                            }
+                            editBtn.disabled = false;
+                            editBtn.innerHTML = '<i class="md-icon">check</i>';
+                            updateCustomApiSource(index, newName, newUrl, newAppId, newAppSecret, newServerMeta);
                             renderSourceList();
                             embyToast({ text: '已保存修改', secondaryText: newName });
                         }
@@ -6660,12 +6498,17 @@
         getById(eleIds.osdLineChartDiv).append(embyCheckbox(
             { label: lsKeys.osdLineChartSkipFilter.name }, lsGetItem(lsKeys.osdLineChartSkipFilter.id), (checked) => {
                 lsSetItem(lsKeys.osdLineChartSkipFilter.id, checked);
+                // [修复] 仅在用户手动操作时重绘，避免打开设置弹窗时自动触发
                 buildProgressBarChart(20);
             }
         ));
         getById(eleIds.osdLineChartTimeDiv).append(
             embySlider({ lsKey: lsKeys.osdLineChartTime, needReload: false }
-                , (val, opts) => { onSliderChange(val, opts);buildProgressBarChart(20); }, onSliderChangeLabel)
+                , (val, opts) => {
+                    onSliderChange(val, opts);
+                    // [修复] opts.isManual=false 说明是 embySlider 初始化时自动触发的 change，跳过重绘
+                    if (opts.isManual !== false) { buildProgressBarChart(20); }
+                }, onSliderChangeLabel)
         );
     }
 
@@ -7962,6 +7805,24 @@
         ));
     }
 
+    /**
+     * [工具函数] 获取或创建 OSD 弹幕信息元素，直接写入任意文字。
+     * appendvideoOsdDanmakuInfo 内部调用此函数。
+     */
+    function setOsdDanmakuText(text) {
+        if (!lsGetItem(lsKeys.osdTitleEnable.id)) return;
+        const videoOsdContainer = document.querySelector(`${mediaContainerQueryStr} .videoOsdSecondaryText`);
+        let el = getById(eleIds.videoOsdDanmakuTitle, videoOsdContainer);
+        if (!el) {
+            el = document.createElement('h3');
+            el.id = eleIds.videoOsdDanmakuTitle;
+            el.classList.add(classes.videoOsdTitle);
+            el.style = 'margin-left: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; position: absolute; right: 0px; bottom: 0px;';
+            if (videoOsdContainer) videoOsdContainer.append(el);
+        }
+        el.innerText = text;
+    }
+
     function appendvideoOsdDanmakuInfo(loadSum) {
         if (!lsGetItem(lsKeys.osdTitleEnable.id)) {
             return;
@@ -7970,24 +7831,12 @@
         const episode_info = window.ede.episode_info || {};
         const { episodeId, animeTitle, episodeTitle } = episode_info;
 
-        const videoOsdContainer = document.querySelector(`${mediaContainerQueryStr} .videoOsdSecondaryText`);
-        let videoOsdDanmakuTitle = getById(eleIds.videoOsdDanmakuTitle, videoOsdContainer);
-
-        if (!videoOsdDanmakuTitle) {
-            videoOsdDanmakuTitle = document.createElement('h3');
-            videoOsdDanmakuTitle.id = eleIds.videoOsdDanmakuTitle;
-            videoOsdDanmakuTitle.classList.add(classes.videoOsdTitle);
-            videoOsdDanmakuTitle.style = 'margin-left: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; position: absolute; right: 0px; bottom: 0px;';
-        }
-
-        //  检查排除状态
+        // 检查排除状态
         const currentLibName = window.ede && window.ede.currentLibraryInfo ? window.ede.currentLibraryInfo.libraryName : null;
-        // 获取当前排除列表
         const excludedList = lsGetItem(lsKeys.excludedLibraries.id) || [];
         const isExcluded = currentLibName && excludedList.includes(currentLibName);
 
         let text = '弹幕：';
-
         if (isExcluded) {
             // 情况1：已被排除
             text += '已禁用';
@@ -7999,11 +7848,7 @@
                 text += `未匹配`;
             }
         }
-        videoOsdDanmakuTitle.innerText = text;
-
-        if (videoOsdContainer) {
-            videoOsdContainer.append(videoOsdDanmakuTitle);
-        }
+        setOsdDanmakuText(text);
     }
 
     function toggleSettingBtn2Header() {
@@ -8072,9 +7917,38 @@
                 if (wrapper) { wrapper.style.visibility = 'hidden'; }
             }
         }
+        // 同步高能进度条显隐（弹幕关闭时一并隐藏）
+        const chartEle = getById(eleIds.progressBarLineChart);
+        if (chartEle) { chartEle.style.display = flag ? '' : 'none'; }
         const osdDanmakuSwitchBtn = getById(eleIds.danmakuSwitchBtn);
         if (osdDanmakuSwitchBtn) {
-            osdDanmakuSwitchBtn.firstChild.innerHTML = flag ? iconKeys.comment : iconKeys.comments_disabled;
+            // danmakuTextBtn 模式：只改内层透明度，保持按钮整体 opacity=1（避免影响加载环亮度）
+            const inner = osdDanmakuSwitchBtn.querySelector('.dd-btn-inner');
+            if (inner) inner.style.opacity = flag ? '1' : '0.4';
+            // 关闭时在"弹"字上叠加 SVG 斜线（左上→右下），开启时移除
+            const textSpan = osdDanmakuSwitchBtn.querySelector('.dd-btn-text');
+            if (textSpan) {
+                const existingLine = textSpan.querySelector('.dd-off-line');
+                if (!flag && !existingLine) {
+                    // 创建 SVG：用 preserveAspectRatio="none" + viewBox 保证始终从左上到右下
+                    const svgNS = 'http://www.w3.org/2000/svg';
+                    const svg = document.createElementNS(svgNS, 'svg');
+                    svg.setAttribute('class', 'dd-off-line');
+                    svg.setAttribute('viewBox', '0 0 10 10');
+                    svg.setAttribute('preserveAspectRatio', 'none');
+                    const line = document.createElementNS(svgNS, 'line');
+                    line.setAttribute('x1', '0'); line.setAttribute('y1', '0');
+                    line.setAttribute('x2', '10'); line.setAttribute('y2', '10');
+                    // 关闭状态斜线用灰色，与灰色"弹"字视觉一致
+                    line.setAttribute('stroke', 'rgba(255,255,255,0.8)');
+                    line.setAttribute('stroke-width', '1.5');
+                    line.setAttribute('stroke-linecap', 'round');
+                    svg.appendChild(line);
+                    textSpan.appendChild(svg);
+                } else if (flag && existingLine) {
+                    existingLine.remove();
+                }
+            }
         }
         const switchElement = getById(eleIds.danmakuSwitch);
         if (switchElement) {
@@ -8716,8 +8590,75 @@
 
 
 
+    // ─── 弹字按钮圆形加载环工具函数 ─────────────────────────────────────────────
+
+    /** 懒创建全局 tooltip div（固定定位，跟随按钮位置） */
+    function getDanmakuTooltip() {
+        let tip = document.getElementById('dd-ring-tooltip');
+        if (!tip) {
+            tip = document.createElement('div');
+            tip.id = 'dd-ring-tooltip';
+            document.body.appendChild(tip);
+        }
+        return tip;
+    }
+
+    /**
+     * 显示并更新"弹"按钮的圆形加载环。
+     * @param {number} progress  0~100 显示具体进度；< 0 为 indeterminate（持续旋转）
+     * @param {string} [tip]     鼠标悬停时显示的状态描述文本
+     */
+    function ddSetLoadingRing(progress, tip) {
+        const btn = getById(eleIds.danmakuSwitchBtn);
+        if (!btn) {
+            // [修复] 按钮 DOM 尚未创建（initUI 还未执行），记录 pending 状态
+            // initUI 创建按钮后会检查并补触发
+            if (window.ede) { window.ede._pendingLoadingRing = { progress, tip }; }
+            return;
+        }
+        // 按钮已就绪，清除 pending 状态
+        if (window.ede) { window.ede._pendingLoadingRing = null; }
+        const C = 69.1; // 周长 = 2π×11
+        const fg = btn.querySelector('.dd-ring-fg');
+        if (fg) {
+            if (progress < 0) {
+                fg.style.strokeDashoffset = String(C * 0.75); // 仅显示 25% 弧段
+            } else {
+                fg.style.strokeDashoffset = String(C * (1 - Math.min(100, Math.max(0, progress)) / 100));
+            }
+        }
+        btn.classList.add('dd-ring-active');
+        btn.classList.toggle('dd-ring-spin', progress < 0);
+        if (tip !== undefined && window.ede) {
+            // 同时存储结构化进度数据，供 tooltip 渲染用
+            window.ede._danmakuLoadStatus = tip;
+            window.ede._danmakuLoadProgress = progress >= 0 ? progress : -1;
+            // [修改] 轮询阶段调用时（有实际进度描述）清除搜索阶段的动态标题，回退到默认标题
+            if (tip && tip !== '正在请求弹幕…') {
+                window.ede._danmakuLoadTitle = '';
+            }
+        }
+    }
+
+    /** 清除"弹"按钮圆形加载环及 tooltip */
+    function ddClearLoadingRing() {
+        const btn = getById(eleIds.danmakuSwitchBtn);
+        if (btn) { btn.classList.remove('dd-ring-active', 'dd-ring-spin'); }
+        if (window.ede) {
+            window.ede._danmakuLoadStatus = '';
+            window.ede._danmakuLoadProgress = -1;
+            // [修改] 清除搜索阶段动态标题，加载完成后 tooltip 改为显示弹幕信息
+            window.ede._danmakuLoadTitle = '';
+        }
+        const tip = document.getElementById('dd-ring-tooltip');
+        if (tip) { tip.style.display = 'none'; }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+
     /** props: {id: 'btnId', label: 'label text', style: '', iconKey: '',...} for setAttribute(key, value)
      * 'iconKey' will innerHTML <i>iconKey</i>|function will not setAttribute
+     * 'danmakuTextBtn: true' 渲染"弹"字按钮，带 SVG 圆形加载环和悬停状态 tooltip
      */
     function embyButton(props, onClick) {
         const button = document.createElement('button');
@@ -8725,9 +8666,81 @@
         button.setAttribute('is', 'emby-button');
         button.setAttribute('type', 'button');
         objectEntries(props).forEach(([key, value]) => {
-            if (key !== 'iconKey' &&  typeof value !== 'function') { button.setAttribute(key, value); }
+            if (key !== 'iconKey' && key !== 'danmakuTextBtn' && typeof value !== 'function') { button.setAttribute(key, value); }
         });
-        if (props.iconKey) {
+        if (props.danmakuTextBtn) {
+            // "弹"字按钮：SVG 圆形加载环（默认隐藏）+ 文字 + 悬停 tooltip
+            button.setAttribute('title', '');          // 禁用浏览器原生 title 遮挡
+            button.setAttribute('aria-label', props.label);
+            button.className = classes.embyButtons.iconButton;
+            button.style.cssText = 'position:relative;overflow:visible;display:inline-flex;align-items:center;justify-content:center;';
+            // 圆环半径 11，周长 ≈ 69.1；初始 dashoffset=69.1 → 不显示弧段
+            button.innerHTML = `<span class="dd-btn-inner">`
+                + `<svg class="dd-ring" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28">`
+                + `<circle class="dd-ring-track" cx="14" cy="14" r="11"/>`
+                + `<circle class="dd-ring-fg" cx="14" cy="14" r="11" stroke-dasharray="69.1" stroke-dashoffset="69.1"/>`
+                + `</svg>`
+                + `<span class="dd-btn-text">弹</span>`
+                + `</span>`;
+            // 悬停显示 tooltip：搜索阶段/轮询阶段/已匹配三种状态
+            button.addEventListener('mouseenter', () => {
+                const desc = (window.ede && window.ede._danmakuLoadStatus) || '';
+                const pct = (window.ede && typeof window.ede._danmakuLoadProgress === 'number')
+                    ? window.ede._danmakuLoadProgress : -1;
+                const loadTitle = (window.ede && window.ede._danmakuLoadTitle) || '';
+
+                let html = '';
+
+                if (loadTitle) {
+                    // 状态1：搜索阶段 — 第一行"弹幕：正在搜索"，第二行视频名，无进度条
+                    const animeName = loadTitle.replace(/^正在搜索弹幕：/, '');
+                    html = `<div class="dd-tip-title">弹幕：正在搜索</div>`
+                        + `<div class="dd-tip-desc">${animeName}</div>`;
+                } else if (desc || pct >= 0) {
+                    // 状态2：轮询阶段 — 第一行"正在生成弹幕"，进度条，第二行描述
+                    const fillWidth = pct >= 0 ? Math.min(100, pct) : 0;
+                    const pctLabel = pct >= 0 ? `${pct}%` : '';
+                    html = `<div class="dd-tip-title">正在生成弹幕</div>`
+                        + `<div class="dd-tip-bar-row">`
+                        + `<div class="dd-tip-track"><div class="dd-tip-fill" style="width:${fillWidth}%"></div></div>`
+                        + (pctLabel ? `<span class="dd-tip-pct">${pctLabel}</span>` : '')
+                        + `</div>`
+                        + (desc ? `<div class="dd-tip-desc">${desc}</div>` : '');
+                } else {
+                    // 状态3：已匹配 — 第一行"弹幕：已匹配"，第二行"番剧名  集名  XX条"
+                    const info = window.ede && window.ede.episode_info;
+                    if (!info || !info.episodeId) return; // 未匹配时不显示
+                    const commentCount = (window.ede.danmaku && window.ede.danmaku.comments)
+                        ? window.ede.danmaku.comments.length : 0;
+                    html = `<div class="dd-tip-title">弹幕：已匹配</div>`
+                        + `<div class="dd-tip-desc">${info.animeTitle}　${info.episodeTitle}　${commentCount} 条</div>`;
+                }
+
+                const tooltip = getDanmakuTooltip();
+                tooltip.innerHTML = html;
+                tooltip.style.visibility = 'hidden';
+                tooltip.style.display = 'block';
+                requestAnimationFrame(() => {
+                    const rect = button.getBoundingClientRect();
+                    // [修复] position:absolute 需要加 scrollX/scrollY 才能在全屏/滚动场景下正确定位
+                    const left = rect.left + window.scrollX + rect.width / 2 - tooltip.offsetWidth / 2;
+                    const top = rect.top + window.scrollY - tooltip.offsetHeight - 6;
+                    tooltip.style.left = Math.max(0, left) + 'px';
+                    tooltip.style.top = Math.max(0, top) + 'px';
+                    tooltip.style.visibility = 'visible';
+                });
+            });
+            button.addEventListener('mouseleave', () => {
+                const tooltip = document.getElementById('dd-ring-tooltip');
+                if (tooltip) { tooltip.style.display = 'none'; }
+            });
+        } else if (props.svgHtml) {
+            // 自定义 SVG 图标分支（如弹幕设置按钮）
+            button.setAttribute('title', props.label);
+            button.setAttribute('aria-label', props.label);
+            button.innerHTML = props.svgHtml;
+            button.className = classes.embyButtons.iconButton;
+        } else if (props.iconKey) {
             button.setAttribute('title', props.label);
             button.setAttribute('aria-label', props.label);
             button.innerHTML = embyI(props.iconKey).outerHTML;
@@ -9082,6 +9095,38 @@
                 lsSetItem(lsKeys.customApiList.id, list);
             }
         }
+
+        // [初始化校验] 对所有启用的条目在后台异步做服务端连通校验，不阻塞返回
+        // 用 Session 级 Set 记录本次已验证的 URL，避免 getCustomApiList 被频繁调用时重复发请求
+        if (!window._ddValidatedApiUrls) { window._ddValidatedApiUrls = new Set(); }
+        const needValidateItems = list.filter(item => item.url && item.enabled && !window._ddValidatedApiUrls.has(item.url));
+        if (needValidateItems.length > 0) {
+            // 立即标记为"本次已提交校验"，防止并发重入
+            needValidateItems.forEach(item => window._ddValidatedApiUrls.add(item.url));
+            (async () => {
+                let changed = false;
+                for (const item of needValidateItems) {
+                    try {
+                        const meta = await detectApiServerType(item.url);
+                        if (meta && meta.serverName) {
+                            item.serverName = meta.serverName;
+                            item.serverVersion = meta.version || '';
+                            changed = true;
+                            logger.debug(`[自定义源] 服务端校验成功: ${item.name || item.url} → ${meta.serverName} ${meta.version || ''}`);
+                        } else {
+                            logger.warn(`[自定义源] 服务端校验未返回 serverName，可能不可达或不兼容: ${item.url}`);
+                        }
+                    } catch (_) {
+                        logger.warn(`[自定义源] 服务端校验异常: ${item.url}`);
+                    }
+                }
+                if (changed) {
+                    lsSetItem(lsKeys.customApiList.id, list);
+                    logger.debug('[自定义源] 初始化服务端校验完成，已更新 serverName/serverVersion');
+                }
+            })();
+        }
+
         return list;
     }
 
@@ -9123,9 +9168,9 @@
     }
 
     /**
-     * 添加自定义弹幕源
+     * 添加自定义弹幕源（支持附带服务器检测结果）
      */
-    function addCustomApiSource(name, url, appId, appSecret) {
+    function addCustomApiSource(name, url, appId, appSecret, serverMeta) {
         // [修复] 函数级别校验 URL 格式，防止非法 URL 进入配置
         if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
             console.warn('[dd-danmaku] 拒绝添加不合法的自定义源 URL:', url);
@@ -9134,7 +9179,13 @@
         const list = getCustomApiList();
         // 检查URL是否已存在
         if (!list.some(item => item.url === url)) {
-            list.push({ name: name || `自定义源${list.length + 1}`, url: url, enabled: true, appId: appId || "", appSecret: appSecret || "" });
+            const entry = { name: name || `自定义源${list.length + 1}`, url: url, enabled: true, appId: appId || "", appSecret: appSecret || "" };
+            // 保存服务器检测结果（serverName / serverVersion）
+            if (serverMeta && serverMeta.serverName) {
+                entry.serverName = serverMeta.serverName;
+                entry.serverVersion = serverMeta.version || '';
+            }
+            list.push(entry);
             lsSetItem(lsKeys.customApiList.id, list);
             // 同时更新旧配置（兼容性）
             if (list.length === 1) {
@@ -9187,15 +9238,20 @@
     }
 
     /**
-     * 更新自定义弹幕源信息
+     * 更新自定义弹幕源信息（URL 变更时重新写入服务器检测结果）
      */
-    function updateCustomApiSource(index, name, url, appId, appSecret) {
+    function updateCustomApiSource(index, name, url, appId, appSecret, serverMeta) {
         const list = getCustomApiList();
         if (index >= 0 && index < list.length) {
             list[index].name = name;
             list[index].url = url.endsWith('/') ? url.slice(0, -1) : url;
             if (typeof appId !== 'undefined') list[index].appId = appId || '';
             if (typeof appSecret !== 'undefined') list[index].appSecret = appSecret || '';
+            // 如果有新的检测结果则写入，否则保留原有（URL 未变时 serverMeta 传 undefined）
+            if (serverMeta !== undefined) {
+                list[index].serverName = serverMeta ? (serverMeta.serverName || '') : '';
+                list[index].serverVersion = serverMeta ? (serverMeta.version || '') : '';
+            }
             lsSetItem(lsKeys.customApiList.id, list);
             const enabledUrls = list.filter(item => item.enabled).map(item => item.url);
             lsSetItem(lsKeys.customApiPrefix.id, enabledUrls[0] || '');
@@ -9394,6 +9450,140 @@
                 `;
                 document.head.appendChild(style);
             }
+        }
+        // 注入"弹"按钮圆形加载环 CSS（只注入一次）
+        if (!document.querySelector('style[dd-danmaku-ring]')) {
+            const ringStyle = document.createElement('style');
+            ringStyle.setAttribute('dd-danmaku-ring', '');
+            ringStyle.innerHTML = `
+                /* 按钮内层容器 */
+                #${eleIds.danmakuSwitchBtn} .dd-btn-inner {
+                    position: relative;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 2em;
+                    height: 2em;
+                }
+                /* "弹"文字 */
+                #${eleIds.danmakuSwitchBtn} .dd-btn-text {
+                    font-size: 1em;
+                    font-weight: bold;
+                    line-height: 1;
+                    pointer-events: none;
+                    z-index: 1;
+                    position: relative;
+                }
+                /* SVG 圆环：默认完全隐藏 */
+                #${eleIds.danmakuSwitchBtn} .dd-ring {
+                    position: absolute;
+                    inset: 0;
+                    width: 100%;
+                    height: 100%;
+                    opacity: 0;
+                    transform: rotate(-90deg);
+                    transition: opacity 0.2s;
+                    pointer-events: none;
+                }
+                /* 底层轨道环 */
+                #${eleIds.danmakuSwitchBtn} .dd-ring-track {
+                    fill: none;
+                    stroke: rgba(0,164,255,0.25);
+                    stroke-width: 2;
+                }
+                /* 进度弧段 */
+                #${eleIds.danmakuSwitchBtn} .dd-ring-fg {
+                    fill: none;
+                    stroke: rgba(0,164,255,0.9);
+                    stroke-width: 2;
+                    stroke-linecap: round;
+                    transition: stroke-dashoffset 0.3s ease;
+                }
+                /* 激活时显示圆环 */
+                #${eleIds.danmakuSwitchBtn}.dd-ring-active .dd-ring {
+                    opacity: 1;
+                }
+                /* 弹幕关闭时：斜线由 JS 动态插入 SVG 实现，CSS 只负责定位容器 */
+                #${eleIds.danmakuSwitchBtn} .dd-btn-text {
+                    position: relative;
+                }
+                /* SVG 斜线覆盖层：绝对定位铺满文字包围盒 */
+                #${eleIds.danmakuSwitchBtn} .dd-off-line {
+                    position: absolute;
+                    inset: 0;
+                    width: 100%;
+                    height: 100%;
+                    pointer-events: none;
+                    overflow: visible;
+                    z-index: 2;
+                }
+                /* indeterminate（progress<0）时整体旋转 */
+                @keyframes dd-ring-rotate {
+                    0%   { transform: rotate(-90deg); }
+                    100% { transform: rotate(270deg); }
+                }
+                #${eleIds.danmakuSwitchBtn}.dd-ring-spin .dd-ring {
+                    animation: dd-ring-rotate 1s linear infinite;
+                }
+                /* 全局悬停 tooltip */
+                #dd-ring-tooltip {
+                    display: none;
+                    position: absolute;
+                    z-index: 2147483647;
+                    background: rgba(0,0,0,0.82);
+                    color: #fff;
+                    font-size: 0.78em;
+                    padding: 6px 10px;
+                    border-radius: 5px;
+                    pointer-events: none;
+                    white-space: normal;
+                    min-width: 160px;
+                    max-width: 240px;
+                    line-height: 1.5;
+                }
+                /* 进度条区域：百分比文字右对齐 */
+                #dd-ring-tooltip .dd-tip-title {
+                    font-size: 0.95em;
+                    font-weight: bold;
+                    margin-bottom: 5px;
+                }
+                #dd-ring-tooltip .dd-tip-bar-row {
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    margin-bottom: 4px;
+                }
+                /* 进度条轨道 */
+                #dd-ring-tooltip .dd-tip-track {
+                    flex: 1;
+                    height: 4px;
+                    background: rgba(255,255,255,0.22);
+                    border-radius: 2px;
+                    overflow: hidden;
+                }
+                /* 进度条填充 */
+                #dd-ring-tooltip .dd-tip-fill {
+                    height: 100%;
+                    background: rgba(255,255,255,0.85);
+                    border-radius: 2px;
+                    transition: width 0.3s ease;
+                }
+                /* 百分比数字 */
+                #dd-ring-tooltip .dd-tip-pct {
+                    flex: none;
+                    min-width: 2.8em;
+                    text-align: right;
+                    font-size: 0.95em;
+                    opacity: 0.9;
+                }
+                /* 描述文字 */
+                #dd-ring-tooltip .dd-tip-desc {
+                    font-size: 0.9em;
+                    opacity: 0.8;
+                    word-break: break-all;
+                }
+            `;
+            document.head.appendChild(ringStyle);
         }
     }
 
@@ -9594,6 +9784,9 @@
         // 3. 移除高能进度条 (如果有)
         const chartEle = getById(eleIds.progressBarLineChart);
         if (chartEle) chartEle.remove();
+
+        // 4. 清除"弹"按钮加载环及悬停 tooltip，避免退出时残留显示
+        ddClearLoadingRing();
         // =====================================
 
         // [数据清空]
@@ -9722,5 +9915,369 @@
             onViewShow(mockEvent);
         }
     }, 500); // 延迟 500ms 确保 DOM 已就绪
+
+    // ------  检测弹幕服务器类型 start ------
+    /**
+     * 检测自定义 API 的服务器类型。
+     * 依次尝试 /api/v2/version 和 /version，取第一个成功且含 serverName 的响应。
+     * @param {string} url  API 根地址（末尾不含 /）
+     * @returns {Promise<{serverName:string, version:string}|null>}
+     */
+    async function detectApiServerType(url) {
+        const paths = ['/api/v2/version', '/version'];
+        for (const path of paths) {
+            try {
+                const resp = await fetch(url + path, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' },
+                    signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined,
+                });
+                if (!resp.ok) continue;
+                const data = await resp.json().catch(() => null);
+                if (data && data.serverName) {
+                    return { serverName: data.serverName, version: data.version || '' };
+                }
+            } catch (_) { /* 超时或网络错误，继续尝试下一条路径 */ }
+        }
+        return null;
+    }
+    // ------  检测弹幕服务器类型 end ------
+
+    // ------  WASM 签名模块 start ------
+
+    const ddSign = {
+        _instance: null,
+        _loading: null,
+        _failed: false,
+        _failedAt: 0,
+
+        get _wasmUrl() {
+            return requireSparkMD5Path.replace(/\/tools\/.*$/, '/tools/sign.wasm');
+        },
+
+        async _ensure() {
+            if (this._instance) return this._instance;
+            const RETRY_COOLDOWN_MS = 3000;
+            if (this._failed) {
+                if (Date.now() - this._failedAt < RETRY_COOLDOWN_MS) return null;
+                this._failed = false;
+                try { logger.info('[签名] wasm 加载冷却期结束，尝试重新加载'); } catch (_) {}
+            }
+            // 已有正在进行中的加载，等待其完成
+            if (this._loading) return this._loading;
+            const imports = { env: { abort: () => { throw new Error('wasm abort'); } } };
+            this._loading = (async () => {
+                // 优先使用 instantiateStreaming（浏览器更友好，无需先转 ArrayBuffer）
+                if (typeof WebAssembly.instantiateStreaming === 'function') {
+                    try {
+                        const resp = await fetch(this._wasmUrl);
+                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                        const { instance } = await WebAssembly.instantiateStreaming(resp, imports);
+                        this._instance = instance.exports;
+                        try { logger.info('[签名] wasm 加载成功 (streaming)'); } catch (_) {}
+                        return this._instance;
+                    } catch (streamErr) {
+                        // streaming 失败（如 CSP / Content-Type 不匹配），回退到 arrayBuffer 方式
+                        try { logger.warn('[签名] streaming 失败，回退 arrayBuffer:', streamErr && (streamErr.message || streamErr)); } catch (_) {}
+                    }
+                }
+                // 回退：先下载字节再实例化
+                const resp2 = await fetch(this._wasmUrl);
+                if (!resp2.ok) throw new Error('HTTP ' + resp2.status);
+                const bytes = await resp2.arrayBuffer();
+                const { instance } = await WebAssembly.instantiate(bytes, imports);
+                this._instance = instance.exports;
+                try { logger.info('[签名] wasm 加载成功 (arrayBuffer)'); } catch (_) {}
+                return this._instance;
+            })();
+            try {
+                return await this._loading;
+            } catch (e) {
+                this._failed = true;
+                this._failedAt = Date.now();
+                // 打完整错误对象，方便排查 CSP / 网络 / 实例化具体原因
+                try { logger.warn('[签名] wasm 加载失败，3s后将重试:', e); } catch (_) {}
+                return null;
+            } finally {
+                this._loading = null;
+            }
+        },
+
+        /**
+         * 预热加载：在页面初始化时主动触发一次 wasm 加载，
+         * 避免首次业务请求时 wasm 还未就绪导致签名头缺失。
+         * 失败时静默，_ensure 的重试机制会在后续请求时接管。
+         */
+        warmup() {
+            if (this._instance || this._loading) return;
+            try { logger.info('[签名] wasm 预热加载开始'); } catch (_) {}
+            this._ensure().then(inst => {
+                if (!inst) {
+                    // 预热失败，3s 后再试一次（此时冷却也结束了）
+                    setTimeout(() => this._ensure(), 3500);
+                }
+            }).catch(() => {});
+        },
+
+        _writeStr(ex, str) {
+            const ptr = ex.__new(str.length << 1, 2); 
+            const mem = new Uint16Array(ex.memory.buffer, ptr, str.length);
+            for (let i = 0; i < str.length; i++) mem[i] = str.charCodeAt(i);
+            return ptr;
+        },
+        _readStr(ex, ptr) {
+            const len = new Uint32Array(ex.memory.buffer, ptr - 4, 1)[0] >>> 1;
+            const mem = new Uint16Array(ex.memory.buffer, ptr, len);
+            let s = '';
+            for (let i = 0; i < len; i++) s += String.fromCharCode(mem[i]);
+            return s;
+        },
+
+        async compute(userId, ts, path) {
+            const ex = await this._ensure();
+            if (!ex) return null;
+            try {
+                const raw = `${userId}:${ts}:${path}`;
+                const p = ex.__pin ? ex.__pin(this._writeStr(ex, raw)) : this._writeStr(ex, raw);
+                const rp = ex.sign(p);
+                const out = this._readStr(ex, rp);
+                if (ex.__unpin) ex.__unpin(p);
+                return out;
+            } catch (e) {
+                try { logger.warn('[签名] 计算异常,本次不带签名', e && e.message); } catch (_) {}
+                return null;
+            }
+        },
+
+        _obfUser: null,
+        _obfUserSrc: '',
+        async userMark() {
+            let uid = '';
+            try { uid = (typeof ApiClient !== 'undefined' && ApiClient.getCurrentUserId) ? (ApiClient.getCurrentUserId() || '') : ''; } catch (_) {}
+            if (!uid) return '';
+            if (this._obfUser && this._obfUserSrc === uid) return this._obfUser;
+
+            const ex = await this._ensure();
+            if (!ex || !ex.obfuscateUser) return uid;
+            try {
+                const p = ex.__pin ? ex.__pin(this._writeStr(ex, uid)) : this._writeStr(ex, uid);
+                const out = this._readStr(ex, ex.obfuscateUser(p));
+                if (ex.__unpin) ex.__unpin(p);
+                if (!out) return uid;
+                this._obfUserSrc = uid;
+                this._obfUser = out;
+                return out;
+            } catch (e) {
+                try { logger.warn('[签名] 异常,回退原始ID', e && e.message); } catch (_) {}
+                return uid;
+            }
+        },
+
+        async buildHeaders(url) {
+            const userId = await this.userMark();
+            const ts = Math.floor(Date.now() / 1000);
+            let path = '';
+            try {
+                const real = url.replace(corsProxy, '');
+                path = new URL(real).pathname;
+            } catch (_) {
+                const m = url.match(/\/api\/v2\/[^?]*/);
+                path = m ? m[0] : '';
+            }
+            const sig = await this.compute(userId, ts, path);
+            if (!sig) return {};
+            return { 'X-Ddd-User': String(userId), 'X-Ddd-Ts': String(ts), 'X-Ddd-Sign': sig };
+        },
+
+        isProxiedOfficial(url) {
+            return typeof url === 'string' && !!corsProxy && url.startsWith(corsProxy);
+        },
+
+        /**
+         * wasm 自检：主动验证 wasm 是否可正常加载并运行
+         * 在浏览器控制台执行 window.ddSign.selfTest() 即可诊断
+         * 返回 { ok: boolean, detail: string }
+         */
+        async selfTest() {
+            const log = (msg) => { try { logger.info('[签名自检] ' + msg); } catch (_) { console.log('[签名自检] ' + msg); } };
+            const warn = (msg) => { try { logger.warn('[签名自检] ' + msg); } catch (_) { console.warn('[签名自检] ' + msg); } };
+
+            log('开始...');
+            log('wasm URL: (已隐藏)');
+            log('WebAssembly 支持: ' + (typeof WebAssembly !== 'undefined' ? '✓' : '✗ 不支持'));
+
+            if (typeof WebAssembly === 'undefined') {
+                warn('当前环境不支持 WebAssembly，签名功能不可用');
+                return { ok: false, detail: 'WebAssembly 不支持' };
+            }
+
+            // 强制重新加载（忽略缓存实例，直接测fetch+instantiate）
+            log('正在 fetch wasm 文件...');
+            let bytes;
+            try {
+                const resp = await fetch(this._wasmUrl);
+                log('fetch 响应状态: ' + resp.status + ' ' + resp.statusText);
+                if (!resp.ok) {
+                    warn('fetch 失败: HTTP ' + resp.status);
+                    return { ok: false, detail: 'fetch HTTP ' + resp.status };
+                }
+                bytes = await resp.arrayBuffer();
+                log('fetch 成功，文件大小: ' + bytes.byteLength + ' 字节');
+            } catch (e) {
+                warn('fetch 异常: ' + (e && e.message));
+                return { ok: false, detail: 'fetch 异常: ' + (e && e.message) };
+            }
+
+            // 尝试实例化
+            log('正在 WebAssembly.instantiate...');
+            let exports;
+            try {
+                const { instance } = await WebAssembly.instantiate(bytes, {
+                    env: { abort: () => { throw new Error('wasm abort'); } },
+                });
+                exports = instance.exports;
+                log('instantiate 成功，导出函数: ' + Object.keys(exports).join(', '));
+            } catch (e) {
+                warn('instantiate 失败: ' + (e && e.message));
+                return { ok: false, detail: 'instantiate 失败: ' + (e && e.message) };
+            }
+
+            // 检查必要导出
+            const required = ['sign', 'obfuscateUser', '__new'];
+            for (const fn of required) {
+                if (typeof exports[fn] !== 'function') {
+                    warn('缺少导出函数: ' + fn);
+                    return { ok: false, detail: '缺少导出: ' + fn };
+                }
+            }
+            log('必要导出函数检查通过: ' + required.join(', '));
+
+            // 试算一次签名
+            log('正在试算签名...');
+            try {
+                const testRaw = 'testUser:1234567890:/api/v2/match';
+                const pRaw = exports.__pin ? exports.__pin(this._writeStr(exports, testRaw)) : this._writeStr(exports, testRaw);
+                const pSig = exports.sign(pRaw);
+                const sig = this._readStr(exports, pSig);
+                if (exports.__unpin) exports.__unpin(pRaw);
+                log('sign() 试算结果: ' + sig.substring(0, 20) + '...(长度' + sig.length + ')');
+                if (!sig || sig.length < 10) {
+                    warn('sign() 返回结果异常');
+                    return { ok: false, detail: 'sign() 结果异常' };
+                }
+            } catch (e) {
+                warn('sign() 调用异常: ' + (e && e.message));
+                return { ok: false, detail: 'sign() 异常: ' + (e && e.message) };
+            }
+
+            // 试算一次用户混淆
+            log('正在试算 obfuscateUser...');
+            try {
+                const testUid = 'test-user-id';
+                const pUid = exports.__pin ? exports.__pin(this._writeStr(exports, testUid)) : this._writeStr(exports, testUid);
+                const pObf = exports.obfuscateUser(pUid);
+                const obf = this._readStr(exports, pObf);
+                if (exports.__unpin) exports.__unpin(pUid);
+                log('obfuscateUser() 试算结果: ' + obf.substring(0, 20) + '...(长度' + obf.length + ')');
+            } catch (e) {
+                warn('obfuscateUser() 调用异常: ' + (e && e.message));
+                return { ok: false, detail: 'obfuscateUser() 异常: ' + (e && e.message) };
+            }
+
+            log('✅ 自检全部通过，wasm 工作正常');
+            log('当前实例状态: _instance=' + (this._instance ? '已加载' : '未加载') + ' _failed=' + this._failed);
+            return { ok: true, detail: 'wasm 工作正常' };
+        },
+    };
+    // 方便在控制台直接调用：window.ddSign.selfTest()
+    window.ddSign = ddSign;
+
+    // ------  WASM 签名模块 end ------
+
+    // ------ 自定义API签名验证 start ------
+    // FIPS 180-4 标准的 SHA-256 算法的纯 JS 实现
+    const sha256Pure = (() => {
+        const K = [
+            0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+            0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+            0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+            0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+            0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+            0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+            0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+            0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+        ];
+        function rotr(x, n) { return (x >>> n) | (x << (32 - n)); }
+        return function (data) {
+            var bytes = new TextEncoder().encode(data);
+            var bitLen = bytes.length * 8;
+            var paddedLen = ((bytes.length + 9 + 63) >>> 6) << 6;
+            var buf = new Uint8Array(paddedLen);
+            buf.set(bytes);
+            buf[bytes.length] = 0x80;
+            var hi = Math.floor(bitLen / 0x100000000);
+            var lo = bitLen >>> 0;
+            var v = new DataView(buf.buffer, paddedLen - 8, 8);
+            v.setUint32(0, hi, false);
+            v.setUint32(4, lo, false);
+            var w = new Uint32Array(64);
+            var h = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+            for (var off = 0; off < paddedLen; off += 64) {
+                for (var i = 0; i < 16; i++) {
+                    w[i] = (buf[off + i * 4] << 24) | (buf[off + i * 4 + 1] << 16) | (buf[off + i * 4 + 2] << 8) | buf[off + i * 4 + 3];
+                }
+                for (var i = 16; i < 64; i++) {
+                    var s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+                    var s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+                    w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+                }
+                var a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+                for (var i = 0; i < 64; i++) {
+                    var S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+                    var ch = (e & f) ^ (~e & g);
+                    var t1 = (hh + S1 + ch + K[i] + w[i]) >>> 0;
+                    var S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+                    var maj = (a & b) ^ (a & c) ^ (b & c);
+                    var t2 = (S0 + maj) >>> 0;
+                    hh = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+                }
+                h[0] = (h[0] + a) >>> 0; h[1] = (h[1] + b) >>> 0; h[2] = (h[2] + c) >>> 0; h[3] = (h[3] + d) >>> 0;
+                h[4] = (h[4] + e) >>> 0; h[5] = (h[5] + f) >>> 0; h[6] = (h[6] + g) >>> 0; h[7] = (h[7] + hh) >>> 0;
+            }
+            var out = new Uint8Array(32);
+            var dv = new DataView(out.buffer);
+            for (var i = 0; i < 8; i++) dv.setUint32(i * 4, h[i], false);
+            return out;
+        };
+    })();
+
+    async function generateCustomApiSignature(appId, timestamp, path, appSecret) {
+        var data = appId + timestamp + path + appSecret;
+        var hashBuffer;
+        // 优先使用 crypto.subtle，网站为 HTTP 时降级为纯 JS 的 SHA-256
+        if (typeof crypto !== "undefined" && crypto.subtle && crypto.subtle.digest) {
+            try {
+                var dataUint8 = new TextEncoder().encode(data);
+                hashBuffer = await crypto.subtle.digest("SHA-256", dataUint8);
+            } catch (_) { hashBuffer = sha256Pure(data); }
+        } else { hashBuffer = sha256Pure(data); }
+        var hashArray = Array.from(new Uint8Array(hashBuffer));
+        return btoa(hashArray.map(function (b) { return String.fromCharCode(b); }).join(""));
+    }
+
+    async function buildCustomApiSignHeaders(appId, appSecret, url) {
+        if (!appId || !appSecret) return {};
+        try {
+            var ts = Math.floor(Date.now() / 1000);
+            var path = new URL(url).pathname;
+            var sig = await generateCustomApiSignature(appId, ts, path, appSecret);
+            var headers = { "X-AppId": appId, "X-Signature": sig, "X-Timestamp": String(ts) };
+            return headers;
+        } catch (e) {
+            try { logger.warn("[签名] 自定义API签名计算失败,本次不带签名", e && e.message); } catch (_) {}
+            return {};
+        }
+    }
+    // ------ 自定义API签名验证 end ------
 
 })();
