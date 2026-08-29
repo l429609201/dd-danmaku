@@ -3,12 +3,12 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.2.9
+// @version      1.3.0
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/l429609201/dd-danmaku/main/ede.js
+// @updateURL    https://github.com/l429609201/dd-danmaku/releases/latest/download/ede.js
 // @match        *://*/web/index.html
 // @match        *://*/web/
 // ==/UserScript==
@@ -67,7 +67,7 @@
 
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.2.9', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.3.0', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -745,14 +745,96 @@
         skipInnerModule = e.stack && e.stack.includes('CustomCssJS');
         // console.log('ignore this not error, callee:', e);
     }
+
+    // ========== Danmaku 运行时补丁系统（通用注册表，内联/网络加载后均可调用）==========
+    // 补丁注册表：每个补丁是 { name, description, apply(DanmakuClass) }
+    // apply 接收原始 Danmaku 类，返回补丁后的类（或 null 表示跳过）
+    // 新增补丁只需往 danmakuPatches 数组 push 即可
+    const danmakuPatches = [
+        {
+            name: 'seeking-position-fix',
+            description: 'Seeking 恢复优化：回退 position 到 currentTime - duration，确保拖动进度条后弹幕立即恢复',
+            apply(DanmakuClass) {
+                const origDestroy = DanmakuClass.prototype.destroy;
+                const OrigDanmaku = DanmakuClass;
+
+                function PatchedDanmaku(opts) {
+                    OrigDanmaku.call(this, opts);
+                    if (this.media && this.comments && this._) {
+                        const self = this;
+                        this._patchedSeekingHandler = function () {
+                            const targetTime = self.media.currentTime - (self._.duration || 4);
+                            let pos = 0;
+                            for (let i = 0; i < self.comments.length; i++) {
+                                if (self.comments[i].time >= targetTime) { pos = i; break; }
+                            }
+                            self._.position = Math.max(0, pos);
+                        };
+                        this._patchedSeekingWrapper = function () {
+                            setTimeout(self._patchedSeekingHandler, 0);
+                        };
+                        this.media.addEventListener('seeking', this._patchedSeekingWrapper);
+                    }
+                }
+                PatchedDanmaku.prototype = OrigDanmaku.prototype;
+                PatchedDanmaku.prototype.constructor = PatchedDanmaku;
+
+                PatchedDanmaku.prototype.destroy = function () {
+                    if (this.media && this._patchedSeekingWrapper) {
+                        this.media.removeEventListener('seeking', this._patchedSeekingWrapper);
+                        this._patchedSeekingWrapper = null;
+                        this._patchedSeekingHandler = null;
+                    }
+                    return origDestroy.call(this);
+                };
+                return PatchedDanmaku;
+            }
+        },
+        // 后续补丁在此追加，格式同上：
+        // { name: 'xxx', description: 'xxx', apply(DanmakuClass) { ... return PatchedClass; } },
+    ];
+
+    // 通用补丁应用函数：遍历注册表逐个应用
+    function applyDanmakuPatches() {
+        let DanmakuClass = window.Danmaku || (typeof Danmaku !== 'undefined' ? Danmaku : null);
+        if (!DanmakuClass) {
+            logger.warn('[弹幕引擎补丁] Danmaku 类不可用，跳过所有补丁');
+            return;
+        }
+        if (DanmakuClass._ddPatched) {
+            logger.debug('[弹幕引擎补丁] 已应用过，跳过');
+            return;
+        }
+
+        const applied = [];
+        for (const patch of danmakuPatches) {
+            try {
+                const result = patch.apply(DanmakuClass);
+                if (result) {
+                    DanmakuClass = result;
+                    applied.push(patch.name);
+                }
+            } catch (e) {
+                logger.warn(`[弹幕引擎补丁] "${patch.name}" 应用失败:`, e);
+            }
+        }
+
+        if (applied.length > 0) {
+            DanmakuClass._ddPatched = true;
+            window.Danmaku = DanmakuClass;
+            logger.info(`[弹幕引擎补丁] 已应用 ${applied.length} 个补丁: ${applied.join(', ')}`);
+        }
+    }
+    // ========== Danmaku 运行时补丁系统结束 ==========
+
     if (!skipInnerModule) {
         // 这里内置依赖是工作在浏览器油猴和服务端 index.html 环境下, requireDanmakuPath 是特殊环境 CustomCssJS 下网络加载使用
-        /* https://cdn.jsdelivr.net/npm/danmaku@2.0.8/dist/danmaku.min.js */
+        /* https://cdn.jsdelivr.net/npm/danmaku@2.0.10/dist/danmaku.min.js */
         /* eslint-disable */
         // prettier-ignore
-        // 注意: 原版使用 this 作为全局对象，但在严格模式下 this 为 undefined，改用 window 确保兼容性
+        // v2.0.10 原版代码（未修改），所有补丁在加载后通过运行时 monkey-patch 应用
         logger.info('[弹幕引擎] 使用内联模式加载 Danmaku 库 (非 CustomCssJS 环境)');
-        !function(t,e){"object"==typeof exports&&"undefined"!=typeof module?module.exports=e():false && "function"==typeof define&&define.amd?define(e):(t="undefined"!=typeof globalThis?globalThis:t||self).Danmaku=e()}(window,(function(){"use strict";var t=function(){if("undefined"==typeof document)return"transform";for(var t=["oTransform","msTransform","mozTransform","webkitTransform","transform"],e=document.createElement("div").style,i=0;i<t.length;i++)if(t[i]in e)return t[i];return"transform"}();function e(t){var e=document.createElement("div");if(e.style.cssText="position:absolute;","function"==typeof t.render){var i=t.render();if(i instanceof HTMLElement)return e.appendChild(i),e}if(e.textContent=t.text,t.style)for(var n in t.style)e.style[n]=t.style[n];return e}var i={name:"dom",init:function(){var t=document.createElement("div");return t.style.cssText="overflow:hidden;white-space:nowrap;transform:translateZ(0);",t},clear:function(t){for(var e=t.lastChild;e;)t.removeChild(e),e=t.lastChild},resize:function(t,e,i){t.style.width=e+"px",t.style.height=i+"px"},framing:function(){},setup:function(t,i){var n=document.createDocumentFragment(),s=0,r=null;for(s=0;s<i.length;s++)(r=i[s]).node=r.node||e(r),n.appendChild(r.node);for(i.length&&t.appendChild(n),s=0;s<i.length;s++)(r=i[s]).width=r.width||r.node.offsetWidth,r.height=r.height||r.node.offsetHeight},render:function(e,i){i.node.style[t]="translate("+i.x+"px,"+i.y+"px)"},remove:function(t,e){t.removeChild(e.node),this.media||(e.node=null)}},n="undefined"!=typeof window&&window.devicePixelRatio||1,s=Object.create(null);function r(t,e){if("function"==typeof t.render){var i=t.render();if(i instanceof HTMLCanvasElement)return t.width=i.width,t.height=i.height,i}var r=document.createElement("canvas"),h=r.getContext("2d"),o=t.style||{};o.font=o.font||"10px sans-serif",o.textBaseline=o.textBaseline||"bottom";var a=1*o.lineWidth;for(var d in a=a>0&&a!==1/0?Math.ceil(a):1*!!o.strokeStyle,h.font=o.font,t.width=t.width||Math.max(1,Math.ceil(h.measureText(t.text).width)+2*a),t.height=t.height||Math.ceil(function(t,e){if(s[t])return s[t];var i=12,n=t.match(/(\d+(?:\.\d+)?)(px|%|em|rem)(?:\s*\/\s*(\d+(?:\.\d+)?)(px|%|em|rem)?)?/);if(n){var r=1*n[1]||10,h=n[2],o=1*n[3]||1.2,a=n[4];"%"===h&&(r*=e.container/100),"em"===h&&(r*=e.container),"rem"===h&&(r*=e.root),"px"===a&&(i=o),"%"===a&&(i=r*o/100),"em"===a&&(i=r*o),"rem"===a&&(i=e.root*o),void 0===a&&(i=r*o)}return s[t]=i,i}(o.font,e))+2*a,r.width=t.width*n,r.height=t.height*n,h.scale(n,n),o)h[d]=o[d];var u=0;switch(o.textBaseline){case"top":case"hanging":u=a;break;case"middle":u=t.height>>1;break;default:u=t.height-a}return o.strokeStyle&&h.strokeText(t.text,a,u),h.fillText(t.text,a,u),r}function h(t){return 1*window.getComputedStyle(t,null).getPropertyValue("font-size").match(/(.+)px/)[1]}var o={name:"canvas",init:function(t){var e=document.createElement("canvas");return e.context=e.getContext("2d"),e._fontSize={root:h(document.getElementsByTagName("html")[0]),container:h(t)},e},clear:function(t,e){t.context.clearRect(0,0,t.width,t.height);for(var i=0;i<e.length;i++)e[i].canvas=null},resize:function(t,e,i){t.width=e*n,t.height=i*n,t.style.width=e+"px",t.style.height=i+"px"},framing:function(t){t.context.clearRect(0,0,t.width,t.height)},setup:function(t,e){for(var i=0;i<e.length;i++){var n=e[i];n.canvas=r(n,t._fontSize)}},render:function(t,e){t.context.drawImage(e.canvas,e.x*n,e.y*n)},remove:function(t,e){e.canvas=null}},a=("undefined"!=typeof window&&(window.requestAnimationFrame||window.mozRequestAnimationFrame||window.webkitRequestAnimationFrame)||function(t){return setTimeout(t,50/3)}).bind(window),d=("undefined"!=typeof window&&(window.cancelAnimationFrame||window.mozCancelAnimationFrame||window.webkitCancelAnimationFrame)||clearTimeout).bind(window);function u(t,e,i){for(var n=0,s=0,r=t.length;s<r-1;)i>=t[n=s+r>>1][e]?s=n:r=n;return t[s]&&i<t[s][e]?s:r}function m(t){return/^(ltr|top|bottom)$/i.test(t)?t.toLowerCase():"rtl"}function c(){var t=9007199254740991;return[{range:0,time:-t,width:t,height:0},{range:t,time:t,width:0,height:0}]}function l(t){t.ltr=c(),t.rtl=c(),t.top=c(),t.bottom=c()}function f(){return void 0!==window.performance&&window.performance.now?window.performance.now():Date.now()}function p(t){var e=this,i=this.media?this.media.currentTime:f()/1e3,n=this.media?this.media.playbackRate:1;function s(t,s){if("top"===s.mode||"bottom"===s.mode)return i-t.time<e._.duration;var r=(e._.width+t.width)*(i-t.time)*n/e._.duration;if(t.width>r)return!0;var h=e._.duration+t.time-i,o=e._.width+s.width,a=e.media?s.time:s._utc,d=o*(i-a)*n/e._.duration,u=e._.width-d;return h>e._.duration*u/(e._.width+s.width)}for(var r=this._.space[t.mode],h=0,o=0,a=1;a<r.length;a++){var d=r[a],u=t.height;if("top"!==t.mode&&"bottom"!==t.mode||(u+=d.height),d.range-d.height-r[h].range>=u){o=a;break}s(d,t)&&(h=a)}var m=r[h].range,c={range:m+t.height,time:this.media?t.time:t._utc,width:t.width,height:t.height};return r.splice(h+1,o-h-1,c),"bottom"===t.mode?this._.height-t.height-m%this._.height:m%(this._.height-t.height)}function g(){if(!this._.visible||!this._.paused)return this;if(this._.paused=!1,this.media)for(var t=0;t<this._.runningList.length;t++){var e=this._.runningList[t];e._utc=f()/1e3-(this.media.currentTime-e.time)}var i=this,n=function(t,e,i,n){return function(s){t(this._.stage);var r=(s||f())/1e3,h=this.media?this.media.currentTime:r,o=this.media?this.media.playbackRate:1,a=null,d=0,u=0;for(u=this._.runningList.length-1;u>=0;u--)a=this._.runningList[u],h-(d=this.media?a.time:a._utc)>this._.duration&&(n(this._.stage,a),this._.runningList.splice(u,1));for(var m=[];this._.position<this.comments.length&&(a=this.comments[this._.position],!((d=this.media?a.time:a._utc)>=h));)h-d>this._.duration||(this.media&&(a._utc=r-(this.media.currentTime-a.time)),m.push(a)),++this._.position;for(e(this._.stage,m),u=0;u<m.length;u++)(a=m[u]).y=p.call(this,a),this._.runningList.push(a);for(u=0;u<this._.runningList.length;u++){a=this._.runningList[u];var c=(this._.width+a.width)*(r-a._utc)*o/this._.duration;"ltr"===a.mode&&(a.x=c-a.width),"rtl"===a.mode&&(a.x=this._.width-c),"top"!==a.mode&&"bottom"!==a.mode||(a.x=this._.width-a.width>>1),i(this._.stage,a)}}}(this._.engine.framing.bind(this),this._.engine.setup.bind(this),this._.engine.render.bind(this),this._.engine.remove.bind(this));return this._.requestID=a((function t(e){n.call(i,e),i._.requestID=a(t)})),this}function _(){return!this._.visible||this._.paused||(this._.paused=!0,d(this._.requestID),this._.requestID=0),this}function v(){if(!this.media)return this;this.clear(),l(this._.space);var t=u(this.comments,"time",this.media.currentTime-this._.duration);return this._.position=Math.max(0,t),this}function w(t){t.play=g.bind(this),t.pause=_.bind(this),t.seeking=v.bind(this),this.media.addEventListener("play",t.play),this.media.addEventListener("pause",t.pause),this.media.addEventListener("playing",t.play),this.media.addEventListener("waiting",t.pause),this.media.addEventListener("seeking",t.seeking)}function y(t){this.media.removeEventListener("play",t.play),this.media.removeEventListener("pause",t.pause),this.media.removeEventListener("playing",t.play),this.media.removeEventListener("waiting",t.pause),this.media.removeEventListener("seeking",t.seeking),t.play=null,t.pause=null,t.seeking=null}function x(t){this._={},this.container=t.container||document.createElement("div"),this.media=t.media,this._.visible=!0,this.engine=(t.engine||"DOM").toLowerCase(),this._.engine="canvas"===this.engine?o:i,this._.requestID=0,this._.speed=Math.max(0,t.speed)||144,this._.duration=4,this.comments=t.comments||[],this.comments.sort((function(t,e){return t.time-e.time}));for(var e=0;e<this.comments.length;e++)this.comments[e].mode=m(this.comments[e].mode);return this._.runningList=[],this._.position=0,this._.paused=!0,this.media&&(this._.listener={},w.call(this,this._.listener)),this._.stage=this._.engine.init(this.container),this._.stage.style.cssText+="position:relative;pointer-events:none;",this.resize(),this.container.appendChild(this._.stage),this._.space={},l(this._.space),this.media&&this.media.paused||(v.call(this),g.call(this)),this}function b(){if(!this.container)return this;for(var t in _.call(this),this.clear(),this.container.removeChild(this._.stage),this.media&&y.call(this,this._.listener),this)Object.prototype.hasOwnProperty.call(this,t)&&(this[t]=null);return this}var L=["mode","time","text","render","style"];function T(t){if(!t||"[object Object]"!==Object.prototype.toString.call(t))return this;for(var e={},i=0;i<L.length;i++)void 0!==t[L[i]]&&(e[L[i]]=t[L[i]]);if(e.text=(e.text||"").toString(),e.mode=m(e.mode),e._utc=f()/1e3,this.media){var n=0;void 0===e.time?(e.time=this.media.currentTime,n=this._.position):(n=u(this.comments,"time",e.time))<this._.position&&(this._.position+=1),this.comments.splice(n,0,e)}else this.comments.push(e);return this}function E(){return this._.visible?this:(this._.visible=!0,this.media&&this.media.paused||(v.call(this),g.call(this)),this)}function k(){return this._.visible?(_.call(this),this.clear(),this._.visible=!1,this):this}function C(){return this._.engine.clear(this._.stage,this._.runningList),this._.runningList=[],this}function z(){return this._.width=this.container.offsetWidth,this._.height=this.container.offsetHeight,this._.engine.resize(this._.stage,this._.width,this._.height),this._.duration=this._.width/this._.speed,this}var D={get:function(){return this._.speed},set:function(t){return"number"!=typeof t||isNaN(t)||!isFinite(t)||t<=0?this._.speed:(this._.speed=t,this._.width&&(this._.duration=this._.width/t),t)}};function M(t){t&&x.call(this,t)}return M.prototype.destroy=function(){return b.call(this)},M.prototype.emit=function(t){return T.call(this,t)},M.prototype.show=function(){return E.call(this)},M.prototype.hide=function(){return k.call(this)},M.prototype.clear=function(){return C.call(this)},M.prototype.resize=function(){return z.call(this)},Object.defineProperty(M.prototype,"speed",D),M}));
+        !function(t,e){"object"==typeof exports&&"undefined"!=typeof module?module.exports=e():"function"==typeof define&&define.amd?define(e):(t="undefined"!=typeof globalThis?globalThis:t||self).Danmaku=e()}(this,(function(){"use strict";var t=function(){if("undefined"==typeof document)return"transform";for(var t=["oTransform","msTransform","mozTransform","webkitTransform","transform"],e=document.createElement("div").style,i=0;i<t.length;i++)if(t[i]in e)return t[i];return"transform"}();function e(t){var e=document.createElement("div");if(e.style.cssText="position:absolute;","function"==typeof t.render){var i=t.render();if(i instanceof HTMLElement)return e.appendChild(i),e}if(e.textContent=t.text,t.style)for(var n in t.style)e.style[n]=t.style[n];return e}var i={name:"dom",init:function(){var t=document.createElement("div");return t.style.cssText="overflow:hidden;white-space:nowrap;transform:translateZ(0);",t},clear:function(t){for(var e=t.lastChild;e;)t.removeChild(e),e=t.lastChild},resize:function(t,e,i){t.style.width=e+"px",t.style.height=i+"px"},framing:function(){},setup:function(t,i){var n=document.createDocumentFragment(),s=0,r=null;for(s=0;s<i.length;s++)(r=i[s]).node=r.node||e(r),n.appendChild(r.node);for(i.length&&t.appendChild(n),s=0;s<i.length;s++)(r=i[s]).width=r.width||r.node.offsetWidth,r.height=r.height||r.node.offsetHeight},render:function(e,i){i.node.style[t]="translate("+i.x+"px,"+i.y+"px)"},remove:function(t,e){t.removeChild(e.node),this.media||(e.node=null)}},n="undefined"!=typeof window&&window.devicePixelRatio||1,s=Object.create(null);function r(t,e){if("function"==typeof t.render){var i=t.render();if(i instanceof HTMLCanvasElement)return t.width=i.width,t.height=i.height,i}var r=document.createElement("canvas"),h=r.getContext("2d"),o=t.style||{};o.font=o.font||"10px sans-serif",o.textBaseline=o.textBaseline||"bottom";var a=1*o.lineWidth;for(var d in a=a>0&&a!==1/0?Math.ceil(a):1*!!o.strokeStyle,h.font=o.font,t.width=t.width||Math.max(1,Math.ceil(h.measureText(t.text).width)+2*a),t.height=t.height||Math.ceil(function(t,e){if(s[t])return s[t];var i=12,n=t.match(/(\d+(?:\.\d+)?)(px|%|em|rem)(?:\s*\/\s*(\d+(?:\.\d+)?)(px|%|em|rem)?)?/);if(n){var r=1*n[1]||10,h=n[2],o=1*n[3]||1.2,a=n[4];"%"===h&&(r*=e.container/100),"em"===h&&(r*=e.container),"rem"===h&&(r*=e.root),"px"===a&&(i=o),"%"===a&&(i=r*o/100),"em"===a&&(i=r*o),"rem"===a&&(i=e.root*o),void 0===a&&(i=r*o)}return s[t]=i,i}(o.font,e))+2*a,r.width=t.width*n,r.height=t.height*n,h.scale(n,n),o)h[d]=o[d];var u=0;switch(o.textBaseline){case"top":case"hanging":u=a;break;case"middle":u=t.height>>1;break;default:u=t.height-a}return o.strokeStyle&&h.strokeText(t.text,a,u),h.fillText(t.text,a,u),r}function h(t){return 1*window.getComputedStyle(t,null).getPropertyValue("font-size").match(/(.+)px/)[1]}var o={name:"canvas",init:function(t){var e=document.createElement("canvas");return e.context=e.getContext("2d"),e._fontSize={root:h(document.getElementsByTagName("html")[0]),container:h(t)},e},clear:function(t,e){t.context.clearRect(0,0,t.width,t.height);for(var i=0;i<e.length;i++)e[i].canvas=null},resize:function(t,e,i){t.width=e*n,t.height=i*n,t.style.width=e+"px",t.style.height=i+"px"},framing:function(t){t.context.clearRect(0,0,t.width,t.height)},setup:function(t,e){for(var i=0;i<e.length;i++){var n=e[i];n.canvas=r(n,t._fontSize)}},render:function(t,e){t.context.drawImage(e.canvas,e.x*n,e.y*n)},remove:function(t,e){e.canvas=null}},a=function(){if("undefined"!=typeof window){var t=window.requestAnimationFrame||window.mozRequestAnimationFrame||window.webkitRequestAnimationFrame;if(t)return t.bind(window)}return function(t){return setTimeout(t,50/3)}}(),d=function(){if("undefined"!=typeof window){var t=window.cancelAnimationFrame||window.mozCancelAnimationFrame||window.webkitCancelAnimationFrame;if(t)return t.bind(window)}return clearTimeout}();function u(t,e,i){for(var n=0,s=0,r=t.length;s<r-1;)i>=t[n=s+r>>1][e]?s=n:r=n;return t[s]&&i<t[s][e]?s:r}function m(t){return/^(ltr|top|bottom)$/i.test(t)?t.toLowerCase():"rtl"}function c(){var t=9007199254740991;return[{range:0,time:-t,width:t,height:0},{range:t,time:t,width:0,height:0}]}function l(t){t.ltr=c(),t.rtl=c(),t.top=c(),t.bottom=c()}function f(){return void 0!==window.performance&&window.performance.now?window.performance.now():Date.now()}function p(t){var e=this,i=this.media?this.media.currentTime:f()/1e3;function n(t,n){if("top"===n.mode||"bottom"===n.mode)return i-t.time<e._.duration;var s=(e._.width+t.width)*(i-t.time)/e._.duration;if(t.width>s)return!0;var r=e._.duration+t.time-i,h=e._.width+n.width,o=e.media?n.time:n._utc,a=h*(i-o)/e._.duration,d=e._.width-a;return r>e._.duration*d/(e._.width+n.width)}for(var s=this._.space[t.mode],r=0,h=0,o=1;o<s.length;o++){var a=s[o],d=t.height;if("top"!==t.mode&&"bottom"!==t.mode||(d+=a.height),a.range-a.height-s[r].range>=d){h=o;break}n(a,t)&&(r=o)}var u=s[r].range,m={range:u+t.height,time:this.media?t.time:t._utc,width:t.width,height:t.height};return s.splice(r+1,h-r-1,m),"bottom"===t.mode?this._.height-t.height-u%this._.height:u%(this._.height-t.height)}function g(){if(!this._.visible||!this._.paused)return this;if(this._.paused=!1,this.media)for(var t=0;t<this._.runningList.length;t++){var e=this._.runningList[t];e._utc=f()/1e3-(this.media.currentTime-e.time)}var i=this,n=function(t,e,i,n){return function(s){t(this._.stage);var r=(s||f())/1e3,h=this.media?this.media.currentTime:r,o=this.media?this.media.playbackRate:1,a=null,d=0,u=0;for(u=this._.runningList.length-1;u>=0;u--)a=this._.runningList[u],h-(d=this.media?a.time:a._utc)>this._.duration&&(n(this._.stage,a),this._.runningList.splice(u,1));for(var m=[];this._.position<this.comments.length&&(a=this.comments[this._.position],!((d=this.media?a.time:a._utc)>=h));)h-d>this._.duration||(this.media&&(a._utc=r-(this.media.currentTime-a.time)),m.push(a)),++this._.position;for(e(this._.stage,m),u=0;u<m.length;u++)(a=m[u]).y=p.call(this,a),this._.runningList.push(a);for(u=0;u<this._.runningList.length;u++){a=this._.runningList[u];var c=(this._.width+a.width)*(r-a._utc)*o/this._.duration;"ltr"===a.mode&&(a.x=c-a.width),"rtl"===a.mode&&(a.x=this._.width-c),"top"!==a.mode&&"bottom"!==a.mode||(a.x=this._.width-a.width>>1),i(this._.stage,a)}}}(this._.engine.framing.bind(this),this._.engine.setup.bind(this),this._.engine.render.bind(this),this._.engine.remove.bind(this));return this._.requestID=a((function t(e){n.call(i,e),i._.requestID=a(t)})),this}function _(){return!this._.visible||this._.paused||(this._.paused=!0,d(this._.requestID),this._.requestID=0),this}function v(){if(!this.media)return this;this.clear(),l(this._.space);var t=u(this.comments,"time",this.media.currentTime);return this._.position=Math.max(0,t-1),this}function w(t){t.play=g.bind(this),t.pause=_.bind(this),t.seeking=v.bind(this),this.media.addEventListener("play",t.play),this.media.addEventListener("pause",t.pause),this.media.addEventListener("playing",t.play),this.media.addEventListener("waiting",t.pause),this.media.addEventListener("seeking",t.seeking)}function y(t){this.media.removeEventListener("play",t.play),this.media.removeEventListener("pause",t.pause),this.media.removeEventListener("playing",t.play),this.media.removeEventListener("waiting",t.pause),this.media.removeEventListener("seeking",t.seeking),t.play=null,t.pause=null,t.seeking=null}function x(t){this._={},this.container=t.container||document.createElement("div"),this.media=t.media,this._.visible=!0,this.engine=(t.engine||"DOM").toLowerCase(),this._.engine="canvas"===this.engine?o:i,this._.requestID=0,this._.speed=Math.max(0,t.speed)||144,this._.duration=4,this.comments=t.comments||[],this.comments.sort((function(t,e){return t.time-e.time}));for(var e=0;e<this.comments.length;e++)this.comments[e].mode=m(this.comments[e].mode);return this._.runningList=[],this._.position=0,this._.paused=!0,this.media&&(this._.listener={},w.call(this,this._.listener)),this._.stage=this._.engine.init(this.container),this._.stage.style.cssText+="position:relative;pointer-events:none;",this.resize(),this.container.appendChild(this._.stage),this._.space={},l(this._.space),this.media&&this.media.paused||(v.call(this),g.call(this)),this}function b(){if(!this.container)return this;for(var t in _.call(this),this.clear(),this.container.removeChild(this._.stage),this.media&&y.call(this,this._.listener),this)Object.prototype.hasOwnProperty.call(this,t)&&(this[t]=null);return this}var L=["mode","time","text","render","style"];function T(t){if(!t||"[object Object]"!==Object.prototype.toString.call(t))return this;for(var e={},i=0;i<L.length;i++)void 0!==t[L[i]]&&(e[L[i]]=t[L[i]]);if(e.text=(e.text||"").toString(),e.mode=m(e.mode),e._utc=f()/1e3,this.media){var n=0;void 0===e.time?(e.time=this.media.currentTime,n=this._.position):(n=u(this.comments,"time",e.time))<this._.position&&(this._.position+=1),this.comments.splice(n,0,e)}else this.comments.push(e);return this}function E(){return this._.visible?this:(this._.visible=!0,this.media&&this.media.paused||(v.call(this),g.call(this)),this)}function C(){return this._.visible?(_.call(this),this.clear(),this._.visible=!1,this):this}function k(){return this._.engine.clear(this._.stage,this._.runningList),this._.runningList=[],this}function z(){return this._.width=this.container.offsetWidth,this._.height=this.container.offsetHeight,this._.engine.resize(this._.stage,this._.width,this._.height),this._.duration=this._.width/this._.speed,this}var D={get:function(){return this._.speed},set:function(t){return"number"!=typeof t||isNaN(t)||!isFinite(t)||t<=0?this._.speed:(this._.speed=t,this._.width&&(this._.duration=this._.width/t),t)}};function M(t){t&&x.call(this,t)}return M.prototype.destroy=function(){return b.call(this)},M.prototype.emit=function(t){return T.call(this,t)},M.prototype.show=function(){return E.call(this)},M.prototype.hide=function(){return C.call(this)},M.prototype.clear=function(){return k.call(this)},M.prototype.resize=function(){return z.call(this)},Object.defineProperty(M.prototype,"speed",D),M}));
         /* eslint-enable */
         // 内联加载后立即验证
         if (typeof window.Danmaku !== 'undefined') {
@@ -762,6 +844,8 @@
         } else {
             logger.error('[弹幕引擎] 内联加载异常: window.Danmaku 和 Danmaku 均为 undefined，可能存在 AMD/模块系统冲突');
         }
+        // 内联加载完成后立即应用补丁
+        applyDanmakuPatches();
      } else {
         // 网络加载 + 动态修复 AMD
         // 必须使用 fetch 下载 -> 修改 -> Blob 执行，才能拦截 define 调用
@@ -792,6 +876,7 @@
                     URL.revokeObjectURL(url); // 用完释放内存
                     if (typeof window.Danmaku !== 'undefined') {
                         logger.info('[弹幕引擎] 网络加载成功, window.Danmaku 已就绪');
+                        applyDanmakuPatches();
                     } else {
                         logger.error('[弹幕引擎] Blob 脚本执行完毕但 window.Danmaku 仍为 undefined, 可能被 AMD/RequireJS 劫持');
                     }
@@ -802,6 +887,7 @@
                     Emby.importModule(requireDanmakuPath).then(f => {
                         window.Danmaku = f;
                         logger.info('[弹幕引擎] Emby.importModule 回退加载成功');
+                        applyDanmakuPatches();
                     }).catch(err => {
                         logger.error('[弹幕引擎] Emby.importModule 回退加载也失败:', err);
                     });
@@ -813,6 +899,7 @@
                 Emby.importModule(requireDanmakuPath).then(f => {
                     window.Danmaku = f;
                     logger.info('[弹幕引擎] Emby.importModule 回退加载成功');
+                    applyDanmakuPatches();
                 }).catch(err => {
                     logger.error('[弹幕引擎] Emby.importModule 回退加载也失败:', err);
                 });
@@ -3399,14 +3486,14 @@
         return null;
     }
 
-    async function getEpisodeInfo(is_auto = true) {
+    async function getEpisodeInfo(is_auto = true, useCache = true) {
         const matchId = Date.now().toString(36).slice(-6);
 
         const itemInfoMap = await getMapByEmbyItemInfo();
         if (!itemInfoMap) { return null; }
         const { _episode_key, animeId, episode, seriesOrMovieId, animeName } = itemInfoMap;
 
-        logger.info(`[匹配 #${matchId}] 开始获取弹幕: ${animeName} 第${episode}集`);
+        logger.info(`[匹配 #${matchId}] 开始获取弹幕: ${animeName} 第${episode}集 (is_auto=${is_auto}, useCache=${useCache})`);
         // [新增] 搜索开始时立即更新 OSD 和 tooltip 标题，告知用户正在搜索哪部内容
         setOsdDanmakuText(`正在搜索弹幕：${animeName}`);
         if (window.ede) { window.ede._danmakuLoadTitle = `正在搜索弹幕：${animeName}`; }
@@ -3489,7 +3576,7 @@
             return false;
         });
         const unique_episode_key = `_api_${enabledApis.join('_')}_` + _episode_key;
-        if (is_auto && window.localStorage.getItem(unique_episode_key)) {
+        if (useCache && window.localStorage.getItem(unique_episode_key)) {
             const cachedInfo = JSON.parse(window.localStorage.getItem(unique_episode_key));
             logger.info(`[匹配 #${matchId}] 使用缓存: episodeId=${cachedInfo.episodeId}`);
             return cachedInfo;
@@ -3614,38 +3701,61 @@
         // const path = window.location.pathname.replace(/\/web\/(index\.html)?/, '/api/danmu/');
         // const url = window.location.origin + path + jellyfinItemId + '/raw';
         const url = `${ApiClient.serverAddress()}/api/danmu/${mediaServerItemId}/raw?X-Emby-Token=${ApiClient.accessToken()}`;
-        const response = await fetch(url);
-        if (!response.ok) {
-            return null;
-        }
-        const xmlText = await response.text();
-        if (!xmlText || xmlText.length === 0) {
-            return null;
-        }
 
-        // parse the xml data
-        // xml data: <d p="392.00000,1,25,16777215,0,0,[BiliBili]e6860b30,1723088443,1">弹幕内容</d>
-        //           <d p="stime, type, fontSize, color, date, pool, sender, dbid, unknown">content</d>
-        // comment data: {cid: "1723088443", p: "392.00,1,16777215,[BiliBili]e6860b30", m: "弹幕内容"}
-        //               {cid: "dbid", p: "stime, type, color, sender", m: "content"}
         try {
-            const parser = new DOMParser();
-            const data = parser.parseFromString(xmlText, 'text/xml');
-            const comments = [];
-
-            for (const comment of data.getElementsByTagName('d')) {
-                const p = comment.getAttribute('p').split(',').map(Number);
-                const commentData = {
-                    cid: p[7],
-                    p: p[0] + ',' + p[1] + ',' + p[3] + ',' + p[6],
-                    m: comment.textContent
-                };
-                comments.push(commentData);
+            const response = await fetch(url);
+            if (!response.ok) {
+                // [优化] 友好的错误提示
+                if (response.status === 404) {
+                    ErrorNotifier.noDanmaku();
+                } else {
+                    ErrorNotifier.apiError('插件API');
+                }
+                return null;
             }
 
-            return comments;
-        } catch (error) {
-            logger.error('Failed to parse XML data:', error);
+            const xmlText = await response.text();
+            if (!xmlText || xmlText.length === 0) {
+                ErrorNotifier.noDanmaku();
+                return null;
+            }
+
+            // parse the xml data
+            // xml data: <d p="392.00000,1,25,16777215,0,0,[BiliBili]e6860b30,1723088443,1">弹幕内容</d>
+            //           <d p="stime, type, fontSize, color, date, pool, sender, dbid, unknown">content</d>
+            // comment data: {cid: "1723088443", p: "392.00,1,16777215,[BiliBili]e6860b30", m: "弹幕内容"}
+            //               {cid: "dbid", p: "stime, type, color, sender", m: "content"}
+            try {
+                const parser = new DOMParser();
+                const data = parser.parseFromString(xmlText, 'text/xml');
+                const comments = [];
+
+                for (const comment of data.getElementsByTagName('d')) {
+                    const p = comment.getAttribute('p').split(',').map(Number);
+                    const commentData = {
+                        cid: p[7],
+                        p: p[0] + ',' + p[1] + ',' + p[3] + ',' + p[6],
+                        m: comment.textContent
+                    };
+                    comments.push(commentData);
+                }
+
+                if (comments.length === 0) {
+                    ErrorNotifier.noDanmaku();
+                    return null;
+                }
+
+                // [优化] 成功加载提示
+                ErrorNotifier.loadSuccess(comments.length);
+                return comments;
+            } catch (parseError) {
+                logger.error('[弹幕解析] XML 解析失败:', parseError);
+                ErrorNotifier.parseError('弹幕XML');
+                return null;
+            }
+        } catch (networkError) {
+            logger.error('[弹幕加载] 网络请求失败:', networkError);
+            ErrorNotifier.networkError('弹幕');
             return null;
         }
     }
@@ -3670,6 +3780,15 @@
 
         if (!comments) { return; }
 
+        // [优化] 保存弹幕到 IndexedDB 缓存
+        if (window.ede.episode_info && window.ede.episode_info.episodeId) {
+            const episodeId = window.ede.episode_info.episodeId;
+            const animeId = window.ede.episode_info.animeId || 'unknown';
+            IndexedDBCache.save(episodeId, animeId, comments).catch(error => {
+                logger.warn('[IndexedDB] 保存弹幕缓存失败:', error);
+            });
+        }
+
         if (window.ede.danmaku) {
             try { window.ede.danmaku.hide(); window.ede.danmaku.destroy(); } catch (e) {
                 logger.warn('旧弹幕实例销毁异常', e);
@@ -3680,7 +3799,13 @@
         const ghostWrappers = document.querySelectorAll(`#${eleIds.danmakuWrapper}`);
         ghostWrappers.forEach(el => el.remove());
 
-        const commentsParsed = danmakuParser(comments);
+        // [优化] 全量解析 + 缓存（复用 danmakuParser，确保字段格式完全兼容）
+
+        // 清空旧的弹幕缓存（切换剧集时）
+        danmakuParseCache.clearAll();
+
+        // 全量解析弹幕（带缓存，相同弹幕集不会重复解析）
+        const commentsParsed = parseAllDanmaku(comments);
         window.ede.commentsParsed = commentsParsed;
 
         logger.debug('开始过滤和合并弹幕 (异步)...');
@@ -4088,8 +4213,24 @@
                     }
                     throw new Error('从服务端Danmu插件获取弹幕失败，尝试在线加载...');
                 })
-                .catch((error) => {
+                .catch(async (error) => {
                     logger.error(error);
+
+                    // [优化] 尝试从 IndexedDB 缓存加载
+                    if (window.ede.episode_info && window.ede.episode_info.episodeId) {
+                        const cachedComments = await IndexedDBCache.load(window.ede.episode_info.episodeId);
+                        if (cachedComments && cachedComments.length > 0) {
+                            logger.info(`[IndexedDB] 从缓存恢复 ${cachedComments.length} 条弹幕`);
+                            ErrorNotifier.cacheSuccess('IndexedDB缓存');
+                            return createDanmaku(cachedComments, currentSessionId).then(() => {
+                                if (window.ede && window.ede.lastLoadId === currentSessionId) {
+                                    ddClearLoadingRing();
+                                }
+                            });
+                        }
+                    }
+
+                    // 缓存也没有，继续在线加载
                     return loadOnlineDanmaku(loadType, currentSessionId);
                 });
             });
@@ -4105,7 +4246,10 @@
             return;
         }
 
-        getEpisodeInfo(loadType === LOAD_TYPE.INIT || loadType === LOAD_TYPE.CHECK)
+        getEpisodeInfo(
+            loadType === LOAD_TYPE.INIT || loadType === LOAD_TYPE.CHECK,
+            loadType !== LOAD_TYPE.SEARCH && loadType !== LOAD_TYPE.REFRESH
+        )
             .then((info) => {
                 return new Promise((resolve, reject) => {
                     // 二次检查
@@ -4153,8 +4297,12 @@
                                     logger.debug(err);
                                 });
                         } else {
-                            // [新增] 调用弹幕接口前更新状态卡片提示
+                            // [新增] 调用弹幕接口前更新状态卡片和 tooltip 提示
+                            const fetchAnimeName = (window.ede.episode_info && window.ede.episode_info.animeTitle) || '';
                             setOsdDanmakuText('弹幕：正在获取弹幕');
+                            if (window.ede && fetchAnimeName) {
+                                window.ede._danmakuLoadTitle = `正在获取弹幕：${fetchAnimeName}`;
+                            }
                             // return 确保外层链等待 fetchComment 及 createDanmaku 全部完成，
                             // 避免 loading=false 和按钮透明度恢复早于弹幕到位
                             return fetchComment(episodeId).then((comments) => {
@@ -4584,6 +4732,39 @@
            }
        });
    }
+
+    // [优化] 弹幕解析缓存（全量解析结果缓存，避免相同弹幕集重复解析）
+    const danmakuParseCache = {
+        // 全量解析结果缓存
+        fullParsed: null,
+        // 全量解析的源数据引用（用于判断是否需要重新解析）
+        fullSource: null,
+
+        // 清空缓存（切换剧集时调用）
+        clearAll() {
+            this.fullParsed = null;
+            this.fullSource = null;
+            logger.debug('[弹幕缓存] 已清空所有缓存');
+        }
+    };
+
+    // [优化] 全量解析弹幕（带缓存，避免重复解析相同弹幕集）
+    // 直接复用经过充分验证的 danmakuParser 函数，确保输出格式完全兼容
+    function parseAllDanmaku(comments) {
+        // 如果弹幕源数据没变，直接返回缓存
+        if (danmakuParseCache.fullSource === comments && danmakuParseCache.fullParsed) {
+            return danmakuParseCache.fullParsed;
+        }
+
+        // 调用原始 danmakuParser 进行全量解析
+        const parsed = danmakuParser(comments);
+
+        // 缓存结果和源引用
+        danmakuParseCache.fullParsed = parsed;
+        danmakuParseCache.fullSource = comments;
+
+        return parsed;
+    }
 
     function danmakuParser($obj) {
         const fontSize = getDanmakuFontSize();
@@ -5250,8 +5431,9 @@
                     window.ede.searchDanmakuOpts.episodes = [];
                 }
 
-                // [修复] 清除TMDB映射缓存
+                // [修复] 清除TMDB映射缓存（内存 + IndexedDB）
                 episodeMappingCache.clear();
+                IndexedDBCache.clearTmdb();
 
                 embyToast({ text: '本地匹配缓存已清除，包括animeId、episodeId等所有匹配信息' });
                 loadDanmaku(LOAD_TYPE.REFRESH); // 强制重新匹配和加载弹幕
@@ -6993,6 +7175,14 @@
 
     async function getTmdbEpisodeGroups(tmdbId, tmdbApiKey) {
         try {
+            // 先查 IndexedDB 缓存（TTL 7天）
+            const cacheKey = `eg-list:${tmdbId}`;
+            const cached = await IndexedDBCache.loadTmdb(cacheKey);
+            if (cached) {
+                logger.info(`[集数映射] Episode Groups 列表缓存命中 (tmdbId: ${tmdbId})`);
+                return cached;
+            }
+
             const tmdbBaseUrl = lsGetItem(lsKeys.tmdbApiBaseUrl.id) || 'https://api.themoviedb.org';
             const url = `${tmdbBaseUrl}/3/tv/${tmdbId}/episode_groups?api_key=${tmdbApiKey}`;
             const response = await fetch(url);
@@ -7000,7 +7190,14 @@
                 throw new Error(`TMDB API 请求失败: ${response.status}`);
             }
             const data = await response.json();
-            return data.results || [];
+            const results = data.results || [];
+
+            // 写入 IndexedDB 缓存（7天 TTL）
+            if (results.length > 0) {
+                IndexedDBCache.saveTmdb(cacheKey, results, 7);
+            }
+
+            return results;
         } catch (error) {
             logger.error('[集数映射] 获取 TMDB Episode Groups 失败:', error);
             return null;
@@ -7008,12 +7205,22 @@
     }
 
     async function getTmdbEpisodeGroup(episodeGroupId, tmdbApiKey) {
+        // 先查内存缓存
         if (episodeMappingCache.has(episodeGroupId)) {
-            logger.debug('[集数映射] 使用缓存的 TMDB Episode Group 数据');
+            logger.debug('[集数映射] 使用内存缓存的 TMDB Episode Group 数据');
             return episodeMappingCache.get(episodeGroupId);
         }
 
         try {
+            // 再查 IndexedDB 缓存（TTL 30天）
+            const cacheKey = `eg-detail:${episodeGroupId}`;
+            const cached = await IndexedDBCache.loadTmdb(cacheKey);
+            if (cached) {
+                logger.info(`[集数映射] Episode Group 详情缓存命中 (groupId: ${episodeGroupId})`);
+                episodeMappingCache.set(episodeGroupId, cached);
+                return cached;
+            }
+
             const tmdbBaseUrl = lsGetItem(lsKeys.tmdbApiBaseUrl.id) || 'https://api.themoviedb.org';
             const url = `${tmdbBaseUrl}/3/tv/episode_group/${episodeGroupId}?api_key=${tmdbApiKey}`;
             const response = await fetch(url);
@@ -7021,7 +7228,11 @@
                 throw new Error(`TMDB API 请求失败: ${response.status}`);
             }
             const data = await response.json();
+
+            // 写入内存缓存 + IndexedDB 缓存（30天 TTL）
             episodeMappingCache.set(episodeGroupId, data);
+            IndexedDBCache.saveTmdb(cacheKey, data, 30);
+
             return data;
         } catch (error) {
             logger.error('[集数映射] 获取 TMDB Episode Group 失败:', error);
@@ -7043,6 +7254,7 @@
         };
 
         let absoluteEpisode = 1;
+        const mappingLines = []; // 收集映射日志
 
         episodeGroup.groups.forEach((group, groupIndex) => {
             if (group.episodes && Array.isArray(group.episodes)) {
@@ -7071,7 +7283,8 @@
                     mapping.customToTmdb[seasonEpisodeKey] = { season: tmdbSeason, episode: tmdbEpisode };
                     mapping.tmdbToCustom[tmdbKey] = { season: customSeason, episode: customEpisode };
 
-                    logger.debug(`[集数映射] 映射: Custom S${String(customSeason).padStart(2, '0')}E${String(customEpisode).padStart(2, '0')} <-> TMDB S${String(tmdbSeason).padStart(2, '0')}E${String(tmdbEpisode).padStart(2, '0')}`);
+                    // 收集映射信息（不立即打印）
+                    mappingLines.push(`  Custom ${seasonEpisodeKey} <-> TMDB ${tmdbKey}`);
 
                     absoluteEpisode++;
                 });
@@ -7079,6 +7292,12 @@
         });
 
         mapping.totalEpisodes = absoluteEpisode - 1;
+
+        // 一次性输出所有映射（换行分隔）
+        if (mappingLines.length > 0) {
+            logger.debug('[集数映射] 映射表:\n' + mappingLines.join('\n'));
+        }
+
         return mapping;
     }
 
@@ -8528,6 +8747,10 @@
     }
 
     function getById(childId, parentNode = document) {
+        // [优化] 只有在 document 级别查询时使用缓存
+        if (parentNode === document) {
+            return domCache.getById(childId);
+        }
         return parentNode.querySelector(`#${childId}`);
     }
 
@@ -8537,6 +8760,10 @@
      * @returns {HTMLElement | null} - 返回找到的单个元素或 null
      */
     function getByClass(className, parentNode = document) {
+        // [优化] 只有在 document 级别查询时使用缓存
+        if (parentNode === document) {
+            return domCache.getByClass(className);
+        }
         return parentNode.querySelector(`.${className}`);
     }
 
@@ -8692,9 +8919,16 @@
                 let html = '';
 
                 if (loadTitle) {
-                    // 状态1：搜索阶段 — 第一行"弹幕：正在搜索"，第二行视频名，无进度条
-                    const animeName = loadTitle.replace(/^正在搜索弹幕：/, '');
-                    html = `<div class="dd-tip-title">弹幕：正在搜索</div>`
+                    // 状态1：搜索/获取阶段 — 第一行状态，第二行视频名，无进度条
+                    let statusText = '弹幕：正在搜索';
+                    let animeName = loadTitle;
+                    if (loadTitle.startsWith('正在获取弹幕：')) {
+                        statusText = '弹幕：正在获取';
+                        animeName = loadTitle.replace(/^正在获取弹幕：/, '');
+                    } else if (loadTitle.startsWith('正在搜索弹幕：')) {
+                        animeName = loadTitle.replace(/^正在搜索弹幕：/, '');
+                    }
+                    html = `<div class="dd-tip-title">${statusText}</div>`
                         + `<div class="dd-tip-desc">${animeName}</div>`;
                 } else if (desc || pct >= 0) {
                     // 状态2：轮询阶段 — 第一行"正在生成弹幕"，进度条，第二行描述
@@ -9258,24 +9492,428 @@
         }
     }
 
+    // [优化] localStorage 内存缓存层，减少同步 I/O
+    const lsCache = new Map();
+
+    // [优化] DOM 查询缓存
+    const domCache = {
+        cache: new Map(),
+
+        // 获取元素（带缓存）
+        get(selector, forceRefresh = false) {
+            if (!forceRefresh && this.cache.has(selector)) {
+                const cached = this.cache.get(selector);
+                // 验证缓存是否仍在 DOM 中
+                if (cached && document.contains(cached)) {
+                    return cached;
+                }
+                // 缓存失效，删除
+                this.cache.delete(selector);
+            }
+
+            // 查询并缓存
+            const element = document.querySelector(selector);
+            if (element) {
+                this.cache.set(selector, element);
+            }
+            return element;
+        },
+
+        // 获取所有匹配元素（不缓存，因为 NodeList 是动态的）
+        getAll(selector) {
+            return document.querySelectorAll(selector);
+        },
+
+        // 按 ID 获取（带缓存）
+        getById(id) {
+            return this.get(`#${id}`);
+        },
+
+        // 按 Class 获取第一个（带缓存）
+        getByClass(className, parent) {
+            const selector = parent ? `${parent} .${className}` : `.${className}`;
+            return this.get(selector);
+        },
+
+        // 清空指定缓存
+        invalidate(selector) {
+            this.cache.delete(selector);
+        },
+
+        // 清空所有缓存（页面导航时调用）
+        clear() {
+            this.cache.clear();
+            logger.debug('[DOM缓存] 已清空所有缓存');
+        }
+    };
+
+    // [优化] 事件监听器统一管理
+    const eventManager = {
+        listeners: new Map(),
+
+        // 添加事件监听器（自动管理）
+        add(target, event, handler, options) {
+            if (!target) return;
+
+            const key = `${this.getTargetKey(target)}_${event}`;
+
+            // 如果已存在相同的监听器，先移除
+            if (this.listeners.has(key)) {
+                this.remove(target, event);
+            }
+
+            target.addEventListener(event, handler, options);
+            this.listeners.set(key, { target, event, handler, options });
+
+            logger.debug(`[事件管理] 添加监听器: ${key}`);
+        },
+
+        // 移除事件监听器
+        remove(target, event) {
+            if (!target) return;
+
+            const key = `${this.getTargetKey(target)}_${event}`;
+            const listener = this.listeners.get(key);
+
+            if (listener) {
+                listener.target.removeEventListener(listener.event, listener.handler, listener.options);
+                this.listeners.delete(key);
+                logger.debug(`[事件管理] 移除监听器: ${key}`);
+            }
+        },
+
+        // 生成目标键（用于标识不同的 target）
+        getTargetKey(target) {
+            if (target === window) return 'window';
+            if (target === document) return 'document';
+            if (target.id) return `#${target.id}`;
+            if (target.className) return `.${target.className.split(' ')[0]}`;
+            return target.tagName || 'unknown';
+        },
+
+        // 清理所有监听器
+        cleanup() {
+            logger.debug(`[事件管理] 开始清理 ${this.listeners.size} 个监听器`);
+
+            this.listeners.forEach(({ target, event, handler, options }) => {
+                try {
+                    target.removeEventListener(event, handler, options);
+                } catch (error) {
+                    logger.warn(`[事件管理] 清理监听器失败: ${event}`, error);
+                }
+            });
+
+            this.listeners.clear();
+            logger.debug('[事件管理] 所有监听器已清理');
+        }
+    };
+
+    // [优化] 用户友好的错误提示管理器
+    const ErrorNotifier = {
+        // 显示错误提示（优先使用 Emby 原生 toast）
+        show(message, type = 'error', duration = 5000) {
+            // 方案1: 使用 Emby 自带的提示
+            if (window.Dashboard && window.Dashboard.alert) {
+                window.Dashboard.alert({
+                    message: message,
+                    title: 'dd-danmaku'
+                });
+            }
+            // 方案2: 在视频 OSD 上显示
+            else {
+                const icon = type === 'error' ? '❌' : type === 'warning' ? '⚠️' : type === 'success' ? '✅' : 'ℹ️';
+                setOsdDanmakuText(`${icon} ${message}`, duration);
+            }
+
+            // 始终记录到控制台
+            const logFn = type === 'error' ? logger.error : type === 'warning' ? logger.warn : logger.info;
+            logFn(`[提示] ${message}`);
+        },
+
+        // 预定义的常见错误提示
+        networkError(context = '数据') {
+            this.show(`网络错误：${context}加载失败，请检查网络连接`, 'error', 5000);
+        },
+
+        apiError(apiName = 'API') {
+            this.show(`${apiName}暂时不可用，正在尝试备用方案...`, 'warning', 3000);
+        },
+
+        parseError(dataType = '数据') {
+            this.show(`${dataType}格式异常，弹幕可能不完整`, 'warning', 3000);
+        },
+
+        cacheSuccess(source = '缓存') {
+            this.show(`已从${source}加载弹幕`, 'info', 2000);
+        },
+
+        noDanmaku() {
+            this.show('当前视频暂无弹幕', 'info', 2000);
+        },
+
+        loadSuccess(count) {
+            this.show(`成功加载 ${count} 条弹幕`, 'success', 2000);
+        }
+    };
+
+    // [优化] IndexedDB 离线缓存管理器
+    const IndexedDBCache = {
+        db: null,
+        dbName: 'dd-danmaku-cache',
+        dbVersion: 2,  // v2: 新增 tmdb store
+        storeName: 'episodes',
+        tmdbStoreName: 'tmdb',
+
+        // 初始化数据库
+        async init() {
+            if (this.db) return true;
+
+            // 检查浏览器是否支持 IndexedDB
+            if (!window.indexedDB) {
+                logger.warn('[IndexedDB] 浏览器不支持 IndexedDB，将使用 localStorage 降级');
+                return false;
+            }
+
+            try {
+                this.db = await new Promise((resolve, reject) => {
+                    const request = indexedDB.open(this.dbName, this.dbVersion);
+
+                    request.onerror = () => {
+                        logger.error('[IndexedDB] 打开数据库失败:', request.error);
+                        reject(request.error);
+                    };
+
+                    request.onsuccess = () => {
+                        logger.info('[IndexedDB] 数据库已就绪');
+                        resolve(request.result);
+                    };
+
+                    request.onupgradeneeded = (event) => {
+                        const db = event.target.result;
+
+                        // v1: 弹幕缓存 store
+                        if (!db.objectStoreNames.contains(this.storeName)) {
+                            const store = db.createObjectStore(this.storeName, { keyPath: 'episodeId' });
+                            store.createIndex('animeId', 'animeId', { unique: false });
+                            store.createIndex('timestamp', 'timestamp', { unique: false });
+                            logger.info('[IndexedDB] 弹幕缓存 store 已创建');
+                        }
+
+                        // v2: TMDB 集数映射缓存 store
+                        if (!db.objectStoreNames.contains(this.tmdbStoreName)) {
+                            const tmdbStore = db.createObjectStore(this.tmdbStoreName, { keyPath: 'cacheKey' });
+                            tmdbStore.createIndex('timestamp', 'timestamp', { unique: false });
+                            logger.info('[IndexedDB] TMDB 缓存 store 已创建');
+                        }
+                    };
+                });
+
+                return true;
+            } catch (error) {
+                logger.error('[IndexedDB] 初始化失败:', error);
+                return false;
+            }
+        },
+
+        // 保存弹幕到 IndexedDB
+        async save(episodeId, animeId, comments) {
+            if (!await this.init()) {
+                // 降级到 localStorage
+                return this.saveToLocalStorage(episodeId, comments);
+            }
+
+            try {
+                const data = {
+                    episodeId: episodeId,
+                    animeId: animeId,
+                    comments: comments,
+                    timestamp: Date.now(),
+                    size: comments.length
+                };
+
+                const transaction = this.db.transaction([this.storeName], 'readwrite');
+                const store = transaction.objectStore(this.storeName);
+                await store.put(data);
+
+                logger.debug(`[IndexedDB] 已缓存 ${comments.length} 条弹幕 (episodeId: ${episodeId})`);
+                return true;
+            } catch (error) {
+                logger.error('[IndexedDB] 保存失败:', error);
+                // 降级到 localStorage
+                return this.saveToLocalStorage(episodeId, comments);
+            }
+        },
+
+        // 从 IndexedDB 加载弹幕
+        async load(episodeId) {
+            if (!await this.init()) {
+                // 降级到 localStorage
+                return this.loadFromLocalStorage(episodeId);
+            }
+
+            try {
+                const transaction = this.db.transaction([this.storeName], 'readonly');
+                const store = transaction.objectStore(this.storeName);
+                const request = store.get(episodeId);
+
+                const data = await new Promise((resolve, reject) => {
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                });
+
+                if (data && data.comments) {
+                    logger.debug(`[IndexedDB] 缓存命中 (episodeId: ${episodeId}, ${data.size} 条弹幕)`);
+                    return data.comments;
+                }
+
+                return null;
+            } catch (error) {
+                logger.error('[IndexedDB] 读取失败:', error);
+                // 降级到 localStorage
+                return this.loadFromLocalStorage(episodeId);
+            }
+        },
+
+        // 降级：保存到 localStorage
+        saveToLocalStorage(episodeId, comments) {
+            try {
+                const key = `danmaku_cache_${episodeId}`;
+                const data = JSON.stringify({ comments, timestamp: Date.now() });
+                localStorage.setItem(key, data);
+                logger.debug(`[localStorage降级] 已缓存弹幕 (episodeId: ${episodeId})`);
+                return true;
+            } catch (error) {
+                logger.error('[localStorage降级] 保存失败:', error);
+                return false;
+            }
+        },
+
+        // 降级：从 localStorage 加载
+        loadFromLocalStorage(episodeId) {
+            try {
+                const key = `danmaku_cache_${episodeId}`;
+                const data = localStorage.getItem(key);
+                if (data) {
+                    const parsed = JSON.parse(data);
+                    logger.debug(`[localStorage降级] 缓存命中 (episodeId: ${episodeId})`);
+                    return parsed.comments;
+                }
+                return null;
+            } catch (error) {
+                logger.error('[localStorage降级] 读取失败:', error);
+                return null;
+            }
+        },
+
+        // ========== TMDB 集数映射缓存 ==========
+
+        // 保存 TMDB 数据到 IndexedDB
+        async saveTmdb(cacheKey, data, ttlDays = 7) {
+            if (!await this.init()) return false;
+            try {
+                const record = {
+                    cacheKey: cacheKey,
+                    data: data,
+                    timestamp: Date.now(),
+                    expireAt: Date.now() + ttlDays * 86400000
+                };
+                const tx = this.db.transaction([this.tmdbStoreName], 'readwrite');
+                const store = tx.objectStore(this.tmdbStoreName);
+                await new Promise((resolve, reject) => {
+                    const req = store.put(record);
+                    req.onsuccess = () => resolve();
+                    req.onerror = () => reject(req.error);
+                });
+                logger.debug(`[IndexedDB] TMDB 缓存已写入: ${cacheKey}`);
+                return true;
+            } catch (error) {
+                logger.warn('[IndexedDB] TMDB 缓存写入失败:', error);
+                return false;
+            }
+        },
+
+        // 从 IndexedDB 加载 TMDB 数据（自动过期检查）
+        async loadTmdb(cacheKey) {
+            if (!await this.init()) return null;
+            try {
+                const tx = this.db.transaction([this.tmdbStoreName], 'readonly');
+                const store = tx.objectStore(this.tmdbStoreName);
+                const record = await new Promise((resolve, reject) => {
+                    const req = store.get(cacheKey);
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => reject(req.error);
+                });
+                if (!record) return null;
+                // TTL 过期检查
+                if (record.expireAt && Date.now() > record.expireAt) {
+                    logger.debug(`[IndexedDB] TMDB 缓存已过期: ${cacheKey}`);
+                    return null;
+                }
+                logger.debug(`[IndexedDB] TMDB 缓存命中: ${cacheKey}`);
+                return record.data;
+            } catch (error) {
+                logger.warn('[IndexedDB] TMDB 缓存读取失败:', error);
+                return null;
+            }
+        },
+
+        // 清空 TMDB 缓存（清除所有缓存时调用）
+        async clearTmdb() {
+            if (!await this.init()) return;
+            try {
+                const tx = this.db.transaction([this.tmdbStoreName], 'readwrite');
+                const store = tx.objectStore(this.tmdbStoreName);
+                await new Promise((resolve, reject) => {
+                    const req = store.clear();
+                    req.onsuccess = () => resolve();
+                    req.onerror = () => reject(req.error);
+                });
+                logger.info('[IndexedDB] TMDB 缓存已清空');
+            } catch (error) {
+                logger.warn('[IndexedDB] TMDB 缓存清空失败:', error);
+            }
+        }
+    };
+
     // 缓存相关方法
     function lsGetItem(id) {
+        // 优先从缓存读取
+        if (lsCache.has(id)) {
+            return lsCache.get(id);
+        }
+
         const key = lsGetKeyById(id);
         if (!key) { return null; }
         const defaultValue = lsKeys[key].defaultValue;
         const item = localStorage.getItem(id);
+
+        let value;
         // [修复] 如果 localStorage 中没有值，或者值为空字符串且默认值不为空，则返回默认值
-        if (item === null || (item === '' && defaultValue !== '')) { return defaultValue; }
+        if (item === null || (item === '' && defaultValue !== '')) {
+            value = defaultValue;
+        }
         // JSON.parse 加 try/catch，防止单个损坏的 localStorage 值中断初始化
-        if (typeof defaultValue === 'object' && defaultValue !== null) {
-            try { return JSON.parse(item); } catch (_) {
+        else if (typeof defaultValue === 'object' && defaultValue !== null) {
+            try {
+                value = JSON.parse(item);
+            } catch (_) {
                 logger.warn(`[lsGetItem] localStorage 值解析失败，键=${id}，使用默认值`);
-                return defaultValue;
+                value = defaultValue;
             }
         }
-        if (typeof defaultValue === 'boolean') { return item === 'true'; }
-        if (typeof defaultValue === 'number') { return parseFloat(item); }
-        return item;
+        else if (typeof defaultValue === 'boolean') {
+            value = item === 'true';
+        }
+        else if (typeof defaultValue === 'number') {
+            value = parseFloat(item);
+        }
+        else {
+            value = item;
+        }
+
+        // 存入缓存
+        lsCache.set(id, value);
+        return value;
     }
     function lsCheckOld(id, value) {
         return JSON.stringify(lsGetItem(id)) === JSON.stringify(value);
@@ -9296,25 +9934,76 @@
             objectEntries(keyValues).forEach(([key, value]) => lsSetItem(key, value));
         }
     }
-    function lsSetItem(id, value, skipSync) {
+    // [优化] 批量延迟写入队列
+    const lsPendingWrites = new Map();
+    let lsWriteTimer = null;
+
+    function lsSetItem(id, value, skipSync, immediate = false) {
         if (!lsGetKeyById(id)) { return; }
+
+        // 立即更新内存缓存
+        lsCache.set(id, value);
+
+        // 如果是立即写入模式，直接写入 localStorage
+        if (immediate) {
+            lsFlushWrite(id, value);
+            // 持久化同步
+            if (!skipSync
+                && lsGetItem(lsKeys.configPersistenceEnable.id)
+                && lsGetItem(lsKeys.configPersistenceAutoSync.id)
+                && id !== lsKeys.configPersistenceEnable.id
+                && id !== lsKeys.configPersistenceAutoSync.id) {
+                persistenceSaveOneDebounced(id, value);
+            }
+            return;
+        }
+
+        // 加入批量写入队列
+        lsPendingWrites.set(id, { value, skipSync });
+
+        // 启动延迟写入定时器（500ms 后批量写入）
+        if (lsWriteTimer) {
+            clearTimeout(lsWriteTimer);
+        }
+        lsWriteTimer = setTimeout(() => {
+            lsFlushAllWrites();
+        }, 500);
+    }
+
+    // 执行单个写入
+    function lsFlushWrite(id, value) {
         let stringValue;
         if (Array.isArray(value)) {
             stringValue = JSON.stringify(value);
-        } else if (typeof value === 'object') {
+        } else if (typeof value === 'object' && value !== null) {
             stringValue = JSON.stringify(value);
         } else {
-            stringValue = value;
+            stringValue = String(value);
         }
         localStorage.setItem(id, stringValue);
-        // 持久化同步：开启持久化且开启实时同步时，配置变更自动同步到服务器
-        if (!skipSync
-            && lsGetItem(lsKeys.configPersistenceEnable.id)
-            && lsGetItem(lsKeys.configPersistenceAutoSync.id)
-            && id !== lsKeys.configPersistenceEnable.id
-            && id !== lsKeys.configPersistenceAutoSync.id) {
-            persistenceSaveOneDebounced(id, value);
-        }
+    }
+
+    // 批量写入所有待写入项
+    function lsFlushAllWrites() {
+        if (lsPendingWrites.size === 0) return;
+
+        logger.debug(`[localStorage] 批量写入 ${lsPendingWrites.size} 项`);
+
+        lsPendingWrites.forEach(({ value, skipSync }, id) => {
+            lsFlushWrite(id, value);
+
+            // 持久化同步
+            if (!skipSync
+                && lsGetItem(lsKeys.configPersistenceEnable.id)
+                && lsGetItem(lsKeys.configPersistenceAutoSync.id)
+                && id !== lsKeys.configPersistenceEnable.id
+                && id !== lsKeys.configPersistenceAutoSync.id) {
+                persistenceSaveOneDebounced(id, value);
+            }
+        });
+
+        lsPendingWrites.clear();
+        lsWriteTimer = null;
     }
     // [优化] 构建 id→key 反向索引 Map，lsGetItem/lsSetItem 查找从 O(n) 降到 O(1)
     const _lsIdToKeyMap = new Map();
@@ -9337,21 +10026,121 @@
     }
 
     /**
+     * [优化] 使用 MutationObserver 替代 setInterval 轮询
      * @param {string|object} target - 等待目标,string 为 selector,object 目标高级自定义 { element: ele, needParent: true }
      * @param {function} callback - 等待目标获取成功后的回调函数,参数为元素
      * @param {number} [timeout=10000] - 超时时间,默认10秒,0则不设置超时
-     * @param {number} [interval=check_interval] - 检查间隔,默认200ms
+     * @param {number} [interval=check_interval] - 降级轮询间隔（仅在 MutationObserver 不可用时）
      * @returns {Promise<HTMLElement|null>} - 返回一个 Promise 对象:
      *   - 如果目标元素在超时时间内被找到,Promise 将 resolve 为目标元素 (HTMLElement)
      *   - 如果超时且未找到目标元素,Promise 将 reject 为一个 Error 对象,表示查找失败
     */
     function waitForElement(target, callback, timeout = 10000, interval = check_interval) {
-        let intervalId = null;
-        let timeoutId = null;
         const isSelector = typeof target === 'string';
         const elementMark = isSelector ? target : target.element.tagName;
 
-        const promise = new Promise((resolve, reject) => {
+        // 立即检查元素是否已存在
+        function checkElementImmediate() {
+            let element = null;
+            if (isSelector) {
+                element = document.querySelector(target);
+            } else {
+                if (target.needParent) {
+                    if (target.element) {
+                        element = target.element.parentNode;
+                    }
+                } else {
+                    element = target.element;
+                }
+            }
+            return element;
+        }
+
+        const existingElement = checkElementImmediate();
+        if (existingElement) {
+            if (callback) callback(existingElement);
+            return Promise.resolve(existingElement);
+        }
+
+        // [优化] 优先使用 MutationObserver
+        if (typeof MutationObserver !== 'undefined') {
+            return waitForElementWithObserver(target, callback, timeout, elementMark);
+        } else {
+            // 降级：使用 setInterval
+            return waitForElementWithPolling(target, callback, timeout, interval, elementMark);
+        }
+    }
+
+    // [优化] 使用 MutationObserver 监听 DOM 变化
+    function waitForElementWithObserver(target, callback, timeout, elementMark) {
+        let observer = null;
+        let timeoutId = null;
+        const isSelector = typeof target === 'string';
+
+        return new Promise((resolve, reject) => {
+            function checkElement() {
+                let element = null;
+                if (isSelector) {
+                    element = document.querySelector(target);
+                } else {
+                    if (target.needParent) {
+                        if (target.element) {
+                            element = target.element.parentNode;
+                        }
+                    } else {
+                        element = target.element;
+                    }
+                }
+
+                if (element) {
+                    cleanup();
+                    if (callback) callback(element);
+                    resolve(element);
+                    return true;
+                }
+                return false;
+            }
+
+            function cleanup() {
+                if (observer) {
+                    observer.disconnect();
+                    observer = null;
+                }
+                if (timeoutId) {
+                    clearTimeout(timeoutId);
+                    timeoutId = null;
+                }
+            }
+
+            // 创建 MutationObserver
+            observer = new MutationObserver(() => {
+                checkElement();
+            });
+
+            // 监听 DOM 树变化
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+
+            // 设置超时
+            if (timeout > 0) {
+                timeoutId = setTimeout(() => {
+                    cleanup();
+                    logger.warn(`[waitForElement] 查找元素 [${elementMark}] 超时 (${timeout}ms)`);
+                    reject(new Error(`Element [${elementMark}] not found within ${timeout}ms`));
+                }, timeout);
+            }
+        });
+    }
+
+    // [降级] 使用 setInterval 轮询
+    function waitForElementWithPolling(target, callback, timeout, interval, elementMark) {
+        let intervalId = null;
+        let timeoutId = null;
+        const isSelector = typeof target === 'string';
+
+        return new Promise((resolve, reject) => {
             function checkElement() {
                 // [优化] 降低日志级别，避免刷屏
                 // logger.debug(`waitForElement: checking element[${elementMark}]`);
@@ -9394,8 +10183,6 @@
                 }, timeout);
             }
         });
-
-        return promise;
     }
 
     function addEasterEggListener() {
@@ -10279,5 +11066,20 @@
         }
     }
     // ------ 自定义API签名验证 end ------
+
+    // [优化] 页面卸载时清理资源
+    window.addEventListener('beforeunload', () => {
+        // localStorage 批量写入
+        if (lsPendingWrites.size > 0) {
+            logger.debug('[localStorage] 页面卸载，立即刷新待写入数据');
+            lsFlushAllWrites();
+        }
+
+        // DOM 缓存清理
+        domCache.clear();
+
+        // 事件监听器清理
+        eventManager.cleanup();
+    });
 
 })();
