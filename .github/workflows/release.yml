@@ -1,0 +1,79 @@
+name: Build and Release
+
+# 触发条件：推送 tag 时自动运行（如 v1.3.0）
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout 代码
+        uses: actions/checkout@v4
+      
+      - name: 设置 Node.js 环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: 安装 Terser（JS 压缩工具）
+        run: npm install -g terser
+      
+      - name: 提取版本号
+        id: extract_version
+        run: |
+          VERSION=$(grep -oP '@version\s+\K[\d\.]+' ede.js)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "检测到版本: $VERSION"
+      
+      - name: 创建 release 目录
+        run: mkdir -p release
+      
+      - name: 复制 ede.js 到 release/
+        run: cp ede.js release/ede.js
+      
+      - name: 压缩生成 ede.min.js
+        run: |
+          terser ede.js \
+            --compress "drop_console=true" \
+            --mangle \
+            --comments "/==UserScript==|@name|@description|@version|@author|@license|@namespace/" \
+            --output release/ede.min.js
+
+          # 打印文件大小对比
+          ORIGINAL_SIZE=$(stat -f%z release/ede.js 2>/dev/null || stat -c%s release/ede.js)
+          MINIFIED_SIZE=$(stat -f%z release/ede.min.js 2>/dev/null || stat -c%s release/ede.min.js)
+          echo "原始大小: $(numfmt --to=iec-i --suffix=B $ORIGINAL_SIZE)"
+          echo "压缩后:   $(numfmt --to=iec-i --suffix=B $MINIFIED_SIZE)"
+          echo "压缩率:   $(awk "BEGIN {printf \"%.1f%%\", ($MINIFIED_SIZE/$ORIGINAL_SIZE)*100}")"
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            release/ede.js
+            release/ede.min.js
+          # append_body: true 会将 body 内容追加到已有 Release Notes 之后
+          append_body: true
+          body: |
+
+            ---
+
+            ## 📦 构建产物
+
+            ### 发布文件
+            - `ede.js` - 原始版本（带注释、调试信息）
+            - `ede.min.js` - 压缩版本（移除 console、变量名混淆）
+
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: 上传构建产物（供后续 job 使用）
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: release/
+          retention-days: 7
