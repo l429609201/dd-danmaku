@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.3.1
+// @version      1.3.2
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -20,7 +20,8 @@
         console.log('[dd-danmaku] 脚本已加载过，跳过重复执行');
         return;
     }
-    window._ddDanmakuLoaded = true;
+    // 宿主客户端可能不存在；纯脚本注入模式统一通过安全访问器降级。
+    const getHostApiClient = () => typeof ApiClient !== 'undefined' ? ApiClient : null;
 
     // ------ 用户配置 start ------
     let requireDanmakuPath = 'https://danmu-api.misaka10876.top/tools/danmaku.min.js';
@@ -67,7 +68,7 @@
 
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.3.1', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.3.2', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -153,10 +154,11 @@
         // --- 第1层：API 版本判断 ---
         let apiSaysOld = false;
         try {
-            if (ApiClient.isMinServerVersion) {
-                apiSaysOld = !ApiClient.isMinServerVersion("4.8.0.0");
+            const client = getHostApiClient();
+            if (client?.isMinServerVersion) {
+                apiSaysOld = !client.isMinServerVersion("4.8.0.0");
             } else {
-                const sv = ApiClient.serverVersion ? ApiClient.serverVersion() : '';
+                const sv = client?.serverVersion ? client.serverVersion() : '';
                 const parts = sv.split('.').map(Number);
                 apiSaysOld = (parts[0] || 0) < 4 || ((parts[0] || 0) === 4 && (parts[1] || 0) < 8);
             }
@@ -477,7 +479,9 @@
         let probeCompleted = false;
 
         function resetIfSessionChanged() {
-            const key = `${ApiClient.serverAddress?.() || ''}|${ApiClient.getCurrentUserId?.() || ''}`;
+            // 外部单脚本注入器可能没有宿主 ApiClient；未定义时必须完整降级为纯 JS 模式。
+            const client = typeof ApiClient !== 'undefined' ? ApiClient : null;
+            const key = `${client?.serverAddress?.() || ''}|${client?.getCurrentUserId?.() || ''}`;
             if (key !== sessionKey) {
                 sessionKey = key;
                 snapshot = null;
@@ -490,14 +494,16 @@
             return key;
         }
         async function request(path, timeout = 2000) {
+            const client = typeof ApiClient !== 'undefined' ? ApiClient : null;
+            if (!client?.serverAddress) return null;
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), timeout);
             try {
-                const base = String(ApiClient.serverAddress?.() || '').replace(/\/$/, '');
+                const base = String(client.serverAddress?.() || '').replace(/\/$/, '');
                 const response = await fetch(`${base}${path}`, {
                     method: 'GET', credentials: 'same-origin', cache: 'no-store', redirect: 'error',
                     signal: controller.signal,
-                    headers: { 'Accept': 'application/json', 'X-Emby-Token': ApiClient.accessToken?.() || '' }
+                    headers: { 'Accept': 'application/json', 'X-Emby-Token': client.accessToken?.() || '' }
                 });
                 const body = await response.json().catch(() => null);
                 if (!response.ok || body?.success === false || body?.Success === false) {
@@ -587,17 +593,18 @@
             },
             async resolveMatch(payload) {
                 const requestSessionKey = resetIfSessionChanged();
+                const client = typeof ApiClient !== 'undefined' ? ApiClient : null;
                 // 与能力接口的 MediaMatch 契约一致，不将 AI 授权作为传统匹配门槛。
-                if (!snapshot || !this.has('MediaMatch')) return null;
+                if (!client?.serverAddress || !snapshot || !this.has('MediaMatch')) return null;
                 const controller = new AbortController();
                 const timer = setTimeout(() => controller.abort(), 130000);
                 try {
-                    const base = String(ApiClient.serverAddress?.() || '').replace(/\/$/, '');
+                    const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
                     const response = await fetch(`${base}/dd-danmaku/api/matches/resolve`, {
                         method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error',
                         signal: controller.signal,
                         headers: { 'Accept': 'application/json', 'Content-Type': 'application/json',
-                            'X-Emby-Token': ApiClient.accessToken?.() || '' },
+                            'X-Emby-Token': client?.accessToken?.() || '' },
                         body: JSON.stringify(payload)
                     });
                     const body = await response.json().catch(() => null);
@@ -920,8 +927,11 @@
         isWindows: () => _uaCache.windows,
         isMobile: () => _uaCache.android || _uaCache.ios,
         isUbuntu: () => _uaCache.ubuntu,
-        isAndroidEmbyNoisyX: () => _uaCache.android && ApiClient.appVersion().includes('-'),
-        isEmbyNoisyX: () => ApiClient.appVersion().includes('-'),
+        isAndroidEmbyNoisyX: () => {
+            const client = getHostApiClient();
+            return _uaCache.android && String(client?.appVersion?.() || '').includes('-');
+        },
+        isEmbyNoisyX: () => String(getHostApiClient()?.appVersion?.() || '').includes('-'),
         isOthers: () => !_uaCache.android && !_uaCache.ios && !_uaCache.macOS && !_uaCache.windows && !_uaCache.ubuntu,
     };
     // 全局 g 标志的正则在 test() 时会更新 lastIndex，跨调用产生状态导致漏判；移除 g，保留 u 支持 Unicode
@@ -1593,10 +1603,11 @@
         logger.debug('监听到事件: 播放开始 (playbackstart)');
         initUI(); // 播放器重新创建控制栏时幂等补建。
         const cached = danmakuPlaybackSnapshot || stoppedDanmakuSnapshot;
+        const hostClient = getHostApiClient();
         clearStoppedDanmaku();
         // 同一用户/服务器/媒体的短暂重启复用正文，不重新匹配来源。
         if (cached && cached.generation === playbackViewGeneration
-            && cached.userId === ApiClient.getCurrentUserId?.()
+            && cached.userId === hostClient?.getCurrentUserId?.()
             && cached.key === getDanmakuPlaybackKey(cached.manager, cached.manager.getCurrentPlayer())
             && String(state?.NowPlayingItem?.Id || '') === String(JSON.parse(cached.key)[1])) {
             window.ede._loadSequence = (window.ede._loadSequence || 0) + 1;
@@ -1694,7 +1705,8 @@
         document.querySelectorAll(`#${eleIds.danmakuCtr}`).forEach(el => el.remove());
         logger.info('正在初始化UI');
 
-        const serverVersion = ApiClient.serverVersion ? ApiClient.serverVersion() : '';
+        const hostClient = getHostApiClient();
+        const serverVersion = hostClient?.serverVersion ? hostClient.serverVersion() : '';
         logger.info('[dd-danmaku] 服务器版本:', serverVersion);
 
         // [综合方案] 使用三层探测替代单一 API 版本判断
@@ -1794,7 +1806,9 @@
 
     async function fatchEmbyItemInfo(id) {
         if (!id) { return; }
-        return await ApiClient.getItem(ApiClient.getCurrentUserId(), id);
+        const client = getHostApiClient();
+        if (!client?.getItem || !client.getCurrentUserId) return null;
+        return await client.getItem(client.getCurrentUserId(), id);
     }
 
     async function fetchSearchEpisodes(anime, episode, prefix, appId, appSecret) {
@@ -2709,16 +2723,17 @@
     // 自动保存仅接收网络原始集合，不接收过滤结果、通知或本地 XML 回读。
     const xmlSaveAttempts = new Set();
     async function fetchComment(episodeId, overridePrefix, appId, appSecret) {
+        const client = getHostApiClient();
         const itemId = window.ede?.itemId;
         const loadId = window.ede?.lastLoadId;
         const generation = playbackViewGeneration;
-        const base = String(ApiClient.serverAddress?.() || '').replace(/\/$/, '');
-        const userId = ApiClient.getCurrentUserId?.();
-        const token = ApiClient.accessToken?.();
+        const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
+        const userId = client?.getCurrentUserId?.();
+        const token = client?.accessToken?.();
         const current = () => itemId && itemId === window.ede?.itemId
             && loadId === window.ede?.lastLoadId && generation === playbackViewGeneration
-            && base === String(ApiClient.serverAddress?.() || '').replace(/\/$/, '')
-            && userId === ApiClient.getCurrentUserId?.() && token === ApiClient.accessToken?.();
+            && base === String(client?.serverAddress?.() || '').replace(/\/$/, '')
+            && userId === client?.getCurrentUserId?.() && token === client?.accessToken?.();
         // 按本次实际请求地址确定来源，避免切换来源后沿用旧匹配标签。
         const rawPrefix = overridePrefix || window.ede?.episode_info?.apiPrefix || dandanplayApi.prefix;
         const normalize = value => String(value || '').replace(/\/+$/, '');
@@ -3232,10 +3247,12 @@
      */
     async function getAllLibraries() {
         try {
-            const userId = ApiClient.getCurrentUserId();
+            const client = getHostApiClient();
+            if (!client?.getCurrentUserId || !client.getUrl || !client.getJSON) return [];
+            const userId = client.getCurrentUserId();
             // 通过 Views API 获取用户可见的媒体库
-            const viewsUrl = ApiClient.getUrl(`Users/${userId}/Views`);
-            const viewsResult = await ApiClient.getJSON(viewsUrl).catch(() => null);
+            const viewsUrl = client.getUrl(`Users/${userId}/Views`);
+            const viewsResult = await client.getJSON(viewsUrl).catch(() => null);
 
             if (viewsResult && viewsResult.Items && viewsResult.Items.length > 0) {
                 return viewsResult.Items.map(item => ({
@@ -3280,11 +3297,13 @@
             }
 
             // 通过 API 获取完整的 item 信息（包含 ParentId 等字段）
-            const userId = ApiClient.getCurrentUserId();
-            const itemUrl = ApiClient.getUrl(`Users/${userId}/Items/${item.Id}`, {
+            const client = getHostApiClient();
+            if (!client?.getCurrentUserId || !client.getUrl || !client.getJSON) return null;
+            const userId = client.getCurrentUserId();
+            const itemUrl = client.getUrl(`Users/${userId}/Items/${item.Id}`, {
                 Fields: 'ParentId,Path,SeriesId,SeasonId,ProviderIds,LocationType'
             });
-            const fullItem = await ApiClient.getJSON(itemUrl).catch(() => null) || item;
+            const fullItem = await client.getJSON(itemUrl).catch(() => null) || item;
 
             logger.debug('[dd-danmaku] Item 完整信息:', {
                 Id: fullItem.Id,
@@ -3317,10 +3336,10 @@
                 }
 
                 // 获取父级信息继续查找
-                const parentUrl = ApiClient.getUrl(`Users/${userId}/Items/${currentId}`, {
+                const parentUrl = client.getUrl(`Users/${userId}/Items/${currentId}`, {
                     Fields: 'ParentId,Name,Type,CollectionType'
                 });
-                const parentItem = await ApiClient.getJSON(parentUrl).catch(() => null);
+                const parentItem = await client.getJSON(parentUrl).catch(() => null);
                 logger.debug('[dd-danmaku] 递归查找父级:', parentItem ? { Id: parentItem.Id, Name: parentItem.Name, ParentId: parentItem.ParentId, Type: parentItem.Type } : 'null');
 
                 if (!parentItem) break;
@@ -3374,8 +3393,8 @@
 
                 // 获取媒体库的路径信息（需要管理员权限，可能失败）
                 try {
-                    const virtualFoldersUrl = ApiClient.getUrl('Library/VirtualFolders');
-                    const virtualFolders = await ApiClient.getJSON(virtualFoldersUrl).catch(() => null);
+                    const virtualFoldersUrl = client.getUrl('Library/VirtualFolders');
+                    const virtualFolders = await client.getJSON(virtualFoldersUrl).catch(() => null);
 
                     if (virtualFolders && virtualFolders.length > 0) {
                         logger.debug('[dd-danmaku] VirtualFolders:', virtualFolders.map(f => ({ Name: f.Name, Locations: f.Locations })));
@@ -3461,8 +3480,10 @@
      */
     async function matchLibraryByFolderName(folderName, libraries) {
         try {
-            const virtualFoldersUrl = ApiClient.getUrl('Library/VirtualFolders');
-            const virtualFolders = await ApiClient.getJSON(virtualFoldersUrl).catch(() => null);
+            const client = getHostApiClient();
+            if (!client?.getUrl || !client.getJSON) return null;
+            const virtualFoldersUrl = client.getUrl('Library/VirtualFolders');
+            const virtualFolders = await client.getJSON(virtualFoldersUrl).catch(() => null);
 
             if (virtualFolders && virtualFolders.length > 0) {
                 logger.debug('[dd-danmaku] VirtualFolders:', virtualFolders.map(f => ({ Name: f.Name, Locations: f.Locations, ItemId: f.ItemId })));
@@ -3590,14 +3611,16 @@
         // 参考embyToLocalPlayer项目的方式构建流媒体URL
         let streamUrl = null;
         if (mediaSource) {
+            const client = getHostApiClient();
+            if (!client?.deviceId || !client.accessToken || !client.serverAddress) return null;
             const itemId = item.Id;
             const mediaSourceId = mediaSource.Id;
-            const deviceId = ApiClient.deviceId();
-            const apiKey = ApiClient.accessToken();
-            const serverAddress = ApiClient.serverAddress();
+            const deviceId = client.deviceId();
+            const apiKey = client.accessToken();
+            const serverAddress = client.serverAddress();
 
             // 检测是否为Emby服务器
-            const isEmby = serverAddress.includes('/emby/') || ApiClient.appName().toLowerCase().includes('emby');
+            const isEmby = serverAddress.includes('/emby/') || String(client.appName?.() || '').toLowerCase().includes('emby');
             const extraStr = isEmby ? '/emby' : '';
 
             // 构建流媒体URL，参考embyToLocalPlayer的方式
@@ -4588,7 +4611,7 @@
         const offset = player && sourceMedia ? getDanmakuPlaybackOffset(manager, player, sourceMedia) : 0;
         danmakuPlaybackSnapshot = key && sourceMedia ? {
             manager, player, key, generation, sessionId: sessionId || window.ede.lastLoadId,
-            userId: ApiClient.getCurrentUserId?.(),
+            userId: getHostApiClient()?.getCurrentUserId?.(),
             comments, media: sourceMedia, src: sourceMedia.src, offset,
         } : null;
         // 适配器在过滤完成后才创建，避免旧异步任务遗留定时器。
@@ -4941,8 +4964,9 @@
     // 手动来源仅覆盖当前用户、服务器和播放条目，不影响下一集的 DLL 策略。
     let manualDanmakuSelection = null;
     function manualDanmakuKey(itemId) {
-        return JSON.stringify([playbackViewGeneration, ApiClient.serverAddress?.(),
-            ApiClient.getCurrentUserId?.(), String(itemId || '')]);
+        const client = getHostApiClient();
+        return JSON.stringify([playbackViewGeneration, client?.serverAddress?.(),
+            client?.getCurrentUserId?.(), String(itemId || '')]);
     }
 
     async function loadDanmaku(loadType = LOAD_TYPE.CHECK) {
@@ -7795,13 +7819,13 @@
     }
 
     function getPersistenceBaseUrl() {
-        return `${ApiClient.serverAddress()}/emby/ParameterPersistence`;
+        return `${getHostApiClient()?.serverAddress?.() || ''}/emby/ParameterPersistence`;
     }
 
     function getPersistenceHeaders() {
         return {
             'Content-Type': 'application/json',
-            'X-Emby-Token': ApiClient.accessToken()
+            'X-Emby-Token': getHostApiClient()?.accessToken?.() || ''
         };
     }
 
@@ -7810,7 +7834,7 @@
         try {
             // 使用宿主认证头，不在查询字符串中暴露令牌。
             const url = `${getPersistenceBaseUrl()}/Query?Namespace=${encodeURIComponent(getPersistenceNamespace())}`;
-            const response = await fetch(url, { method: 'GET', headers: { 'X-Emby-Token': ApiClient.accessToken() } });
+            const response = await fetch(url, { method: 'GET', headers: { 'X-Emby-Token': getHostApiClient()?.accessToken?.() || '' } });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const result = await response.json();
             if (result.Success) return withMetadata ? result : (result.DataList || []);
@@ -7851,7 +7875,7 @@
                 const resp = await fetch(`${getPersistenceBaseUrl()}/Create`, {
                     method: 'POST',
                     headers: getPersistenceHeaders(),
-                    body: JSON.stringify({ userid: ApiClient.getCurrentUserId(), Parameters: toCreate })
+                    body: JSON.stringify({ userid: getHostApiClient()?.getCurrentUserId?.() || '', Parameters: toCreate })
                 });
                 const r = await resp.json();
                 if (r.Success) created = toCreate.length;
@@ -7860,7 +7884,7 @@
                 const resp = await fetch(`${getPersistenceBaseUrl()}/Update`, {
                     method: 'POST',
                     headers: getPersistenceHeaders(),
-                    body: JSON.stringify({ userid: ApiClient.getCurrentUserId(), Parameters: toUpdate })
+                    body: JSON.stringify({ userid: getHostApiClient()?.getCurrentUserId?.() || '', Parameters: toUpdate })
                 });
                 const r = await resp.json();
                 if (r.Success) updated = toUpdate.length;
@@ -7885,7 +7909,7 @@
                 // 等待首次读取完服务器参数，账号切换后丢弃旧会话的异步写入。
                 await prepareUserParameters();
                 if (identity !== persistenceIdentity() || !ddBackend.has('ParameterPersistence')) return;
-                const userId = ApiClient.getCurrentUserId();
+                const userId = getHostApiClient()?.getCurrentUserId?.() || '';
                 // 先尝试 Update，如果不存在则 Create
                 let resp = await fetch(`${getPersistenceBaseUrl()}/Update`, {
                     method: 'POST',
@@ -7988,8 +8012,10 @@
 
     async function getEmbyItemProviderIds(itemId) {
         try {
-            const userId = ApiClient.getCurrentUserId();
-            const url = `${ApiClient.serverAddress()}/emby/Users/${userId}/Items/${itemId}?api_key=${ApiClient.accessToken()}`;
+            const client = getHostApiClient();
+            if (!client?.getCurrentUserId || !client.serverAddress || !client.accessToken) return [];
+            const userId = client.getCurrentUserId();
+            const url = `${client.serverAddress()}/emby/Users/${userId}/Items/${itemId}?api_key=${client.accessToken()}`;
             const response = await fetch(url);
             if (!response.ok) {
                 throw new Error(`Emby API 请求失败: ${response.status}`);
@@ -8008,7 +8034,7 @@
             // 如果有 SeriesId，从 Series 获取 TMDB Episode Group ID
             if (data.SeriesId) {
                 try {
-                    const seriesUrl = `${ApiClient.serverAddress()}/emby/Users/${userId}/Items/${data.SeriesId}?api_key=${ApiClient.accessToken()}`;
+                    const seriesUrl = `${client.serverAddress()}/emby/Users/${userId}/Items/${data.SeriesId}?api_key=${client.accessToken()}`;
                     const seriesResponse = await fetch(seriesUrl);
                     if (seriesResponse.ok) {
                         const seriesData = await seriesResponse.json();
@@ -9251,7 +9277,9 @@
             e.target.setAttribute(attrKey, '1');
             return searchInputEle.value = animeOriginalTitle;
         }
-        ApiClient.getItem(ApiClient.getCurrentUserId(), seriesOrMovieId).then(item => {
+        const client = getHostApiClient();
+        if (!client?.getItem || !client.getCurrentUserId) return;
+        client.getItem(client.getCurrentUserId(), seriesOrMovieId).then(item => {
             if (item.OriginalTitle) {
                 e.target.setAttribute(attrKey, '1');
                 searchInputEle.value = item.OriginalTitle;
@@ -10818,15 +10846,19 @@
         }
     };
 
-    // 按服务器和用户隔离配置；无用户时保留旧键供纯 JS 回退。
-    const persistenceIdentity = () => `${ApiClient.serverAddress?.() || ''}|${ApiClient.getCurrentUserId?.() || ''}`;
-    const localParameterKey = id => ApiClient.getCurrentUserId?.()
+    // 按服务器和用户隔离配置；无用户或无宿主客户端时保留纯 JS 回退。
+    const persistenceIdentity = () => {
+        const client = getHostApiClient();
+        return `${client?.serverAddress?.() || ''}|${client?.getCurrentUserId?.() || ''}`;
+    };
+    const localParameterKey = id => getHostApiClient()?.getCurrentUserId?.()
         ? `dd-user:${encodeURIComponent(persistenceIdentity())}:${id}` : id;
     let persistenceSession = '';
     let persistenceReady = Promise.resolve();
     async function prepareUserParameters() {
+        const client = getHostApiClient();
         const identity = persistenceIdentity();
-        if (!ApiClient.getCurrentUserId?.()) return;
+        if (!client?.getCurrentUserId?.()) return;
         if (identity === persistenceSession) return persistenceReady;
         // 先按各自用户键落盘待写入值，再切换内存缓存；旧请求不得同步到新账号。
         if (lsWriteTimer) clearTimeout(lsWriteTimer);
@@ -11413,7 +11445,10 @@
         let socket = null, timer = null, key = '', generation = -1, epoch = '', session = '';
         let sequence = 0, lastReply = 0, retryAt = 0, playSession = '', itemId = '', itemGuid = '', remote = false;
         let pendingStop = null, manager = null, player = null;
-        const identity = () => `${ApiClient.serverAddress?.()}|${ApiClient.getCurrentUserId?.()}|${ApiClient.accessToken?.()}|${ApiClient.deviceId?.()}`;
+        const identity = () => {
+            const client = getHostApiClient();
+            return `${client?.serverAddress?.() || ''}|${client?.getCurrentUserId?.() || ''}|${client?.accessToken?.() || ''}|${client?.deviceId?.() || ''}`;
+        };
         const enabled = () => ddBackend.isDll() && ddBackend.has('WebSocketPlayback') && typeof WebSocket === 'function';
         function finishStop() {
             const pending = pendingStop; pendingStop = null;
@@ -11489,6 +11524,10 @@
             if (!enabled() || generation !== playbackViewGeneration || key !== identity()) {
                 close(); clearInterval(timer); timer = null; return;
             }
+            const client = getHostApiClient();
+            if (!client?.serverAddress || !client.accessToken || !client.deviceId) {
+                close(); return;
+            }
             // 换流暂时没有媒体或播放器时保留重连循环；同页恢复后重新订阅。
             // 不能清掉 timer 后依赖未必再次发生的事件绑定来启动连接。
             const currentPlayer = manager?.getCurrentPlayer();
@@ -11496,18 +11535,18 @@
             if (currentPlayer !== player) { close(); player = currentPlayer; retryAt = 0; }
             if (socket) {
                 if (Date.now() - lastReply > 20000) return close();
-                send(epoch ? 'DDDanmaku.Heartbeat' : 'DDDanmaku.Subscribe', ApiClient.deviceId?.() || '');
+                send(epoch ? 'DDDanmaku.Heartbeat' : 'DDDanmaku.Subscribe', client.deviceId?.() || '');
                 return;
             }
             if (Date.now() < retryAt) return;
             try {
-                const url = new URL(String(ApiClient.serverAddress()).replace(/\/$/, '') + '/embywebsocket');
+                const url = new URL(String(client.serverAddress()).replace(/\/$/, '') + '/embywebsocket');
                 url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-                url.searchParams.set('api_key', ApiClient.accessToken());
-                url.searchParams.set('deviceId', ApiClient.deviceId());
+                url.searchParams.set('api_key', client.accessToken());
+                url.searchParams.set('deviceId', client.deviceId());
                 const current = socket = new WebSocket(url.href);
                 lastReply = Date.now();
-                current.onopen = () => { if (socket === current) send('DDDanmaku.Subscribe', ApiClient.deviceId()); };
+                current.onopen = () => { if (socket === current) send('DDDanmaku.Subscribe', client.deviceId()); };
                 current.onmessage = event => {
                     if (socket !== current || generation !== playbackViewGeneration || key !== identity()) return;
                     try { receive(JSON.parse(event.data)); } catch (_) { close(); }
@@ -11827,7 +11866,7 @@
     logLevel = readLogLevel();
 
     // 启动恢复与播放前准备共用同一 Promise，避免首次初始化标记被后台查询抢走。
-    if (ApiClient.getCurrentUserId?.()) {
+    if (getHostApiClient()?.getCurrentUserId?.()) {
         prepareUserParameters().catch(error => logger.warn('[持久化] 启动加载失败', error));
     }
 
