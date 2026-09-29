@@ -25,9 +25,7 @@ internal sealed class UserDefaultsStore(string directory, string? legacyDirector
             var oldPath = Path.Combine(legacyDirectory, $"{id:N}.json");
             var old = await ReadFileAsync(oldPath);
             if (old is null) return legacy.Copy();
-            // 校验旧配置后先发布新文件，禁止覆盖并发创建的新配置，再删除迁移源。
-            await WriteUnlockedAsync(id, old, false);
-            DeleteLegacyFile(oldPath);
+            // 旧文件仅作为回退读取，统一参数文件写入成功前不移动或删除源文件。
             return old;
         }
         finally { _gate.Release(); }

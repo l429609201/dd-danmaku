@@ -2,6 +2,7 @@ namespace DD.Danmaku.Hosting;
 
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using DD.Danmaku.Persistence;
 using DD.Danmaku.Web.Api;
 using DD.Danmaku.Web.ParameterPersistence;
 
@@ -34,8 +35,12 @@ public sealed partial class DanmakuApiService
         // 指定 Key 但省略 Namespace 时与原插件一致，只查询 default 命名空间。
         var ns = !string.IsNullOrWhiteSpace(request.Key) && string.IsNullOrWhiteSpace(request.Namespace)
             ? "default" : request.Namespace;
+        // 查询当前用户前先按默认模板建立独立文件；旧个人文件始终优先。
+        var initialized = await InitializeParameters(plugin, user.Id, Request.CancellationToken);
         var result = await plugin.Parameters.ForUser(user.Id).QueryAsync(
             new ParameterQueryRequest(ns, request.Key, request.Keyword), Request.CancellationToken);
+        if (initialized && result.Success && string.IsNullOrWhiteSpace(request.Key))
+            return ParameterResult(result with { Message = "INITIALIZED_DEFAULTS" });
         return ParameterResult(result);
     });
 
@@ -78,6 +83,8 @@ public sealed partial class DanmakuApiService
             if (string.IsNullOrWhiteSpace(key)) throw new ArgumentException("参数 Key 为空");
             ValidateParameterText(key, 512);
         }
+        // 直接创建或更新参数的旧客户端也需先继承默认模板，不能跳过首次初始化。
+        await InitializeParameters(plugin, user.Id, Request.CancellationToken);
         var service = plugin.Parameters.ForUser(user.Id);
         var mutation = new ParameterMutationRequest(body.Namespace, body.Key, body.Value, body.Type, body.Description);
         var result = operation switch

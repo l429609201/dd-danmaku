@@ -28,6 +28,15 @@ internal sealed class UserParameterServices(string pluginConfigurationsPath, str
 
     internal ParameterCompatibilityService ForUser(Guid userId) => new(StoreFor(userId));
 
+    private readonly Lazy<ParameterFileStore> _defaults = new(() => new ParameterFileStore(
+        Path.Combine(dataDirectory ?? Path.Combine(pluginConfigurationsPath, "DD.Danmaku", "Users"), "Defaults.json")));
+    internal ParameterFileStore Defaults => _defaults.Value;
+
+    // 旧用户文件只作读取回退；默认模板不允许按用户 ID 解析。
+    internal Task<bool> InitializeForAsync(Guid id, IReadOnlyList<ParameterEntry> defaults, CancellationToken token)
+        => StoreFor(id).InitializeAsync(defaults, token);
+
+
     internal ParameterFileStore StoreFor(Guid userId)
     {
         if (userId == Guid.Empty) throw new ArgumentException("缺少认证用户标识");

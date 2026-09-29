@@ -1,5 +1,6 @@
 namespace DD.Danmaku.Hosting;
 
+using DD.Danmaku.Persistence;
 using DD.Danmaku.Web.Api;
 using MediaBrowser.Model.Services;
 
@@ -47,12 +48,11 @@ public sealed partial class DanmakuApiService
     public Task<object> Get(EffectiveFrontendDefaultsRequest request) => Execute(async (user, plugin, host) =>
         ApiHttpResult.Success(await DefaultView(plugin, user.Id)));
 
-    /// <summary>读取管理员设置的全局播放器默认参数。</summary>
-    public Task<object> Get(GlobalFrontendDefaultsRequest request) => Execute((user, plugin, host) =>
+    /// <summary>读取管理员设置的公共默认参数文件。</summary>
+    public Task<object> Get(GlobalFrontendDefaultsRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
-        lock (PluginConfigurationService.ConfigurationGate)
-            return Task.FromResult(ApiHttpResult.Success((plugin.Configuration.GlobalFrontendDefaults ?? new()).Copy()));
+        return ApiHttpResult.Success(await GlobalDefaults(plugin));
     });
 
     /// <summary>管理员读取指定用户的播放器默认参数。</summary>
@@ -76,15 +76,26 @@ public sealed partial class DanmakuApiService
         values.Validate();
         if (id.HasValue)
         {
-            // 先提交 Data 文件，再清理 XML 旧条目；中途失败仍以新文件为准。
-            await plugin.UserDefaults.SaveAsync(id.Value, values);
+            await InitializeParameters(plugin, id.Value, Request.CancellationToken);
+            await plugin.Parameters.StoreFor(id.Value).MutateAsync(rows =>
+            {
+                // 管理页只覆盖受支持的默认字段，保留个人私密参数和其他命名空间。
+                var managedKeys = FrontendParameterMap.ManagedKeys;
+                rows.RemoveAll(row => row.Namespace == "dd-danmaku" && managedKeys.Contains(row.Key));
+                rows.AddRange(FrontendParameterMap.ToEntries(values));
+                return true;
+            }, Request.CancellationToken);
             RemoveLegacyDefaults(plugin, id.Value);
         }
-        else lock (PluginConfigurationService.ConfigurationGate)
+        else
         {
-            var copy = plugin.Configuration.CopyForUpdate();
-            copy.GlobalFrontendDefaults = values.Copy();
-            plugin.UpdateConfiguration(copy);
+            await plugin.Parameters.Defaults.MutateAsync(rows =>
+            {
+                var managedKeys = FrontendParameterMap.ManagedKeys;
+                rows.RemoveAll(row => row.Namespace == "dd-danmaku" && managedKeys.Contains(row.Key));
+                rows.AddRange(FrontendParameterMap.ToEntries(values));
+                return true;
+            }, Request.CancellationToken);
         }
         return ApiHttpResult.Success(new { Saved = true });
     });
@@ -94,7 +105,12 @@ public sealed partial class DanmakuApiService
     {
         EmbyAccessControl.RequireAdministrator(user);
         var id = DefaultUserId(request.UserId, false);
-        await plugin.UserDefaults.ResetAsync(id);
+        await InitializeParameters(plugin, id, Request.CancellationToken);
+        await plugin.Parameters.StoreFor(id).MutateAsync(rows =>
+        {
+            rows.RemoveAll(row => row.Namespace == "dd-danmaku" && FrontendParameterMap.ManagedKeys.Contains(row.Key));
+            return true;
+        }, Request.CancellationToken);
         RemoveLegacyDefaults(plugin, id);
         return ApiHttpResult.Success(new { Reset = true });
     });
@@ -122,17 +138,51 @@ public sealed partial class DanmakuApiService
 
     private static bool SameUser(string value, Guid id) => Guid.TryParse(value, out var parsed) && parsed == id;
 
-    private static async Task<object> DefaultView(Plugin plugin, Guid id)
+    private static async Task<FrontendDefaults> GlobalDefaults(Plugin plugin)
     {
-        FrontendDefaults global, legacy;
+        FrontendDefaults legacy;
         lock (PluginConfigurationService.ConfigurationGate)
-        {
-            global = (plugin.Configuration.GlobalFrontendDefaults ?? new()).Copy();
+            legacy = (plugin.Configuration.GlobalFrontendDefaults ?? new()).Copy();
+        // 仅首次以旧全局值创建模板；已有 Defaults.json 始终是唯一权威。
+        await plugin.Parameters.Defaults.InitializeAsync(FrontendParameterMap.ToEntries(legacy), CancellationToken.None);
+        return FrontendParameterMap.FromEntries(await plugin.Parameters.Defaults.QueryAsync(null, null, null, CancellationToken.None));
+    }
+
+    private static async Task<bool> InitializeParameters(Plugin plugin, Guid id, CancellationToken token)
+    {
+        await GlobalDefaults(plugin);
+        FrontendDefaults legacy;
+        lock (PluginConfigurationService.ConfigurationGate)
             legacy = (plugin.Configuration.UserFrontendDefaults ?? [])
                 .FirstOrDefault(x => x is not null && SameUser(x.UserId, id))?.Values?.Copy() ?? new();
-        }
-        // 文件读取不占用全局配置锁，避免阻塞其他管理员配置请求。
         var personal = await plugin.UserDefaults.ReadAsync(id, legacy);
+        var defaults = (await plugin.Parameters.Defaults.QueryAsync(null, null, null, token)).ToList();
+        // 模板中的任意命名空间都要复制；旧用户播放器覆盖项仅替换对应字段。
+        foreach (var row in FrontendParameterMap.ToEntries(personal))
+        {
+            defaults.RemoveAll(current => current.Namespace == row.Namespace && current.Key == row.Key);
+            defaults.Add(row);
+        }
+        return await plugin.Parameters.InitializeForAsync(id, defaults, token);
+    }
+
+    private static async Task<object> DefaultView(Plugin plugin, Guid id)
+    {
+        var global = await GlobalDefaults(plugin);
+        // 新参数文件一旦存在便是唯一用户配置来源；重置后不可回退到旧个人默认值。
+        var personal = File.Exists(plugin.Parameters.PathFor(id))
+            ? FrontendParameterMap.FromEntries(await plugin.Parameters.StoreFor(id)
+                .QueryAsync(null, null, null, CancellationToken.None))
+            : await LegacyDefaultView(plugin, id);
         return new { Global = global, User = personal, Effective = FrontendDefaults.Merge(global, personal) };
+    }
+
+    private static async Task<FrontendDefaults> LegacyDefaultView(Plugin plugin, Guid id)
+    {
+        FrontendDefaults legacy;
+        lock (PluginConfigurationService.ConfigurationGate)
+            legacy = (plugin.Configuration.UserFrontendDefaults ?? [])
+                .FirstOrDefault(x => x is not null && SameUser(x.UserId, id))?.Values?.Copy() ?? new();
+        return await plugin.UserDefaults.ReadAsync(id, legacy);
     }
 }

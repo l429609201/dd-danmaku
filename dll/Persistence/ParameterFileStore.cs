@@ -112,6 +112,32 @@ public sealed class ParameterFileStore : IParameterFileStore
         finally { _gate.Release(); }
     }
 
+
+    /// <summary>首次访问时复制默认参数；旧个人字段优先，旧文件不触发浏览器配置覆盖。</summary>
+    internal async Task<bool> InitializeAsync(IReadOnlyList<ParameterEntry> defaults, CancellationToken token)
+    {
+        await _gate.WaitAsync(token);
+        try
+        {
+            if (File.Exists(_filePath)) return false;
+            var hadLegacy = new[] { _legacyFilePath }.Concat(_additionalLegacyPaths)
+                .Any(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path));
+            // 旧参数先读取并复制到新文件；其同名字段优先，默认值只补齐缺项。
+            var store = await ReadUnlockedAsync(token);
+            var existing = store.Parameters.Select(row => (row.Namespace, row.Key)).ToHashSet();
+            foreach (var row in defaults.Where(row => !existing.Contains((row.Namespace, row.Key))))
+                store.Parameters.Add(new ParameterEntry
+                {
+                    Namespace = row.Namespace, Key = row.Key, Value = row.Value,
+                    Type = row.Type, Description = row.Description
+                });
+            // 在同一文件锁中检查并创建，避免两个页面首次访问互相覆盖。
+            await WriteUnlockedAsync(store, token);
+            return !hadLegacy;
+        }
+        finally { _gate.Release(); }
+    }
+
     /// <summary>在文件锁内对参数集合执行操作并原子保存。</summary>
     public async Task<T> MutateAsync<T>(Func<List<ParameterEntry>, T> mutation, CancellationToken token)
     {

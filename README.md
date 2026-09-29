@@ -16,6 +16,36 @@
 
 更新时下载目标发行版的 DLL，替换旧文件并重启 Emby。仅更新单独下载的 `ede.js` 不会更新 DLL 中内置的脚本和管理页面。
 
+### 兼容旧弹幕插件的读取接口
+
+DLL 保留以下四个旧式 **GET** 路径，供原先调用弹幕插件接口的客户端读取本地弹幕。`{Id}` 是 Emby 媒体 ID；以下路径由 Emby 提供服务端 API 前缀（通常为 `/emby`），实际访问地址还需包含服务器地址和必要的认证信息。
+
+| 路径 | 说明 |
+| --- | --- |
+| `/plugin/danmu/{Id}` | 兼容读取入口 |
+| `/api/danmu/{Id}` | 兼容读取入口 |
+| `/plugin/danmu/raw/{Id}` | 兼容读取入口 |
+| `/api/danmu/{Id}/raw` | 兼容读取入口 |
+
+四个路径共用同一套参数与处理逻辑；路径中包含 `raw` **不代表**会绕过权限检查或改变默认返回格式：
+
+| 查询参数 | 用途 |
+| --- | --- |
+| `Option` | `DownloadXml`（默认，返回 XML）、`GetJsonById`（返回 JSON）、`select`（返回可用来源列表）。 |
+| `Mode` | `single`（默认，只读取第一个可用文件）或 `aggregate`（合并多个来源）。 |
+| `Source` | 指定单个弹幕来源；不能与 `NeedSites` 同时传入。 |
+| `NeedSites` | 指定多个来源（最多 32 个）；与 `Source` 二选一。 |
+
+例如，在已登录并具有该媒体访问权限的 Emby 环境中，读取媒体 `12345` 的本地 XML：
+
+```text
+/emby/plugin/danmu/12345?Option=DownloadXml
+/emby/api/danmu/12345?Option=select
+/emby/api/danmu/12345/raw?Option=GetJsonById&Mode=aggregate
+```
+
+`select` 返回 `sources` 列表；JSON 读取返回 `hasNext`、`data`（按来源分组的 `danmuEvents`）及 `extra`。接口仅读取服务器上**已有的本地弹幕文件**：需要 Emby 用户认证及该媒体的访问权限；找不到弹幕时读取请求返回 404，不会自动搜索、刷新、下载或保存弹幕。旧弹幕插件如果占用相同路由，应先停用旧插件，避免接口冲突。
+
 ## 食用方法 (手动注入)
 
 如果你不想使用 `CustomCssJS` 插件，也可以通过手动修改前端文件的方式来加载此脚本。以下方法参考自 Catcat's Blog。

@@ -451,8 +451,8 @@
         blacklistApplyToCustomApi: { id: 'danmakuBlacklistApplyToCustomApi', defaultValue: false, name: '黑名单应用于自定义接口' },
         convertTopTo: { id: 'danmakuConvertTopTo', defaultValue: 'default', name: '顶部弹幕转换为' },
         convertBottomTo: { id: 'danmakuConvertBottomTo', defaultValue: 'default', name: '底部弹幕转换为' },
-        configPersistenceEnable: { id: 'danmakuConfigPersistenceEnable', defaultValue: false, name: '启用配置持久化' },
-        configPersistenceAutoSync: { id: 'danmakuConfigPersistenceAutoSync', defaultValue: false, name: '实时同步' },
+        configPersistenceEnable: { id: 'danmakuConfigPersistenceEnable', defaultValue: true, name: '启用配置持久化' },
+        configPersistenceAutoSync: { id: 'danmakuConfigPersistenceAutoSync', defaultValue: true, name: '实时同步' },
         configPersistenceNamespace: { id: 'danmakuConfigPersistenceNamespace', defaultValue: 'dd-danmaku', name: '同步标识符' },
     };
 
@@ -552,7 +552,7 @@
                             defaults = data?.effective || data?.Effective || null;
                             defaultsLoaded = true;
                             // 默认值是会话级覆盖，失效目标字段但不触碰用户持久化内容。
-                            for (const key of defaultKeys) lsCache.delete(lsKeys[key].id);
+                            for (const key of defaultKeys) lsCache.delete(localParameterKey(lsKeys[key].id));
                             return defaults;
                         })
                         .catch(() => null)
@@ -638,7 +638,7 @@
             resetCache() {
                 defaults = null;
                 defaultsLoaded = false;
-                for (const key of defaultKeys) lsCache.delete(lsKeys[key].id);
+                for (const key of defaultKeys) lsCache.delete(localParameterKey(lsKeys[key].id));
             }
         };
     })();
@@ -4977,8 +4977,8 @@
             ddSetLoadingRing(-1, '');
         }
 
-        // 播放前等待一次能力与会话默认值探测，确保 DLL 请求不会绕过前端会话校验。
-        await ddBackend.prepare();
+        // 播放前等待 DLL 默认值和当前用户参数；后端失败时继续纯 JS 流程。
+        await prepareUserParameters();
         if (!isCurrentLoad()) return;
         const item = await getEmbyItemInfo();
         if (!isCurrentLoad()) return;
@@ -7762,7 +7762,9 @@
                 statusLabel.innerText = '正在从服务器恢复配置...';
                 statusLabel.style.color = '';
                 try {
-                    const count = await persistenceLoadAll();
+                    const identity = persistenceIdentity();
+                    await prepareUserParameters();
+                    const count = identity === persistenceIdentity() ? await persistenceLoadAll(identity) : -1;
                     if (count > 0) {
                         statusLabel.innerText = `✅ 恢复完成: 已加载 ${count} 个配置，刷新页面生效`;
                         statusLabel.style.color = 'green';
@@ -7804,19 +7806,16 @@
     }
 
     // 查询服务器上所有持久化配置
-    async function persistenceQueryAll() {
+    async function persistenceQueryAll(withMetadata = false) {
         try {
-            // 使用 GET + query string 方式查询（Emby ServiceStack 对 POST body 解析有兼容问题）
-            const url = `${getPersistenceBaseUrl()}/Query?Namespace=${encodeURIComponent(getPersistenceNamespace())}&api_key=${ApiClient.accessToken()}`;
-            const response = await fetch(url, { method: 'GET' });
+            // 使用宿主认证头，不在查询字符串中暴露令牌。
+            const url = `${getPersistenceBaseUrl()}/Query?Namespace=${encodeURIComponent(getPersistenceNamespace())}`;
+            const response = await fetch(url, { method: 'GET', headers: { 'X-Emby-Token': ApiClient.accessToken() } });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const result = await response.json();
-            // API 返回字段是 PascalCase
-            if (result.Success) {
-                return result.DataList || [];
-            }
+            if (result.Success) return withMetadata ? result : (result.DataList || []);
             logger.warn('[持久化] 查询失败:', result.Message);
-            return [];
+            return withMetadata ? null : [];
         } catch (error) {
             logger.error('[持久化] 查询服务器配置失败:', error);
             return null;
@@ -7878,15 +7877,21 @@
     // 保存单个配置到服务器（防抖）
     const _persistenceSaveTimers = {};
     function persistenceSaveOneDebounced(key, value) {
-        if (_persistenceSaveTimers[key]) clearTimeout(_persistenceSaveTimers[key]);
-        _persistenceSaveTimers[key] = setTimeout(async () => {
+        const identity = persistenceIdentity();
+        const timerKey = `${identity}:${key}`;
+        if (_persistenceSaveTimers[timerKey]) clearTimeout(_persistenceSaveTimers[timerKey]);
+        _persistenceSaveTimers[timerKey] = setTimeout(async () => {
             try {
+                // 等待首次读取完服务器参数，账号切换后丢弃旧会话的异步写入。
+                await prepareUserParameters();
+                if (identity !== persistenceIdentity() || !ddBackend.has('ParameterPersistence')) return;
+                const userId = ApiClient.getCurrentUserId();
                 // 先尝试 Update，如果不存在则 Create
                 let resp = await fetch(`${getPersistenceBaseUrl()}/Update`, {
                     method: 'POST',
                     headers: getPersistenceHeaders(),
                     body: JSON.stringify({
-                        userid: ApiClient.getCurrentUserId(),
+                        userid: userId,
                         Namespace: getPersistenceNamespace(),
                         Key: key,
                         Value: typeof value === 'object' ? JSON.stringify(value) : String(value),
@@ -7894,14 +7899,14 @@
                     })
                 });
                 let result = await resp.json();
-                if (!result.Success) {
+                if (!result.Success && identity === persistenceIdentity()) {
                     // 不存在则创建
                     resp = await fetch(`${getPersistenceBaseUrl()}/Create`, {
                         method: 'POST',
                         headers: getPersistenceHeaders(),
                         body: JSON.stringify({
-                            userid: ApiClient.getCurrentUserId(),
-                        Namespace: getPersistenceNamespace(),
+                            userid: userId,
+                            Namespace: getPersistenceNamespace(),
                             Key: key,
                             Value: typeof value === 'object' ? JSON.stringify(value) : String(value),
                             Type: typeof value === 'object' ? 'json' : typeof value,
@@ -7916,15 +7921,28 @@
     }
 
     // 从服务器加载所有配置到 localStorage
-    async function persistenceLoadAll() {
+    async function persistenceLoadAll(identity = '') {
         try {
-            const list = await persistenceQueryAll();
-            if (!list || list.length === 0) {
+            const result = await persistenceQueryAll(true);
+            if (!result || (identity && identity !== persistenceIdentity())) return -1;
+            const list = result.DataList || [];
+            // 服务端为当前用户的权威快照；移除本地已删除的个人项，避免重置后继续沿用旧值。
+            const serverKeys = new Set(list.map(param => param.Key));
+            for (const { id } of Object.values(lsKeys)) {
+                if (!serverKeys.has(id)) {
+                    const storageKey = localParameterKey(id);
+                    localStorage.removeItem(storageKey);
+                    lsCache.delete(storageKey);
+                }
+            }
+            if (!list.length) {
                 logger.info('[持久化] 服务器无配置数据');
                 return 0;
             }
+            // 旧浏览器共享键无法确认归属，不自动上传；只接收当前用户服务器文件。
             let count = 0;
             for (const param of list) {
+                if (identity && identity !== persistenceIdentity()) return -1;
                 const keyName = lsGetKeyById(param.Key);
                 if (!keyName) continue;
                 const defaultValue = lsKeys[keyName].defaultValue;
@@ -7938,7 +7956,7 @@
                 } else {
                     parsedValue = param.Value;
                 }
-                lsSetItem(param.Key, parsedValue, true); // skipSync=true 避免循环
+                lsSetItem(param.Key, parsedValue, true);
                 count++;
             }
             logger.info(`[持久化] 从服务器加载了 ${count} 个配置`);
@@ -10800,17 +10818,42 @@
         }
     };
 
+    // 按服务器和用户隔离配置；无用户时保留旧键供纯 JS 回退。
+    const persistenceIdentity = () => `${ApiClient.serverAddress?.() || ''}|${ApiClient.getCurrentUserId?.() || ''}`;
+    const localParameterKey = id => ApiClient.getCurrentUserId?.()
+        ? `dd-user:${encodeURIComponent(persistenceIdentity())}:${id}` : id;
+    let persistenceSession = '';
+    let persistenceReady = Promise.resolve();
+    async function prepareUserParameters() {
+        const identity = persistenceIdentity();
+        if (!ApiClient.getCurrentUserId?.()) return;
+        if (identity === persistenceSession) return persistenceReady;
+        // 先按各自用户键落盘待写入值，再切换内存缓存；旧请求不得同步到新账号。
+        if (lsWriteTimer) clearTimeout(lsWriteTimer);
+        lsFlushAllWrites();
+        lsCache.clear();
+        persistenceSession = identity;
+        persistenceReady = (async () => {
+            const state = await ddBackend.prepare();
+            if (!state || !ddBackend.has('ParameterPersistence') || identity !== persistenceIdentity()) return;
+            const count = await persistenceLoadAll(identity);
+            if (count > 0 && identity === persistenceIdentity()) {
+                logLevel = readLogLevel();
+                logger.info(`[持久化] 已恢复当前用户 ${count} 项配置`);
+            }
+        })().catch(error => logger.warn('[持久化] 加载个人配置失败', error));
+        return persistenceReady;
+    }
+
     // 缓存相关方法
     function lsGetItem(id) {
-        // 优先从缓存读取
-        if (lsCache.has(id)) {
-            return lsCache.get(id);
-        }
-
+        const storageKey = localParameterKey(id);
+        // 内存缓存也使用会话键，切换账号不会复用上一用户的值。
+        if (lsCache.has(storageKey)) return lsCache.get(storageKey);
         const key = lsGetKeyById(id);
         if (!key) { return null; }
         const defaultValue = lsKeys[key].defaultValue;
-        const item = localStorage.getItem(id);
+        const item = localStorage.getItem(storageKey);
 
         let value;
         // DLL 仅提供会话级默认值；用户已有 localStorage 值始终优先，避免覆盖主动配置。
@@ -10842,7 +10885,7 @@
         }
 
         // 存入缓存
-        lsCache.set(id, value);
+        lsCache.set(storageKey, value);
         return value;
     }
     function lsCheckOld(id, value) {
@@ -10871,12 +10914,10 @@
     function lsSetItem(id, value, skipSync, immediate = false) {
         if (!lsGetKeyById(id)) { return; }
 
-        // 立即更新内存缓存
-        lsCache.set(id, value);
-
-        // 如果是立即写入模式，直接写入 localStorage
+        const storageKey = localParameterKey(id);
+        lsCache.set(storageKey, value);
         if (immediate) {
-            lsFlushWrite(id, value);
+            lsFlushWrite(storageKey, value);
             // 持久化同步
             if (!skipSync
                 && lsGetItem(lsKeys.configPersistenceEnable.id)
@@ -10889,7 +10930,7 @@
         }
 
         // 加入批量写入队列
-        lsPendingWrites.set(id, { value, skipSync });
+        lsPendingWrites.set(storageKey, { id, value, skipSync, identity: persistenceIdentity() });
 
         // 启动延迟写入定时器（500ms 后批量写入）
         if (lsWriteTimer) {
@@ -10919,10 +10960,10 @@
 
         logger.debug(`[localStorage] 批量写入 ${lsPendingWrites.size} 项`);
 
-        lsPendingWrites.forEach(({ value, skipSync }, id) => {
-            lsFlushWrite(id, value);
-
-            // 持久化同步
+        lsPendingWrites.forEach(({ id, value, skipSync, identity }, storageKey) => {
+            lsFlushWrite(storageKey, value);
+            // 防抖回调必须属于当前账号，不能把上一用户的参数写进新用户文件。
+            if (identity !== persistenceIdentity()) return;
             if (!skipSync
                 && lsGetItem(lsKeys.configPersistenceEnable.id)
                 && lsGetItem(lsKeys.configPersistenceAutoSync.id)
@@ -11785,18 +11826,9 @@
     }
     logLevel = readLogLevel();
 
-    // 配置持久化：启动时自动从服务器加载配置
-    if (lsGetItem(lsKeys.configPersistenceEnable.id)) {
-        logger.info('[持久化] 检测到持久化已开启，正在从服务器加载配置...');
-        persistenceLoadAll().then(count => {
-            if (count > 0) {
-                logger.info(`[持久化] 启动加载完成，已恢复 ${count} 个配置`);
-                // 重新读取日志级别（可能被持久化覆盖）
-                logLevel = readLogLevel();
-            }
-        }).catch(error => {
-            logger.warn('[持久化] 启动加载失败，使用本地配置:', error.message);
-        });
+    // 启动恢复与播放前准备共用同一 Promise，避免首次初始化标记被后台查询抢走。
+    if (ApiClient.getCurrentUserId?.()) {
+        prepareUserParameters().catch(error => logger.warn('[持久化] 启动加载失败', error));
     }
 
     refreshEventListener({ 'viewshow': onViewShow });
