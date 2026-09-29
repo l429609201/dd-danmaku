@@ -1,0 +1,102 @@
+:root { font-family: Inter, "Segoe UI", sans-serif; color: #1e293b; background: #f8fafc; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 960px; }
+button { font: inherit; }
+.shell { min-height: 100vh; display: flex; background: #f8fafc; }
+.sidebar { width: 236px; display: flex; flex-direction: column; padding: 24px 14px; background: #fff; border-right: 1px solid #e2e8f0; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 12px 30px; }
+.brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; color: #fff; font-weight: 800; background: #2563eb; }
+.brand strong, .brand small { display: block; }
+.brand strong { font-size: 14px; }
+.brand small { margin-top: 3px; color: #94a3b8; font-size: 10px; }
+/* 顶部导航改为单行横排，空间不足时仅导航区域横向滚动。 */
+.top-nav { display: flex; flex-flow: row nowrap; align-items: center; gap: 5px; flex: 1; min-width: 0; overflow-x: auto; }
+.nav-item { display: flex; flex: 0 0 auto; white-space: nowrap; gap: 11px; align-items: center; padding: 11px 12px; border: 0; border-radius: 8px; color: #64748b; background: transparent; cursor: pointer; text-align: left; }
+.nav-item:hover, .nav-item.active { color: #1d4ed8; background: #eff6ff; }
+.sidebar-foot { margin-top: auto; padding: 12px; color: #94a3b8; font-size: 11px; }
+.main { flex: 1; min-width: 0; max-width: 1280px; padding: 30px 42px 22px; }
+.topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 28px; }
+/* 清除旧侧栏品牌区的底部留白，品牌与刷新按钮不参与压缩。 */
+.topbar .brand { flex: 0 0 auto; padding: 0; }
+.topbar > .el-button { flex: 0 0 auto; }
+/* 版本与仓库图标作为一个横向链接，保留清晰键盘焦点。 */
+.version-badge { display: inline-flex; align-items: center; gap: 10px; flex-shrink: 0; white-space: nowrap; padding: 8px 12px; color: #334155; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; text-decoration: none; }
+.version-badge span { border-left: 1px solid #cbd5e1; padding-left: 10px; }
+.version-badge:hover { background: #eff6ff; }
+.version-badge:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+.eyebrow { margin: 0 0 8px; color: #2563eb; font-size: 11px; letter-spacing: .12em; font-weight: 700; }
+h1 { margin: 0; font-size: 25px; letter-spacing: -.02em; }
+.content-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .8fr); gap: 16px; }
+.el-card { border: 1px solid #e2e8f0; border-radius: 12px; }
+.hero-card { min-height: 244px; background: linear-gradient(135deg, #eff6ff, #fff); }
+.hero-card h2 { max-width: 500px; margin: 22px 0 10px; font-size: 24px; line-height: 1.35; }
+.hero-card p { max-width: 500px; margin: 0 0 22px; color: #64748b; line-height: 1.7; }
+.status-line { color: #15803d; font-size: 13px; font-weight: 600; }
+.status-dot { display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; background: #22c55e; }
+.metrics { display: flex; justify-content: space-between; padding: 12px 0 4px; }
+.metrics strong, .metrics small { display: block; }
+.metrics strong { margin-bottom: 8px; font-size: 23px; }
+.metrics small { color: #94a3b8; font-size: 12px; }
+.wide { grid-column: 1 / -1; }
+.capabilities { display: flex; flex-wrap: wrap; gap: 10px; }
+.placeholder { max-width: 760px; }
+footer { margin-top: 30px; color: #94a3b8; font-size: 11px; }
+footer span { color: #64748b; }
+@media (max-width: 1100px) { .main { padding: 24px; } .sidebar { width: 210px; } }
+
+/* 管理台容器允许收缩；宽表仅使用 Element Plus 自身的横向滚动。 */
+body { min-width: 0; }
+#app, .shell, .main, .main section, .main .el-card, .main .el-card__body { min-width: 0; }
+.main { width: 100%; }
+.main .el-table { max-width: 100%; }
+.main p, .main .el-alert__content, .el-drawer__body, .el-dialog__body { overflow-wrap: anywhere; }
+.nav-item:focus-visible { outline: 2px solid #2563eb; outline-offset: -2px; }
+/* 弹层会传送到 body，不能限定在 .main 内。 */
+.el-dialog, .el-message-box { max-width: calc(100vw - 24px); }
+.el-drawer { max-width: 100vw; }
+.el-descriptions__table { table-layout: fixed; }
+@media (max-width: 760px) {
+  .main { padding: 16px 12px; padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+  .topbar { flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+  .topbar .top-nav { flex: 1 0 100%; width: 100%; padding-bottom: 4px; overscroll-behavior-x: contain; }
+  .topbar .version-badge { margin-left: auto; }
+  .nav-item { min-height: 44px; padding: 10px 12px; }
+  .content-grid { grid-template-columns: minmax(0, 1fr); }
+  .main .el-card { --el-card-padding: 14px; }
+  .main .el-form-item { flex-direction: column; align-items: stretch; }
+  .main .el-form-item > .el-form-item__label { width: auto !important; justify-content: flex-start; height: auto; line-height: 1.5; padding: 0 0 8px; white-space: normal; }
+  .main .el-form-item > .el-form-item__content { margin-left: 0 !important; min-width: 0; }
+  .main .el-input-number, .main .el-select { max-width: 100%; }
+  .main .el-input__inner, .main .el-textarea__inner, .main .el-select__input { font-size: 16px; }
+  .main .el-input__wrapper, .main .el-select__wrapper { min-height: 44px; }
+  .main .el-button, .el-dialog .el-button, .el-message-box .el-button { min-height: 44px; white-space: normal; height: auto; }
+  .main .el-button + .el-button { margin-left: 0; }
+  .main .toolbar, .main .panel-head, .main .actions, .main .saved-secret { flex-wrap: wrap; gap: 10px; }
+  .main .saved-secret .el-input { flex-basis: 100%; }
+  .main .el-pagination { flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 100%; }
+  .main .el-pagination__total { flex-basis: 100%; text-align: center; margin: 0; }
+  .main .el-pager li, .main .el-pagination button { min-width: 28px; }
+  .main .el-checkbox { height: auto; min-height: 44px; max-width: 100%; }
+  .main .el-checkbox__label, .main .el-radio__label { white-space: normal; overflow-wrap: anywhere; }
+  .main .el-radio-group { display: flex; flex-wrap: wrap; gap: 8px; }
+  .main .el-radio { height: auto; min-height: 44px; margin-right: 0; }
+  .el-drawer__body, .el-dialog__body { padding: 14px; }
+  .el-drawer__close-btn, .el-dialog__headerbtn { min-width: 44px; min-height: 44px; }
+  .el-message { max-width: calc(100vw - 24px); }
+  footer { line-height: 1.6; }
+}
+@media (max-width: 560px) {
+  /* 匹配页和仪表盘分别使用自己的网格，避免改变桌面端排列。 */
+  .main .panel .grid { grid-template-columns: minmax(0, 1fr); }
+  .main .panel .grid .el-input-number { width: 100%; }
+  .main .stat-grid { gap: 10px; }
+  .main .stat-grid strong { font-size: 22px; overflow-wrap: anywhere; }
+  .main .scan-toolbar > div:first-child { flex-basis: 100%; }
+  .main .scan-toolbar { gap: 10px; }
+  .main .toolbar .el-select, .main .toolbar .el-input { width: 100%; max-width: 100%; }
+  h1 { font-size: 22px; }
+}
+@media (max-width: 360px) {
+  .main .stat-grid { grid-template-columns: minmax(0, 1fr); }
+  .main .el-pager li, .main .el-pagination button { min-width: 24px; padding-inline: 2px; }
+}

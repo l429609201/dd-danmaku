@@ -6,6 +6,45 @@
 
 <img width="1847" height="996" alt="image" src="https://github.com/user-attachments/assets/376b7ef5-3776-4aae-8232-4bc20885a606" />
 
+## DLL 版（Emby 服务端插件）
+
+`DD.Danmaku.dll` 是安装在 Emby 服务器上的插件，提供弹幕管理页面和服务端功能，并内置构建时的 `ede.js`。如果只想使用前端脚本，可跳到下方的[手动注入方法](#食用方法-手动注入)；手动注入不会安装 DLL 的服务端功能。
+
+1. 前往 [Releases](https://github.com/l429609201/dd-danmaku/releases) 下载 `DD.Danmaku.dll`：稳定使用选正式发行版，体验新构建选标题为 `test` 的预发行版。
+2. 将 DLL 放入 Emby 的插件目录，重启 Emby，并在插件管理页面确认插件已加载。
+3. 按需在插件管理页面配置功能。Web 端自动注入是否生效取决于服务器环境；如需手动加载 `ede.js`，请避免重复注入。
+
+更新时下载目标发行版的 DLL，替换旧文件并重启 Emby。仅更新单独下载的 `ede.js` 不会更新 DLL 中内置的脚本和管理页面。
+
+### 兼容旧弹幕插件的读取接口
+
+DLL 保留以下四个旧式 **GET** 路径，供原先调用弹幕插件接口的客户端读取本地弹幕。`{Id}` 是 Emby 媒体 ID；以下路径由 Emby 提供服务端 API 前缀（通常为 `/emby`），实际访问地址还需包含服务器地址和必要的认证信息。
+
+| 路径 | 说明 |
+| --- | --- |
+| `/plugin/danmu/{Id}` | 兼容读取入口 |
+| `/api/danmu/{Id}` | 兼容读取入口 |
+| `/plugin/danmu/raw/{Id}` | 兼容读取入口 |
+| `/api/danmu/{Id}/raw` | 兼容读取入口 |
+
+四个路径共用同一套参数与处理逻辑；路径中包含 `raw` **不代表**会绕过权限检查或改变默认返回格式：
+
+| 查询参数 | 用途 |
+| --- | --- |
+| `Option` | `DownloadXml`（默认，返回 XML）、`GetJsonById`（返回 JSON）、`select`（返回可用来源列表）。 |
+| `Mode` | `single`（默认，只读取第一个可用文件）或 `aggregate`（合并多个来源）。 |
+| `Source` | 指定单个弹幕来源；不能与 `NeedSites` 同时传入。 |
+| `NeedSites` | 指定多个来源（最多 32 个）；与 `Source` 二选一。 |
+
+例如，在已登录并具有该媒体访问权限的 Emby 环境中，读取媒体 `12345` 的本地 XML：
+
+```text
+/emby/plugin/danmu/12345?Option=DownloadXml
+/emby/api/danmu/12345?Option=select
+/emby/api/danmu/12345/raw?Option=GetJsonById&Mode=aggregate
+```
+
+`select` 返回 `sources` 列表；JSON 读取返回 `hasNext`、`data`（按来源分组的 `danmuEvents`）及 `extra`。接口仅读取服务器上**已有的本地弹幕文件**：需要 Emby 用户认证及该媒体的访问权限；找不到弹幕时读取请求返回 404，不会自动搜索、刷新、下载或保存弹幕。旧弹幕插件如果占用相同路由，应先停用旧插件，避免接口冲突。
 
 ## 食用方法 (手动注入)
 
