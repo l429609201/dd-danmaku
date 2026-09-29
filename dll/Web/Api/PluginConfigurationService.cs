@@ -12,7 +12,8 @@ public sealed record PluginConfigDto(
     bool? AiUserAccessEnabled = null,
     string[]? AiAllowedUserIds = null,
     string? MatchStrategy = null,
-    bool? AllowMatchFallback = null);
+    bool? AllowMatchFallback = null,
+    string UpdateChannel = "main");
 
 /// <summary>对插件配置进行读取与更新的业务接口。</summary>
 public interface IPluginConfigurationService
@@ -83,6 +84,7 @@ public sealed class PluginConfigurationService : IPluginConfigurationService
             configuration.MatchStrategy = strategy is "traditional-first" or "ai-first"
                 ? strategy : "traditional-first";
             configuration.AllowMatchFallback = requested.AllowMatchFallback ?? current.AllowMatchFallback;
+            configuration.UpdateChannel = requested.UpdateChannel is "main" or "test" ? requested.UpdateChannel : "main";
             // 保存失败向调用者抛出，不伪报成功；不使用自建 JSON 配置文件。
             _saveConfiguration?.Invoke(configuration);
             return ToDto(_getConfiguration());
@@ -107,6 +109,6 @@ public sealed class PluginConfigurationService : IPluginConfigurationService
         configuration.AutoRefreshOnNextPlayback, configuration.FilePersistenceEnabled,
         configuration.AiEnabled, configuration.AiUserAccessEnabled,
         (configuration.AiAllowedUserIds ?? []).ToArray(),
-        configuration.MatchStrategy, configuration.AllowMatchFallback);
+        configuration.MatchStrategy, configuration.AllowMatchFallback, configuration.UpdateChannel);
 }
 

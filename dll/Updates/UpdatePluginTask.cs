@@ -27,7 +27,7 @@ public sealed class UpdatePluginTask : IScheduledTask
     /// <summary>计划任务显示名称。</summary>
     public string Name => "自动更新 DD-Danmaku";
     /// <summary>任务用途及安装后的操作说明。</summary>
-    public string Description => "检查正式发布并更新包含管理页面及 ede.js 的 DLL，安装后需手动重启 Emby。";
+    public string Description => "按所选频道检查并更新包含管理页面及 ede.js 的 DLL，安装后需手动重启 Emby。";
     /// <summary>计划任务所属的插件分类。</summary>
     public string Category => Plugin.PluginName;
 
@@ -56,11 +56,12 @@ public sealed class UpdatePluginTask : IScheduledTask
             deadline.CancelAfter(TimeSpan.FromMinutes(5));
             var token = deadline.Token;
             using var client = new GitHubReleaseClient();
-            var release = await client.LatestAsync(token).ConfigureAwait(false);
+            var channel = Plugin.Instance?.Configuration.UpdateChannel is "test" ? "test" : "main";
+            var release = await client.LatestAsync(channel, token).ConfigureAwait(false);
             var loaded = typeof(Plugin).Assembly.GetName().Version ?? new Version(0, 0);
-            if (release is null || release.Version <= GitHubReleaseClient.Normalize(loaded))
+            if (release is null || !release.IsTest && release.Version <= GitHubReleaseClient.Normalize(loaded))
             {
-                _logger.Info("没有可安装的新正式版 DLL。");
+                _logger.Info("没有可安装的新 {0} 频道 DLL。", channel);
                 progress.Report(100);
                 return;
             }
@@ -69,7 +70,7 @@ public sealed class UpdatePluginTask : IScheduledTask
             // 重启之前内存仍为旧版本，磁盘可能已经安装更新，不能重复覆盖备份。
             var disk = AssemblyName.GetAssemblyName(target);
             if (disk.Name != "DD.Danmaku") throw new InvalidDataException("插件安装文件名称不匹配。");
-            if (GitHubReleaseClient.Normalize(disk.Version ?? new Version(0, 0)) >= release.Version)
+            if (!release.IsTest && GitHubReleaseClient.Normalize(disk.Version ?? new Version(0, 0)) >= release.Version)
             {
                 _host.NotifyPendingRestart();
                 _logger.Info("磁盘中的插件已更新，等待手动重启 Emby。");
@@ -81,6 +82,17 @@ public sealed class UpdatePluginTask : IScheduledTask
             await client.DownloadAsync(release, temporary, token).ConfigureAwait(false);
             progress.Report(80);
             PluginPackageValidator.Validate(temporary, release);
+            if (release.IsTest)
+            {
+                var candidate = AssemblyName.GetAssemblyName(temporary);
+                if (candidate.Name != "DD.Danmaku" || GitHubReleaseClient.Normalize(candidate.Version ?? new Version(0, 0))
+                    <= GitHubReleaseClient.Normalize(loaded))
+                {
+                    _logger.Info("test 频道没有比当前版本更新的 DLL。");
+                    progress.Report(100);
+                    return;
+                }
+            }
             token.ThrowIfCancellationRequested();
             // 同目录替换并保留旧文件；不截断加载中的 DLL，也不在失败后退回直接覆盖。
             // 若宿主/文件系统不支持替换，任务失败并保留原文件，管理员可手动更新。

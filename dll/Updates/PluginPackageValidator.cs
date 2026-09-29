@@ -24,9 +24,10 @@ internal static class PluginPackageValidator
         var metadata = pe.GetMetadataReader();
         if (!metadata.IsAssembly) throw new InvalidDataException("更新文件不是程序集。");
         var assembly = metadata.GetAssemblyDefinition();
-        if (metadata.GetString(assembly.Name) != "DD.Danmaku"
-            || GitHubReleaseClient.Normalize(assembly.Version) != release.Version)
-            throw new InvalidDataException("DLL 名称或程序集版本与发布不符。");
+        var assemblyName = metadata.GetString(assembly.Name);
+        var assemblyVersion = GitHubReleaseClient.Normalize(assembly.Version);
+        if (assemblyName != "DD.Danmaku" || !release.IsTest && assemblyVersion != release.Version)
+            throw new InvalidDataException($"DLL 名称或程序集版本与发布不符（程序集 {assemblyName} {assemblyVersion}，发布 {release.Version}）。");
         var directory = pe.PEHeaders.CorHeader?.ResourcesDirectory
             ?? throw new InvalidDataException("DLL 缺少资源目录。");
         var block = pe.GetSectionData(directory.RelativeVirtualAddress);

@@ -137,7 +137,7 @@ internal sealed partial class LocalPlaybackService(MediaSidecarPathResolver path
                         if (entry.Count is int count)
                             items[index] = previous with { CommentCount = count, UpdatedAt = started,
                                 // 深度扫描已重新解析正文，清除旧的校验异常标记。
-                                RefreshState = previous.RefreshState == "scan-unverified" || previous.RefreshState.StartsWith("verify-", StringComparison.Ordinal)
+                                RefreshState = !entry.IsCanonical ? "scan-noncanonical" : previous.RefreshState == "scan-unverified" || previous.RefreshState.StartsWith("verify-", StringComparison.Ordinal)
                                     ? "none" : previous.RefreshState };
                     }
                     else
@@ -146,7 +146,7 @@ internal sealed partial class LocalPlaybackService(MediaSidecarPathResolver path
                         positions[key] = items.Count;
                         items.Add(new DanmakuRecord(recordId, entry.ItemId, null, null, entry.Source,
                             entry.Count ?? 0, null, started, started, null, null, false, null,
-                            entry.Count is null ? "scan-unverified" : "none", "sidecar", 1));
+                            entry.Count is null ? "scan-unverified" : entry.IsCanonical ? "none" : "scan-noncanonical", "sidecar", 1));
                     }
                 }
                 // 存储层统一校验容量并原子写入；超限抛错，扫描不能伪报完成。

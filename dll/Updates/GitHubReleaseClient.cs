@@ -18,29 +18,26 @@ internal sealed class GitHubReleaseClient : IDisposable
         _client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
     }
 
-    internal async Task<Release?> LatestAsync(CancellationToken token)
+    internal async Task<Release?> LatestAsync(string channel, CancellationToken token)
     {
-        // 凭据只附加到固定 GitHub API 请求，不放默认请求头，避免下载重定向泄露。
-        using var request = new HttpRequestMessage(HttpMethod.Get,
-            $"https://api.github.com/repos/{Repository}/releases/latest");
+        var isTest = channel == "test";
+        var endpoint = isTest
+            ? $"https://api.github.com/repos/{Repository}/releases/tags/test-release"
+            : $"https://api.github.com/repos/{Repository}/releases/latest";
+        using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
         var credential = Plugin.Instance?.Configuration.GitHubToken;
         if (!string.IsNullOrWhiteSpace(credential))
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", credential);
-        using var response = await _client.SendAsync(request,
-            HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+        using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
         response.EnsureSuccessStatusCode();
         using var buffer = new MemoryStream();
         await CopyBoundedAsync(response, buffer, 1024 * 1024, token).ConfigureAwait(false);
         using var json = JsonDocument.Parse(buffer.ToArray());
         var root = json.RootElement;
-        if (root.GetProperty("draft").GetBoolean() || root.GetProperty("prerelease").GetBoolean()) return null;
+        if (root.GetProperty("draft").GetBoolean() || !isTest && root.GetProperty("prerelease").GetBoolean()) return null;
         var tag = root.GetProperty("tag_name").GetString() ?? "";
-        // 只剥离单个可选前缀，拒绝预发布后缀及缺少修订号的标签。
-        var versionText = tag.StartsWith('v') ? tag[1..] : tag;
-        if (!Version.TryParse(versionText, out var parsed) || parsed.Build < 0)
-            throw new InvalidDataException("正式发布标签必须为 v主.次.修订[.构建]。");
-        var version = Normalize(parsed);
+        var version = isTest ? new Version(0, 0, 0, 0) : ParseReleaseVersion(tag);
         var assets = root.GetProperty("assets").EnumerateArray()
             .Where(a => a.GetProperty("name").GetString() == FileName).ToArray();
         if (assets.Length == 0) return null;
@@ -53,7 +50,15 @@ internal sealed class GitHubReleaseClient : IDisposable
             || !url.AbsolutePath.StartsWith($"/{Repository}/releases/download/", StringComparison.Ordinal))
             throw new InvalidDataException("发布附件地址或大小无效。");
         var digest = asset.TryGetProperty("digest", out var field) ? field.GetString() : null;
-        return new Release(version, url, size, digest);
+        return new Release(version, url, size, digest, isTest);
+    }
+
+    private static Version ParseReleaseVersion(string tag)
+    {
+        var versionText = tag.StartsWith('v') ? tag[1..] : tag;
+        if (!Version.TryParse(versionText, out var parsed) || parsed.Build < 0)
+            throw new InvalidDataException("正式发布标签必须为 v主.次.修订[.构建]。");
+        return Normalize(parsed);
     }
 
     internal async Task DownloadAsync(Release release, string path, CancellationToken token)
@@ -103,5 +108,5 @@ internal sealed class GitHubReleaseClient : IDisposable
     internal static Version Normalize(Version version)
         => new(version.Major, version.Minor, Math.Max(0, version.Build), Math.Max(0, version.Revision));
     public void Dispose() => _client.Dispose();
-    internal sealed record Release(Version Version, Uri Url, long Size, string? Digest);
+    internal sealed record Release(Version Version, Uri Url, long Size, string? Digest, bool IsTest);
 }

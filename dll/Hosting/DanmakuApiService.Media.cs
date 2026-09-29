@@ -42,7 +42,10 @@ public sealed partial class DanmakuApiService
         var id = _access.RequireVideo(user, request.ItemId);
         // XML 与 JSON 播放查询共用授权读取编排，保持与保存/删除相同的锁顺序。
         var playback = await host.Playback.QueryAsync(id, Request.CancellationToken, request.Source);
-        var comments = playback.Comments.Select(c => new DanmakuComment(c.Text, c.Time, c.Mode, c.Color, c.UserId)).ToArray();
+        // 播放查询返回 API DTO；导出 XML 前转换为内部模型，避免跨层传递 DTO。
+        var comments = playback.Comments.Select(c => new DanmakuComment(
+            c.Text, c.Time, c.Mode, c.Color, c.UserId,
+            c.FontSize, c.Timestamp, c.Pool, c.Cid, c.Weight)).ToArray();
         using var stream = new MemoryStream();
         await DanmakuXml.WriteAsync(stream, comments, Request.CancellationToken);
         return new ApiHttpResult(200, stream.ToArray(), "application/xml; charset=utf-8");

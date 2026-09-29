@@ -17,7 +17,7 @@ async function saveRuntime() {
     const latest = await api.config()
     config.value = await api.saveConfig({ ...latest, autoInjectionEnabled: config.value.autoInjectionEnabled,
       edeResourceEnabled: config.value.edeResourceEnabled, resourceVersion: config.value.resourceVersion,
-      logLevel: config.value.logLevel }) // 匹配策略由 AI 服务页维护，不提交本页旧草稿。
+      logLevel: config.value.logLevel, updateChannel: config.value.updateChannel }) // 匹配策略由 AI 服务页维护，不提交本页旧草稿。
     message.value = '运行设置已保存'
   } catch (e) { error.value = e.message }
   finally { busy.value = false }
@@ -42,7 +42,7 @@ onMounted(load)
         <!-- 匹配策略统一移至 AI 服务，运行设置不维护重复入口。 -->
 
         <el-form-item label="自动注入"><el-switch v-model="config.autoInjectionEnabled" inline-prompt active-text="开" inactive-text="关" :width="52" /></el-form-item>
-        <el-form-item label="启用 ede.js 资源"><el-switch v-model="config.edeResourceEnabled" inline-prompt active-text="开" inactive-text="关" :width="52" /></el-form-item>
+        <el-form-item label="更新频道"><el-select v-model="config.updateChannel" style="width: 220px"><el-option label="main（正式版）" value="main" /><el-option label="test（测试版）" value="test" /></el-select><span>默认使用 main；test 对应 GitHub 的 test-release 预发行版。</span></el-form-item>
         <el-collapse><el-collapse-item title="高级设置" name="advanced">
           <el-form-item label="资源缓存标识"><el-input v-model="config.resourceVersion" /><span>用于刷新浏览器缓存，不是 ede.js 版本号。</span></el-form-item>
           <el-form-item label="日志级别"><el-select v-model="config.logLevel"><el-option v-for="level in ['Information', 'Warning', 'Error']" :key="level" :label="level" :value="level" /></el-select></el-form-item>

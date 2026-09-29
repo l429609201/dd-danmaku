@@ -85,8 +85,14 @@ public sealed record PlaybackQueryDto(
 /// <param name="Time">视频时间轴位置，单位为秒。</param>
 /// <param name="Mode">显示模式编码。</param>
 /// <param name="Color">颜色整数编码。</param>
-/// <param name="UserId">来源发送者标识。</param>
-public sealed record DanmakuCommentDto(string Text, double Time, int Mode, int Color, string? UserId);
+/// <param name="UserId">来源提供的发送者标识，可为空。</param>
+/// <param name="FontSize">Bilibili p 属性中的字号。</param>
+/// <param name="Timestamp">Bilibili p 属性中的发送时间戳。</param>
+/// <param name="Pool">Bilibili p 属性中的弹幕池编号。</param>
+/// <param name="Cid">来源弹幕 ID。</param>
+/// <param name="Weight">来源权重字段。</param>
+public sealed record DanmakuCommentDto(string Text, double Time, int Mode, int Color, string? UserId,
+    int FontSize = 25, long Timestamp = 0, int Pool = 0, string? Cid = null, int Weight = 0);
 /// <summary>播放响应中的匹配摘要。</summary>
 /// <param name="AnimeId">作品标识。</param>
 /// <param name="EpisodeId">剧集标识。</param>

@@ -96,7 +96,7 @@ export const api = {
   // 记录操作只提交索引标识，来源与路径由服务器解析。
   records: (page = 1, pageSize = 20, signal, filters = {}) => request(`/records?${new URLSearchParams({ page, pageSize, ...filters })}`, { signal }),
   recordDetail: (id, signal) => request(`/records/detail?recordId=${encodeURIComponent(id)}`, { signal }),
-  verifyRecord: id => request(`/records/verify?recordId=${encodeURIComponent(id)}`, { method: 'POST' }),
+  normalizeRecord: id => request(`/records/normalize?recordId=${encodeURIComponent(id)}`, { method: 'POST' }),
   removeRecord: (id, deleteFile) => request(`/records/remove?recordId=${encodeURIComponent(id)}&deleteFile=${deleteFile}`, { method: 'DELETE' }),
   mediaLink: id => {
     const { base } = clientContext()

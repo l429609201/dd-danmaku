@@ -48,5 +48,6 @@ public sealed class PlaybackService : IPlaybackService
     }
 
     private static DanmakuCommentDto ToDto(DanmakuComment comment) =>
-        new(comment.Text, comment.Time, comment.Mode, comment.Color, comment.UserId);
+        new(comment.Text, comment.Time, comment.Mode, comment.Color, comment.UserId,
+            comment.FontSize, comment.Timestamp, comment.Pool, comment.Cid, comment.Weight);
 }

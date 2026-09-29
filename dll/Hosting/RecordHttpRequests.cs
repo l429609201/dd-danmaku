@@ -17,6 +17,13 @@ public sealed class VerifyRecordRequest
     /// <summary>记录标识。</summary>
     public string RecordId { get; set; } = "";
 }
+/// <summary>规范化指定记录的 XML 文件。</summary>
+[Route("/dd-danmaku/api/records/normalize", "POST")]
+public sealed class NormalizeRecordRequest
+{
+    /// <summary>记录标识。</summary>
+    public string RecordId { get; set; } = "";
+}
 /// <summary>移除记录索引或同时删除关联 XML 文件。</summary>
 [Route("/dd-danmaku/api/records/remove", "DELETE")]
 public sealed class RemoveRecordRequest

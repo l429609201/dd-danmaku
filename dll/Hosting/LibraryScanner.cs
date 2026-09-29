@@ -1,6 +1,5 @@
 namespace DD.Danmaku.Hosting;
 
-using System.Globalization;
 using System.Xml;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
@@ -120,36 +119,34 @@ internal sealed class LibraryScanner(ILibraryManager library)
                     || source.Any(c => char.IsControl(c) || "<>:\"/\\|?*".Contains(c))))
                 { row.Skipped++; continue; }
                 var entry = new ScanRecordEntry(item.Id.ToString(), source, xml, null);
-                discovered(entry);
-                if (!deep) continue;
+                if (!deep)
+                {
+                    discovered(entry);
+                    continue;
+                }
                 var info = new FileInfo(xml);
                 row.Bytes += info.Length;
-                if (info.Length > 32 * 1024 * 1024) { row.Invalid++; continue; }
+                if (info.Length > 32 * 1024 * 1024)
+                {
+                    // 深度扫描无法读取超限文件时仍保留旁车索引，避免扫描结果把已发现文件误删。
+                    discovered(entry);
+                    row.Invalid++;
+                    continue;
+                }
                 try
                 {
-                    using var reader = XmlReader.Create(xml, new XmlReaderSettings
-                    { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 32 * 1024 * 1024 });
-                    reader.MoveToContent();
-                    if (reader.Name != "i") { row.Invalid++; continue; }
-                    long count = 0;
-                    while (reader.Read())
-                    {
-                        token.ThrowIfCancellationRequested();
-                        if (reader.NodeType != XmlNodeType.Element || reader.Name != "d") continue;
-                        var fields = (reader.GetAttribute("p") ?? "").Split(',');
-                        if (fields.Length < 4 || !double.TryParse(fields[0], NumberStyles.Float,
-                            CultureInfo.InvariantCulture, out var time) || !double.IsFinite(time) || time < 0)
-                            throw new XmlException("弹幕属性无效");
-                        count++;
-                        if (count > Danmaku.DanmakuXml.MaxComments) throw new XmlException("弹幕条数超过限制");
-                    }
+                    using var stream = new FileStream(xml, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    var report = Danmaku.DanmakuXml.ReadReportAsync(stream, token).GetAwaiter().GetResult();
+                    long count = report.Comments.Count;
                     // 只有完整解析成功才发布实际条数；无效 XML 保持未校验状态。
-                    discovered(entry with { Count = (int)count });
-                    row.Valid++; row.Comments += count;
+                    discovered(entry with { Count = (int)count, IsCanonical = report.IsCanonical });
+                    if (report.IsCanonical) row.Valid++; else row.Invalid++;
+                    row.Comments += count;
                     if (count == 0) row.Empty++;
                 }
                 // 单份 XML 格式错误仅计为无效，继续扫描其他来源文件。
-                catch (XmlException) { row.Invalid++; }
+                catch (XmlException) { discovered(entry); row.Invalid++; }
+                catch (InvalidDataException) { discovered(entry); row.Invalid++; }
             }
         }
         catch (OperationCanceledException) { throw; }

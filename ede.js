@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.3.2
+// @version      1.3.3
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -68,7 +68,7 @@
 
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.3.2', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.3.3', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -480,7 +480,7 @@
 
         function resetIfSessionChanged() {
             // 外部单脚本注入器可能没有宿主 ApiClient；未定义时必须完整降级为纯 JS 模式。
-            const client = typeof ApiClient !== 'undefined' ? ApiClient : null;
+            const client = getHostApiClient();
             const key = `${client?.serverAddress?.() || ''}|${client?.getCurrentUserId?.() || ''}`;
             if (key !== sessionKey) {
                 sessionKey = key;
@@ -494,7 +494,7 @@
             return key;
         }
         async function request(path, timeout = 2000) {
-            const client = typeof ApiClient !== 'undefined' ? ApiClient : null;
+            const client = getHostApiClient();
             if (!client?.serverAddress) return null;
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), timeout);
@@ -593,7 +593,7 @@
             },
             async resolveMatch(payload) {
                 const requestSessionKey = resetIfSessionChanged();
-                const client = typeof ApiClient !== 'undefined' ? ApiClient : null;
+                const client = getHostApiClient();
                 // 与能力接口的 MediaMatch 契约一致，不将 AI 授权作为传统匹配门槛。
                 if (!client?.serverAddress || !snapshot || !this.has('MediaMatch')) return null;
                 const controller = new AbortController();
@@ -2777,12 +2777,13 @@
             if ((policy?.canWrite ?? policy?.CanWrite) !== true
                 || (policy?.autoSave ?? policy?.AutoSave) !== true || !current()) return;
             const xml = document.implementation.createDocument('', 'i', null);
-            // 弹弹 play 的 p 为时间、类型、颜色、发送者；XML 需补齐字号和日期等字段。
+            // 弹弹 play 的 p 为时间、类型、颜色、发送者；保存时补齐 Bilibili 九段字段。
             for (const comment of comments) {
                 const fields = String(comment?.p || '').split(',');
                 if (fields.length < 3 || typeof comment?.m !== 'string') return;
                 const node = xml.createElement('d');
-                node.setAttribute('p', [fields[0], fields[1], 25, fields[2], 0, 0, fields[3] || '', comment.cid || 0].join(','));
+                node.setAttribute('p', [fields[0], fields[1], 25, fields[2], 0, 0,
+                    fields[3] || '', comment.cid || 0, 0].join(','));
                 node.textContent = comment.m;
                 xml.documentElement.appendChild(node);
             }
