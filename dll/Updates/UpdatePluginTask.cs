@@ -59,9 +59,16 @@ public sealed class UpdatePluginTask : IScheduledTask
             var channel = Plugin.Instance?.Configuration.UpdateChannel is "test" ? "test" : "main";
             var release = await client.LatestAsync(channel, token).ConfigureAwait(false);
             var loaded = typeof(Plugin).Assembly.GetName().Version ?? new Version(0, 0);
-            if (release is null || !release.IsTest && release.Version <= GitHubReleaseClient.Normalize(loaded))
+            if (release is null)
             {
-                _logger.Info("没有可安装的新 {0} 频道 DLL。", channel);
+                _logger.Info("{0} 频道未找到可用的 GitHub Release 或 DD.Danmaku.dll 附件。", channel);
+                progress.Report(100);
+                return;
+            }
+            _logger.Info("已找到 {0} 频道的 DD.Danmaku.dll 附件，开始下载并校验。", channel);
+            if (!release.IsTest && release.Version <= GitHubReleaseClient.Normalize(loaded))
+            {
+                _logger.Info("{0} 频道版本 {1} 不高于当前版本 {2}。", channel, release.Version, loaded);
                 progress.Report(100);
                 return;
             }
