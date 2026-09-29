@@ -69,4 +69,10 @@ public interface ISidecarStorageService
 /// <param name="Mode">弹幕显示模式编码。</param>
 /// <param name="Color">弹幕颜色的整数编码。</param>
 /// <param name="UserId">来源提供的发送者标识，可为空。</param>
-public sealed record DanmakuComment(string Text, double Time, int Mode, int Color, string? UserId);
+/// <param name="FontSize">Bilibili p 属性中的字号。</param>
+/// <param name="Timestamp">Bilibili p 属性中的发送时间戳。</param>
+/// <param name="Pool">Bilibili p 属性中的弹幕池编号。</param>
+/// <param name="Cid">来源弹幕 ID，可为空。</param>
+/// <param name="Weight">来源权重字段，Bilibili 标准中通常为 0。</param>
+public sealed record DanmakuComment(string Text, double Time, int Mode, int Color, string? UserId,
+    int FontSize = 25, long Timestamp = 0, int Pool = 0, string? Cid = null, int Weight = 0);

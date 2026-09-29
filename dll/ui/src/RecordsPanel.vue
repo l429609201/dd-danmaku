@@ -5,7 +5,7 @@ import { api } from './api.js'
 const rows = ref([]), loading = ref(false), error = ref(''), page = ref(1), total = ref(0)
 const drawer = ref(false), selected = ref(null), detail = ref(null), detailLoading = ref(false), busy = ref(false)
 const filters = reactive({ keyword: '', source: '', state: '' })
-const states = { unverified: '未校验', valid: '有效', empty: '空弹幕', invalid: '异常 / 不可读', missing: 'XML 缺失', unlinked: '媒体失联 / 不可访问' }
+const states = { unverified: '未校验', 'scan-noncanonical': '需规范化', noncanonical: '需规范化', valid: '有效', empty: '空弹幕', invalid: '异常 / 不可读', missing: 'XML 缺失', unlinked: '媒体失联 / 不可访问' }
 let listRequest, detailRequest
 // 取消上一请求，避免快速翻页或切换详情后旧响应覆盖新选择。
 async function load() {
@@ -51,6 +51,12 @@ async function act(row, action) {
       const data = await api.verifyRecord(row.recordId)
       ElMessage.success(`校验完成：${states[data.state] || data.state}`)
       if (drawer.value && selected.value?.recordId === row.recordId) await show(row)
+    } else if (action === 'normalize') {
+      await ElMessageBox.confirm(`${row.title} · ${row.episode || ''} · 来源：${row.source || '未标注来源'}\n将把兼容 XML 解析后重新写成标准 i/d/p 格式，原文件会被原子替换。`, '确认规范化 XML', {
+        type: 'warning', confirmButtonText: '规范化并替换', cancelButtonText: '取消', closeOnClickModal: false,
+      })
+      const data = await api.normalizeRecord(row.recordId)
+      ElMessage.success(`规范化完成：${data.commentCount ?? 0} 条弹幕`)
     } else { await api.downloadRecord(row.recordId); return }
     await load()
   } catch (e) { if (e !== 'cancel' && e !== 'close') error.value = e.message || '操作失败' }
@@ -94,7 +100,7 @@ onBeforeUnmount(() => { listRequest?.abort(); closeDetail() })
         <el-descriptions-item label="当前弹幕条数">{{ detail?.detail?.commentCount ?? '未知' }}</el-descriptions-item>
         <el-descriptions-item label="索引创建时间">{{ time(selected.storedAt) }}</el-descriptions-item>
       </el-descriptions>
-      <div class="actions toolbar"><el-button :disabled="!selected.available" @click="openMedia(selected)">打开 Emby 媒体详情</el-button><el-button :disabled="!selected.available || busy" @click="act(selected, 'download')">下载 XML</el-button><el-button :disabled="!selected.available || busy" @click="act(selected, 'verify')">重新校验</el-button></div>
+      <div class="actions toolbar"><el-button :disabled="!selected.available" @click="openMedia(selected)">打开 Emby 媒体详情</el-button><el-button :disabled="!selected.available || busy" @click="act(selected, 'download')">下载 XML</el-button><el-button :disabled="!selected.available || busy" @click="act(selected, 'verify')">重新校验</el-button><el-button type="warning" plain :disabled="!selected.available || busy" @click="act(selected, 'normalize')">规范化 XML</el-button></div>
       <el-divider>弹幕预览（最多 30 条）</el-divider>
       <el-skeleton v-if="detailLoading" :rows="4" animated /><el-empty v-else-if="!detail?.detail?.comments?.length" description="没有可预览的弹幕" />
       <div v-for="(item, index) in detail?.detail?.comments || []" :key="index" class="comment"><b>{{ item.time }}s</b> {{ item.text }}</div>

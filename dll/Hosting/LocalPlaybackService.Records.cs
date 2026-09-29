@@ -35,6 +35,7 @@ internal sealed partial class LocalPlaybackService
             // 下载保留原文件内容；限制大小并拒绝链接，与播放器读取边界一致。
             IReadOnlyList<DanmakuComment> comments = [];
             var state = "valid";
+            var canonical = true;
             try
             {
                 await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -55,22 +56,37 @@ internal sealed partial class LocalPlaybackService
                     }
                     return buffer.ToArray();
                 }
-                comments = await DanmakuXml.ReadAsync(stream, token);
+                var report = await DanmakuXml.ReadReportAsync(stream, token);
+                comments = report.Comments;
+                canonical = report.IsCanonical;
                 if (comments.Count == 0) state = "empty";
+                else if (!canonical) state = "noncanonical";
             }
             catch (FileNotFoundException) { state = "missing"; }
             catch (DirectoryNotFoundException) { state = "missing"; }
             catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or System.Xml.XmlException or ArgumentException)
             { state = "invalid"; }
             if (action == "download") throw new ApiAccessException(409, "XML_UNAVAILABLE", "XML 不存在、不可读或超过大小限制");
-            if (action == "verify")
+            if (action == "normalize")
+            {
+                if (state is not ("valid" or "empty" or "noncanonical"))
+                    throw new ApiAccessException(409, "XML_UNAVAILABLE", "XML 不存在、不可读或无法规范化");
+                await _files.SaveAsync(path, comments, token, true);
+                await records.MutateAsync(items =>
+                {
+                    var index = items.FindIndex(r => r.RecordId == recordId);
+                    if (index >= 0) items[index] = items[index] with { CommentCount = comments.Count,
+                        RefreshState = comments.Count == 0 ? "verify-empty" : "none", UpdatedAt = DateTimeOffset.UtcNow };
+                }, token);
+            }
+            else if (action == "verify")
                 await records.MutateAsync(items =>
                 {
                     var index = items.FindIndex(r => r.RecordId == recordId);
                     if (index >= 0) items[index] = items[index] with { CommentCount = comments.Count,
                         RefreshState = "verify-" + state, UpdatedAt = DateTimeOffset.UtcNow };
                 }, token);
-            return new { XmlPath = path, State = state, CommentCount = state is "valid" or "empty" ? (int?)comments.Count : null,
+            return new { XmlPath = path, State = state, CommentCount = state is "valid" or "empty" or "noncanonical" ? (int?)comments.Count : null,
                 Comments = comments.Take(30).Select(c => new { c.Text, c.Time }).ToArray() };
         }
         finally { _gate.Release(); }

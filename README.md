@@ -16,36 +16,57 @@
 
 更新时下载目标发行版的 DLL，替换旧文件并重启 Emby。仅更新单独下载的 `ede.js` 不会更新 DLL 中内置的脚本和管理页面。
 
-### 兼容旧弹幕插件的读取接口
+### 原版插件与本项目 DLL 的 API 说明
 
-DLL 保留以下四个旧式 **GET** 路径，供原先调用弹幕插件接口的客户端读取本地弹幕。`{Id}` 是 Emby 媒体 ID；以下路径由 Emby 提供服务端 API 前缀（通常为 `/emby`），实际访问地址还需包含服务器地址和必要的认证信息。
+经对照上游 `pipi20xx/dd-danmaku` 的公开说明，原版插件的核心是 **Emby 前端脚本**：在播放器页面中匹配并加载弹幕，匹配信息主要保存在浏览器或客户端本地存储。上游公开说明并没有把 `/plugin/danmu/{Id}`、`/api/danmu/{Id}` 这一组路径作为原版插件的官方 DLL API 发布。
 
-| 路径 | 说明 |
+本项目 DLL 额外提供了下面四个 **兼容旧弹幕插件调用方式的只读接口**。它们是本项目的兼容层，不应表述为原版插件原生接口：
+
+| 方法 | 路径 |
 | --- | --- |
-| `/plugin/danmu/{Id}` | 兼容读取入口 |
-| `/api/danmu/{Id}` | 兼容读取入口 |
-| `/plugin/danmu/raw/{Id}` | 兼容读取入口 |
-| `/api/danmu/{Id}/raw` | 兼容读取入口 |
+| `GET` | `/plugin/danmu/{Id}` |
+| `GET` | `/api/danmu/{Id}` |
+| `GET` | `/plugin/danmu/raw/{Id}` |
+| `GET` | `/api/danmu/{Id}/raw` |
 
-四个路径共用同一套参数与处理逻辑；路径中包含 `raw` **不代表**会绕过权限检查或改变默认返回格式：
+其中 `{Id}` 是 Emby 媒体项 ID。实际 URL 需要加上 Emby 服务器地址及部署时的 API 前缀；常见形式是 `/emby`，但反向代理或服务器配置不同可能有所变化，不能固定假定为 `/emby`。请求必须携带有效的 Emby 用户认证（推荐使用 `X-Emby-Token`，也可由 Emby 支持的认证方式提供），并且该用户必须有权访问对应媒体。
 
-| 查询参数 | 用途 |
-| --- | --- |
-| `Option` | `DownloadXml`（默认，返回 XML）、`GetJsonById`（返回 JSON）、`select`（返回可用来源列表）。 |
-| `Mode` | `single`（默认，只读取第一个可用文件）或 `aggregate`（合并多个来源）。 |
-| `Source` | 指定单个弹幕来源；不能与 `NeedSites` 同时传入。 |
-| `NeedSites` | 指定多个来源（最多 32 个）；与 `Source` 二选一。 |
+#### 兼容接口参数
 
-例如，在已登录并具有该媒体访问权限的 Emby 环境中，读取媒体 `12345` 的本地 XML：
+四个路径使用相同的查询参数。参数名按原兼容请求模型绑定，大小写以实际客户端和 Emby/ServiceStack 的参数绑定规则为准：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `Option` | `DownloadXml` | `DownloadXml` 返回 XML；`GetJsonById` 返回 JSON；`select` 只返回可用来源列表。 |
+| `Mode` | `single` | `single` 读取第一个可用来源；`aggregate` 合并指定范围内的多个来源。 |
+| `Source` | 未指定 | 指定一个来源名称；不能和 `NeedSites` 同时使用。 |
+| `NeedSites` | 未指定 | 指定多个来源名称，最多 32 个；可按客户端的列表参数方式重复传递。 |
+
+示例：
 
 ```text
 /emby/plugin/danmu/12345?Option=DownloadXml
 /emby/api/danmu/12345?Option=select
-/emby/api/danmu/12345/raw?Option=GetJsonById&Mode=aggregate
+/emby/api/danmu/12345?Option=GetJsonById&Mode=aggregate&NeedSites=弹弹play&NeedSites=B站
 ```
 
-`select` 返回 `sources` 列表；JSON 读取返回 `hasNext`、`data`（按来源分组的 `danmuEvents`）及 `extra`。接口仅读取服务器上**已有的本地弹幕文件**：需要 Emby 用户认证及该媒体的访问权限；找不到弹幕时读取请求返回 404，不会自动搜索、刷新、下载或保存弹幕。旧弹幕插件如果占用相同路由，应先停用旧插件，避免接口冲突。
+#### 返回内容与边界
 
+- `Option=DownloadXml`：返回 `application/xml` 弹幕文件内容。
+- `Option=GetJsonById`：返回 JSON 对象，包含 `hasNext`、`data`、`extra`；`data` 按来源分组，每组包含 `source`、`sourceName`、`opened` 和 `danmuEvents`。
+- `Option=select`：返回 `{ "sources": [...] }`，用于枚举服务器上可读取的来源。
+- 接口只读取服务器上已经存在的本地弹幕文件，不负责搜索、匹配、刷新、下载或写入弹幕。
+- 未找到弹幕返回 `404`；参数无效返回 `400`；没有有效认证返回 `401`；没有媒体访问权限返回 `403`。具体错误响应由 DLL 的 API 错误格式返回。
+- `/raw` 只是兼容路径的一部分，不会绕过认证、媒体权限、读取开关或其他安全限制。
+
+### XML 格式与规范化
+
+DLL 读取和写入的规范 XML 采用 Bilibili 常见的 `<i><d p="...">文本</d></i>` 结构。`p` 属性规范为九段：
+`时间,模式,字号,颜色,发送时间戳,弹幕池,用户标识,弹幕 ID,权重`。根节点可以包含 `chatid`、`chatserver`、`sourceprovider` 等来源元数据，但这些元数据不是本项目内部弹幕记录的必要字段。
+
+读取时会兼容字段数量不足或追加字段的来源 XML，并在扫描结果中标记为“需规范化”；记录管理页面的“规范化 XML”任务会在保留可解析字段的前提下，以 Bilibili 九段 `p` 格式原子替换原文件。无法解析时间、模式或正文的单条弹幕会被跳过；无法读取或 XML 结构损坏的文件仍标记为异常，不会被规范化任务覆盖。
+
+如果使用的是原版 `ede.js` 或其他仅依赖前端匹配逻辑的客户端，并不要求调用上述 DLL 接口；只有需要从本项目服务器读取本地弹幕文件的旧客户端，才需要使用这组兼容接口。
 ## 食用方法 (手动注入)
 
 如果你不想使用 `CustomCssJS` 插件，也可以通过手动修改前端文件的方式来加载此脚本。以下方法参考自 Catcat's Blog。

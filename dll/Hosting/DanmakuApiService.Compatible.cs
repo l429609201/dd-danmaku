@@ -68,16 +68,23 @@ public sealed partial class DanmakuApiService
             if (total > DanmakuXml.MaxComments)
                 throw new ApiAccessException(413, "COMMENT_LIMIT", "弹幕超过单次读取上限");
             if (request.Option == "DownloadXml")
-                merged.AddRange(playback.Comments.Select(c => new DanmakuComment(c.Text, c.Time, c.Mode, c.Color, c.UserId)));
+            {
+                // 播放查询返回 API DTO；写 XML 前转换回内部弹幕模型，保持存储层与接口层解耦。
+                merged.AddRange(playback.Comments.Select(c => new DanmakuComment(
+                    c.Text, c.Time, c.Mode, c.Color, c.UserId,
+                    c.FontSize, c.Timestamp, c.Pool, c.Cid, c.Weight)));
+            }
             else groups.Add(new
             {
                 source, sourceName = source.Length == 0 ? "未标注来源" : source, opened = true,
-                // 只输出现有解析器保留的播放字段，其余字段使用默认值。
+                // 输出 Bilibili 九段 p 属性，并保留解析器已保存的来源字段。
                 danmuEvents = playback.Comments.Select(c => new
                 {
                     m = c.Text,
-                    p = string.Join(",", c.Time.ToString(CultureInfo.InvariantCulture), c.Mode.ToString(CultureInfo.InvariantCulture),
-                        "25", c.Color.ToString(CultureInfo.InvariantCulture), "0", "0", c.UserId ?? "0", "0")
+                    p = string.Join(",", c.Time.ToString("R", CultureInfo.InvariantCulture), c.Mode.ToString(CultureInfo.InvariantCulture),
+                        c.FontSize.ToString(CultureInfo.InvariantCulture), c.Color.ToString(CultureInfo.InvariantCulture),
+                        c.Timestamp.ToString(CultureInfo.InvariantCulture), c.Pool.ToString(CultureInfo.InvariantCulture),
+                        c.UserId ?? "", c.Cid ?? "0", c.Weight.ToString(CultureInfo.InvariantCulture))
                 }).ToArray()
             });
             if (request.Mode == "single") break;

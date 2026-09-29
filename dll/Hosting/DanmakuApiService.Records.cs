@@ -26,6 +26,7 @@ public sealed partial class DanmakuApiService
             }
             var source = JsonDanmakuRecordStore.GetEffectiveSource(record) ?? "";
             var state = !info.Available ? "unlinked" : record.RefreshState == "scan-unverified" ? "unverified"
+                : record.RefreshState == "scan-noncanonical" ? "scan-noncanonical"
                 : record.RefreshState.StartsWith("verify-", StringComparison.Ordinal) ? record.RefreshState[7..]
                 : record.CommentCount == 0 ? "empty" : "valid";
             if (!string.IsNullOrWhiteSpace(request.Keyword)
@@ -87,6 +88,16 @@ public sealed partial class DanmakuApiService
     {
         RequireRecordRead(user, plugin);
         return ApiHttpResult.Success(await host.Playback.ManageRecordAsync(request.RecordId, "verify",
+            id => _access.RequireVideo(user, id), Request.CancellationToken));
+    });
+
+    /// <summary>管理员将兼容 XML 重新写成统一 i/d/p 格式。</summary>
+    public Task<object> Post(NormalizeRecordRequest request) => Execute(async (user, plugin, host) =>
+    {
+        RequireRecordRead(user, plugin);
+        if (!plugin.Configuration.FilePersistenceWriteEnabled)
+            throw new ApiAccessException(409, "XML_WRITE_DISABLED", "服务器 XML 写入未启用");
+        return ApiHttpResult.Success(await host.Playback.ManageRecordAsync(request.RecordId, "normalize",
             id => _access.RequireVideo(user, id), Request.CancellationToken));
     });
 

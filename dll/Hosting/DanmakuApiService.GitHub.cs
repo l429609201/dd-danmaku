@@ -61,15 +61,17 @@ public sealed partial class DanmakuApiService
         using var client = new GitHubReleaseClient();
         try
         {
-            var release = await client.LatestAsync(deadline.Token);
-            // 只提供发行版与公开附件链接，绝不调用下载替换安装流程。
+            var channel = plugin.Configuration.UpdateChannel is "test" ? "test" : "main";
+            var release = await client.LatestAsync(channel, deadline.Token);
+            // 只提供选定频道的发行版与公开附件链接，绝不调用下载替换安装流程。
             return ApiHttpResult.Success(new
             {
+                Channel = channel,
                 CurrentVersion = ScriptVersion.Current,
-                LatestVersion = release?.Version.ToString(3),
+                LatestVersion = release is { IsTest: true } ? "test" : release?.Version.ToString(3),
                 DownloadUrl = release?.Url.AbsoluteUri,
                 ReleaseUrl = $"https://github.com/{GitHubReleaseClient.Repository}/releases",
-                Message = release is null ? "未找到包含 DLL 附件的正式发行版" : "检查完成；下载后请手动安装"
+                Message = release is null ? $"未找到 {channel} 频道的 DLL 附件" : "检查完成；下载后请手动安装"
             });
         }
         catch (HttpRequestException)

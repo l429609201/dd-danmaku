@@ -9,7 +9,13 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
-  <!-- 只引用已核对的公共 SDK；net8.0 是本插件目标，不代表兼容所有 Emby 版本。 -->
+  <PropertyGroup>
+    <!-- 发布工作流通过 Version 注入正式标签版本；本地构建使用当前脚本版本作为可识别的默认值。 -->
+    <Version Condition="'$(Version)' == ''">1.3.3</Version>
+    <AssemblyVersion Condition="'$(AssemblyVersion)' == ''">$(Version)</AssemblyVersion>
+    <FileVersion Condition="'$(FileVersion)' == ''">$(Version)</FileVersion>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="MediaBrowser.Server.Core" Version="4.8.0.80"
                       IncludeAssets="compile" PrivateAssets="all" />
