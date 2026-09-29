@@ -6,6 +6,15 @@
 
 <img width="1847" height="996" alt="image" src="https://github.com/user-attachments/assets/376b7ef5-3776-4aae-8232-4bc20885a606" />
 
+## DLL 版（Emby 服务端插件）
+
+`DD.Danmaku.dll` 是安装在 Emby 服务器上的插件，提供弹幕管理页面和服务端功能，并内置构建时的 `ede.js`。如果只想使用前端脚本，可跳到下方的[手动注入方法](#食用方法-手动注入)；手动注入不会安装 DLL 的服务端功能。
+
+1. 前往 [Releases](https://github.com/l429609201/dd-danmaku/releases) 下载 `DD.Danmaku.dll`：稳定使用选正式发行版，体验新构建选标题为 `test` 的预发行版。
+2. 将 DLL 放入 Emby 的插件目录，重启 Emby，并在插件管理页面确认插件已加载。
+3. 按需在插件管理页面配置功能。Web 端自动注入是否生效取决于服务器环境；如需手动加载 `ede.js`，请避免重复注入。
+
+更新时下载目标发行版的 DLL，替换旧文件并重启 Emby。仅更新单独下载的 `ede.js` 不会更新 DLL 中内置的脚本和管理页面。
 
 ## 食用方法 (手动注入)
 

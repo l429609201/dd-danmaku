@@ -1,6 +1,6 @@
 name: Build and Release
 
-# 测试分支持续更新固定发行版，正式版仅由版本标签触发。
+# test 分支更新固定预发行版（使用不同名的 test-release 标签）；正式版仅由版本标签触发。
 on:
   push:
     branches: [test]
@@ -33,6 +33,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:GITHUB_REF -eq 'refs/heads/test') {
+            # Artifact 保持固定名称；发行版使用不同名的内部标签。
             'tag=test' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding UTF8
           } elseif ($env:GITHUB_REF -like 'refs/tags/v*') {
             # 在任何构建和发布动作之前确认标签提交属于 main 历史。
@@ -90,25 +91,26 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: 发布全部产物到同一个发行版
+      - name: 发布构建产物
         env:
           RELEASE_TAG: ${{ steps.target.outputs.tag }}
         run: |
           $ErrorActionPreference = 'Stop'
-          # 全部构建成功才更新发行版；只覆盖三个同名附件，保留其他附件和说明。
           if ($env:GITHUB_REF -eq 'refs/heads/test') {
-            git tag --force test $env:GITHUB_SHA
-            if ($LASTEXITCODE -ne 0) { throw '更新 test 标签失败' }
-            git push origin refs/tags/test --force
-            if ($LASTEXITCODE -ne 0) { throw '推送 test 标签失败' }
-            gh release view test
+            # Release 必须关联标签；只更新不同名的内部标签，避免与 test 分支冲突。
+            git tag --force test-release $env:GITHUB_SHA
+            if ($LASTEXITCODE -ne 0) { throw '更新测试版标签失败' }
+            git push origin refs/tags/test-release --force
+            if ($LASTEXITCODE -ne 0) { throw '推送测试版标签失败' }
+            gh release view test-release
             if ($LASTEXITCODE -ne 0) {
-              gh release create test --verify-tag --title 'test' --prerelease --latest=false --notes 'test 分支自动构建：ede.js、ede.min.js、DD.Danmaku.dll。'
+              gh release create test-release --verify-tag --title 'test' --prerelease --latest=false --notes 'test 分支自动构建：ede.js、ede.min.js、DD.Danmaku.dll。'
               if ($LASTEXITCODE -ne 0) { throw '创建 test 预发行版失败' }
             } else {
-              gh release edit test --prerelease --latest=false
-              if ($LASTEXITCODE -ne 0) { throw '更新 test 预发行版状态失败' }
+              gh release edit test-release --title 'test' --prerelease --latest=false
+              if ($LASTEXITCODE -ne 0) { throw '更新 test 预发行版失败' }
             }
+            $env:RELEASE_TAG = 'test-release'
           } else {
             gh release view $env:RELEASE_TAG
             if ($LASTEXITCODE -ne 0) {
