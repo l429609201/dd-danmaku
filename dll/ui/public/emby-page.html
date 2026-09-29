@@ -1,0 +1,11 @@
+<div id="ddDanmakuPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button" data-controller="__plugin/dd-danmaku-bridge">
+  <div data-role="content">
+    <div class="content-primary">
+      <!-- 页面只承载同源管理界面，所有数据操作仍由后端验证权限。 -->
+      <p class="dd-error" role="alert" hidden></p>
+      <iframe class="dd-admin-frame" title="DD 弹幕管理" referrerpolicy="same-origin"
+              style="width:100%;height:calc(100vh - 160px);min-height:600px;border:0;"></iframe>
+    </div>
+  </div>
+</div>

@@ -1,79 +1,120 @@
 name: Build and Release
 
-# 触发条件：推送 tag 时自动运行（如 v1.3.0）
+# 测试分支持续更新固定发行版，正式版仅由版本标签触发。
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [test]
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
-      - name: Checkout 代码
+      - name: 拉取同一提交的后端、前端和 ede.js
         uses: actions/checkout@v4
-      
-      - name: 设置 Node.js 环境
+        with:
+          fetch-depth: 0
+
+      - name: 核对发布目标
+        id: target
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF -eq 'refs/heads/test') {
+            'tag=test' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding UTF8
+          } elseif ($env:GITHUB_REF -like 'refs/tags/v*') {
+            # 在任何构建和发布动作之前确认标签提交属于 main 历史。
+            git fetch origin main
+            if ($LASTEXITCODE -ne 0) { throw '获取 main 分支失败' }
+            git merge-base --is-ancestor HEAD origin/main
+            if ($LASTEXITCODE -ne 0) { throw '正式版标签提交不属于 main 分支' }
+            "tag=$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding UTF8
+          } else {
+            throw '不支持的发布目标'
+          }
+
+      - name: 设置 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      
-      - name: 安装 Terser（JS 压缩工具）
-        run: npm install -g terser
-      
-      - name: 提取版本号
-        id: extract_version
-        run: |
-          VERSION=$(grep -oP '@version\s+\K[\d\.]+' ede.js)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "检测到版本: $VERSION"
-      
-      - name: 创建 release 目录
-        run: mkdir -p release
-      
-      - name: 复制 ede.js 到 release/
-        run: cp ede.js release/ede.js
-      
-      - name: 压缩生成 ede.min.js
-        run: |
-          terser ede.js \
-            --compress "drop_console=true" \
-            --mangle \
-            --comments "/==UserScript==|@name|@description|@version|@author|@license|@namespace/" \
-            --output release/ede.min.js
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dll/ui/package-lock.json
 
-          # 打印文件大小对比
-          ORIGINAL_SIZE=$(stat -f%z release/ede.js 2>/dev/null || stat -c%s release/ede.js)
-          MINIFIED_SIZE=$(stat -f%z release/ede.min.js 2>/dev/null || stat -c%s release/ede.min.js)
-          echo "原始大小: $(numfmt --to=iec-i --suffix=B $ORIGINAL_SIZE)"
-          echo "压缩后:   $(numfmt --to=iec-i --suffix=B $MINIFIED_SIZE)"
-          echo "压缩率:   $(awk "BEGIN {printf \"%.1f%%\", ($MINIFIED_SIZE/$ORIGINAL_SIZE)*100}")"
-
-      - name: 创建 GitHub Release
-        uses: softprops/action-gh-release@v1
+      - name: 设置 .NET SDK
+        uses: actions/setup-dotnet@v4
         with:
-          files: |
-            release/ede.js
-            release/ede.min.js
-          # append_body: true 会将 body 内容追加到已有 Release Notes 之后
-          append_body: true
-          body: |
+          dotnet-version: '8.0.x'
 
-            ---
+      - name: 安装管理前端依赖
+        working-directory: dll/ui
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw '安装前端依赖失败' }
 
-            ## 📦 构建产物
+      - name: 构建 DLL 并嵌入管理前端与原始脚本
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # csproj 在构建时生成管理页面、复制 ede.js 并嵌入，不回写仓库。
+          dotnet build dll/DD.Danmaku.csproj --configuration Release --nologo
+          if ($LASTEXITCODE -ne 0) { throw 'DLL 构建失败' }
 
-            ### 发布文件
-            - `ede.js` - 原始版本（带注释、调试信息）
-            - `ede.min.js` - 压缩版本（移除 console、变量名混淆）
+      - name: 压缩脚本并汇集全部产物
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm install --global terser@5
+          if ($LASTEXITCODE -ne 0) { throw '安装脚本压缩工具失败' }
+          New-Item -ItemType Directory -Path release -Force | Out-Null
+          Copy-Item ede.js release/ede.js
+          Copy-Item dll/bin/Release/net8.0/DD.Danmaku.dll release/DD.Danmaku.dll
+          terser ede.js --compress 'drop_console=true' --mangle --comments '/==UserScript==|@name|@description|@version|@author|@license|@namespace/' --output release/ede.min.js
+          if ($LASTEXITCODE -ne 0) { throw '压缩 ede.js 失败' }
 
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: 上传构建产物（供后续 job 使用）
+      - name: 保存统一构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: release-files
+          name: release-files-${{ steps.target.outputs.tag }}
           path: release/
+          if-no-files-found: error
           retention-days: 7
+
+      - name: 发布全部产物到同一个发行版
+        env:
+          RELEASE_TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # 全部构建成功才更新发行版；只覆盖三个同名附件，保留其他附件和说明。
+          if ($env:GITHUB_REF -eq 'refs/heads/test') {
+            git tag --force test $env:GITHUB_SHA
+            if ($LASTEXITCODE -ne 0) { throw '更新 test 标签失败' }
+            git push origin refs/tags/test --force
+            if ($LASTEXITCODE -ne 0) { throw '推送 test 标签失败' }
+            gh release view test
+            if ($LASTEXITCODE -ne 0) {
+              gh release create test --verify-tag --title 'test' --prerelease --latest=false --notes 'test 分支自动构建：ede.js、ede.min.js、DD.Danmaku.dll。'
+              if ($LASTEXITCODE -ne 0) { throw '创建 test 预发行版失败' }
+            } else {
+              gh release edit test --prerelease --latest=false
+              if ($LASTEXITCODE -ne 0) { throw '更新 test 预发行版状态失败' }
+            }
+          } else {
+            gh release view $env:RELEASE_TAG
+            if ($LASTEXITCODE -ne 0) {
+              gh release create $env:RELEASE_TAG --verify-tag --title $env:RELEASE_TAG --generate-notes
+              if ($LASTEXITCODE -ne 0) { throw '创建正式发行版失败' }
+            }
+          }
+          gh release upload $env:RELEASE_TAG release/ede.js release/ede.min.js release/DD.Danmaku.dll --clobber
+          if ($LASTEXITCODE -ne 0) { throw '上传发行版附件失败' }

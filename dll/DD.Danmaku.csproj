@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>DD.Danmaku</AssemblyName>
+    <RootNamespace>DD.Danmaku</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- 只引用已核对的公共 SDK；net8.0 是本插件目标，不代表兼容所有 Emby 版本。 -->
+  <ItemGroup>
+    <PackageReference Include="MediaBrowser.Server.Core" Version="4.8.0.80"
+                      IncludeAssets="compile" PrivateAssets="all" />
+    <PackageReference Include="MediaBrowser.Common" Version="4.8.0.80"
+                      IncludeAssets="compile" PrivateAssets="all" />
+    <!-- IResponse.OutputWriter 的公开签名依赖此程序集；运行时使用宿主版本，不随插件复制。 -->
+    <PackageReference Include="System.IO.Pipelines" Version="6.0.3"
+                      IncludeAssets="compile" PrivateAssets="all" />
+  </ItemGroup>
+  <PropertyGroup>
+    <!-- 前端依赖与生成文件不参与 SDK 默认源码扫描。 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);ui/**;Resources/**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <!-- 在资源路径分配之前生成并枚举文件，首次构建也能完整嵌入。 -->
+  <Target Name="PreparePluginResources" BeforeTargets="AssignTargetPaths"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)/../ede.js')"
+           Text="缺少仓库根目录 ede.js，无法构建完整插件。" />
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)/ui/node_modules/vite/bin/vite.js')"
+           Text="缺少 UI 构建依赖，请先在 dll/ui 目录执行 npm ci。" />
+    <Exec Command="npm run build" WorkingDirectory="$(MSBuildProjectDirectory)/ui" />
+    <MakeDir Directories="$(MSBuildProjectDirectory)/Resources" />
+    <!-- 根目录脚本是唯一源码；每次构建同步，不维护第二份手工副本。 -->
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/../ede.js"
+          DestinationFiles="$(MSBuildProjectDirectory)/Resources/ede.js" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/ui/弹幕.svg"
+          DestinationFiles="$(MSBuildProjectDirectory)/Resources/Admin/dd-icon.svg"
+          SkipUnchangedFiles="true" />
+
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)/Resources/Admin/index.html')"
+           Text="UI 构建未生成 Resources/Admin/index.html，停止打包。" />
+    <ItemGroup>
+      <!-- 先创建项目，再批处理路径元数据，避免属性函数过早求值得到空名称。 -->
+      <EmbeddedResource Include="Resources/Admin/**/*;Resources/ede.js">
+        <WithCulture>false</WithCulture>
+        <Type>Non-Resx</Type>
+      </EmbeddedResource>
+      <EmbeddedResource Update="@(EmbeddedResource)">
+        <LogicalName>DD.Danmaku.$([System.String]::Copy('%(EmbeddedResource.Identity)').Replace('\', '/'))</LogicalName>
+      </EmbeddedResource>
+    </ItemGroup>
+  </Target>
+</Project>

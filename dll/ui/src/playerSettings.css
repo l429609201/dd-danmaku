@@ -1,0 +1,57 @@
+/* 局部复现播放器的 Emby 控件比例，不依赖宿主自定义元素或污染管理页面。 */
+.ede-surface { --player-accent: #52b54b; font-size: 14px; color: var(--el-text-color-primary); }
+.ede-surface .ede-editor, .ede-surface .player-settings { max-width: 44em; margin: 1em auto; }
+.ede-surface .tabs { display: flex; justify-content: center; border: 0; gap: 1em; margin-bottom: 1em; }
+.ede-surface .segments { display: flex; flex-wrap: wrap; gap: .3em; }
+.ede-surface .tabs button, .ede-surface .segments button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: inherit; cursor: pointer; padding: .65em .8em; font: inherit; }
+.ede-surface .check { display: inline-flex; align-items: center; gap: .3em; }
+.ede-surface .control > small { color: var(--el-text-color-secondary); white-space: nowrap; }
+.ede-surface .tabs [aria-selected=true], .ede-surface .segments [aria-pressed=true] { color: var(--player-accent); border-color: var(--player-accent); }
+.ede-surface .parameter { padding: .2em 0; }
+.ede-surface .row, .ede-surface .control { min-height: 2.4em; gap: .6em; }
+.ede-surface .basic .row > label:first-child { flex-basis: 5em; }
+.ede-surface .row > label:first-child, .ede-surface .control > label:not(.check) { font-size: 1em; flex-basis: 10em; }
+.ede-surface .basic-controls .control > label:not(.check) { flex-basis: 5em; }
+.ede-surface input[type=range] { appearance: none; height: .25em; max-width: 15.5em; background: var(--el-border-color); border-radius: 1em; cursor: pointer; }
+.ede-surface input[type=range]::-webkit-slider-thumb { appearance: none; width: 1em; height: 1em; border-radius: 50%; background: var(--player-accent); }
+.ede-surface input[type=range]::-moz-range-thumb { width: 1em; height: 1em; border: 0; border-radius: 50%; background: var(--player-accent); }
+.ede-surface input[type=checkbox] { appearance: none; flex: 0 0 auto; width: 1.3em; height: 1.3em; margin: .3em; border: 2px solid var(--el-text-color-secondary); border-radius: .15em; vertical-align: middle; cursor: pointer; }
+.ede-surface input[type=checkbox]:checked { background: var(--player-accent); border-color: var(--player-accent); }
+.ede-surface input[type=checkbox]:checked::after { content: ''; display: block; width: .3em; height: .65em; margin: 0 auto; border: solid white; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.ede-surface details { border: 0; }
+.ede-surface summary { list-style: none; display: flex; justify-content: space-between; align-items: center; padding: .85em .6em; font-weight: 400; font-size: 1.1em; border-bottom: 1px solid var(--el-border-color-lighter); }
+.ede-surface summary::-webkit-details-marker { display: none; }
+.ede-surface summary::after { content: ''; width: .45em; height: .45em; border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(45deg); margin-right: .4em; }
+.ede-surface details[open] > summary::after { transform: rotate(225deg); }
+.ede-surface .content, .ede-surface .setting-content { padding: .5em .8em 1em; }
+.ede-surface .checks, .ede-surface .checkbox-list { gap: .3em .8em; }
+.ede-surface output { min-width: 4em; text-align: left; margin-left: .5em; }
+.ede-surface input[type=text], .ede-surface input[type=password], .ede-surface textarea, .ede-surface select { border-radius: .2em; font: inherit; }
+.ede-surface .inherit { margin: 0; justify-content: flex-end; }
+.ede-surface .save-status { min-height: 1.5em; color: var(--el-text-color-secondary); font-size: .85em; }
+.ede-surface .clear-secret { border: 0; background: transparent; color: var(--el-text-color-secondary); cursor: pointer; padding: .3em; }
+/* 默认参数与完整参数共用移动布局，保持播放器原有控件风格。 */
+@media(max-width: 560px) {
+  .ede-surface { font-size: 16px; min-width: 0; }
+  .ede-surface .basic, .ede-surface .basic-controls { grid-template-columns: minmax(0, 1fr); }
+  .ede-surface .basic .row, .ede-surface .row, .ede-surface .control { flex-wrap: wrap; min-width: 0; }
+  .ede-surface .row > label:first-child, .ede-surface .basic .row > label:first-child,
+  .ede-surface .control > label:not(.check), .ede-surface .basic-controls .control > label:not(.check) { flex-basis: 100%; }
+  .ede-surface .content, .ede-surface .setting-content { padding-inline: .3em; }
+  .ede-surface .control > small { white-space: normal; }
+  .ede-surface .tabs { justify-content: flex-start; overflow-x: auto; gap: .3em; }
+  .ede-surface .tabs button { flex: 0 0 auto; white-space: nowrap; }
+  .ede-surface button:not(.toggle), .ede-surface .check, .ede-surface .checks label, .ede-surface .save-item { min-height: 44px; }
+  .ede-surface input[type=text], .ede-surface input[type=password], .ede-surface input[type=number], .ede-surface select { min-height: 44px; max-width: 100%; }
+  /* 透明边框扩大滑条触摸区域，不扩大可见轨道。 */
+  .ede-surface input[type=range] { flex: 1 1 50%; height: 44px; border-block: 20px solid transparent; background-clip: content-box; }
+  .ede-surface input[type=range]::-webkit-slider-thumb { width: 22px; height: 22px; }
+  .ede-surface input[type=range]::-moz-range-thumb { width: 22px; height: 22px; }
+  .ede-surface .source { flex-wrap: wrap; }
+  .ede-surface .source > .source-form { flex-basis: 100%; }
+  .ede-surface .source .buttons { max-width: none; width: 100%; justify-content: flex-end; gap: 6px; }
+  .ede-surface .source .buttons button { min-width: 44px; }
+  .ede-surface .list { overflow-wrap: anywhere; }
+  .ede-surface .list ul { padding-left: 20px; }
+  .ede-surface .list label { flex-wrap: wrap; max-width: 100%; }
+}
