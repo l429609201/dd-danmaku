@@ -3,9 +3,14 @@ namespace DD.Danmaku.Matching;
 using System.Text.Json;
 using DD.Danmaku.Web.Api;
 
+/// <summary>匹配接口的 HTTP 状态及 JSON 响应。</summary>
+/// <param name="StatusCode">HTTP 状态码。</param>
+/// <param name="Body">匹配结果响应体。</param>
 public sealed record MatchHttpResult(int StatusCode, ApiResponse<ResolveMatchResponse> Body)
 {
+    /// <summary>响应的 JSON 内容类型。</summary>
     public string ContentType => "application/json; charset=utf-8";
+    /// <summary>以固定字段命名规则序列化响应体。</summary>
     public string ToJson() => JsonSerializer.Serialize(Body, MatchJson.Options);
 }
 
@@ -16,8 +21,10 @@ public sealed record MatchHttpResult(int StatusCode, ApiResponse<ResolveMatchRes
 public sealed class MatchApiService
 {
     private readonly IMatchService _matcher;
+    /// <summary>使用业务匹配器构建 HTTP 边界。</summary>
     public MatchApiService(IMatchService matcher) => _matcher = matcher;
 
+    /// <summary>校验并解析有界 JSON 请求后执行匹配。</summary>
     public async Task<MatchHttpResult> ResolveJsonAsync(ReadOnlyMemory<byte> utf8Body,
         CancellationToken cancellationToken)
     {
@@ -37,6 +44,7 @@ public sealed class MatchApiService
     }
 
     // HTTP 宿主注入的关联号同时用于业务日志与响应；客户端 JSON 不能设置该字段。
+    /// <summary>匹配已授权的结构化请求并保留宿主关联号。</summary>
     public Task<MatchHttpResult> ResolveAsync(ResolveMatchRequest request, CancellationToken cancellationToken)
         => ResolveCoreAsync(request, request.TraceId ?? Guid.NewGuid().ToString("N"), cancellationToken);
 

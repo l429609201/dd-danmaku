@@ -2,12 +2,16 @@ namespace DD.Danmaku.Matching;
 
 using DD.Danmaku.Web.Api;
 
+/// <summary>匹配请求的尺寸和字段校验器。</summary>
 public static class MatchRequestValidator
 {
     // 请求安全硬上限与 AI 设置范围一致；返回条数仍独立限制为 100。
+    /// <summary>单次匹配允许的最大候选数。</summary>
     public const int MaxCandidates = 1000;
+    /// <summary>匹配请求体的最大字节数。</summary>
     public const int MaxBodyBytes = 512 * 1024;
 
+    /// <summary>校验选择范围、候选数量和所有结构化字段。</summary>
     public static void Validate(ResolveMatchRequest? request)
     {
         Require(request is not null, "请求不能为空");

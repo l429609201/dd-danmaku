@@ -4,19 +4,27 @@ using DD.Danmaku.Updates;
 using DD.Danmaku.Web.Api;
 using MediaBrowser.Model.Services;
 
+/// <summary>读取管理员配置的 GitHub 凭据状态。</summary>
 [Route("/dd-danmaku/api/config/github", "GET")]
 public sealed class GitHubSettingsRequest { }
+/// <summary>保存或清除 GitHub 访问凭据。</summary>
 [Route("/dd-danmaku/api/config/github", "PUT")]
 public sealed class SaveGitHubSettingsRequest : IRequiresRequestStream
 {
+    /// <summary>包含凭据变更的 JSON 请求体。</summary>
     public Stream RequestStream { get; set; } = Stream.Null;
 }
+/// <summary>手动检查最新的正式版 DLL 更新。</summary>
 [Route("/dd-danmaku/api/updates/check", "GET")]
 public sealed class CheckGitHubUpdateRequest { }
+/// <summary>管理员提交的 GitHub 凭据变更。</summary>
+/// <param name="Token">新凭据；空值表示保留旧值。</param>
+/// <param name="ClearToken">是否明确清除现有凭据。</param>
 public sealed record GitHubSettingsBody(string? Token, bool ClearToken);
 
 public sealed partial class DanmakuApiService
 {
+    /// <summary>读取管理员 GitHub 配置，回包使用会话凭据保护。</summary>
     public Task<object> Get(GitHubSettingsRequest request) => Execute((user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -24,6 +32,7 @@ public sealed partial class DanmakuApiService
         return Task.FromResult(SecretSuccess(new { HasToken = !string.IsNullOrEmpty(plugin.Configuration.GitHubToken), Token = plugin.Configuration.GitHubToken }));
     });
 
+    /// <summary>保存或清除管理员 GitHub 访问凭据。</summary>
     public Task<object> Put(SaveGitHubSettingsRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -43,6 +52,7 @@ public sealed partial class DanmakuApiService
         }
     });
 
+    /// <summary>检查公开发行版中的 DLL 更新，不执行安装。</summary>
     public Task<object> Get(CheckGitHubUpdateRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);

@@ -31,6 +31,7 @@ public sealed class ParameterFileStore : IParameterFileStore
     }
 
 
+    /// <summary>按命名空间、键和关键词筛选用户参数。</summary>
     public async Task<IReadOnlyList<ParameterEntry>> QueryAsync(string? nameSpace, string? key, string? keyword, CancellationToken cancellationToken)
     {
         var store = await ReadAsync(cancellationToken);
@@ -44,6 +45,7 @@ public sealed class ParameterFileStore : IParameterFileStore
         return result.ToList();
     }
 
+    /// <summary>增加或替换相同命名空间和键的参数。</summary>
     public async Task<ParameterEntry> CreateAsync(ParameterEntry parameter, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -71,6 +73,7 @@ public sealed class ParameterFileStore : IParameterFileStore
         finally { _gate.Release(); }
     }
 
+    /// <summary>修改已存在参数的值与描述。</summary>
     public async Task<ParameterEntry?> UpdateAsync(string nameSpace, string key, string value, string? description, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -88,6 +91,7 @@ public sealed class ParameterFileStore : IParameterFileStore
         finally { _gate.Release(); }
     }
 
+    /// <summary>删除指定命名空间和键对应的参数。</summary>
     public async Task<bool> DeleteAsync(string nameSpace, string key, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -108,6 +112,7 @@ public sealed class ParameterFileStore : IParameterFileStore
         finally { _gate.Release(); }
     }
 
+    /// <summary>在文件锁内对参数集合执行操作并原子保存。</summary>
     public async Task<T> MutateAsync<T>(Func<List<ParameterEntry>, T> mutation, CancellationToken token)
     {
         await _gate.WaitAsync(token);

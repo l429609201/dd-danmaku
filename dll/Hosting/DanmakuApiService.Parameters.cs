@@ -25,6 +25,7 @@ public sealed partial class DanmakuApiService
         public string? UserId { get; set; }
     }
 
+    /// <summary>查询当前认证用户的参数。</summary>
     public Task<object> Get(QueryUserParameters request) => Execute(async (user, plugin, host) =>
     {
         ValidateParameterText(request.Namespace, 256);
@@ -38,8 +39,11 @@ public sealed partial class DanmakuApiService
         return ParameterResult(result);
     });
 
+    /// <summary>为当前认证用户创建参数。</summary>
     public Task<object> Post(CreateUserParameters request) => MutateParameters(request.RequestStream, "create");
+    /// <summary>更新当前认证用户的参数。</summary>
     public Task<object> Post(UpdateUserParameters request) => MutateParameters(request.RequestStream, "update");
+    /// <summary>删除当前认证用户的参数。</summary>
     public Task<object> Post(DeleteUserParameters request) => MutateParameters(request.RequestStream, "delete");
 
     private Task<object> MutateParameters(Stream stream, string operation) => Execute(async (user, plugin, host) =>

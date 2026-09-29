@@ -8,17 +8,29 @@ using MediaBrowser.Controller.Library;
 /// <summary>单个媒体库的只读旁车统计；缺失、跳过和访问失败分别计数。</summary>
 public sealed class LibraryScanRow
 {
+    /// <summary>媒体库名称。</summary>
     public string Name { get; set; } = "";
+    /// <summary>已检查的媒体数。</summary>
     public int Total { get; set; }
+    /// <summary>找到同名 XML 的媒体数。</summary>
     public int Present { get; set; }
+    /// <summary>缺少同名 XML 的媒体数。</summary>
     public int Missing { get; set; }
+    /// <summary>因路径或媒体类型限制跳过的数量。</summary>
     public int Skipped { get; set; }
+    /// <summary>检查时发生错误的数量。</summary>
     public int Errors { get; set; }
+    /// <summary>通过 XML 内容验证的文件数。</summary>
     public int Valid { get; set; }
+    /// <summary>未通过 XML 内容验证的文件数。</summary>
     public int Invalid { get; set; }
+    /// <summary>没有弹幕的 XML 文件数。</summary>
     public int Empty { get; set; }
+    /// <summary>已扫描 XML 中的弹幕总数。</summary>
     public long Comments { get; set; }
+    /// <summary>已扫描 XML 的字节数。</summary>
     public long Bytes { get; set; }
+    /// <summary>有 XML 的媒体占已检查媒体的百分比。</summary>
     public double Coverage => Present + Missing == 0 ? 0 : Math.Round(100d * Present / (Present + Missing), 1);
 }
 

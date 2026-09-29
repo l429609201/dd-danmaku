@@ -12,10 +12,12 @@ public sealed class MatchService : IMatchService
     private readonly Action<string>? _info;
     private readonly Action<string>? _warn;
 
+    /// <summary>组合规则、排序、AI 与服务端配置的匹配服务。</summary>
     public MatchService(IRuleMatcher rules, IIntelligentMatcher ranking, IAiMatchService ai,
         Func<PluginConfiguration> configuration, Action<string>? info = null, Action<string>? warn = null)
         => (_rules, _ranking, _ai, _configuration, _info, _warn) = (rules, ranking, ai, configuration, info, warn);
 
+    /// <summary>验证候选后按配置策略执行规则及 AI 匹配。</summary>
     public async Task<ResolveMatchResponse> ResolveAsync(ResolveMatchRequest request, CancellationToken cancellationToken)
     {
         MatchRequestValidator.Validate(request);

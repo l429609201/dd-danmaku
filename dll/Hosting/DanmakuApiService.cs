@@ -78,12 +78,14 @@ public sealed partial class DanmakuApiService : IService, IRequiresRequest
         catch (Exception) { return Error(500, "INTERNAL_ERROR", "插件处理请求失败"); }
     }
 
+    /// <summary>管理员读取插件配置。</summary>
     public Task<object> Get(ConfigRequest request) => Execute((user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
         return Task.FromResult(ApiHttpResult.Success(host.Configuration.Get()));
     });
 
+    /// <summary>管理员更新插件配置并核验 AI 授权用户。</summary>
     public Task<object> Put(UpdateConfigRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -101,6 +103,7 @@ public sealed partial class DanmakuApiService : IService, IRequiresRequest
         return ApiHttpResult.Success(host.Configuration.Update(config));
     });
 
+    /// <summary>管理员读取可用于授权的用户选项。</summary>
     public Task<object> Get(UserOptionsRequest request) => Execute((user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -115,12 +118,14 @@ public sealed partial class DanmakuApiService : IService, IRequiresRequest
         return Task.FromResult(ApiHttpResult.Success(items));
     });
 
+    /// <summary>管理员读取插件运行状态快照。</summary>
     public Task<object> Get(StatusRequest request) => Execute((user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
         return Task.FromResult(ApiHttpResult.Success(plugin.Service.Snapshot(plugin.Configuration)));
     });
 
+    /// <summary>返回面向当前用户的后端能力信息。</summary>
     public Task<object> Get(CapabilitiesRequest request) => Execute((user, plugin, host) =>
     {
         var ready = new BackendReadiness(ApiReady: true, LocalDanmaku: plugin.Configuration.FilePersistenceEnabled, Sidecar: true,

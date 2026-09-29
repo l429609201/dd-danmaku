@@ -5,6 +5,7 @@ public sealed class MediaSidecarPathResolver
 {
     private readonly Func<string, CancellationToken, Task<string?>> _resolvePlaybackFile;
     private readonly Func<PluginConfiguration> _configuration;
+    /// <summary>绑定已授权媒体文件解析器与插件配置。</summary>
     public MediaSidecarPathResolver(Func<string, CancellationToken, Task<string?>> resolvePlaybackFile,
         Func<PluginConfiguration> configuration)
         => (_resolvePlaybackFile, _configuration) = (resolvePlaybackFile, configuration);

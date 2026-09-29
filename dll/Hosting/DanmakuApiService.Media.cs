@@ -6,6 +6,7 @@ using DD.Danmaku.Web.Api;
 
 public sealed partial class DanmakuApiService
 {
+    /// <summary>验证候选媒体并调用后端匹配服务。</summary>
     public Task<object> Post(ResolveMatchHttpRequest request) => Execute(async (user, plugin, host) =>
     {
         var started = System.Diagnostics.Stopwatch.StartNew();
@@ -35,6 +36,7 @@ public sealed partial class DanmakuApiService
         }
     });
 
+    /// <summary>读取已授权媒体的本地弹幕 XML。</summary>
     public Task<object> Get(ReadDanmakuRequest request) => Execute(async (user, plugin, host) =>
     {
         var id = _access.RequireVideo(user, request.ItemId);
@@ -46,6 +48,7 @@ public sealed partial class DanmakuApiService
         return new ApiHttpResult(200, stream.ToArray(), "application/xml; charset=utf-8");
     });
 
+    /// <summary>管理员验证并保存媒体旁车弹幕 XML。</summary>
     public Task<object> Put(SaveDanmakuRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -60,6 +63,7 @@ public sealed partial class DanmakuApiService
         return ApiHttpResult.Success(new { Saved = true, CommentCount = comments.Count });
     });
 
+    /// <summary>管理员删除已授权媒体的弹幕文件。</summary>
     public Task<object> Delete(DeleteDanmakuRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -68,12 +72,14 @@ public sealed partial class DanmakuApiService
         return ApiHttpResult.Success(new { Deleted = true });
     });
 
+    /// <summary>查询已授权媒体及来源的播放弹幕。</summary>
     public Task<object> Get(PlaybackHttpRequest request) => Execute(async (user, plugin, host) =>
     {
         var id = _access.RequireVideo(user, request.ItemId);
         return ApiHttpResult.Success(await host.Playback.QueryAsync(id, Request.CancellationToken, request.Source));
     });
 
+    /// <summary>管理员查询已管理的弹幕记录。</summary>
     public Task<object> Get(RecordsHttpRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);

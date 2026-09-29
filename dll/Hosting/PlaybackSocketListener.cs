@@ -20,6 +20,7 @@ public sealed class PlaybackSocketListener(ISessionManager sessions, MediaBrowse
     private bool _running;
     internal static bool Available => Volatile.Read(ref _active) is not null;
 
+    /// <summary>订阅 Emby 播放事件并启动连接清理。</summary>
     public void Run()
     {
         lock (_gate)
@@ -34,6 +35,7 @@ public sealed class PlaybackSocketListener(ISessionManager sessions, MediaBrowse
         }
     }
 
+    /// <summary>处理订阅、取消订阅及心跳消息。</summary>
     public Task ProcessMessage(WebSocketMessageInfo message)
     {
         if (message.MessageType is not (PlaybackSocketProtocol.Subscribe or PlaybackSocketProtocol.Unsubscribe
@@ -132,6 +134,7 @@ public sealed class PlaybackSocketListener(ISessionManager sessions, MediaBrowse
         bound.Connection.Closed -= Closed;
         bound.Dispose();
     }
+    /// <summary>解除播放事件订阅并释放连接清理计时器。</summary>
     public void Dispose()
     {
         lock (_gate)

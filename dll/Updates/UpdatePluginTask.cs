@@ -14,6 +14,7 @@ public sealed class UpdatePluginTask : IScheduledTask
     private readonly IApplicationPaths _paths;
     private readonly ILogger _logger;
 
+    /// <summary>注入宿主服务，用于检查发行版并替换插件文件。</summary>
     public UpdatePluginTask(IApplicationHost host, IApplicationPaths paths, ILogManager logs)
     {
         _host = host;
@@ -21,11 +22,16 @@ public sealed class UpdatePluginTask : IScheduledTask
         _logger = logs.GetLogger("DD.Danmaku.Update");
     }
 
+    /// <summary>计划任务的稳定标识。</summary>
     public string Key => "DD.Danmaku.UpdatePlugin";
+    /// <summary>计划任务显示名称。</summary>
     public string Name => "自动更新 DD-Danmaku";
+    /// <summary>任务用途及安装后的操作说明。</summary>
     public string Description => "检查正式发布并更新包含管理页面及 ede.js 的 DLL，安装后需手动重启 Emby。";
+    /// <summary>计划任务所属的插件分类。</summary>
     public string Category => Plugin.PluginName;
 
+    /// <summary>为每周更新检查生成随机的默认触发时间。</summary>
     public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()
     {
         // 随机分散初次默认检查时间；用户可在 Emby 计划任务页面修改或移除触发器。
@@ -37,6 +43,7 @@ public sealed class UpdatePluginTask : IScheduledTask
         };
     }
 
+    /// <summary>执行正式版检查及安全替换，完成后通知管理员重启。</summary>
     public async Task Execute(CancellationToken cancellationToken, IProgress<double> progress)
     {
         await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);

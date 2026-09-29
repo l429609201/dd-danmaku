@@ -50,6 +50,7 @@ public sealed class SaveDanmakuRequest : IRequiresRequestStream
     public bool Overwrite { get; set; }
     /// <summary>可选弹幕来源；为空时使用媒体固定同名 XML。</summary>
     public string? Source { get; set; }
+    /// <summary>待保存弹幕 XML 的请求体。</summary>
     public Stream RequestStream { get; set; } = Stream.Null;
 }
 /// <summary>删除目标媒体旁路弹幕 XML 的请求。</summary>
@@ -80,7 +81,10 @@ public sealed class RecordsHttpRequest
     /// <summary>每页条数，服务端仍会检查允许范围。</summary>
     public int PageSize { get; set; } = 50;
     // 筛选在分页之前执行，状态指最近一次校验结果。
+    /// <summary>分页前按关键词筛选弹幕记录。</summary>
     public string? Keyword { get; set; }
+    /// <summary>分页前按来源筛选弹幕记录。</summary>
     public string? Source { get; set; }
+    /// <summary>分页前按最近校验状态筛选弹幕记录。</summary>
     public string? State { get; set; }
 }

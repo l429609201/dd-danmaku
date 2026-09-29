@@ -11,15 +11,21 @@ using MediaBrowser.Model.Services;
 [Route("/api/danmu/{Id}/raw", "GET")]
 public sealed class CompatibleDanmuRequest
 {
+    /// <summary>当前用户有权访问的媒体标识。</summary>
     public string Id { get; set; } = "";
+    /// <summary>读取 XML、JSON 或来源清单的操作类型。</summary>
     public string Option { get; set; } = "DownloadXml";
+    /// <summary>需要读取的来源名称列表。</summary>
     public List<string> NeedSites { get; set; } = [];
+    /// <summary>单来源或聚合读取模式。</summary>
     public string Mode { get; set; } = "single";
+    /// <summary>可选的单个弹幕来源名称。</summary>
     public string? Source { get; set; }
 }
 
 public sealed partial class DanmakuApiService
 {
+    /// <summary>只读兼容接口，按来源返回 XML、JSON 或来源清单。</summary>
     public Task<object> Get(CompatibleDanmuRequest request) => Execute(async (user, plugin, host) =>
     {
         var id = _access.RequireVideo(user, request.Id);

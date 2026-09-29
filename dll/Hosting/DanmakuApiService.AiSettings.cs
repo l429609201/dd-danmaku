@@ -10,6 +10,7 @@ public sealed class AiSettingsRequest { }
 [Route("/dd-danmaku/api/config/ai", "PUT")]
 public sealed class SaveAiSettingsRequest : IRequiresRequestStream
 {
+    /// <summary>AI 设置的 JSON 请求体。</summary>
     public Stream RequestStream { get; set; } = Stream.Null;
 }
 
@@ -25,6 +26,7 @@ public sealed class AiModelsRequest { }
 
 public sealed partial class DanmakuApiService
 {
+    /// <summary>管理员读取 AI 设置并保护已存凭据。</summary>
     public Task<object> Get(AiSettingsRequest request) => Execute((user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -32,12 +34,14 @@ public sealed partial class DanmakuApiService
             return Task.FromResult(SecretSuccess(AiSettingsView(plugin.Configuration)));
     });
 
+    /// <summary>使用管理员保存的端点配置列出可选 AI 模型。</summary>
     public Task<object> Get(AiModelsRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
         return ApiHttpResult.Success(new { Models = await host.GetAiModelsAsync(Request.CancellationToken) });
     });
 
+    /// <summary>验证并保存 AI 端点、模型及凭据。</summary>
     public Task<object> Put(SaveAiSettingsRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);

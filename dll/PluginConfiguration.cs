@@ -50,7 +50,9 @@ public sealed partial class PluginConfiguration : MediaBrowser.Model.Plugins.Bas
     public string[] AiAllowedUserIds { get; set; } = [];
     /// <summary>统一的 OpenAI 兼容接入；旧字段仅供升级迁移读取。</summary>
     public bool AiEndpointConfigured { get; set; }
+    /// <summary>AI 兼容服务的基础地址；为空时需使用其他接入配置。</summary>
     public string? AiBaseUrl { get; set; }
+    /// <summary>AI 兼容服务所使用的模型名称。</summary>
     public string? AiModel { get; set; }
     /// <summary>管理员补充的 AI 匹配偏好；为空时使用内置规则。</summary>
     public string? AiMatchPrompt { get; set; }

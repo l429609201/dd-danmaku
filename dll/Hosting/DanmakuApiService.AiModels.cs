@@ -17,6 +17,7 @@ public sealed record AiModelsDraft(string? BaseUrl, string? ApiKey = null,
 
 public sealed partial class DanmakuApiService
 {
+    /// <summary>使用管理员表单草稿查询模型，不修改保存的配置。</summary>
     public Task<object> Post(QueryAiModelsRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);

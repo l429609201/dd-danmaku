@@ -13,6 +13,7 @@ public sealed class ApiFacade
     private readonly Func<PluginConfiguration> _configurationProvider;
     private readonly Func<Runtime.RuntimeSnapshot> _snapshotProvider;
 
+    /// <summary>使用宿主提供的业务服务构建 API 外观层。</summary>
     public ApiFacade(
         CapabilitiesService capabilities,
         IPluginConfigurationService configuration,
@@ -31,9 +32,11 @@ public sealed class ApiFacade
 
     // 宿主组合根需显式安装匹配端点；未接入时不能假装请求成功。
     private Matching.MatchApiService? _matches;
+    /// <summary>将宿主的匹配服务安装到 API 外观层。</summary>
     public void ConfigureMatching(Matching.MatchApiService matches)
         => _matches = matches ?? throw new ArgumentNullException(nameof(matches));
 
+    /// <summary>解析匹配请求 JSON；未安装匹配服务时返回不可用状态。</summary>
     public Task<Matching.MatchHttpResult> ResolveMatchJsonAsync(
         ReadOnlyMemory<byte> utf8Body, CancellationToken cancellationToken)
         => _matches is not null ? _matches.ResolveJsonAsync(utf8Body, cancellationToken)
@@ -42,10 +45,13 @@ public sealed class ApiFacade
                     null, Guid.NewGuid().ToString("N"))));
 
 
+    /// <summary>读取当前可管理的插件配置。</summary>
     public PluginConfigDto GetConfig() => _configuration.Get();
 
+    /// <summary>更新可管理的插件配置。</summary>
     public PluginConfigDto UpdateConfig(PluginConfigDto requested) => _configuration.Update(requested);
 
+    /// <summary>查询当前插件能力及运行快照。</summary>
     public ApiResponse<CapabilitiesDto> GetCapabilities()
     {
         return new ApiResponse<CapabilitiesDto>(
@@ -53,6 +59,7 @@ public sealed class ApiFacade
             _capabilities.Create(_configurationProvider(), _snapshotProvider()), null);
     }
 
+    /// <summary>读取媒体对应的旁车弹幕。</summary>
     public async Task<ApiResponse<PlaybackQueryDto>> GetPlaybackAsync(
         string itemId, CancellationToken cancellationToken)
     {
@@ -63,6 +70,7 @@ public sealed class ApiFacade
         return new ApiResponse<PlaybackQueryDto>(true, null, null, data, null);
     }
 
+    /// <summary>记录媒体弹幕的播放结果。</summary>
     public async Task<ApiResponse<object>> PostPlaybackResultAsync(
         string itemId, PlaybackResultDto result, CancellationToken cancellationToken)
     {
@@ -73,6 +81,7 @@ public sealed class ApiFacade
         return new ApiResponse<object>(true, "播放结果已接收", null, null, null);
     }
 
+    /// <summary>获取播放记录和弹幕覆盖统计。</summary>
     public async Task<ApiResponse<IReadOnlyDictionary<string, object>>> GetStatisticsAsync(
         CancellationToken cancellationToken)
     {

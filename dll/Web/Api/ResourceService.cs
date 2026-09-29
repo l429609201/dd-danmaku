@@ -8,14 +8,17 @@ public sealed class ResourceService : IResourceService
     private readonly string? _rootPath;
 
     // 默认读取随 DLL 发布的资源，不要求额外部署 Resources 目录。
+    /// <summary>仅从 DLL 内嵌资源中读取管理页面及脚本。</summary>
     public ResourceService() { }
 
     // 保留显式目录入口，兼容原有独立使用方式。
+    /// <summary>设置内嵌资源缺失时的受限磁盘回退目录。</summary>
     public ResourceService(string rootPath)
     {
         _rootPath = Path.GetFullPath(rootPath);
     }
 
+    /// <summary>仅打开白名单内的内嵌或回退资源。</summary>
     public Task<Stream?> OpenAsync(string resourcePath, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -36,6 +39,7 @@ public sealed class ResourceService : IResourceService
         return Task.FromResult<Stream?>(stream);
     }
 
+    /// <summary>根据白名单资源的扩展名返回 MIME 类型。</summary>
     public string GetContentType(string resourcePath)
     {
         var extension = Path.GetExtension(resourcePath).ToLowerInvariant();

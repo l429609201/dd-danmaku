@@ -6,11 +6,13 @@ using MediaBrowser.Model.Services;
 [Route("/dd-danmaku/api/parameter-files/{UserId}/convert", "POST")]
 public sealed class ConvertParameterFileRequest
 {
+    /// <summary>管理待转换的旧参数所属用户标识。</summary>
     public string UserId { get; set; } = "";
 }
 
 public sealed partial class DanmakuApiService
 {
+    /// <summary>管理员将指定用户的旧参数文件转换为新格式。</summary>
     public Task<object> Post(ConvertParameterFileRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);

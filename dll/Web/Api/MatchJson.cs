@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 /// <summary>DD 新匹配协议专用，不改变 ParameterPersistence 的 PascalCase 序列化。</summary>
 public static class MatchJson
 {
+    /// <summary>严格解析匹配协议的 JSON 序列化选项。</summary>
     public static JsonSerializerOptions Options { get; } = CreateOptions();
     private static JsonSerializerOptions CreateOptions()
     {
@@ -21,6 +22,7 @@ public static class MatchJson
         return options;
     }
 
+    /// <summary>递归拒绝匹配请求内的重复 JSON 属性。</summary>
     public static void RejectDuplicateProperties(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)

@@ -11,12 +11,14 @@ public sealed class JsonDanmakuRecordStore
     private readonly JsonSerializerOptions _options = new() { PropertyNamingPolicy = null, WriteIndented = true };
     private readonly SemaphoreSlim _gate = new(1, 1);
 
+    /// <summary>在数据目录中建立弹幕记录索引路径。</summary>
     public JsonDanmakuRecordStore(string dataDirectory)
     {
         Directory.CreateDirectory(dataDirectory);
         _filePath = Path.Combine(dataDirectory, "records.json");
     }
 
+    /// <summary>从记录索引文件加载弹幕记录。</summary>
     public async Task<IReadOnlyList<DanmakuRecord>> LoadAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -24,6 +26,7 @@ public sealed class JsonDanmakuRecordStore
         finally { _gate.Release(); }
     }
 
+    /// <summary>保存整个弹幕记录索引。</summary>
     public async Task SaveAsync(IReadOnlyList<DanmakuRecord> records, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -32,6 +35,7 @@ public sealed class JsonDanmakuRecordStore
     }
 
     // 新业务使用整次读改写事务；不能将 Load/Save 分开调用当作事务。
+    /// <summary>在同一锁内读取、修改并保存记录索引。</summary>
     public async Task MutateAsync(Action<List<DanmakuRecord>> mutation, CancellationToken token)
     {
         await _gate.WaitAsync(token);

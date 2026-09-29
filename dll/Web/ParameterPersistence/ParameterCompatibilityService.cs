@@ -9,11 +9,13 @@ public sealed class ParameterCompatibilityService : IParameterCompatibilityServi
 {
     private readonly IParameterFileStore _store;
 
+    /// <summary>绑定用户参数存储。</summary>
     public ParameterCompatibilityService(IParameterFileStore store)
     {
         _store = store;
     }
 
+    /// <summary>按原参数协议筛选并返回单项或列表。</summary>
     public async Task<ParameterResponse> QueryAsync(ParameterQueryRequest request, CancellationToken cancellationToken)
     {
         var items = await _store.QueryAsync(request.Namespace, request.Key, request.Keyword, cancellationToken);
@@ -28,10 +30,12 @@ public sealed class ParameterCompatibilityService : IParameterCompatibilityServi
         return new ParameterResponse(true, DataList: items, Total: items.Count);
     }
 
+    /// <summary>批量创建参数，已有参数按原协议覆盖。</summary>
     public Task<ParameterResponse> CreateAsync(ParameterMutationRequest request,
         IReadOnlyList<ParameterItem>? items, CancellationToken cancellationToken)
         => SaveBatchAsync(request, items, false, cancellationToken);
 
+    /// <summary>仅更新已存在的参数，缺失任一目标时整批拒绝。</summary>
     public Task<ParameterResponse> UpdateAsync(ParameterMutationRequest request,
         IReadOnlyList<ParameterItem>? items, CancellationToken cancellationToken)
         => SaveBatchAsync(request, items, true, cancellationToken);
@@ -74,6 +78,7 @@ public sealed class ParameterCompatibilityService : IParameterCompatibilityServi
         }, token);
     }
 
+    /// <summary>合并单项与批量目标并删除对应参数。</summary>
     public Task<ParameterResponse> DeleteAsync(string? nameSpace, string? key,
         IReadOnlyList<string>? keys, IReadOnlyList<ParameterItem>? items, CancellationToken cancellationToken)
     {

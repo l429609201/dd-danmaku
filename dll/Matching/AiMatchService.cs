@@ -8,11 +8,15 @@ public sealed class AiMatchService : IAiMatchService
 {
     private readonly Func<PluginConfiguration> _configuration;
     private readonly IAiProvider? _provider;
+    /// <summary>使用服务端配置与可选 AI 提供者创建重排服务。</summary>
     public AiMatchService(Func<PluginConfiguration> configuration, IAiProvider? provider = null)
         => (_configuration, _provider) = (configuration, provider);
+    /// <summary>是否已启用且提供者可用。</summary>
     public bool IsAvailable => _configuration().AiEnabled && _provider?.IsAvailable == true;
+    /// <summary>用于接受 AI 重排结果的最低分数。</summary>
     public decimal MatchThreshold => Math.Clamp(_configuration().AiConfidenceThreshold, 0.85m, 1m);
 
+    /// <summary>使用 AI 对通过规则筛选的候选进行重排。</summary>
     public async Task<IReadOnlyList<CandidateAssessment>> RerankAsync(ResolveMatchRequest request,
         IReadOnlyList<CandidateAssessment> candidates, CancellationToken cancellationToken)
     {

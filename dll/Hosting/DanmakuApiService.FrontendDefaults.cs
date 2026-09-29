@@ -4,37 +4,50 @@ using DD.Danmaku.Web.Api;
 using MediaBrowser.Model.Services;
 
 // 管理接口与当前用户读取接口分离，普通用户不能指定其他用户身份。
+/// <summary>当前用户读取生效的播放器默认参数。</summary>
 [Route("/dd-danmaku/api/frontend-defaults", "GET")]
 public sealed class EffectiveFrontendDefaultsRequest { }
+/// <summary>管理员读取全局播放器默认参数。</summary>
 [Route("/dd-danmaku/api/config/frontend-defaults", "GET")]
 public sealed class GlobalFrontendDefaultsRequest { }
+/// <summary>管理员保存全局播放器默认参数。</summary>
 [Route("/dd-danmaku/api/config/frontend-defaults", "PUT")]
 public sealed class SaveGlobalFrontendDefaultsRequest : IRequiresRequestStream
 {
+    /// <summary>待保存参数的 JSON 请求体。</summary>
     public Stream RequestStream { get; set; } = Stream.Null;
 }
+/// <summary>管理员读取指定用户的播放器默认参数。</summary>
 [Route("/dd-danmaku/api/config/frontend-defaults/users/{UserId}", "GET")]
 public sealed class UserFrontendDefaultsRequest
 {
+    /// <summary>待查询用户的标识。</summary>
     public string UserId { get; set; } = "";
 }
+/// <summary>管理员保存指定用户的播放器默认参数。</summary>
 [Route("/dd-danmaku/api/config/frontend-defaults/users/{UserId}", "PUT")]
 public sealed class SaveUserFrontendDefaultsRequest : IRequiresRequestStream
 {
+    /// <summary>待保存用户的标识。</summary>
     public string UserId { get; set; } = "";
+    /// <summary>待保存参数的 JSON 请求体。</summary>
     public Stream RequestStream { get; set; } = Stream.Null;
 }
+/// <summary>管理员重置指定用户的播放器默认参数。</summary>
 [Route("/dd-danmaku/api/config/frontend-defaults/users/{UserId}", "DELETE")]
 public sealed class ResetUserFrontendDefaultsRequest
 {
+    /// <summary>待重置用户的标识。</summary>
     public string UserId { get; set; } = "";
 }
 
 public sealed partial class DanmakuApiService
 {
+    /// <summary>读取当前用户生效的播放器默认参数。</summary>
     public Task<object> Get(EffectiveFrontendDefaultsRequest request) => Execute(async (user, plugin, host) =>
         ApiHttpResult.Success(await DefaultView(plugin, user.Id)));
 
+    /// <summary>读取管理员设置的全局播放器默认参数。</summary>
     public Task<object> Get(GlobalFrontendDefaultsRequest request) => Execute((user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -42,13 +55,16 @@ public sealed partial class DanmakuApiService
             return Task.FromResult(ApiHttpResult.Success((plugin.Configuration.GlobalFrontendDefaults ?? new()).Copy()));
     });
 
+    /// <summary>管理员读取指定用户的播放器默认参数。</summary>
     public Task<object> Get(UserFrontendDefaultsRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
         return ApiHttpResult.Success(await DefaultView(plugin, DefaultUserId(request.UserId, true)));
     });
 
+    /// <summary>管理员保存全局播放器默认参数。</summary>
     public Task<object> Put(SaveGlobalFrontendDefaultsRequest request) => SaveDefaults(request.RequestStream, null);
+    /// <summary>管理员保存指定用户的播放器默认参数。</summary>
     public Task<object> Put(SaveUserFrontendDefaultsRequest request) => SaveDefaults(request.RequestStream, request.UserId);
 
     private Task<object> SaveDefaults(Stream stream, string? userId) => Execute(async (user, plugin, host) =>
@@ -73,6 +89,7 @@ public sealed partial class DanmakuApiService
         return ApiHttpResult.Success(new { Saved = true });
     });
 
+    /// <summary>管理员重置指定用户的播放器默认参数。</summary>
     public Task<object> Delete(ResetUserFrontendDefaultsRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);

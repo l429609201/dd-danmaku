@@ -116,6 +116,7 @@ public sealed record PlaybackResultDto(
 /// <param name="ResultLimit">最多返回的候选数量。</param>
 /// <param name="NumberingContext">调用方声明的编号映射上下文。</param>
 /// <param name="CandidatesTruncated">候选是否已被调用方截断。</param>
+/// <param name="SelectionScope">选择作品或分集的匹配范围。</param>
 public sealed record ResolveMatchRequest(
     string Mode,
     TargetMediaDto? Target,

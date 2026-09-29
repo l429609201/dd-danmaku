@@ -3,19 +3,28 @@ namespace DD.Danmaku.Hosting;
 using DD.Danmaku.Web.Api;
 using MediaBrowser.Model.Services;
 
+/// <summary>媒体库的可选扫描范围。</summary>
+/// <param name="Id">媒体库标识。</param>
+/// <param name="Name">媒体库名称。</param>
 public sealed record LibraryOption(string Id, string Name);
+/// <summary>要扫描的媒体库标识列表；空列表表示全部。</summary>
+/// <param name="LibraryIds">媒体库标识列表。</param>
 public sealed record ScanScopeBody(string[] LibraryIds);
 // 扫描范围不使用 dashboard 子路径，避免宿主返回旧网页迁移 HTML。
+/// <summary>读取扫描范围的请求。</summary>
 [Route("/dd-danmaku/api/library-scan/scope", "GET")]
 public sealed class ScanScopeRequest { }
+/// <summary>保存扫描范围的请求。</summary>
 [Route("/dd-danmaku/api/library-scan/scope", "PUT")]
 public sealed class SaveScanScopeRequest : IRequiresRequestStream
 {
+    /// <summary>包含媒体库列表的 JSON 请求体。</summary>
     public Stream RequestStream { get; set; } = Stream.Null;
 }
 
 public sealed partial class DanmakuApiService
 {
+    /// <summary>管理员查询媒体库扫描范围和可选媒体库。</summary>
     public Task<object> Get(ScanScopeRequest request) => Execute((user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -25,6 +34,7 @@ public sealed partial class DanmakuApiService
         }));
     });
 
+    /// <summary>管理员保存已验证的媒体库扫描范围。</summary>
     public Task<object> Put(SaveScanScopeRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);

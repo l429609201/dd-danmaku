@@ -14,12 +14,16 @@ public sealed record PluginConfigDto(
     string? MatchStrategy = null,
     bool? AllowMatchFallback = null);
 
+/// <summary>对插件配置进行读取与更新的业务接口。</summary>
 public interface IPluginConfigurationService
 {
+    /// <summary>获取当前可管理的配置。</summary>
     PluginConfigDto Get();
+    /// <summary>更新可管理的配置并返回生效值。</summary>
     PluginConfigDto Update(PluginConfigDto requested);
 }
 
+/// <summary>通过宿主配置对象读写插件设置。</summary>
 public sealed class PluginConfigurationService : IPluginConfigurationService
 {
     private readonly Func<PluginConfiguration> _getConfiguration;
@@ -29,12 +33,14 @@ public sealed class PluginConfigurationService : IPluginConfigurationService
     private object _gate => ConfigurationGate;
 
     // 保留业务层独立使用方式；宿主必须使用带 getter/saver 的构造函数。
+    /// <summary>使用单一配置对象构建不持久化的业务服务。</summary>
     public PluginConfigurationService(PluginConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         _getConfiguration = () => configuration;
     }
 
+    /// <summary>使用宿主的配置读取与保存委托构建持久化服务。</summary>
     public PluginConfigurationService(Func<PluginConfiguration> getConfiguration,
         Action<PluginConfiguration> saveConfiguration)
     {
@@ -42,11 +48,13 @@ public sealed class PluginConfigurationService : IPluginConfigurationService
         _saveConfiguration = saveConfiguration ?? throw new ArgumentNullException(nameof(saveConfiguration));
     }
 
+    /// <summary>获取当前可管理的插件配置。</summary>
     public PluginConfigDto Get()
     {
         lock (_gate) return ToDto(_getConfiguration());
     }
 
+    /// <summary>校验输入并保存管理员提交的插件设置。</summary>
     public PluginConfigDto Update(PluginConfigDto requested)
     {
         ArgumentNullException.ThrowIfNull(requested);

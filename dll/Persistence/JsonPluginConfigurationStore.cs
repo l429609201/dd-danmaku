@@ -11,12 +11,14 @@ public sealed class JsonPluginConfigurationStore
     private readonly JsonSerializerOptions _options = new() { PropertyNamingPolicy = null, WriteIndented = true };
     private readonly SemaphoreSlim _gate = new(1, 1);
 
+    /// <summary>在指定目录创建独立 JSON 配置文件。</summary>
     public JsonPluginConfigurationStore(string configurationDirectory)
     {
         Directory.CreateDirectory(configurationDirectory);
         _filePath = Path.Combine(configurationDirectory, "DD.Danmaku.json");
     }
 
+    /// <summary>读取已保存配置；文件不存在时返回默认配置。</summary>
     public async Task<PluginConfiguration> LoadAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -30,6 +32,7 @@ public sealed class JsonPluginConfigurationStore
         finally { _gate.Release(); }
     }
 
+    /// <summary>保存配置到临时文件后替换旧文件。</summary>
     public async Task SaveAsync(PluginConfiguration configuration, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);

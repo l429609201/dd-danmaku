@@ -11,8 +11,11 @@ public sealed class OpenAiCompatibleProvider : IAiProvider, IDisposable
     // 禁止自动重定向，避免向另一主机发送匹配内容或凭据。
     private readonly HttpClient _client = new(new HttpClientHandler { AllowAutoRedirect = false })
     { Timeout = Timeout.InfiniteTimeSpan };
+    /// <summary>使用服务端配置创建不自动重定向的 AI 客户端。</summary>
     public OpenAiCompatibleProvider(Func<PluginConfiguration> configuration) => _configuration = configuration;
+    /// <summary>兼容提供者的标识名称。</summary>
     public string Name => "openai-compatible";
+    /// <summary>是否存在可用的服务端 AI 端点。</summary>
     public bool IsAvailable => GetEndpoint(_configuration()) is not null;
 
     private sealed record Endpoint(Uri BaseUrl, string Model, string? Key);
@@ -33,6 +36,7 @@ public sealed class OpenAiCompatibleProvider : IAiProvider, IDisposable
         return new UriBuilder(baseUrl) { Path = path + "/" + (responses ? "responses" : "chat/completions"), Query = "", Fragment = "" }.Uri;
     }
 
+    /// <summary>向兼容端点请求结构化的匹配结果。</summary>
     public async Task<string> CompleteStructuredAsync(string prompt, CancellationToken cancellationToken)
     {
         var config = _configuration();
@@ -196,5 +200,6 @@ public sealed class OpenAiCompatibleProvider : IAiProvider, IDisposable
     }
     private static MatchRequestException InvalidResponse()
         => new("AI 上游响应格式无效或超出大小限制", "AI_INVALID_RESPONSE", 502);
+    /// <summary>释放上游 AI 请求使用的 HTTP 客户端。</summary>
     public void Dispose() => _client.Dispose();
 }

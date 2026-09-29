@@ -6,18 +6,31 @@ using System.Text.Json;
 public sealed partial class FrontendDefaults
 {
     // 本地读取由 DLL 播放策略控制，不下发旧 XML 开关。
+    /// <summary>是否启用弹弹 Play 官方接口。</summary>
     public bool? UseOfficialApi { get; set; }
+    /// <summary>是否启用自定义弹幕接口。</summary>
     public bool? UseCustomApi { get; set; }
+    /// <summary>是否启用自定义接口的匹配 API。</summary>
     public bool? MatchApiEnable { get; set; }
+    /// <summary>搜索文件名时是否拼接季集号。</summary>
     public bool? AppendSeasonEpisode { get; set; }
+    /// <summary>前端搜索所使用的匹配模式。</summary>
     public string? MatchMode { get; set; }
+    /// <summary>自定义弹幕来源列表的 JSON 文本。</summary>
     public string? CustomApiList { get; set; }
+    /// <summary>官方与自定义接口优先级的 JSON 数组。</summary>
     public string? ApiPriority { get; set; }
+    /// <summary>自定义 API 的基础地址。</summary>
     public string? CustomApiPrefix { get; set; }
+    /// <summary>自定义跨域代理地址。</summary>
     public string? CustomeCorsProxyUrl { get; set; }
+    /// <summary>普通弹幕请求的自定义地址模板。</summary>
     public string? CustomeGetCommentUrl { get; set; }
+    /// <summary>扩展弹幕请求的自定义地址模板。</summary>
     public string? CustomeGetExtcommentUrl { get; set; }
+    /// <summary>海报请求的自定义地址模板。</summary>
     public string? CustomePosterImgUrl { get; set; }
+    /// <summary>弹幕请求的自定义地址模板。</summary>
     public string? CustomeDanmakuUrl { get; set; }
 
     private void ValidateApi()

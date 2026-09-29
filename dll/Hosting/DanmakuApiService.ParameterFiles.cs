@@ -4,18 +4,25 @@ using DD.Danmaku.Persistence;
 using DD.Danmaku.Web.Api;
 using MediaBrowser.Model.Services;
 
+/// <summary>管理员列出已有用户参数文件。</summary>
 [Route("/dd-danmaku/api/parameter-files", "GET")]
 public sealed class ParameterFilesRequest { }
+/// <summary>管理员读取、保存或清空指定用户的参数文件。</summary>
 [Route("/dd-danmaku/api/parameter-files/{UserId}", "GET,PUT,DELETE")]
 public sealed class ParameterFileRequest : IRequiresRequestStream
 {
+    /// <summary>参数文件所属用户的标识。</summary>
     public string UserId { get; set; } = "";
+    /// <summary>保存参数时提交的 JSON 请求体。</summary>
     public Stream RequestStream { get; set; } = Stream.Null;
 }
+/// <summary>管理员从指定用户复制可共享的参数。</summary>
 [Route("/dd-danmaku/api/parameter-files/{UserId}/copy", "POST")]
 public sealed class CopyParameterFileRequest : IRequiresRequestStream
 {
+    /// <summary>源参数文件所属用户的标识。</summary>
     public string UserId { get; set; } = "";
+    /// <summary>目标用户及覆盖选项的 JSON 请求体。</summary>
     public Stream RequestStream { get; set; } = Stream.Null;
 }
 
@@ -33,6 +40,7 @@ public sealed partial class DanmakuApiService
         public bool Overwrite { get; set; }
     }
 
+    /// <summary>列出已有参数文件及其更新时间。</summary>
     public Task<object> Get(ParameterFilesRequest request) => Execute((user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -48,6 +56,7 @@ public sealed partial class DanmakuApiService
         return Task.FromResult(ApiHttpResult.Success(files));
     });
 
+    /// <summary>读取指定用户参数并保护敏感字段。</summary>
     public Task<object> Get(ParameterFileRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -58,6 +67,7 @@ public sealed partial class DanmakuApiService
             x.Value, Sensitive = ParameterPrivacy.IsSensitive(x.Key), HasValue = !string.IsNullOrEmpty(x.Value) }));
     });
 
+    /// <summary>验证输入并原子更新指定用户参数。</summary>
     public Task<object> Put(ParameterFileRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -98,6 +108,7 @@ public sealed partial class DanmakuApiService
         return ApiHttpResult.Success(new { Saved = true });
     });
 
+    /// <summary>清空用户参数并保留阻止旧文件回退的存储屏障。</summary>
     public Task<object> Delete(ParameterFileRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -107,6 +118,7 @@ public sealed partial class DanmakuApiService
         return ApiHttpResult.Success(new { Deleted = true });
     });
 
+    /// <summary>复制可共享参数，跳过不允许复制的敏感字段。</summary>
     public Task<object> Post(CopyParameterFileRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);

@@ -3,10 +3,15 @@ namespace DD.Danmaku;
 /// <summary>类型和来源等常用默认值，不包含个人凭据。</summary>
 public sealed partial class FrontendDefaults
 {
+    /// <summary>按弹幕类型屏蔽的类型列表；空值继承上级配置。</summary>
     public string[]? TypeFilter { get; set; }
+    /// <summary>按来源屏蔽的来源列表。</summary>
     public string[]? SourceFilter { get; set; }
+    /// <summary>需要显示来源标识的来源列表。</summary>
     public string[]? ShowSource { get; set; }
+    /// <summary>顶部弹幕转换后的显示方式。</summary>
     public string? ConvertTopTo { get; set; }
+    /// <summary>底部弹幕转换后的显示方式。</summary>
     public string? ConvertBottomTo { get; set; }
 
     private void ValidateFilters()

@@ -68,6 +68,7 @@ public sealed partial class DanmakuApiService
             throw new ApiAccessException(409, "XML_READ_DISABLED", "服务器 XML 读取未启用");
     }
 
+    /// <summary>管理员查看已授权弹幕记录的详情。</summary>
     public Task<object> Get(RecordDetailRequest request) => Execute(async (user, plugin, host) =>
     {
         RequireRecordRead(user, plugin);
@@ -81,6 +82,7 @@ public sealed partial class DanmakuApiService
         return ApiHttpResult.Success(new { MediaPath = mediaPath, Detail = detail });
     });
 
+    /// <summary>管理员校验记录关联的旁车文件。</summary>
     public Task<object> Post(VerifyRecordRequest request) => Execute(async (user, plugin, host) =>
     {
         RequireRecordRead(user, plugin);
@@ -88,6 +90,7 @@ public sealed partial class DanmakuApiService
             id => _access.RequireVideo(user, id), Request.CancellationToken));
     });
 
+    /// <summary>管理员移除记录索引或同时删除关联文件。</summary>
     public Task<object> Delete(RemoveRecordRequest request) => Execute(async (user, plugin, host) =>
     {
         EmbyAccessControl.RequireAdministrator(user);
@@ -97,6 +100,7 @@ public sealed partial class DanmakuApiService
             id => _access.RequireVideo(user, id), Request.CancellationToken));
     });
 
+    /// <summary>管理员下载已授权记录的 XML 弹幕。</summary>
     public Task<object> Get(DownloadRecordRequest request) => Execute(async (user, plugin, host) =>
     {
         RequireRecordRead(user, plugin);
