@@ -12,14 +12,19 @@ internal sealed partial class LocalPlaybackService(MediaSidecarPathResolver path
     private readonly DanmakuFileService _files = new();
 
     internal async Task SaveAsync(string id, IReadOnlyList<DanmakuComment> comments, CancellationToken token,
-        bool overwrite = false, string? source = null)
+        bool overwrite = false, string? source = null, DanmakuXmlMetadata? metadata = null,
+        Action? authorize = null)
     {
         await _gate.WaitAsync(token);
         try
         {
-            // 单次解析路径；新建模式最终由文件系统拒绝覆盖，不能仅依赖预检查。
+            // 获取锁后重新检查在途请求的权限，落盘前由文件服务再次复查。
+            authorize?.Invoke();
             var path = await RequirePathAsync(id, token, source);
-            try { await _files.SaveAsync(path, comments, token, overwrite); }
+            // 媒体与来源由已授权参数统一确定，不能由上传 XML 改写本地绑定。
+            var writeMetadata = (metadata ?? new DanmakuXmlMetadata()) with
+            { EmbyItemId = id, SourceId = NormalizeSource(source) };
+            try { await _files.SaveWithMetadataAsync(path, comments, token, overwrite, writeMetadata, authorize); }
             catch (IOException) when (!overwrite && File.Exists(path))
             { throw new ApiAccessException(409, "XML_EXISTS", "已有 XML 弹幕，覆盖需要管理员明确确认"); }
             try
@@ -32,9 +37,17 @@ internal sealed partial class LocalPlaybackService(MediaSidecarPathResolver path
                         && string.Equals(JsonDanmakuRecordStore.GetEffectiveSource(r), normalizedSource, StringComparison.Ordinal));
                     var now = DateTimeOffset.UtcNow;
                     var recordId = normalizedSource is null ? id : id + "|" + normalizedSource;
-                    var record = new DanmakuRecord(recordId, id, null, null, normalizedSource, comments.Count, null,
+                    // 来源作品/集 ID 与来源一起入索引，不能与 Emby ItemId 混用。
+                    var record = new DanmakuRecord(recordId, id, writeMetadata.SourceAnimeId,
+                        writeMetadata.SourceEpisodeId, normalizedSource, comments.Count, null,
                         index < 0 ? now : items[index].StoredAt, now, null, null, false, null,
-                        "none", "sidecar", 1);
+                        "none", "sidecar", 1)
+                    {
+                        OwnerUserId = writeMetadata.OwnerUserId, OwnerUserName = writeMetadata.OwnerUserName,
+                        UpdatedByUserId = writeMetadata.UpdatedByUserId, WriteMethod = writeMetadata.WriteMethod,
+                        FetchedAt = writeMetadata.FetchedAt, SeasonNumber = writeMetadata.SeasonNumber,
+                        EpisodeNumber = writeMetadata.EpisodeNumber
+                    };
                     if (index < 0) items.Add(record); else items[index] = record;
                 }, token);
             }
@@ -147,6 +160,20 @@ internal sealed partial class LocalPlaybackService(MediaSidecarPathResolver path
                         items.Add(new DanmakuRecord(recordId, entry.ItemId, null, null, entry.Source,
                             entry.Count ?? 0, null, started, started, null, null, false, null,
                             entry.Count is null ? "scan-unverified" : entry.IsCanonical ? "none" : "scan-noncanonical", "sidecar", 1));
+                    }
+                    // 扫描不将 XML 声称的所有者转成授权；这里只同步展示信息及来源配对。
+                    if (entry.Metadata is { } metadata)
+                    {
+                        var position = positions[key];
+                        var sameSource = string.Equals(metadata.SourceId, entry.Source, StringComparison.Ordinal);
+                        items[position] = items[position] with
+                        {
+                            AnimeId = sameSource ? metadata.SourceAnimeId : null,
+                            EpisodeId = sameSource ? metadata.SourceEpisodeId : null,
+                            UpdatedByUserId = metadata.UpdatedByUserId, WriteMethod = metadata.WriteMethod,
+                            FetchedAt = metadata.FetchedAt, SeasonNumber = metadata.SeasonNumber,
+                            EpisodeNumber = metadata.EpisodeNumber
+                        };
                     }
                 }
                 // 存储层统一校验容量并原子写入；超限抛错，扫描不能伪报完成。

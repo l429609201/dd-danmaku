@@ -7,6 +7,7 @@ using MediaBrowser.Model.Services;
 /// <summary>固定 JSON 字段和缓存策略，避免宿主序列化器改变无状态匹配协议。</summary>
 internal sealed class ApiHttpResult(int status, byte[] body, string contentType) : IAsyncStreamWriter
 {
+    internal int StatusCode => status;
     internal static ApiHttpResult Json<T>(T data, int status = 200)
         => new(status, JsonSerializer.SerializeToUtf8Bytes(data, MatchJson.Options), "application/json; charset=utf-8");
     internal static ApiHttpResult Success<T>(T data)

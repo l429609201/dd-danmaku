@@ -36,7 +36,14 @@ public sealed partial class DanmakuApiService
         if (request.Source is not null && request.NeedSites is { Count: > 0 })
             throw new ArgumentException("Source 与 NeedSites 不能同时使用");
         var explicitSources = request.Source is not null || request.NeedSites is { Count: > 0 };
-        var sources = request.Source is not null ? new[] { request.Source.Trim() }
+        // 默认单来源播放才应用本人选择；来源列表和显式聚合仍保持共享查询语义。
+        Web.Api.PlaybackQueryDto? preferred = null;
+        if (!explicitSources && request.Mode == "single" && request.Option != "select"
+            && plugin.Configuration.FilePersistenceEnabled && plugin.Configuration.FilePersistenceReadEnabled
+            && await host.Selections.FindAsync(user.Id.ToString("N"), id, Request.CancellationToken) is not null)
+            preferred = await QueryUserPlaybackAsync(id, null, user, plugin, host);
+        var sources = preferred?.StorageLocation == "temporary" ? new[] { preferred.Source ?? "" }
+            : request.Source is not null ? new[] { request.Source.Trim() }
             : request.NeedSites is { Count: > 0 } ? request.NeedSites.Select(s => s?.Trim() ?? "").Distinct(StringComparer.Ordinal).ToArray()
             : (await host.Playback.GetSourcesAsync(id, Request.CancellationToken)).Append("").ToArray();
         if (sources.Any(s => s.Length > 64 || s.Any(c => char.IsControl(c) || "<>:\"/\\|?*".Contains(c))))
@@ -49,7 +56,9 @@ public sealed partial class DanmakuApiService
         foreach (var source in sources)
         {
             Web.Api.PlaybackQueryDto playback;
-            try { playback = await host.Playback.QueryAsync(id, Request.CancellationToken, source); }
+            try { playback = preferred?.StorageLocation == "temporary" ? preferred
+                : request.Option == "select" ? await host.Playback.QueryAsync(id, Request.CancellationToken, source)
+                : await QuerySharedPlaybackAsync(id, source, user, plugin, host); }
             catch (Exception error) when (!explicitSources && request.Mode == "single"
                 && request.Option != "select" && error is IOException or UnauthorizedAccessException)
             {

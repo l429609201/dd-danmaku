@@ -26,7 +26,7 @@ const sections = [
   { id: 'settings', label: '插件设置', icon: Setting, component: PluginSettings },
   { id: 'ai', label: 'AI 服务', icon: Connection, component: AiServicePanel },
   // 默认值与完整参数统一入口，避免两个顶级菜单造成重复配置的误解。
-  { id: 'parameters', label: '参数设置', icon: Files, component: ParameterSettingsPanel },
+  { id: 'parameters', label: '用户配置', icon: Files, component: ParameterSettingsPanel },
   { id: 'records', label: '弹幕记录', icon: VideoPlay, component: RecordsPanel },
   { id: 'matching', label: '媒体匹配', icon: Connection, component: MatchingPanel },
 ]

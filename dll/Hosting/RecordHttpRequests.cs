@@ -40,3 +40,13 @@ public sealed class DownloadRecordRequest
     /// <summary>记录标识。</summary>
     public string RecordId { get; set; } = "";
 }
+
+/// <summary>按明确勾选的记录执行有限批量操作，不接受文件路径。</summary>
+[Route("/dd-danmaku/api/records/batch", "POST")]
+public sealed class BatchRecordsRequest
+{
+    /// <summary>每批最多 100 个记录标识。</summary>
+    public List<string> RecordIds { get; set; } = [];
+    /// <summary>操作：verify、normalize、remove、delete。</summary>
+    public string Action { get; set; } = "";
+}

@@ -2,13 +2,19 @@
 import { onMounted, onBeforeUnmount, reactive, ref } from 'vue'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { api } from './api.js'
+import RecordBatchToolbar from './RecordBatchToolbar.vue'
+import SelectionRecordsPanel from './SelectionRecordsPanel.vue'
+import SharedUploadControl from './SharedUploadControl.vue'
 const rows = ref([]), loading = ref(false), error = ref(''), page = ref(1), total = ref(0)
 const drawer = ref(false), selected = ref(null), detail = ref(null), detailLoading = ref(false), busy = ref(false)
-const filters = reactive({ keyword: '', source: '', state: '' })
-const states = { unverified: '未校验', 'scan-noncanonical': '需规范化', noncanonical: '需规范化', valid: '有效', empty: '空弹幕', invalid: '异常 / 不可读', missing: 'XML 缺失', unlinked: '媒体失联 / 不可访问' }
+const table = ref(null), checked = ref([])
+const filters = reactive({ keyword: '', source: '', state: '', mediaType: '' })
+const mediaTypes = { movie: '电影', episode: '剧集', other: '其他视频', unlinked: '未关联' }
+const states = { unverified: '未校验', noncanonical: '需规范化', valid: '有效', empty: '空弹幕', invalid: '异常 / 不可读', missing: 'XML 缺失', unlinked: '媒体失联 / 不可访问' }
 let listRequest, detailRequest
-// 取消上一请求，避免快速翻页或切换详情后旧响应覆盖新选择。
+// 翻页、刷新、筛选时清空选择，禁止隐式跨页操作；旧请求不能覆盖新列表。
 async function load() {
+  checked.value = []; table.value?.clearSelection()
   listRequest?.abort(); const controller = listRequest = new AbortController()
   loading.value = true; error.value = ''
   try {
@@ -19,8 +25,14 @@ async function load() {
   } catch (e) { if (!controller.signal.aborted) error.value = e.message }
   finally { if (listRequest === controller) loading.value = false }
 }
-function search() { page.value = 1; load() }
-function closeDetail() { detailRequest?.abort(); detailLoading.value = false }
+function search() { if (busy.value) return; page.value = 1; load() }
+// 重置同时移除可选季号，避免界面清空后请求仍携带旧筛选。
+function reset() { delete filters.seasonNumber; Object.assign(filters, { keyword: '', source: '', state: '', mediaType: '' }); search() }
+function batchDone() { closeDetail(); drawer.value = false; load() }
+function closeDetail() {
+  // 关闭或切换详情时卸载上传控件，撤销尚未确认的提交。
+  detailRequest?.abort(); detailLoading.value = false; selected.value = null
+}
 async function show(row) {
   closeDetail(); selected.value = row; detail.value = null; drawer.value = true
   if (!row.available) return
@@ -57,6 +69,7 @@ async function act(row, action) {
       })
       const data = await api.normalizeRecord(row.recordId)
       ElMessage.success(`规范化完成：${data.commentCount ?? 0} 条弹幕`)
+      if (drawer.value && selected.value?.recordId === row.recordId) await show(row)
     } else { await api.downloadRecord(row.recordId); return }
     await load()
   } catch (e) { if (e !== 'cancel' && e !== 'close') error.value = e.message || '操作失败' }
@@ -67,24 +80,30 @@ onMounted(load)
 onBeforeUnmount(() => { listRequest?.abort(); closeDetail() })
 </script>
 <template>
+  <SelectionRecordsPanel />
   <section class="panel"><el-card shadow="never">
-    <template #header><div class="panel-head"><strong>弹幕记录管理</strong><el-button :loading="loading" @click="load">刷新</el-button></div></template>
+    <template #header><div class="panel-head"><strong>弹幕记录管理</strong><el-button :disabled="busy" :loading="loading" @click="load">刷新</el-button></div></template>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
-    <el-form class="filters" label-position="top" @submit.prevent="search">
+    <el-form class="filters" label-position="top" :disabled="busy" @submit.prevent="search">
       <el-form-item label="媒体名称 / 季集 / 媒体库 / ID"><el-input v-model="filters.keyword" clearable placeholder="搜索对应电影或剧集" maxlength="200" /></el-form-item>
       <el-form-item label="来源"><el-input v-model="filters.source" clearable placeholder="按来源搜索" maxlength="64" /></el-form-item>
-      <el-form-item label="最近校验状态"><el-select v-model="filters.state" clearable placeholder="全部"><el-option v-for="(label, key) in states" :key="key" :value="key" :label="label" /></el-select></el-form-item>
-      <el-button type="primary" native-type="submit">查询</el-button>
+      <el-form-item label="媒体类型"><el-select v-model="filters.mediaType" clearable placeholder="全部"><el-option v-for="(label, key) in mediaTypes" :key="key" :value="key" :label="label" /></el-select></el-form-item>
+      <el-form-item label="最近校验状态"><el-select v-model="filters.state" clearable placeholder="全部"><el-option value="abnormal" label="异常汇总（不可读 / 缺失 / 失联）" /><el-option v-for="(label, key) in states" :key="key" :value="key" :label="label" /></el-select></el-form-item>
+      <!-- 季编号由后端按 Emby 元数据过滤；清空时不限制季，0 表示特别篇。 -->
+      <el-form-item label="季编号（0 为特别篇）"><el-input-number :model-value="filters.seasonNumber" :min="0" :precision="0" placeholder="全部季" @update:model-value="value => { if (value == null) delete filters.seasonNumber; else filters.seasonNumber = value }" /></el-form-item>
+      <el-button type="primary" native-type="submit">查询</el-button><el-button @click="reset">重置</el-button>
     </el-form>
-    <p class="muted">按媒体与来源管理；条数及列表状态是最近一次扫描 / 校验结果，文件变化后请重新校验。</p>
-    <el-table :data="rows" v-loading="loading" stripe>
-      <el-table-column label="对应媒体" min-width="260"><template #default="{ row }"><strong>{{ row.title }}</strong><div>{{ row.episode }}</div><small class="muted">{{ row.library || '未关联媒体库' }}</small></template></el-table-column>
+    <p class="muted">按媒体与来源管理；状态是最近一次扫描 / 校验结果。表头可全选当前页，翻页或刷新会清空选择，不跨页批量。</p>
+    <RecordBatchToolbar :rows="checked" :disabled="busy || loading" @busy="busy = $event" @done="batchDone" @clear="table?.clearSelection()" />
+    <el-table ref="table" :data="rows" row-key="recordId" v-loading="loading" stripe @selection-change="checked = $event">
+      <el-table-column type="selection" width="48" :selectable="() => !busy && !loading" />
+      <el-table-column label="对应媒体" min-width="260"><template #default="{ row }"><strong>{{ row.title }}</strong><div>{{ row.episode }}</div><small class="muted">{{ mediaTypes[row.mediaType] || '其他' }} · {{ row.library || '未关联媒体库' }}</small></template></el-table-column>
       <el-table-column label="来源" min-width="130"><template #default="{ row }">{{ row.source || '未标注来源' }}</template></el-table-column>
       <el-table-column label="状态 / 条数" min-width="160"><template #default="{ row }"><el-tag :type="row.state === 'valid' ? 'success' : 'warning'">{{ states[row.state] || row.state }}</el-tag><div>{{ row.commentCount == null ? '条数未知' : `${row.commentCount} 条` }}</div></template></el-table-column>
       <el-table-column label="更新时间" min-width="175"><template #default="{ row }">{{ time(row.updatedAt) }}</template></el-table-column>
-      <el-table-column label="操作" min-width="210"><template #default="{ row }"><div class="actions"><el-button @click="show(row)">管理详情</el-button><el-button :disabled="!row.available" @click="openMedia(row)">打开媒体</el-button></div></template></el-table-column>
+      <el-table-column label="操作" min-width="210"><template #default="{ row }"><div class="actions"><el-button :disabled="busy" @click="show(row)">管理详情</el-button><el-button :disabled="!row.available" @click="openMedia(row)">打开媒体</el-button></div></template></el-table-column>
     </el-table>
-    <el-pagination v-model:current-page="page" :page-size="20" :total="total" layout="total, prev, pager, next" @current-change="load" />
+    <el-pagination v-model:current-page="page" :disabled="busy || loading" :page-size="20" :total="total" layout="total, prev, pager, next" @current-change="load" />
   </el-card>
   <el-drawer v-model="drawer" title="弹幕管理详情" size="680px" @close="closeDetail">
     <template v-if="selected">
@@ -94,6 +113,12 @@ onBeforeUnmount(() => { listRequest?.abort(); closeDetail() })
         <el-descriptions-item label="媒体库">{{ selected.library || '未关联' }}</el-descriptions-item>
         <el-descriptions-item label="媒体 ID">{{ selected.itemId }}</el-descriptions-item>
         <el-descriptions-item label="来源">{{ selected.source || '未标注来源（同名 XML）' }}</el-descriptions-item>
+        <!-- 旧文件没有归属与时间信息时明确显示未知，不推断保存者。 -->
+        <el-descriptions-item label="文件所有者">{{ selected.ownerUserName || selected.ownerUserId || '未记录个人归属' }}</el-descriptions-item>
+        <el-descriptions-item label="最近更新者">{{ selected.updatedByUserId || '未知' }}</el-descriptions-item>
+        <el-descriptions-item label="写入方式">{{ ({ upload: '上传', normalize: '格式规范化', auto: '自动保存', merge: '合并' })[selected.writeMethod] || selected.writeMethod || '未知' }}</el-descriptions-item>
+        <el-descriptions-item label="来源作品 / 集 ID">{{ selected.sourceAnimeId || '未知' }} / {{ selected.sourceEpisodeId || '未知' }}</el-descriptions-item>
+        <el-descriptions-item label="内容获取时间">{{ time(selected.fetchedAt) }}</el-descriptions-item>
         <el-descriptions-item label="媒体位置"><span class="path">{{ detail?.mediaPath || '暂不可用' }}</span></el-descriptions-item>
         <el-descriptions-item label="XML 位置"><span class="path">{{ detail?.detail?.xmlPath || '暂不可用' }}</span></el-descriptions-item>
         <el-descriptions-item label="当前读取状态">{{ detail ? states[detail.detail.state] : '尚未读取' }}</el-descriptions-item>
@@ -101,6 +126,8 @@ onBeforeUnmount(() => { listRequest?.abort(); closeDetail() })
         <el-descriptions-item label="索引创建时间">{{ time(selected.storedAt) }}</el-descriptions-item>
       </el-descriptions>
       <div class="actions toolbar"><el-button :disabled="!selected.available" @click="openMedia(selected)">打开 Emby 媒体详情</el-button><el-button :disabled="!selected.available || busy" @click="act(selected, 'download')">下载 XML</el-button><el-button :disabled="!selected.available || busy" @click="act(selected, 'verify')">重新校验</el-button><el-button type="warning" plain :disabled="!selected.available || busy" @click="act(selected, 'normalize')">规范化 XML</el-button></div>
+      <!-- 上传组件随目标重建，版本确认与普通记录操作保持独立。 -->
+      <SharedUploadControl :key="selected.recordId || selected.itemId" :record="selected" :disabled="busy" @saved="load(); closeDetail()" />
       <el-divider>弹幕预览（最多 30 条）</el-divider>
       <el-skeleton v-if="detailLoading" :rows="4" animated /><el-empty v-else-if="!detail?.detail?.comments?.length" description="没有可预览的弹幕" />
       <div v-for="(item, index) in detail?.detail?.comments || []" :key="index" class="comment"><b>{{ item.time }}s</b> {{ item.text }}</div>

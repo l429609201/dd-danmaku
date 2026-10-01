@@ -33,7 +33,24 @@ public sealed record DanmakuRecord(
     DateTimeOffset? RefreshAfter,
     string RefreshState,
     string StorageLocation,
-    int FormatVersion);
+    int FormatVersion)
+{
+    // 扩展使用可空属性，旧索引反序列化后保持未知，不猜测历史归属。
+    /// <summary>个人文件所有者；共享文件为空。</summary>
+    public string? OwnerUserId { get; init; }
+    /// <summary>保存时的所有者显示名，不作为授权依据。</summary>
+    public string? OwnerUserName { get; init; }
+    /// <summary>最近写入者的宿主认证标识。</summary>
+    public string? UpdatedByUserId { get; init; }
+    /// <summary>最近写入方式。</summary>
+    public string? WriteMethod { get; init; }
+    /// <summary>内容获取时间；规范化不刷新此值。</summary>
+    public DateTimeOffset? FetchedAt { get; init; }
+    /// <summary>所属季编号。</summary>
+    public int? SeasonNumber { get; init; }
+    /// <summary>所属集编号。</summary>
+    public int? EpisodeNumber { get; init; }
+}
 
 /// <summary>提供弹幕索引的媒体查询、分页及刷新标记维护。</summary>
 public interface IDanmakuRecordService

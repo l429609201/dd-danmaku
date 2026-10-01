@@ -57,15 +57,22 @@ public sealed class JsonDanmakuRecordStore
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: token);
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() > 10000) throw Corrupt();
-            // 逐字段检查完整性，防止构造函数默认值掩盖缺失字段或重复字段覆盖。
-            var required = typeof(DanmakuRecord).GetProperties().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+            // 原始字段仍必须完整；后加的可空元数据允许缺失，兼容已有 records.json。
+            var allowed = typeof(DanmakuRecord).GetProperties().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+            var optional = new HashSet<string>(StringComparer.Ordinal)
+            {
+                nameof(DanmakuRecord.OwnerUserId), nameof(DanmakuRecord.OwnerUserName),
+                nameof(DanmakuRecord.UpdatedByUserId), nameof(DanmakuRecord.WriteMethod),
+                nameof(DanmakuRecord.FetchedAt), nameof(DanmakuRecord.SeasonNumber), nameof(DanmakuRecord.EpisodeNumber)
+            };
+            var required = allowed.Except(optional).ToHashSet(StringComparer.Ordinal);
             foreach (var entry in root.EnumerateArray())
             {
                 if (entry.ValueKind != JsonValueKind.Object) throw Corrupt();
                 var names = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var property in entry.EnumerateObject())
-                    if (!required.Contains(property.Name) || !names.Add(property.Name)) throw Corrupt();
-                if (!names.SetEquals(required)) throw Corrupt();
+                    if (!allowed.Contains(property.Name) || !names.Add(property.Name)) throw Corrupt();
+                if (!required.IsSubsetOf(names)) throw Corrupt();
             }
             var records = root.Deserialize<List<DanmakuRecord>>(_options);
             Validate(records);

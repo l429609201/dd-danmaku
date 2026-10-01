@@ -39,8 +39,14 @@ public sealed class DanmakuFileService : IDanmakuFileService
         CancellationToken cancellationToken) => SaveAsync(filePath, comments, cancellationToken, true);
 
     /// <summary>创建模式在最终移动时禁止覆盖，避免并发请求覆盖已有弹幕。</summary>
-    public async Task SaveAsync(string filePath, IReadOnlyList<DanmakuComment> comments,
+    public Task SaveAsync(string filePath, IReadOnlyList<DanmakuComment> comments,
         CancellationToken cancellationToken, bool overwrite)
+        => SaveWithMetadataAsync(filePath, comments, cancellationToken, overwrite,
+            new DanmakuXmlMetadata { FetchedAt = DateTimeOffset.UtcNow });
+
+    // 格式转换传入原元数据，不将重写时间误记为内容获取时间。
+    internal async Task SaveWithMetadataAsync(string filePath, IReadOnlyList<DanmakuComment> comments,
+        CancellationToken cancellationToken, bool overwrite, DanmakuXmlMetadata metadata, Action? authorize = null)
     {
         ValidatePath(filePath);
         ArgumentNullException.ThrowIfNull(comments);
@@ -58,11 +64,13 @@ public sealed class DanmakuFileService : IDanmakuFileService
             await using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                 8192, FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
-                // 获取时间属于文件级元数据，不混入每条弹幕的发送时间。
-                await DanmakuXml.WriteAsync(stream, snapshot, cancellationToken, DateTimeOffset.UtcNow);
+                // 来源、归属与获取时间原样传递；写入时间由 XML 写入器统一生成。
+                await DanmakuXml.WriteAsync(stream, snapshot, cancellationToken, metadata.FetchedAt, metadata);
                 await stream.FlushAsync(cancellationToken);
             }
             cancellationToken.ThrowIfCancellationRequested();
+            // 文件替换前最后检查授权，撤销权限的在途请求不得继续提交。
+            authorize?.Invoke();
             ValidatePath(filePath);
             File.Move(tempPath, filePath, overwrite);
         }

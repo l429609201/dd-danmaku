@@ -42,6 +42,7 @@ public sealed class ReadDanmakuRequest
 /// <summary>为已授权媒体保存弹幕 XML 的请求。</summary>
 [Route("/api/danmu/{ItemId}", "PUT", Summary = "保存或更新来源弹幕")]
 [Route("/plugin/danmu/{ItemId}", "PUT")]
+// 自动保存与上传共用既有接口风格，写入方式由请求参数与后端策略区分。
 public sealed class SaveDanmakuRequest : IRequiresRequestStream
 {
     /// <summary>目标 Emby 媒体标识。</summary>
@@ -87,4 +88,8 @@ public sealed class RecordsHttpRequest
     public string? Source { get; set; }
     /// <summary>分页前按最近校验状态筛选弹幕记录。</summary>
     public string? State { get; set; }
+    /// <summary>媒体类型：movie、episode、other 或 unlinked；分页前筛选。</summary>
+    public string? MediaType { get; set; }
+    /// <summary>按季编号筛选，0 表示特别篇；省略表示全部季。</summary>
+    public int? SeasonNumber { get; set; }
 }

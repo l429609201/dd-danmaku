@@ -40,6 +40,8 @@ public sealed class CapabilitiesService
             ["Statistics"] = ready.ApiReady && ready.Statistics,
             ["RefreshPolicy"] = ready.ApiReady && ready.RefreshPolicy,
             ["MediaMatch"] = ready.ApiReady && ready.MediaMatch,
+            ["OnlineMatch"] = ready.ApiReady && ready.MediaMatch,
+            ["OperationEvents"] = ready.ApiReady && ready.MediaMatch,
             ["AiMatching"] = ready.ApiReady && ready.MediaMatch && ready.AiProviderReady && configuration.AiEnabled,
             ["ParameterPersistence"] = ready.ApiReady && ready.ParameterPersistence,
             ["Injection"] = snapshot.InjectionAvailable && snapshot.ResolvedPatch is not null

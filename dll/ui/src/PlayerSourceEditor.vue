@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, onBeforeUnmount } from 'vue'
 import PlayerSourceForm from './PlayerSourceForm.vue'
+import { api } from './api.js'
 const props = defineProps({ modelValue: String, saved: String, disabled: Boolean })
 const emit = defineEmits(['update:modelValue'])
 const editing = ref(-1), addingKey = ref(0), detecting = ref(false), error = ref('')
@@ -16,7 +17,27 @@ const parsed = computed(() => {
 })
 const locked = computed(() => props.disabled || detecting.value)
 function publish(list) { emit('update:modelValue', JSON.stringify(list)) }
-function origin(url) { try { return new URL(url).origin } catch { return '地址格式无效' } }
+function origin(url) { if (url === 'emby-proxy://custom') return '本地 Emby DLL 后端中转'; try { return new URL(url).origin } catch { return '地址格式无效' } }
+async function addProxy(name) {
+  if (locked.value || editing.value >= 0 || !parsed.value) return
+  error.value = ''
+  if (parsed.value.some(item => item.type === 'emby-proxy' || item.url === 'emby-proxy://custom')) {
+    error.value = '已添加 Emby 中转'; return
+  }
+  detecting.value = true
+  const original = JSON.stringify(parsed.value)
+  try {
+    const data = await api.validateProxy()
+    if (!active) return
+    if ((data?.available ?? data?.Available) !== true) throw new Error('后台上游验证失败')
+    if (JSON.stringify(parsed.value) !== original || props.disabled) throw new Error('配置已变化，请重新添加')
+    publish([...parsed.value, { name: name || 'Emby 插件代理', type: 'emby-proxy',
+      url: 'emby-proxy://custom', enabled: true, appId: '', appSecret: '',
+      serverName: data.serverType ?? data.ServerType ?? 'generic' }])
+    addingKey.value++
+  } catch (e) { if (active) error.value = e.message || '插件代理验证失败' }
+  finally { detecting.value = false }
+}
 async function submit(value, index = -1) {
   if (locked.value) return
   if (parsed.value.some((item, i) => i !== index && item.url.replace(/\/+$/, '') === value.url)) { error.value = '此 API 地址已存在'; return }
@@ -53,7 +74,7 @@ function remove(index) {
   <div class="sources">
     <p v-if="parsed === null" role="alert">源列表格式无效，已保留原值；请先通过原始参数管理修复。</p>
     <template v-else>
-      <PlayerSourceForm :key="addingKey" :disabled="locked || editing >= 0" @submit="value => submit(value)" />
+      <PlayerSourceForm :key="addingKey" :disabled="locked || editing >= 0" @submit="value => submit(value)" @proxy="addProxy" />
       <p v-if="error" role="alert">{{ error }}</p>
       <div class="source-list">
         <p v-if="!parsed.length">暂无自定义源，请在上方添加</p>
@@ -62,7 +83,7 @@ function remove(index) {
           <template v-else>
             <input type="checkbox" :aria-label="`启用 ${source.name}`" :checked="source.enabled !== false" :disabled="locked || editing >= 0" @change="publish(parsed.map((item, i) => i === index ? { ...item, enabled: $event.target.checked } : item))">
             <div class="info" :class="{ muted: source.enabled === false }"><strong>{{ source.name || `自定义源${index + 1}` }}</strong><span v-if="source.appId && source.appSecret" title="已配置 AppId/AppSecret"> 🔒</span><span v-if="source.serverName === 'Misaka_Danmu_Server'" class="badge">御坂弹幕库 {{ source.serverVersion ? `v${source.serverVersion}` : '' }}</span><small>{{ origin(source.url) }}</small></div>
-            <div class="buttons"><button type="button" :disabled="locked || editing >= 0" @click="editing = index">编辑</button><button type="button" aria-label="上移" :disabled="locked || editing >= 0 || index === 0" @click="move(index, -1)">↑</button><button type="button" aria-label="下移" :disabled="locked || editing >= 0 || index === parsed.length - 1" @click="move(index, 1)">↓</button><button type="button" :disabled="locked || editing >= 0" @click="remove(index)">删除</button></div>
+            <div class="buttons"><button v-if="source.type !== 'emby-proxy'" type="button" :disabled="locked || editing >= 0" @click="editing = index">编辑</button><span v-else title="在用户配置的本地中转 API 中修改上游">后台管理</span><button type="button" aria-label="上移" :disabled="locked || editing >= 0 || index === 0" @click="move(index, -1)">↑</button><button type="button" aria-label="下移" :disabled="locked || editing >= 0 || index === parsed.length - 1" @click="move(index, 1)">↓</button><button type="button" :disabled="locked || editing >= 0" @click="remove(index)">删除</button></div>
           </template>
         </div>
       </div>

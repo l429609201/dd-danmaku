@@ -48,7 +48,7 @@ add('媒体库与黑名单', [
   ['blacklistApplyToCustomApi', '黑名单应用于自定义接口', false],
 ])
 add('同步', [
-  ['configPersistenceEnable', '启用配置持久化', false], ['configPersistenceAutoSync', '实时同步', false],
+  ['configPersistenceEnable', '启用配置持久化', true], ['configPersistenceAutoSync', '实时同步', true],
   ['configPersistenceNamespace', '同步标识符', 'dd-danmaku'],
 ])
 add('日志与调试', [
