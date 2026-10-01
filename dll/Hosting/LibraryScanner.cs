@@ -139,7 +139,8 @@ internal sealed class LibraryScanner(ILibraryManager library)
                     var report = Danmaku.DanmakuXml.ReadReportAsync(stream, token).GetAwaiter().GetResult();
                     long count = report.Comments.Count;
                     // 只有完整解析成功才发布实际条数；无效 XML 保持未校验状态。
-                    discovered(entry with { Count = (int)count, IsCanonical = report.IsCanonical });
+                    // XML 元数据只作为文件描述传递，实际媒体身份仍取自宿主扫描对象。
+                    discovered(entry with { Count = (int)count, IsCanonical = report.IsCanonical, Metadata = report.Metadata });
                     if (report.IsCanonical) row.Valid++; else row.Invalid++;
                     row.Comments += count;
                     if (count == 0) row.Empty++;

@@ -31,7 +31,43 @@ internal static class FrontendParameterMap
         ["CustomeCorsProxyUrl"] = "danmakuCustomeCorsProxyUrl",
         ["CustomeGetCommentUrl"] = "danmakuCustomeGetCommentUrl",
         ["CustomeGetExtcommentUrl"] = "danmakuCustomeGetExtcommentUrl",
-        ["CustomePosterImgUrl"] = "danmakuCustomePosterImgUrl", ["CustomeDanmakuUrl"] = "danmakuCustomeDanmakuUrl"
+        ["CustomePosterImgUrl"] = "danmakuCustomePosterImgUrl", ["CustomeDanmakuUrl"] = "danmakuCustomeDanmakuUrl",
+        ["TimelineOffset"] = "danmakuTimelineOffset",
+        ["DanmuList"] = "danmakuDanmuList",
+        ["TimeoutCallbackUnit"] = "danmakuTimeoutCallbackUnit",
+        ["TimeoutCallbackValue"] = "danmakuTimeoutCallbackValue",
+        ["BangumiEnable"] = "danmakuBangumiEnable",
+        ["BangumiToken"] = "danmakuBangumiToken",
+        ["BangumiPostPercent"] = "danmakuBangumiPostPercent",
+        ["BangumiApiPrefix"] = "danmakuBangumiApiPrefix",
+        ["BgmSearchFallbackEnable"] = "danmakuBgmSearchFallbackEnable",
+        ["BangumiImageDomain"] = "danmakuBangumiImageDomain",
+        ["TmdbApiKey"] = "danmakuTmdbApiKey",
+        ["TmdbApiBaseUrl"] = "danmakuTmdbApiBaseUrl",
+        ["TmdbEpisodeMappingEnable"] = "danmakuTmdbEpisodeMappingEnable",
+        ["CacheDanmakuToServer"] = "danmakuCacheDanmakuToServer",
+        ["EpisodeOffsetRules"] = "danmakuEpisodeOffsetRules",
+        ["ExcludedLibraries"] = "danmakuExcludedLibraries",
+        ["AnimeTitleBlacklist"] = "danmakuAnimeTitleBlacklist",
+        ["EpisodeTitleBlacklist"] = "danmakuEpisodeTitleBlacklist",
+        ["BlacklistApplyToCustomApi"] = "danmakuBlacklistApplyToCustomApi",
+        ["ConfigPersistenceEnable"] = "danmakuConfigPersistenceEnable",
+        ["ConfigPersistenceAutoSync"] = "danmakuConfigPersistenceAutoSync",
+        ["ConfigPersistenceNamespace"] = "danmakuConfigPersistenceNamespace",
+        ["ConsoleLogEnable"] = "danmakuConsoleLogEnable",
+        ["LogLevel"] = "danmakuLogLevel",
+        ["DebugShowDanmakuWrapper"] = "danmakuDebugShowDanmakuWrapper",
+        ["DebugShowDanmakuCtrWrapper"] = "danmakuDebugShowDanmakuCtrWrapper",
+        ["DebugReverseDanmu"] = "danmakuDebugReverseDanmu",
+        ["DebugRandomDanmuColor"] = "danmakuDebugRandomDanmuColor",
+        ["DebugForceDanmuWhite"] = "danmakuDebugForceDanmuWhite",
+        ["DebugGenerateLarge"] = "danmakuDebugGenerateLarge",
+        ["DebugDialogHyalinize"] = "danmakuDebugDialogHyalinize",
+        ["DebugDialogWindow"] = "danmakuDebugDialogWindow",
+        ["DebugDialogRight"] = "danmakuDebugDialogRight",
+        ["DebugTabIframeEnable"] = "danmakuDebugTabIframeEnable",
+        ["DebugH5VideoAdapterEnable"] = "danmakuDebugH5VideoAdapterEnable",
+        ["QuickDebugOn"] = "danmakuQuickDebugOn"
     };
     private static readonly PropertyInfo[] Properties = typeof(FrontendDefaults).GetProperties();
 
@@ -43,13 +79,14 @@ internal static class FrontendParameterMap
         .Select(property =>
         {
             var value = property.GetValue(values)!;
-            var json = value is Array || property.Name is "CustomApiList" or "ApiPriority";
+            var json = value is Array || property.Name is "CustomApiList" or "ApiPriority" or "EpisodeOffsetRules" or "ExcludedLibraries";
             return new ParameterEntry { Namespace = Namespace, Key = Keys[property.Name],
                 Value = value is Array ? JsonSerializer.Serialize(value)
                     : value is bool flag ? (flag ? "true" : "false")
                     : value is int number ? number.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : value is double fraction ? fraction.ToString(System.Globalization.CultureInfo.InvariantCulture)
                     : value.ToString()!,
-                Type = json ? "json" : value is bool ? "boolean" : value is int ? "number" : "string" };
+                Type = json ? "json" : value is bool ? "boolean" : value is int or double ? "number" : "string" };
         }).ToList();
 
     internal static FrontendDefaults FromEntries(IEnumerable<ParameterEntry> entries)
@@ -65,8 +102,9 @@ internal static class FrontendParameterMap
                 object? value = property.PropertyType == typeof(string[]) ? JsonSerializer.Deserialize<string[]>(text)
                     : property.PropertyType == typeof(bool?) ? bool.Parse(text)
                     : property.PropertyType == typeof(int?) ? int.Parse(text, System.Globalization.CultureInfo.InvariantCulture)
+                    : property.PropertyType == typeof(double?) ? double.Parse(text, System.Globalization.CultureInfo.InvariantCulture)
                     : text;
-                if (property.Name is "CustomApiList" or "ApiPriority" && !string.IsNullOrEmpty(text))
+                if (property.Name is "CustomApiList" or "ApiPriority" or "EpisodeOffsetRules" or "ExcludedLibraries" && !string.IsNullOrEmpty(text))
                 {
                     using var document = JsonDocument.Parse(text);
                     if (document.RootElement.ValueKind != JsonValueKind.Array) continue;

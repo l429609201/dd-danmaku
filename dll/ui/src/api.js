@@ -54,6 +54,21 @@ async function request(path, options = {}, compatibility = false) {
 }
 
 export const api = {
+  // 覆盖版本在确认前读取，上传不隐式刷新版本或重试。
+  sharedVersion: (itemId, source) => request(`/items/${encodeURIComponent(itemId)}/shared-version?${new URLSearchParams({ Source: source })}`),
+  uploadShared: (itemId, source, file, overwrite, hash) => request(`/api/danmu/${encodeURIComponent(itemId)}?${new URLSearchParams({ Source: source, Overwrite: String(overwrite), ...(overwrite ? { ExpectedHash: hash } : {}) })}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/xml' }, body: file,
+  }, true),
+  // 完整保存选择策略，空授权数组明确表示撤销。
+  selectionSettings: () => request('/config/selection'),
+  saveSelectionSettings: data => request('/config/selection', { method: 'PUT', body: JSON.stringify(data) }),
+  // 用户选择管理与共享文件批量接口分离，避免混用记录身份。
+  selectionRecords: (page, retention, signal) => request(`/selections?${new URLSearchParams({ page, retention })}`, { signal }),
+  retainSelections: (keepForever, items) => request('/selections/retention', { method: 'POST', body: JSON.stringify({ keepForever, items }) }),
+  // 上游凭据只交后台保存，可用性验证由 Emby DLL 发起。
+  proxySettings: () => request('/config/proxy'),
+  saveProxySettings: data => request('/config/proxy', { method: 'PUT', body: JSON.stringify(data) }),
+  validateProxy: () => request('/proxy/validate'),
   // 管理员专用更新入口；新页面只检查，不调用自动安装任务。
   githubSettings: () => request('/config/github'),
   saveGithubSettings: data => request('/config/github', { method: 'PUT', body: JSON.stringify(data) }),
@@ -96,6 +111,9 @@ export const api = {
   // 记录操作只提交索引标识，来源与路径由服务器解析。
   records: (page = 1, pageSize = 20, signal, filters = {}) => request(`/records?${new URLSearchParams({ page, pageSize, ...filters })}`, { signal }),
   recordDetail: (id, signal) => request(`/records/detail?recordId=${encodeURIComponent(id)}`, { signal }),
+  // 批量接口仅传标识与白名单操作；各项失败由调用方分别展示。
+  batchRecords: (action, recordIds) => request('/records/batch', { method: 'POST', body: JSON.stringify({ action, recordIds }) }),
+  verifyRecord: id => request(`/records/verify?recordId=${encodeURIComponent(id)}`, { method: 'POST' }),
   normalizeRecord: id => request(`/records/normalize?recordId=${encodeURIComponent(id)}`, { method: 'POST' }),
   removeRecord: (id, deleteFile) => request(`/records/remove?recordId=${encodeURIComponent(id)}&deleteFile=${deleteFile}`, { method: 'DELETE' }),
   mediaLink: id => {

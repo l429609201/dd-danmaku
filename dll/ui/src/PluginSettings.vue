@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { api } from './api.js'
 // 更新凭据独立保存，避免与运行设置互相覆盖。
 import GitHubSettingsPanel from './GitHubSettingsPanel.vue'
+import SelectionSettingsPanel from './SelectionSettingsPanel.vue'
 const config = ref(null), playback = ref(null), busy = ref(false), error = ref(''), message = ref('')
 async function load() {
   busy.value = true; error.value = ''
@@ -63,6 +64,8 @@ onMounted(load)
         <el-button type="primary" @click="savePlayback">保存 XML 联动设置</el-button>
       </el-form>
     </el-card>
+    <!-- 授权策略独立保存，避免与运行设置或 XML 联动设置互相覆盖。 -->
+    <SelectionSettingsPanel />
     <!-- 更新设置独立加载，XML 设置失败不妨碍维护 GitHub 凭据。 -->
     <GitHubSettingsPanel />
   </section>

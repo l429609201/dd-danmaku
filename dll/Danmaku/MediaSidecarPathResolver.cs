@@ -29,6 +29,7 @@ public sealed class MediaSidecarPathResolver
         if (string.IsNullOrWhiteSpace(source)) return target;
         // 拒绝非法字符而不是删除，避免不同来源被静默映射到同一文件；跨平台采用相同限制。
         var safeSource = source.Trim();
+        // 用户选择改存插件缓存，不占用媒体旁车来源命名空间，兼容旧 user_ 来源。
         if (safeSource.Length is 0 or > 64 || safeSource.Any(c => char.IsControl(c)
             || "<>:\"/\\|?*".Contains(c) || Path.GetInvalidFileNameChars().Contains(c)))
             throw new ArgumentException("弹幕来源标识无效", nameof(source));

@@ -41,6 +41,7 @@ public sealed partial class FrontendDefaults
         ValidateExtended();
         ValidateFilters();
         ValidateApi();
+        ValidatePlayer();
     }
 
     private static void Check(int? value, int min, int max)
@@ -68,6 +69,7 @@ public sealed partial class FrontendDefaults
         MergeExtended(result, global, user);
         MergeFilters(result, global, user);
         MergeApi(result, global, user);
+        MergePlayer(result, global, user);
         return result;
     }
 }

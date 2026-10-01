@@ -36,6 +36,7 @@ internal sealed partial class LocalPlaybackService
             IReadOnlyList<DanmakuComment> comments = [];
             var state = "valid";
             var canonical = true;
+            DanmakuXmlMetadata? metadata = null;
             try
             {
                 await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -58,6 +59,7 @@ internal sealed partial class LocalPlaybackService
                 }
                 var report = await DanmakuXml.ReadReportAsync(stream, token);
                 comments = report.Comments;
+                metadata = report.Metadata;
                 canonical = report.IsCanonical;
                 if (comments.Count == 0) state = "empty";
                 else if (!canonical) state = "noncanonical";
@@ -71,7 +73,9 @@ internal sealed partial class LocalPlaybackService
             {
                 if (state is not ("valid" or "empty" or "noncanonical"))
                     throw new ApiAccessException(409, "XML_UNAVAILABLE", "XML 不存在、不可读或无法规范化");
-                await _files.SaveAsync(path, comments, token, true);
+                // 规范化仅改变格式，不伪造获取时间，也不丢弃来源与用户归属。
+                await _files.SaveWithMetadataAsync(path, comments, token, true,
+                    (metadata ?? new DanmakuXmlMetadata()) with { WriteMethod = "normalize" });
                 await records.MutateAsync(items =>
                 {
                     var index = items.FindIndex(r => r.RecordId == recordId);
@@ -79,6 +83,8 @@ internal sealed partial class LocalPlaybackService
                         RefreshState = comments.Count == 0 ? "verify-empty" : "none", UpdatedAt = DateTimeOffset.UtcNow };
                 }, token);
             }
+            // 规范化响应报告写入后的状态，避免批量结果仍显示“需规范化”。
+            if (action == "normalize") state = comments.Count == 0 ? "empty" : "valid";
             else if (action == "verify")
                 await records.MutateAsync(items =>
                 {

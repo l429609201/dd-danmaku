@@ -13,7 +13,7 @@ internal static class DanmakuXml
 
     /// <summary>XML 检查结果；根节点额外元数据不影响规范性，p 非九段时标记为需规范化。</summary>
     internal sealed record ReadReport(IReadOnlyList<DanmakuComment> Comments, bool IsCanonical,
-        IReadOnlyList<string> Issues);
+        IReadOnlyList<string> Issues, DanmakuXmlMetadata? Metadata = null);
 
     internal static void Validate(DanmakuComment comment)
     {
@@ -45,11 +45,30 @@ internal static class DanmakuXml
             || reader.NamespaceURI.Length != 0) throw new InvalidDataException("不是弹幕 XML：缺少 i 根节点");
         var comments = new List<DanmakuComment>();
         var issues = new List<string>();
+        // 兼容旧根属性；缺失时间保持未知，不使用文件修改时间冒充获取时间。
+        DanmakuXmlMetadata? metadata = null;
+        if (DateTimeOffset.TryParse(reader.GetAttribute("fetchedAt"), Culture, DateTimeStyles.RoundtripKind, out var legacyFetched))
+            metadata = new() { FetchedAt = legacyFetched.ToUniversalTime() };
+        var metadataSeen = false;
         await reader.ReadAsync();
         while (!reader.EOF)
         {
             token.ThrowIfCancellationRequested();
             if (reader.Depth > 32) throw new InvalidDataException("XML 嵌套过深");
+            if (reader.NodeType == XmlNodeType.Element && reader.Depth == 1 && reader.Name == "ddDanmaku"
+                && reader.NamespaceURI.Length == 0)
+            {
+                if (metadataSeen) throw new InvalidDataException("XML 插件元数据节点重复");
+                metadataSeen = true;
+                try
+                {
+                    var parsed = await DanmakuXmlMetadataCodec.ReadAsync(reader, token);
+                    metadata = parsed with { FetchedAt = parsed.FetchedAt ?? metadata?.FetchedAt };
+                }
+                catch (FormatException ex) { throw new InvalidDataException("XML 元数据格式无效", ex); }
+                catch (OverflowException ex) { throw new InvalidDataException("XML 元数据数值超出范围", ex); }
+                continue;
+            }
             if (reader.NodeType == XmlNodeType.Element && reader.Depth == 1 && reader.Name == "d"
                 && reader.NamespaceURI.Length == 0)
             {
@@ -81,7 +100,7 @@ internal static class DanmakuXml
             }
             await reader.ReadAsync();
         }
-        return new ReadReport(comments, issues.Count == 0, issues);
+        return new ReadReport(comments, issues.Count == 0, issues, metadata);
     }
 
     private static int ParseInt(string[] parts, int index, int fallback, List<string> issues, int number, string name)
@@ -108,7 +127,7 @@ internal static class DanmakuXml
     }
 
     internal static async Task WriteAsync(Stream stream, IReadOnlyList<DanmakuComment> comments,
-        CancellationToken token, DateTimeOffset? fetchedAt)
+        CancellationToken token, DateTimeOffset? fetchedAt, DanmakuXmlMetadata? metadata = null)
     {
         using var writer = XmlWriter.Create(stream, new XmlWriterSettings
         {
@@ -117,8 +136,11 @@ internal static class DanmakuXml
         });
         await writer.WriteStartDocumentAsync();
         await writer.WriteStartElementAsync(null, "i", null);
-        if (fetchedAt is { } timestamp)
+        // 保留旧根属性供已有新鲜度判断读取，新节点保存完整来源与媒体信息。
+        var effectiveMetadata = (metadata ?? new DanmakuXmlMetadata()) with { FetchedAt = fetchedAt ?? metadata?.FetchedAt };
+        if (effectiveMetadata.FetchedAt is { } timestamp)
             await writer.WriteAttributeStringAsync(null, "fetchedAt", null, timestamp.ToUniversalTime().ToString("O", Culture));
+        await DanmakuXmlMetadataCodec.WriteAsync(writer, effectiveMetadata, token);
         for (var index = 0; index < comments.Count; index++)
         {
             token.ThrowIfCancellationRequested();

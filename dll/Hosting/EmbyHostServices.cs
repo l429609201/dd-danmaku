@@ -43,16 +43,30 @@ internal sealed class EmbyHostServices : IDisposable
         Matches = new Matching.MatchApiService(new Matching.MatchService(new Matching.RuleMatcher(),
             new Matching.IntelligentMatcher(), new Matching.AiMatchService(GetConfiguration, _aiProvider),
             GetConfiguration, message => logger.Info("{0}", message), message => logger.Warn("{0}", message)));
+        // 组合根启动清理并将取消注册到宿主生命周期，不进行定时抓取。
+        var cleanupStop = new CancellationTokenSource();
+        _cleanupStop = cleanupStop;
+        _startCleanup = selections =>
+        {
+            var worker = new SelectionCleanupWorker(selections, logger);
+            cleanupStop.Token.Register(worker.Dispose);
+        };
     }
 
+    private readonly CancellationTokenSource _cleanupStop;
+    private readonly Action<DanmakuSelectionService> _startCleanup;
     internal LocalPlaybackService Playback { get; private set; } = null!;
+    internal DanmakuSelectionService Selections { get; private set; } = null!;
 
     /// <summary>扫描与播放共享记录索引及操作锁，避免多个实例覆盖同一文件。</summary>
     internal void InitializeRecords(string dataDirectory)
     {
+        // 所有请求复用唯一选择协调器，不能逐请求创建独立锁。
+        Selections = new DanmakuSelectionService(Path.Combine(dataDirectory, "selections"), GetConfiguration);
         Playback = new LocalPlaybackService(_paths, new JsonDanmakuRecordStore(dataDirectory));
         Scan = new LibraryScanCoordinator(_library, dataDirectory, Playback);
         Scan.Load();
+        _startCleanup(Selections);
     }
 
     internal async Task RequireLocalFileAsync(string itemId, CancellationToken token)
@@ -73,10 +87,12 @@ internal sealed class EmbyHostServices : IDisposable
         _plugin.UpdateConfiguration(configuration);
     }
 
-    // 卸载时取消后台扫描并释放提供者。
+    // 卸载时取消后台扫描和临时缓存清理并释放提供者。
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _cleanupStop.Cancel();
+        _cleanupStop.Dispose();
         Scan?.Dispose();
         _aiProvider.Dispose();
     }

@@ -65,3 +65,4 @@ dll/obj/
 dll/Resources/Admin/
 dll/Resources/ede.js
 dll/ui/dist/
+.cunzhi-memory/metadata.json

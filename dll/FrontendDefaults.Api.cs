@@ -65,7 +65,14 @@ public sealed partial class FrontendDefaults
                 var url = item.ValueKind == JsonValueKind.String ? item.GetString()
                     : item.ValueKind == JsonValueKind.Object && item.TryGetProperty("url", out var address)
                     && address.ValueKind == JsonValueKind.String ? address.GetString() : null;
-                if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
+                var isProxy = item.ValueKind == JsonValueKind.Object
+                    && item.TryGetProperty("type", out var sourceType)
+                    && sourceType.ValueKind == JsonValueKind.String && sourceType.GetString() == "emby-proxy";
+                if (isProxy)
+                {
+                    if (url != "emby-proxy://custom") throw new ArgumentException("Emby 中转来源地址无效");
+                }
+                else if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
                     throw new ArgumentException("自定义源地址必须是 HTTP 或 HTTPS 地址");
                 if (item.ValueKind != JsonValueKind.Object) continue;
                 foreach (var key in new[] { "name", "appId", "appSecret", "serverName", "serverVersion" })

@@ -54,15 +54,34 @@ public sealed partial class DanmakuApiService
     /// <summary>管理员验证并保存媒体旁车弹幕 XML。</summary>
     public Task<object> Put(SaveDanmakuRequest request) => Execute(async (user, plugin, host) =>
     {
-        EmbyAccessControl.RequireAdministrator(user);
+        DanmakuWritePolicy.Require(user, plugin.Configuration, DanmakuWritePolicy.Operation.UploadShared);
         var id = _access.RequireVideo(user, request.ItemId);
         await host.RequireLocalFileAsync(id, Request.CancellationToken);
         var bytes = await ApiHttpResult.ReadBodyAsync(request.RequestStream, Request,
             (int)DanmakuXml.MaxBytes, "application/xml", "text/xml");
         using var stream = new MemoryStream(bytes, writable: false);
-        var comments = await DanmakuXml.ReadAsync(stream, Request.CancellationToken);
-        // 默认只新增；覆盖必须由管理员客户端明确提交。
-        await host.Playback.SaveAsync(id, comments, Request.CancellationToken, request.Overwrite, request.Source);
+        var report = await DanmakuXml.ReadReportAsync(stream, Request.CancellationToken);
+        var comments = report.Comments;
+        // 上游集 ID 仅在上传来源与目标来源一致时保留；上传身份字段不作为授权依据。
+        var sourceMatches = !string.IsNullOrWhiteSpace(request.Source)
+            && string.Equals(report.Metadata?.SourceId, request.Source.Trim(), StringComparison.Ordinal);
+        var metadata = new DanmakuXmlMetadata
+        {
+            SourceEpisodeId = sourceMatches ? report.Metadata?.SourceEpisodeId : null,
+            SourceAnimeId = sourceMatches ? report.Metadata?.SourceAnimeId : null,
+            UpdatedByUserId = user.Id.ToString("N"), WriteMethod = "upload",
+            // 上传不是重新抓取，不采用上传文件声称的可信上游配置指纹。
+            FetchedAt = report.Metadata?.FetchedAt
+        };
+        void Authorize(DanmakuWritePolicy.Operation operation)
+        {
+            var current = _access.Authenticate(Request);
+            if (current.Id != user.Id) throw new ApiAccessException(403, "USER_CHANGED", "用户身份已变化");
+            _access.RequireVideo(current, id);
+            DanmakuWritePolicy.Require(current, plugin.Configuration, operation);
+        }
+        await host.Playback.SaveUploadAsync(id, request.Source, comments, metadata, request.Overwrite,
+            Request.QueryString["ExpectedHash"], Authorize, Request.CancellationToken);
         return ApiHttpResult.Success(new { Saved = true, CommentCount = comments.Count });
     });
 
@@ -79,7 +98,8 @@ public sealed partial class DanmakuApiService
     public Task<object> Get(PlaybackHttpRequest request) => Execute(async (user, plugin, host) =>
     {
         var id = _access.RequireVideo(user, request.ItemId);
-        return ApiHttpResult.Success(await host.Playback.QueryAsync(id, Request.CancellationToken, request.Source));
+        // 默认播放先读取本人选择；过期临时正文仅在本次播放尝试刷新。
+        return ApiHttpResult.Success(await QueryUserPlaybackAsync(id, request.Source, user, plugin, host));
     });
 
     /// <summary>管理员查询已管理的弹幕记录。</summary>

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { parameterFields } from './parameterFields.js'
+import { parameterSections as sections, parameterChoices as extraChoices } from './parameterSections.js'
 import { choices } from './defaultFields.js'
 import SavedSecretInput from './SavedSecretInput.vue'
 import PlayerApiSettings from './PlayerApiSettings.vue'
@@ -9,34 +10,7 @@ import PlayerListEditor from './PlayerListEditor.vue'
 const props = defineProps({ values: Object, enabled: Object, clear: Object, rows: Array, namespace: String, userId: String, search: String, busy: Boolean })
 const emit = defineEmits(['value', 'enabled', 'clear'])
 const tab = ref('弹幕设置')
-// API 独立分类，沿用原持久化键；新增字段未分组时也提供入口，避免静默遗漏。
-const sections = [
-  ['弹幕设置', '基础设置', 'switch antiOverlap filterLevel heightPercent fontSizeRate fontOpacity speed timelineOffset'],
-  ['弹幕设置', '弹幕字体样式', 'fontWeight fontStyle fontFamily'],
-  ['弹幕设置', '弹幕列表', 'danmuList'],
-  ['高级设置', '弹幕屏蔽', 'typeFilter sourceFilter showSource'],
-  ['高级设置', '弹幕高级屏蔽', 'autoFilterCount mergeSimilarEnable mergeSimilarPercent mergeSimilarTime filterKeywordsEnable filterKeywords'],
-  ['高级设置', '弹幕位置转换', 'convertTopTo convertBottomTo'],
-  ['高级设置', '额外设置', 'chConvert engine'],
-  ['弹幕 API', '自动匹配', 'autoLoadSwitch matchApiEnable matchMode appendSeasonEpisode'],
-  ['高级设置', '集数偏移', 'episodeOffsetRules'],
-  ['高级设置', '播放界面设置', 'osdTitleEnable osdHeaderClockEnable osdLineChartEnable osdLineChartSkipFilter osdLineChartTime'],
-  ['高级设置', '播放设置', 'timeoutCallbackUnit timeoutCallbackValue'],
-  ['高级设置', 'Bangumi 设置', 'bgmSearchFallbackEnable bangumiEnable bangumiToken bangumiPostPercent bangumiApiPrefix bangumiImageDomain'],
-  ['高级设置', 'TMDB 集数映射设置', 'tmdbEpisodeMappingEnable tmdbApiKey tmdbApiBaseUrl'],
-  ['高级设置', '配置持久化', 'configPersistenceEnable configPersistenceAutoSync configPersistenceNamespace'],
-  ['高级设置', '媒体库排除设置', 'excludedLibraries'],
-  ['高级设置', '搜索内容黑名单', 'animeTitleBlacklist episodeTitleBlacklist blacklistApplyToCustomApi'],
-  // API 控制栏与源列表共用原版布局。
-  ['弹幕 API', 'API选择、自定义API配置', 'useOfficialApi useCustomApi apiPriority customApiList'],
-  ['弹幕 API', '代理与接口模板', 'customApiPrefix customeCorsProxyUrl customeGetCommentUrl customeGetExtcommentUrl customePosterImgUrl customeDanmakuUrl'],
-  ['高级设置', '日志与调试', parameterFields.filter(f => /^(debug|quickDebug|consoleLog|logLevel)/.test(f.key)).map(f => f.key).join(' ')],
-]
-const groupedKeys = new Set(sections.flatMap(([, , keys]) => keys.split(' ')))
-const ungrouped = parameterFields.filter(field => !groupedKeys.has(field.key))
-if (ungrouped.length) sections.push(['高级设置', '其他参数', ungrouped.map(field => field.key).join(' ')])
 const groups = computed(() => sections.filter(([page]) => props.search || page === tab.value).map(([, title, keys]) => ({ title, fields: keys.split(' ').map(key => parameterFields.find(f => f.key === key)).filter(f => f && (!props.search || `${f.label} ${f.id}`.toLowerCase().includes(props.search.toLowerCase()))) })).filter(g => g.fields.length))
-const extraChoices = { matchMode: [['hashAndFileName', '哈希+文件名'], ['fileNameOnly', '仅文件名']], danmuList: [[0, '不展示'], [1, '屏中'], [2, '所有']], logLevel: [['2', 'WARN'], ['3', 'INFO'], ['4', 'DEBUG']] }
 function options(field) { return choices[field.key] || extraChoices[field.key] || [] }
 function arrayValue(field) {
   try { const value = JSON.parse(props.values[field.id]); return Array.isArray(value) ? value : [] } catch { return [] }
