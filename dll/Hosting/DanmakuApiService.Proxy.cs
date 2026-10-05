@@ -62,7 +62,9 @@ public sealed partial class DanmakuApiService
         {
             using var document = JsonDocument.Parse(reply.Body);
             var root = document.RootElement;
-            if (root.TryGetProperty("status", out var state) && state.ValueKind == JsonValueKind.String
+            // 裸数组也是合法正文，只有对象响应才能读取异步任务状态。
+            if (root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("status", out var state) && state.ValueKind == JsonValueKind.String
                 && state.GetString() == "pending" && root.TryGetProperty("taskId", out var task))
                 ProxyTaskBindings.Register(ProxyIdentifier(task.ToString()), userId, itemId,
                     ProxyIdentifier(request.Id), upstreamKey);

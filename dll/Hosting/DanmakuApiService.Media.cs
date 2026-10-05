@@ -51,10 +51,28 @@ public sealed partial class DanmakuApiService
         return new ApiHttpResult(200, stream.ToArray(), "application/xml; charset=utf-8");
     });
 
-    /// <summary>管理员验证并保存媒体旁车弹幕 XML。</summary>
+    /// <summary>验证并保存媒体旁车弹幕 XML；自动保存仅允许创建且不可覆盖。</summary>
     public Task<object> Put(SaveDanmakuRequest request) => Execute(async (user, plugin, host) =>
     {
-        DanmakuWritePolicy.Require(user, plugin.Configuration, DanmakuWritePolicy.Operation.UploadShared);
+        if (request.SavePurpose is not ("upload" or "auto"))
+            throw new ApiAccessException(400, "INVALID_SAVE_PURPOSE", "保存用途无效");
+        if (request.SavePurpose == "auto")
+        {
+            if (request.Overwrite)
+                throw new ApiAccessException(400, "AUTO_SAVE_OVERWRITE_FORBIDDEN", "自动保存不允许覆盖");
+            // 浏览器自动保存也检查统一保存资格；提交前仍复查实际新建操作。
+            DanmakuWritePolicy.Require(user, plugin.Configuration, DanmakuWritePolicy.Operation.UploadShared);
+            DanmakuWritePolicy.Require(user, plugin.Configuration, DanmakuWritePolicy.Operation.CreateShared);
+            if (!plugin.Configuration.AutoSaveDanmaku)
+                throw new ApiAccessException(403, "AUTO_SAVE_DISABLED", "自动保存已关闭");
+        }
+        else
+        {
+            // 直传正文始终需要 Upload；新建所需 Create 由保存服务在锁内再次判定。
+            DanmakuWritePolicy.Require(user, plugin.Configuration, DanmakuWritePolicy.Operation.UploadShared);
+        }
+        if (request.Overwrite && !plugin.Configuration.XmlOverwriteEnabled)
+            throw new ApiAccessException(403, "XML_OVERWRITE_DISABLED", "覆盖已有 XML 已关闭");
         var id = _access.RequireVideo(user, request.ItemId);
         await host.RequireLocalFileAsync(id, Request.CancellationToken);
         var bytes = await ApiHttpResult.ReadBodyAsync(request.RequestStream, Request,
@@ -79,6 +97,12 @@ public sealed partial class DanmakuApiService
             if (current.Id != user.Id) throw new ApiAccessException(403, "USER_CHANGED", "用户身份已变化");
             _access.RequireVideo(current, id);
             DanmakuWritePolicy.Require(current, plugin.Configuration, operation);
+            if (request.SavePurpose == "auto")
+            {
+                DanmakuWritePolicy.Require(current, plugin.Configuration, DanmakuWritePolicy.Operation.CreateShared);
+                if (!plugin.Configuration.AutoSaveDanmaku)
+                    throw new ApiAccessException(403, "AUTO_SAVE_DISABLED", "自动保存已关闭");
+            }
         }
         await host.Playback.SaveUploadAsync(id, request.Source, comments, metadata, request.Overwrite,
             Request.QueryString["ExpectedHash"], Authorize, Request.CancellationToken);

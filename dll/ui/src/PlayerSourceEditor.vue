@@ -1,10 +1,13 @@
 <script setup>
-import { computed, ref, onBeforeUnmount } from 'vue'
+import { computed, inject, ref, onBeforeUnmount } from 'vue'
+import { useUiRef } from './useUiState.js'
 import PlayerSourceForm from './PlayerSourceForm.vue'
 import { api } from './api.js'
 const props = defineProps({ modelValue: String, saved: String, disabled: Boolean })
 const emit = defineEmits(['update:modelValue'])
-const editing = ref(-1), addingKey = ref(0), detecting = ref(false), error = ref('')
+const scope = inject('parameterDraftScope', ref('unscoped'))
+const editing = useUiRef(`sources-editing:${scope.value}`, -1, value => Number.isInteger(value) && value >= -1 && value < 100)
+const addingKey = ref(0), detecting = ref(false), error = ref(''), addingForm = ref(null), editingForms = ref([])
 let active = true
 onBeforeUnmount(() => { active = false })
 // 保留扩展属性；只有确认保存才提交草稿，检测失败不阻止添加。
@@ -34,6 +37,7 @@ async function addProxy(name) {
     publish([...parsed.value, { name: name || 'Emby 插件代理', type: 'emby-proxy',
       url: 'emby-proxy://custom', enabled: true, appId: '', appSecret: '',
       serverName: data.serverType ?? data.ServerType ?? 'generic' }])
+    addingForm.value?.discardDraft()
     addingKey.value++
   } catch (e) { if (active) error.value = e.message || '插件代理验证失败' }
   finally { detecting.value = false }
@@ -58,7 +62,8 @@ async function submit(value, index = -1) {
   detecting.value = false
   if (!active) return
   const list = [...parsed.value]
-  if (index < 0) { list.push(value); addingKey.value++ } else list[index] = value
+  if (index < 0) { addingForm.value?.discardDraft(); list.push(value); addingKey.value++ }
+  else { editingForms.value[index]?.discardDraft(); list[index] = value }
   editing.value = -1; publish(list)
 }
 function move(index, offset) {
@@ -74,12 +79,12 @@ function remove(index) {
   <div class="sources">
     <p v-if="parsed === null" role="alert">源列表格式无效，已保留原值；请先通过原始参数管理修复。</p>
     <template v-else>
-      <PlayerSourceForm :key="addingKey" :disabled="locked || editing >= 0" @submit="value => submit(value)" @proxy="addProxy" />
+      <PlayerSourceForm ref="addingForm" :key="addingKey" :disabled="locked || editing >= 0" @submit="value => submit(value)" @proxy="addProxy" />
       <p v-if="error" role="alert">{{ error }}</p>
       <div class="source-list">
         <p v-if="!parsed.length">暂无自定义源，请在上方添加</p>
         <div v-for="(source, index) in parsed" :key="index" class="source">
-          <PlayerSourceForm v-if="editing === index" editing :source="source" :disabled="locked" @submit="value => submit(value, index)" @cancel="editing = -1" />
+          <PlayerSourceForm v-if="editing === index" :ref="form => { editingForms[index] = form }" :draft-id="`edit-${index}`" editing :source="source" :disabled="locked" @submit="value => submit(value, index)" @cancel="editingForms[index]?.discardDraft(); editing = -1" />
           <template v-else>
             <input type="checkbox" :aria-label="`启用 ${source.name}`" :checked="source.enabled !== false" :disabled="locked || editing >= 0" @change="publish(parsed.map((item, i) => i === index ? { ...item, enabled: $event.target.checked } : item))">
             <div class="info" :class="{ muted: source.enabled === false }"><strong>{{ source.name || `自定义源${index + 1}` }}</strong><span v-if="source.appId && source.appSecret" title="已配置 AppId/AppSecret"> 🔒</span><span v-if="source.serverName === 'Misaka_Danmu_Server'" class="badge">御坂弹幕库 {{ source.serverVersion ? `v${source.serverVersion}` : '' }}</span><small>{{ origin(source.url) }}</small></div>

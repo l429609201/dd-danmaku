@@ -1,10 +1,15 @@
 <script setup>
-import { onMounted, onBeforeUnmount, ref } from 'vue'
+import { computed, provide, onMounted, onBeforeUnmount, ref } from 'vue'
+import { useUiRef, useDetailsState, useSafeDrafts } from './useUiState.js'
 import { api } from './api.js'
 
-const users = ref([]), selected = ref(''), loadedId = ref('')
+const users = ref([]), loadedId = ref('')
+const selected = useUiRef('defaults-user', '', value => typeof value === 'string')
+provide('parameterDraftScope', computed(() => `defaults:${selected.value || 'global'}`))
 const values = ref(null), global = ref({}), busy = ref(false), saving = ref(false)
-const error = ref(''), message = ref(''), tab = ref('弹幕设置')
+const error = ref(''), message = ref(''), restoredDrafts = ref(false)
+const tab = useUiRef('defaults-tab', '弹幕设置', value => ['弹幕设置', '弹幕 API', '高级设置'].includes(value))
+const details = useDetailsState('defaults-details')
 let controller, generation = 0
 import { choices } from './defaultFields.js'
 import { parameterChoices } from './parameterSections.js'
@@ -12,12 +17,24 @@ import { defaultParameterGroups as allGroups, defaultParameterFields as allField
 import { parameterFields, serializeParameter } from './parameterFields.js'
 import DefaultParameterControl from './DefaultParameterControl.vue'
 import PlayerApiSettings from './PlayerApiSettings.vue'
+const drafts = useSafeDrafts('frontend-defaults', key => parameterFields.some(field => field.key === key && !field.sensitive))
+function stageInput(event) {
+  const field = parameterFields.find(item => `default-${item.key}` === event.target.id)
+  if (!field || !values.value || busy.value || saving.value) return
+  const value = field.type === 'number' ? (event.target.value === '' ? '' : Number(event.target.value)) : event.target.value
+  values.value[field.key] = value
+  drafts.stage(field.key, value)
+}
+function discardRestored() {
+  drafts.discard(); void load()
+}
 function pageFor(group) { return group.tab }
 function setApiValue(field, value) {
+  values.value[field[0]] = value
+  drafts.stage(field[0], value)
   try {
     const definition = parameterFields.find(item => item.key === field[0])
     serializeParameter(definition, nativeDefaultArrays.has(field[0]) ? JSON.stringify(value) : value)
-    values.value[field[0]] = value
     void save()
   } catch (e) { error.value = e.message }
 }
@@ -32,6 +49,7 @@ function effective(field) {
 }
 function toggle(field, checked) {
   values.value[field[0]] = checked ? effective(field) : null
+  drafts.stage(field[0], values.value[field[0]])
   void save()
 }
 async function load() {
@@ -43,6 +61,11 @@ async function load() {
     if (version !== generation) return
     global.value = id ? data.global : data
     values.value = { ...(id ? data.user : data) }; loadedId.value = id
+    drafts.select(id || 'global')
+    restoredDrafts.value = drafts.count.value > 0
+    for (const [key, value] of Object.entries(drafts.entries.value)) {
+      if (allFields.some(field => field[0] === key)) values.value[key] = value
+    }
   } catch (e) { if (version === generation && e.name !== 'AbortError') error.value = e.message }
   finally { if (version === generation) busy.value = false }
 }
@@ -50,22 +73,35 @@ async function loadUsers() {
   try { users.value = await api.users() }
   catch (e) { error.value = `用户列表读取失败：${e.message}` }
 }
-async function save(reset = false) {
+async function save(reset = false, explicit = false) {
+  if (restoredDrafts.value && !explicit && !reset) return
   if (!values.value || saving.value || loadedId.value !== selected.value) return
   saving.value = true; error.value = ''; message.value = ''
   try {
     // 所有空值显式发送 null，表示继承；不能将默认预览写成用户专属值。
     const data = Object.fromEntries(allFields.map(([key]) => [key, values.value[key] ?? null]))
+    if (!reset) {
+      for (const [key, value] of Object.entries(data)) {
+        if (value != null) serializeParameter(parameterFields.find(field => field.key === key), nativeDefaultArrays.has(key) ? JSON.stringify(value) : value)
+      }
+    }
     if (reset) {
       await api.resetFrontendDefaults(selected.value)
       values.value = Object.fromEntries(allFields.map(([key]) => [key, null]))
     } else await api.saveFrontendDefaults(selected.value, data)
+    if (reset) drafts.discard()
+    else for (const [key, value] of Object.entries(data)) drafts.acknowledge(key, value)
+    restoredDrafts.value = false
     // 保存成功不重新挂载控件，保留展开状态和焦点。
     message.value = reset ? '已恢复继承全局' : '已自动保存'
   } catch (e) { error.value = `${e.message}；若连接中断，请重新读取确认服务器状态` }
   finally { saving.value = false }
 }
-onMounted(() => { load(); loadUsers() })
+onMounted(async () => {
+  await loadUsers()
+  if (selected.value && !users.value.some(user => user.id === selected.value)) selected.value = ''
+  await load()
+})
 onBeforeUnmount(() => { ++generation; controller?.abort() })
 </script>
 
@@ -81,11 +117,12 @@ onBeforeUnmount(() => { ++generation; controller?.abort() })
       <el-button :disabled="saving || busy" @click="load">重新读取</el-button>
       <el-button :disabled="saving" @click="loadUsers">刷新用户列表</el-button>
     </div>
-    <div class="save-status" role="status" aria-live="polite">{{ error || (saving ? '正在保存…' : message || '修改后自动保存') }}<el-button v-if="error && values" link :disabled="saving" @click="save()">重试保存</el-button></div>
+    <div class="save-status" role="status" aria-live="polite">{{ error || (saving ? '正在保存…' : message || '修改后自动保存') }}<el-button v-if="error && values" link :disabled="saving" @click="save(false, true)">重试保存</el-button></div>
     <!-- 默认配置接口为整份覆盖，保存期间禁用编辑确保快照顺序。 -->
-    <fieldset v-if="values" :key="selected" class="player-settings" :disabled="saving || busy">
+    <div v-if="drafts.count.value" class="save-status" role="status">已保留 {{ drafts.count.value }} 项未保存草稿 <el-button link :disabled="saving || busy" @click="save(false, true)">保存草稿</el-button><el-button link :disabled="saving || busy" @click="discardRestored">丢弃草稿</el-button></div>
+    <fieldset v-if="values" :key="selected" class="player-settings" :disabled="saving || busy" @input="stageInput">
       <div class="tabs" role="tablist"><button v-for="name in ['弹幕设置', '弹幕 API', '高级设置']" :key="name" type="button" role="tab" :aria-selected="tab === name" @click="tab = name">{{ name }}</button></div>
-      <component :is="group.basic ? 'section' : 'details'" v-for="group in allGroups.filter(g => pageFor(g) === tab)" :key="group.title" :open="group.title === '弹幕屏蔽'" :class="{ basic: group.basic }">
+      <component :is="group.basic ? 'section' : 'details'" v-for="group in allGroups.filter(g => pageFor(g) === tab)" :key="group.title" :open="details.isOpen(`${selected}:${group.title}`, group.title === '弹幕屏蔽')" @toggle="details.toggle(`${selected}:${group.title}`, $event)" :class="{ basic: group.basic }">
         <summary v-if="!group.basic">{{ group.title }}</summary>
         <div class="setting-content" :class="{ 'basic-controls': group.basic }">
           <PlayerApiSettings v-if="group.title === 'API选择、自定义API配置'" :key="selected" :official="effective(allFields.find(f => f[0] === 'useOfficialApi'))" :custom="effective(allFields.find(f => f[0] === 'useCustomApi'))" :priority="effective(allFields.find(f => f[0] === 'apiPriority'))" :sources="effective(allFields.find(f => f[0] === 'customApiList'))" :disabled="saving || busy" @change="(key, value) => setApiValue(allFields.find(f => f[0] === key), value)">

@@ -13,10 +13,11 @@ using DD.Danmaku.Runtime;
 /// <param name="MediaMatch">媒体匹配是否就绪。</param>
 /// <param name="AiProviderReady">当前用户可用的 AI 提供者是否就绪。</param>
 /// <param name="ParameterPersistence">参数兼容服务是否可用。</param>
+/// <param name="FrontendLogs">前端日志存储是否已就绪。</param>
 public sealed record BackendReadiness(
     bool ApiReady = false, bool LocalDanmaku = false, bool Sidecar = false,
     bool BatchManagement = false, bool Statistics = false, bool RefreshPolicy = false,
-    bool MediaMatch = false, bool AiProviderReady = false, bool ParameterPersistence = false);
+    bool MediaMatch = false, bool AiProviderReady = false, bool ParameterPersistence = false, bool FrontendLogs = false);
 
 /// <summary>结合真实就绪状态与配置生成客户端能力声明。</summary>
 public sealed class CapabilitiesService
@@ -44,6 +45,8 @@ public sealed class CapabilitiesService
             ["OperationEvents"] = ready.ApiReady && ready.MediaMatch,
             ["AiMatching"] = ready.ApiReady && ready.MediaMatch && ready.AiProviderReady && configuration.AiEnabled,
             ["ParameterPersistence"] = ready.ApiReady && ready.ParameterPersistence,
+            // 上传允许认证用户；读取和清除入口单独校验目标用户范围。
+            ["FrontendLogs"] = ready.ApiReady && ready.FrontendLogs,
             ["Injection"] = snapshot.InjectionAvailable && snapshot.ResolvedPatch is not null
                 && configuration.AutoInjectionEnabled
         };

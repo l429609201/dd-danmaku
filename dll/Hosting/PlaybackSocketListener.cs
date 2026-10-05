@@ -51,7 +51,7 @@ public sealed class PlaybackSocketListener(ISessionManager sessions, MediaBrowse
             if (!_running) return Task.CompletedTask;
             if (message.MessageType == PlaybackSocketProtocol.Unsubscribe)
             {
-                Remove(connection.Id);
+                Remove(connection.Id, "CLIENT_UNSUBSCRIBED");
                 return Task.CompletedTask;
             }
             if (message.MessageType == PlaybackSocketProtocol.Heartbeat)
@@ -78,7 +78,8 @@ public sealed class PlaybackSocketListener(ISessionManager sessions, MediaBrowse
             }
             if (_subscriptions.Count >= 512 || _subscriptions.Values.Count(s => s.UserId == user.InternalId) >= 8)
                 return Task.CompletedTask;
-            var subscription = new PlaybackSocketSubscription(connection, matches[0].Id, device, user.InternalId, Valid);
+            var subscription = new PlaybackSocketSubscription(connection, matches[0].Id, device, user.InternalId, Valid,
+                reason => _logger.Info("播放联动：订阅释放，原因={0}", reason));
             if (_subscriptions.TryAdd(connection.Id, subscription)) connection.Closed += Closed;
             else subscription.Dispose();
         }
@@ -121,18 +122,19 @@ public sealed class PlaybackSocketListener(ISessionManager sessions, MediaBrowse
     private void SessionEnded(object? sender, SessionEventArgs args) => Expire();
     private void Closed(object? sender, EventArgs args)
     {
-        if (sender is IWebSocketConnection connection) Remove(connection.Id);
+        if (sender is IWebSocketConnection connection) Remove(connection.Id, "SOCKET_CLOSED");
     }
     private void Expire()
     {
         foreach (var pair in _subscriptions)
-            if (pair.Value.Expired || !Valid(pair.Value)) Remove(pair.Key);
+            if (pair.Value.Expired || !Valid(pair.Value))
+                Remove(pair.Key, pair.Value.Expired ? "HEARTBEAT_EXPIRED" : "AUTH_OR_SESSION_INVALID");
     }
-    private void Remove(Guid id)
+    private void Remove(Guid id, string reason = "AUTH_OR_SESSION_INVALID")
     {
         if (!_subscriptions.TryRemove(id, out var bound)) return;
         bound.Connection.Closed -= Closed;
-        bound.Dispose();
+        bound.Dispose(reason);
     }
     /// <summary>解除播放事件订阅并释放连接清理计时器。</summary>
     public void Dispose()
@@ -147,7 +149,7 @@ public sealed class PlaybackSocketListener(ISessionManager sessions, MediaBrowse
             sessions.PlaybackStopped -= Stopped;
             sessions.SessionEnded -= SessionEnded;
             _expiry?.Dispose();
-            foreach (var id in _subscriptions.Keys) Remove(id);
+            foreach (var id in _subscriptions.Keys) Remove(id, "HOST_STOPPED");
         }
     }
 }

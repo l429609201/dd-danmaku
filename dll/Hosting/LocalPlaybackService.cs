@@ -80,7 +80,9 @@ internal sealed partial class LocalPlaybackService(MediaSidecarPathResolver path
         {
             var path = await RequirePathAsync(id, token, source);
             // 正文解析结果需要在异常处理块之后构造响应。
-            IReadOnlyList<DanmakuComment> comments;
+            DanmakuXml.ReadReport report;
+            string version;
+            var normalizedSource = NormalizeSource(source);
             try
             {
                 // 不用 File.Exists：缺失与合法空 XML 分开，权限错误不伪装成未找到。
@@ -89,7 +91,14 @@ internal sealed partial class LocalPlaybackService(MediaSidecarPathResolver path
                 if (info.LinkTarget is not null || (info.Attributes & FileAttributes.ReparsePoint) != 0)
                     throw new IOException("不允许读取链接旁车文件");
                 if (stream.Length > DanmakuXml.MaxBytes) throw new IOException("服务器弹幕文件超过限制");
-                comments = await DanmakuXml.ReadAsync(stream, token);
+                // 解析消费的字节同步进入哈希，避免外部原地覆盖造成两次读取版本错配。
+                using var sha = System.Security.Cryptography.SHA256.Create();
+                await using var hashed = new System.Security.Cryptography.CryptoStream(stream, sha,
+                    System.Security.Cryptography.CryptoStreamMode.Read, leaveOpen: true);
+                report = await DanmakuXml.ReadReportAsync(hashed, token);
+                // 保证读取至 EOF 完成最终块；不重新 seek 或重新打开正文。
+                await hashed.CopyToAsync(Stream.Null, token);
+                version = Convert.ToHexString(sha.Hash!).ToLowerInvariant();
             }
             catch (FileNotFoundException) { return Result(id, false, []); }
             catch (DirectoryNotFoundException) { return Result(id, false, []); }
@@ -97,7 +106,12 @@ internal sealed partial class LocalPlaybackService(MediaSidecarPathResolver path
             catch (InvalidDataException ex) { throw new IOException("服务器弹幕 XML 内容无效", ex); }
             catch (ArgumentException ex) { throw new IOException("服务器弹幕 XML 字段无效", ex); }
             // 不依赖索引可用性，不将旧索引的计数、时间或匹配信息冒充当前文件元数据。
-            return Result(id, true, comments);
+            var metadata = report.Metadata;
+            var trusted = metadata is not null && metadata.EmbyItemId == id
+                && string.Equals(metadata.SourceId, normalizedSource, StringComparison.Ordinal);
+            var match = trusted && (metadata!.SourceAnimeId is not null || metadata.SourceEpisodeId is not null)
+                ? new MatchSummaryDto(metadata.SourceAnimeId, metadata.SourceEpisodeId, null, 1m, "stored") : null;
+            return Result(id, true, report.Comments, normalizedSource, match) with { ContentVersion = version };
         }
         finally { _gate.Release(); }
     }
@@ -213,9 +227,11 @@ internal sealed partial class LocalPlaybackService(MediaSidecarPathResolver path
 
     private static string? NormalizeSource(string? source)
         => string.IsNullOrWhiteSpace(source) ? null : source.Trim();
-    private static PlaybackQueryDto Result(string id, bool found, IReadOnlyList<DanmakuComment> comments)
-        => new(id, found, comments.Select(c => new DanmakuCommentDto(c.Text, c.Time, c.Mode, c.Color, c.UserId)).ToArray(),
-            comments.Count, null, null, null, false, null, found ? "sidecar" : null, null);
+    private static PlaybackQueryDto Result(string id, bool found, IReadOnlyList<DanmakuComment> comments,
+        string? source = null, MatchSummaryDto? match = null)
+        => new(id, found, comments.Select(c => new DanmakuCommentDto(c.Text, c.Time, c.Mode, c.Color, c.UserId,
+                c.FontSize, c.Timestamp, c.Pool, c.Cid, c.Weight)).ToArray(),
+            comments.Count, null, null, source, false, null, found ? "sidecar" : null, match);
 
     private static ApiAccessException PartialCommit()
         => new(500, "INDEX_COMMIT_FAILED", "XML 操作已完成，但记录索引更新失败；未回滚 XML，请重试相同操作修复索引");

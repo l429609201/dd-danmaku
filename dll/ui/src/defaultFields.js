@@ -15,21 +15,21 @@ export const labels = { fontStyle: '弹幕斜体', chConvert: '简繁转换', ty
 export const groups = [
   { title: '基础设置', basic: true, fields: [
     ['switch', '弹幕开关', true], ['antiOverlap', '防重叠', false],
-    ['filterLevel', '过滤等级', 0, 0, 3], ['heightPercent', '显示区域（%）', 70, 3, 100],
-    ['fontSizeRate', '弹幕字号（%）', 140, 50, 300], ['fontOpacity', '不透明度（%）', 60, 20, 100],
-    ['speed', '弹幕速度（%）', 200, 10, 300],
+    ['filterLevel', '过滤等级', 0, 0, 3, 1], ['heightPercent', '显示区域（%）', 70, 3, 100, 1],
+    ['fontSizeRate', '弹幕字号（%）', 140, 50, 300, 10], ['fontOpacity', '不透明度（%）', 60, 20, 100, 10],
+    ['speed', '弹幕速度（%）', 200, 10, 300, 10],
   ] },
   { title: '弹幕字体样式', fields: [
-    ['fontWeight', '弹幕粗细', 400, 100, 1000], ['fontStyle', '弹幕斜体', 0, 0, 2],
+    ['fontWeight', '弹幕粗细', 400, 100, 1000, 100], ['fontStyle', '弹幕斜体', 0, 0, 2, 1],
     ['fontFamily', '弹幕字体', 'sans-serif'],
   ] },
   { title: '弹幕屏蔽', fields: [
     ['typeFilter', '屏蔽类型', []], ['sourceFilter', '屏蔽来源平台', []], ['showSource', '显示来源信息', []],
   ] },
   { title: '弹幕高级屏蔽', fields: [
-    ['autoFilterCount', '自动过滤条数阈值', 0, 0, 10000],
-    ['mergeSimilarEnable', '合并相似弹幕', false], ['mergeSimilarPercent', '相似度（%）', 80, 20, 100],
-    ['mergeSimilarTime', '时间窗口（秒）', 10, 1, 60],
+    ['autoFilterCount', '自动过滤条数阈值', 0, 0, 10000, 500],
+    ['mergeSimilarEnable', '合并相似弹幕', false], ['mergeSimilarPercent', '相似度（%）', 80, 20, 100, 1],
+    ['mergeSimilarTime', '时间窗口（秒）', 10, 1, 60, 1],
     ['filterKeywordsEnable', '启用屏蔽关键词', true], ['filterKeywords', '屏蔽关键词', ''],
   ] },
   { title: '弹幕位置转换', fields: [
@@ -42,7 +42,7 @@ export const groups = [
   { title: '播放界面设置', fields: [
     ['osdTitleEnable', '显示弹幕信息', false], ['osdHeaderClockEnable', '显示播放时钟', false],
     ['osdLineChartEnable', '高能进度条', false], ['osdLineChartSkipFilter', '高能进度条免过滤', false],
-    ['osdLineChartTime', '颗粒度（秒）', 10, 1, 60],
+    ['osdLineChartTime', '颗粒度（秒）', 10, 1, 60, 1],
   ] },
 ]
 export const fields = groups.flatMap(group => group.fields)

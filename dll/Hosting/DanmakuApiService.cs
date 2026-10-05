@@ -45,18 +45,18 @@ public sealed partial class DanmakuApiService : IService, IRequiresRequest
             var plugin = Plugin.Instance;
             if (plugin?.Host is not { } host)
                 return Error(503, "HOST_UNAVAILABLE", "插件宿主尚未就绪");
-            // 普通用户仅可读取授权媒体的弹幕，写入和删除始终保留管理员边界。
+            // 保存按统一写入授权判定，删除仍保留管理员边界。
             if (Request.Dto is SaveDanmakuRequest or DeleteDanmakuRequest)
             {
                 // 写操作必须明确选择来源；空值表示旧无来源文件，不接受省略参数。
                 if (Request.QueryString["source"] is null)
                     throw new ArgumentException("保存或删除弹幕必须指定 source 参数");
-                EmbyAccessControl.RequireAdministrator(user);
+                if (Request.Dto is DeleteDanmakuRequest) EmbyAccessControl.RequireAdministrator(user);
                 if (!plugin.Configuration.FilePersistenceEnabled || !plugin.Configuration.FilePersistenceWriteEnabled)
                     throw new ApiAccessException(409, "XML_WRITE_DISABLED", "服务器 XML 写入未启用");
             }
             // 兼容读取入口与原生读取入口使用相同开关，不能绕过管理员策略。
-            if (Request.Dto is ReadDanmakuRequest or PlaybackHttpRequest or CompatibleDanmuRequest)
+            if (Request.Dto is ReadDanmakuRequest or PlaybackHttpRequest or CompatibleDanmuRequest or LocalPlaybackInfoRequest)
             {
                 if (!plugin.Configuration.FilePersistenceEnabled || !plugin.Configuration.FilePersistenceReadEnabled)
                     throw new ApiAccessException(409, "XML_READ_DISABLED", "服务器 XML 读取未启用");
@@ -130,7 +130,7 @@ public sealed partial class DanmakuApiService : IService, IRequiresRequest
     {
         var ready = new BackendReadiness(ApiReady: true, LocalDanmaku: plugin.Configuration.FilePersistenceEnabled, Sidecar: true,
             MediaMatch: true, AiProviderReady: host.AiProviderReady && EmbyAccessControl.CanUseAi(user, plugin.Configuration),
-            ParameterPersistence: ParameterRouteGuard.IsAvailable);
+            ParameterPersistence: ParameterRouteGuard.IsAvailable, FrontendLogs: host.FrontendLogs?.Ready == true);
         var data = new CapabilitiesService(() => ready).Create(plugin.Configuration, plugin.Service.Snapshot(plugin.Configuration));
         return Task.FromResult(ApiHttpResult.Success(data));
     });

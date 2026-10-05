@@ -38,9 +38,7 @@ public sealed partial class DanmakuApiService
                 comments = await host.Selections.RefreshAsync(selection, Authorize,
                     () => FetchSelectionCommentsAsync(selection.Content, user.Id, plugin.Configuration, token), token);
             }
-            return new(id, true, comments.Select(c => new DanmakuCommentDto(c.Text, c.Time, c.Mode,
-                c.Color, c.UserId, c.FontSize, c.Timestamp, c.Pool, c.Cid, c.Weight)).ToArray(),
-                comments.Count, selection.SelectedAt, null, selection.Content.SourceId, false, null, "temporary", null);
+            return TemporaryPlayback(id, selection, comments);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch (Exception error) when (error is ApiAccessException or IOException or UnauthorizedAccessException
@@ -52,5 +50,25 @@ public sealed partial class DanmakuApiService
         }
         var shared = await host.Playback.QueryAsync(id, token);
         return shared with { RefreshRequired = true, RefreshReason = failure };
+    }
+
+    // 固定属性顺序序列化已存身份、选集时间和完整正文，两种读取入口共用版本算法。
+    private static PlaybackQueryDto TemporaryPlayback(string id, UserDanmakuSelection selection,
+        IReadOnlyList<DanmakuComment> comments)
+    {
+        var content = selection.Content;
+        var version = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                Content = new { content.ItemId, content.SourceId, content.SourceEpisodeId,
+                    content.ChConvert, content.UpstreamRevision },
+                selection.SelectedAt, Comments = comments
+            }))).ToLowerInvariant();
+        var match = content.ItemId == id
+            ? new MatchSummaryDto(null, content.SourceEpisodeId, null, 1m, "selection") : null;
+        return new PlaybackQueryDto(id, true, comments.Select(c => new DanmakuCommentDto(c.Text, c.Time, c.Mode,
+            c.Color, c.UserId, c.FontSize, c.Timestamp, c.Pool, c.Cid, c.Weight)).ToArray(), comments.Count,
+            selection.SelectedAt, null, content.SourceId, false, null, "temporary", match)
+        { ContentVersion = version };
     }
 }

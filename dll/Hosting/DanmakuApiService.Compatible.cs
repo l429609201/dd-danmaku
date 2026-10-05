@@ -86,6 +86,8 @@ public sealed partial class DanmakuApiService
             else groups.Add(new
             {
                 source, sourceName = source.Length == 0 ? "未标注来源" : source, opened = true,
+                // 追加正文绑定字段，保留既有选择、聚合和空文件语义。
+                itemId = playback.ItemId, storageLocation = playback.StorageLocation, contentVersion = playback.ContentVersion,
                 // 输出 Bilibili 九段 p 属性，并保留解析器已保存的来源字段。
                 danmuEvents = playback.Comments.Select(c => new
                 {

@@ -2,24 +2,30 @@ import { groups as basicGroups } from './defaultFields.js'
 
 // 与播放器持久化键保持一致；没有可靠内置值的 URL 不自动填充，避免覆盖播放器版本配置。
 const ids = { speed: 'danmakuBaseSpeed' }
+// 动态内置值仅提供继承提示，不把当前脚本地址或黑名单写成宿主默认值。
+const unknownBuiltinPreviews = new Set(['customeCorsProxyUrl', 'customeDanmakuUrl', 'customeGetCommentUrl',
+  'customeGetExtcommentUrl', 'customePosterImgUrl', 'episodeTitleBlacklist'])
 const sensitive = key => /token|apikey|secret|password|url|prefix/i.test(key) || key === 'customApiList'
-const field = (key, label, value, options) => ({ key, label, value, options,
+// 数值范围与步长贯穿两类编辑器，沿用播放器控件的离散步长。
+const field = (key, label, value, options, min, max, step) => ({ key, label, value, options, min, max, step,
   id: ids[key] || `danmaku${key[0].toUpperCase()}${key.slice(1)}`,
+  builtinPreviewUnknown: unknownBuiltinPreviews.has(key),
   sensitive: sensitive(key), type: Array.isArray(value) ? 'json' : typeof value })
 export const parameterGroups = basicGroups.map(group => ({ title: group.title,
-  fields: group.fields.map(([key, label, value, options, max]) => ({ ...field(key, label, value, Array.isArray(options) ? options : undefined),
-    min: typeof options === 'number' ? options : undefined, max })) }))
+  fields: group.fields.map(([key, label, value, options, max, step]) => field(key, label, value,
+    Array.isArray(options) ? options : undefined, typeof options === 'number' ? options : undefined, max, step)) }))
 const add = (title, entries) => parameterGroups.push({ title, fields: entries.map(entry => field(...entry)) })
 // 类型和来源字段已由基础分组提供，避免重复提交同键导致后端拒绝保存。
 add('时间轴与列表', [
   ['timelineOffset', '时间轴偏移（秒）', 0], ['danmuList', '弹幕列表设置', 0],
 ])
 add('定时', [
-  ['timeoutCallbackUnit', '定时单位索引', 1], ['timeoutCallbackValue', '定时值', 0],
+  ['timeoutCallbackUnit', '定时单位索引', 1, undefined, 0, 2, 1],
+  ['timeoutCallbackValue', '定时值', 0, undefined, 0],
 ])
 add('Bangumi', [
   ['bangumiEnable', '启用 Bangumi', false], ['bangumiToken', '个人令牌', ''],
-  ['bangumiPostPercent', '观看时长比（1–99）', 95],
+  ['bangumiPostPercent', '观看时长比（1–99）', 95, undefined, 1, 99, 1],
   ['bangumiApiPrefix', 'Bangumi API 地址', 'https://api.bgm.tv'],
   ['bgmSearchFallbackEnable', 'BGM 搜索兜底', false],
   ['bangumiImageDomain', 'Bangumi 图片域名', 'https://lain.bgm.tv'],

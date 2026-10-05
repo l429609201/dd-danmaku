@@ -57,10 +57,15 @@ internal sealed class EmbyHostServices : IDisposable
     private readonly Action<DanmakuSelectionService> _startCleanup;
     internal LocalPlaybackService Playback { get; private set; } = null!;
     internal DanmakuSelectionService Selections { get; private set; } = null!;
+    // 所有请求复用宿主生命周期内唯一的日志轮转锁。
+    internal FrontendLogStore? FrontendLogs { get; private set; }
 
     /// <summary>扫描与播放共享记录索引及操作锁，避免多个实例覆盖同一文件。</summary>
     internal void InitializeRecords(string dataDirectory)
     {
+        // 记录目录为 DD.Danmaku/Data；日志与 Data 同级，归属 DD.Danmaku/Logs。
+        FrontendLogs = new FrontendLogStore(Path.GetDirectoryName(Path.GetFullPath(dataDirectory))
+            ?? throw new ArgumentException("插件数据目录无效", nameof(dataDirectory)));
         // 所有请求复用唯一选择协调器，不能逐请求创建独立锁。
         Selections = new DanmakuSelectionService(Path.Combine(dataDirectory, "selections"), GetConfiguration);
         Playback = new LocalPlaybackService(_paths, new JsonDanmakuRecordStore(dataDirectory));
@@ -94,6 +99,7 @@ internal sealed class EmbyHostServices : IDisposable
         _cleanupStop.Cancel();
         _cleanupStop.Dispose();
         Scan?.Dispose();
+        FrontendLogs?.Dispose();
         _aiProvider.Dispose();
     }
 }

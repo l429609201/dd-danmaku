@@ -6,6 +6,9 @@ import PlayerListEditor from './PlayerListEditor.vue'
 const props = defineProps({ field: Array, value: [String, Number, Boolean, Array], options: Array, custom: Boolean, origin: String })
 const emit = defineEmits(['update', 'custom'])
 const definition = computed(() => parameterFields.find(item => item.key === props.field[0]))
+// 全局明确设置为空时不冒充脚本内置；提示不会建立覆盖或修改继承值。
+const builtinPlaceholder = computed(() => definition.value.builtinPreviewUnknown && !props.custom
+  && props.origin === '脚本内置' && props.value === '' ? '由播放器内置提供' : undefined)
 const secret = computed(() => /token|apikey|secret|password/i.test(props.field[0]))
 const reveal = ref(false)
 function checkOption(value, id, checked) {
@@ -21,16 +24,17 @@ function checkOption(value, id, checked) {
       <template v-else>
         <label :for="`default-${field[0]}`">{{ field[1] }}</label>
         <div v-if="Array.isArray(field[2])" class="checkbox-list" role="group" :aria-label="field[1]"><label v-for="[id, title] in options" :key="id" class="check"><input type="checkbox" :checked="value.includes(id)" @change="checkOption(value, id, $event.target.checked)">{{ title }}</label></div>
-        <template v-else-if="typeof field[2] === 'number' && field[3] != null && field[4] != null && field[0] !== 'chConvert'">
-          <input :id="`default-${field[0]}`" type="range" :min="field[3]" :max="field[4]" step="1" :value="value" @change="emit('update', Number($event.target.value))">
+        <template v-else-if="typeof field[2] === 'number' && field[3] != null && field[4] != null && !['chConvert', 'timeoutCallbackUnit'].includes(field[0])">
+          <!-- 与播放器滑块共享步长，不扩大原版可选数值集合。 -->
+          <input :id="`default-${field[0]}`" type="range" :min="field[3]" :max="field[4]" :step="field[5] ?? 1" :value="value" @change="emit('update', Number($event.target.value))">
           <output>{{ options.find(([id]) => id === value)?.[1] ?? value }}</output>
         </template>
         <div v-else-if="options.length" class="segments"><button v-for="[id, title] in options" :key="id" type="button" :aria-pressed="value === id" @click="emit('update', id)">{{ title }}</button></div>
-        <input v-else-if="typeof field[2] === 'number'" :id="`default-${field[0]}`" type="number" :value="value" @change="emit('update', $event.target.value === '' ? NaN : Number($event.target.value))">
+        <input v-else-if="typeof field[2] === 'number'" :id="`default-${field[0]}`" type="number" :min="field[3]" :max="field[4]" :step="field[5] ?? 'any'" :value="value" @change="emit('update', $event.target.value === '' ? NaN : Number($event.target.value))">
         <PlayerListEditor v-else-if="field[0] === 'excludedLibraries'" :kind="field[0]" :model-value="value" @update:model-value="v => emit('update', v)" />
         <textarea v-else-if="definition.type === 'json'" :id="`default-${field[0]}`" :value="value" rows="5" @change="emit('update', $event.target.value)" />
-        <textarea v-else-if="['filterKeywords', 'animeTitleBlacklist', 'episodeTitleBlacklist'].includes(field[0])" :id="`default-${field[0]}`" :value="value" maxlength="8192" rows="3" @change="emit('update', $event.target.value)" />
-        <input v-else :id="`default-${field[0]}`" :type="secret && !reveal ? 'password' : 'text'" :value="value" :maxlength="field[0] === 'fontFamily' ? 256 : 8192" autocomplete="off" @change="emit('update', $event.target.value)" @keydown.enter="$event.target.blur()">
+        <textarea v-else-if="['filterKeywords', 'animeTitleBlacklist', 'episodeTitleBlacklist'].includes(field[0])" :id="`default-${field[0]}`" :value="value" :placeholder="builtinPlaceholder" maxlength="8192" rows="3" @change="emit('update', $event.target.value)" />
+        <input v-else :id="`default-${field[0]}`" :type="secret && !reveal ? 'password' : 'text'" :value="value" :placeholder="builtinPlaceholder" :maxlength="field[0] === 'fontFamily' ? 256 : 8192" autocomplete="off" @change="emit('update', $event.target.value)" @keydown.enter="$event.target.blur()">
         <button v-if="secret" type="button" :aria-pressed="reveal" @click="reveal = !reveal">{{ reveal ? '隐藏' : '显示' }}</button>
       </template>
       <button v-if="custom" type="button" class="clear-secret" :title="`恢复${origin}`" @click="emit('custom', false)">继承</button><small v-else :title="origin">继承</small>

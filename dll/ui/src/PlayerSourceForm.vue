@@ -1,10 +1,23 @@
 <script setup>
-import { ref } from 'vue'
-const props = defineProps({ source: Object, disabled: Boolean, editing: Boolean })
+import { inject, ref, watch } from 'vue'
+import { useSafeDrafts } from './useUiState.js'
+const props = defineProps({ source: Object, disabled: Boolean, editing: Boolean, draftId: { type: String, default: 'new' } })
 const emit = defineEmits(['submit', 'cancel', 'proxy'])
 // 草稿与保存值隔离；关闭认证开关只在明确保存时清除凭据。
-const draft = ref({ name: '', url: '', enabled: true, appId: '', appSecret: '', ...props.source })
-const auth = ref(Boolean(draft.value.appId && draft.value.appSecret)), reveal = ref(false), error = ref('')
+const scope = inject('parameterDraftScope', ref('unscoped'))
+const drafts = useSafeDrafts('source-form', key => ['name', 'enabled', 'auth'].includes(key))
+drafts.select(JSON.stringify([scope.value, props.draftId]))
+const { auth: cachedAuth, ...restored } = drafts.entries.value
+const draft = ref({ name: '', url: '', enabled: true, appId: '', appSecret: '', ...props.source, ...restored })
+const auth = ref(cachedAuth ?? Boolean(draft.value.appId && draft.value.appSecret)), reveal = ref(false), error = ref('')
+const baseline = { ...draft.value }
+watch(draft, value => {
+  for (const key of ['name', 'url', 'enabled', 'appId', 'appSecret']) {
+    if (value[key] !== baseline[key] || Object.hasOwn(drafts.entries.value, key)) drafts.stage(key, value[key])
+  }
+}, { deep: true, flush: 'sync' })
+watch(auth, value => drafts.stage('auth', value), { flush: 'sync' })
+defineExpose({ discardDraft: drafts.discard })
 function onEnter(event) {
   if (event.target.tagName !== 'INPUT') return
   event.preventDefault()

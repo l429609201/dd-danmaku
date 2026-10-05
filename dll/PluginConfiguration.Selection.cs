@@ -13,14 +13,22 @@ public sealed partial class PluginConfiguration
     public int TemporaryDanmakuLimitMiB { get; set; } = 512;
     /// <summary>每用户最多保留的选择条数，包含长期选择。</summary>
     public int DanmakuSelectionLimitPerUser { get; set; } = 100;
-    /// <summary>允许创建和刷新本人临时选择的用户。</summary>
+    /// <summary>管理员是否允许保存 XML；关闭后不能借普通用户白名单绕过。</summary>
+    public bool XmlAdministratorSaveEnabled { get; set; } = true;
+    /// <summary>普通用户 XML 保存白名单；null 兼容旧创建与上传交集，空数组明确撤权。</summary>
+    public string[]? XmlSaveUserIds { get; set; }
+    /// <summary>是否允许覆盖已有 XML，管理员与普通用户均受此开关限制。</summary>
+    public bool XmlOverwriteEnabled { get; set; }
+
+    // 以下旧名单仅保留配置兼容性；选择不再按名单授权，保存仅在新名单为 null 时读取创建与上传交集。
+    /// <summary>旧版本人临时选择名单，仅供兼容。</summary>
     public string[] DanmakuSelectionUserIds { get; set; } = [];
-    /// <summary>允许创建缺失共享正文的用户。</summary>
+    /// <summary>旧版创建共享正文名单，仅用于兼容保存白名单。</summary>
     public string[] DanmakuCreateSharedUserIds { get; set; } = [];
-    /// <summary>允许刷新共享同来源同集正文的用户。</summary>
+    /// <summary>旧版刷新共享正文名单，仅供兼容，不再用于授权。</summary>
     public string[] DanmakuRefreshSharedUserIds { get; set; } = [];
-    /// <summary>允许显式替换共享来源或集绑定的用户。</summary>
+    /// <summary>旧版替换共享正文名单，仅供兼容，不再用于授权。</summary>
     public string[] DanmakuReplaceSharedUserIds { get; set; } = [];
-    /// <summary>允许上传共享正文的用户，不自动授予覆盖权限。</summary>
+    /// <summary>旧版上传共享正文名单，仅用于兼容保存白名单。</summary>
     public string[] DanmakuUploadSharedUserIds { get; set; } = [];
 }

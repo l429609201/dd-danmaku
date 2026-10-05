@@ -14,20 +14,29 @@ function clientContext() {
   return { token, userId, base: base.href.replace(/\/$/, '') }
 }
 
-function currentUserId() {
+// 页面状态仅按实例与认证用户分区，不包含登录令牌。
+export function uiSessionScope() {
+  const { base, userId } = clientContext()
+  if (!userId) throw new Error('未获取到当前 Emby 用户标识')
+  return JSON.stringify([base, userId])
+}
+
+export function currentUserId() {
   const { userId } = clientContext()
   if (!userId) throw new Error('未获取到当前 Emby 用户标识')
   return userId
 }
 
 async function request(path, options = {}, compatibility = false) {
-  const { token, base } = clientContext()
+  const { token, base, userId } = clientContext()
   const response = await fetch(`${base}${compatibility ? '' : prefix}${path}`, {
     ...options,
     credentials: 'same-origin', cache: 'no-store', redirect: 'error',
     headers: { 'Content-Type': 'application/json', ...options.headers, 'X-Emby-Token': token },
   })
   const body = await response.json().catch(() => null)
+  const current = clientContext()
+  if (current.base !== base || current.userId !== userId) throw new Error('登录身份已变化，请重新打开管理页面')
   if (!response.ok || body?.success === false || body?.Success === false) {
     const error = new Error(body?.message || body?.Message || `请求失败（${response.status}）`)
     error.status = response.status
@@ -75,7 +84,7 @@ export const api = {
   checkUpdate: () => request('/updates/check'),
   // 跨用户操作仅使用管理员路由，不改变播放器本人接口的权限。
   parameterFiles: () => request('/parameter-files'),
-  parameterFile: (id) => request(`/parameter-files/${encodeURIComponent(id)}`),
+  parameterFile: (id, signal) => request(`/parameter-files/${encodeURIComponent(id)}`, { signal }),
   saveParameterFile: (id, data) => request(`/parameter-files/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteParameterFile: (id) => request(`/parameter-files/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   copyParameterFile: (id, data) => request(`/parameter-files/${encodeURIComponent(id)}/copy`, { method: 'POST', body: JSON.stringify(data) }),
@@ -95,11 +104,30 @@ export const api = {
   aiModels: data => request('/config/ai/models', { method: 'POST', body: JSON.stringify(data) }),
   saveAiSettings: (data) => request('/config/ai', { method: 'PUT', body: JSON.stringify(data) }),
   capabilities: () => request('/capabilities'),
+  // 整合表单一次提交完整 XML、授权与缓存策略，避免跨接口部分成功。
+  storageSettings: signal => request('/config/storage', { signal }),
+  saveStorageSettings: (data, signal) => request('/config/storage', { method: 'PUT', body: JSON.stringify(data), signal }),
   // XML 策略独立保存，避免其他页面保存配置时覆盖联动开关。
   playbackSettings: () => request('/config/playback'),
   savePlaybackSettings: data => request('/config/playback', { method: 'PUT', body: JSON.stringify(data) }),
   config: () => request('/config'),
-  users: () => request('/users'),
+  users: signal => request('/users', { signal }),
+  // 日志按认证用户隔离，跨用户管理权限由服务器独立校验。
+  frontendLogFiles: (signal, userId = '') => request(`/frontend-logs/files?${new URLSearchParams({ UserId: userId })}`, { signal }),
+  clearFrontendLogs: (userId, signal) => request(`/frontend-logs?${new URLSearchParams({ UserId: userId || '' })}`, { method: 'DELETE', signal }),
+  frontendLogs: (filters, signal) => request(`/frontend-logs?${new URLSearchParams({ FileId: filters.fileId, UserId: filters.userId || '', Level: filters.level || '', Keyword: filters.keyword || '', Page: filters.page, PageSize: filters.pageSize })}`, { signal }),
+  exportFrontendLogs: async (filters, signal) => {
+    const { base, token } = clientContext()
+    const query = new URLSearchParams({ FileId: filters.fileId, UserId: filters.userId || '', Level: filters.level || '', Keyword: filters.keyword || '' })
+    const response = await fetch(`${base}${prefix}/frontend-logs/export?${query}`, {
+      signal, headers: { 'X-Emby-Token': token }, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
+    })
+    if (!response.ok || !response.headers.get('content-type')?.toLowerCase().includes('application/x-ndjson')) {
+      const body = await response.json().catch(() => null)
+      throw new Error(body?.message || `日志导出失败（${response.status}）`)
+    }
+    return response.blob()
+  },
   saveConfig: (data) => request('/config', { method: 'PUT', body: JSON.stringify(data) }),
   parameters: (filters = {}) => {
     const query = new URLSearchParams(Object.entries({ Namespace: filters.namespace, Key: filters.key, Keyword: filters.keyword }).filter(([, value]) => value != null && value !== ''))

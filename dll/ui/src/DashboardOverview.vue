@@ -14,8 +14,8 @@ const state = value => value ? '开' : '关'
     <el-card shadow="never">
       <template #header><strong>服务器 XML 联动</strong></template>
       <p>总开关：{{ state(overview.xmlEnabled) }}</p>
-      <p>有效读取 / 管理员写入：{{ state(overview.xmlRead) }} / {{ state(overview.xmlWrite) }}</p>
-      <p>优先本地 / 管理员自动保存：{{ state(overview.preferLocal) }} / {{ state(overview.autoSave) }}</p>
+      <p>有效读取 / 授权写入：{{ state(overview.xmlRead) }} / {{ state(overview.xmlWrite) }}</p>
+      <p>优先本地 / 授权用户自动保存：{{ state(overview.preferLocal) }} / {{ state(overview.autoSave) }}</p>
       <small>自动保存只新增，不覆盖已有 XML。</small>
     </el-card>
     <el-card shadow="never">
