@@ -1,6 +1,7 @@
 namespace DD.Danmaku.Updates;
 
 using System.Reflection;
+using System.Security.Cryptography;
 using MediaBrowser.Common;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Model.Logging;
@@ -43,7 +44,16 @@ public sealed class UpdatePluginTask : IScheduledTask
         };
     }
 
-    /// <summary>执行正式版检查及安全替换，完成后通知管理员重启。</summary>
+    private static bool IsSameDigest(string path, string? digest)
+    {
+        if (string.IsNullOrWhiteSpace(digest) || !digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+            return false;
+        using var file = File.OpenRead(path);
+        var actual = Convert.ToHexString(SHA256.HashData(file));
+        return string.Equals(actual, digest[7..], StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>执行正式版或测试版检查及安全替换，完成后通知管理员重启。</summary>
     public async Task Execute(CancellationToken cancellationToken, IProgress<double> progress)
     {
         await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -84,22 +94,20 @@ public sealed class UpdatePluginTask : IScheduledTask
                 progress.Report(100);
                 return;
             }
+            if (release.IsTest && IsSameDigest(target, release.Digest))
+            {
+                _logger.Info("test 频道附件摘要与磁盘插件一致，无需重复安装。");
+                progress.Report(100);
+                return;
+            }
             progress.Report(10);
             temporary = target + "." + Guid.NewGuid().ToString("N") + ".download";
             await client.DownloadAsync(release, temporary, token).ConfigureAwait(false);
             progress.Report(80);
             PluginPackageValidator.Validate(temporary, release);
-            if (release.IsTest)
-            {
-                var candidate = AssemblyName.GetAssemblyName(temporary);
-                if (candidate.Name != "DD.Danmaku" || GitHubReleaseClient.Normalize(candidate.Version ?? new Version(0, 0))
-                    <= GitHubReleaseClient.Normalize(loaded))
-                {
-                    _logger.Info("test 频道没有比当前版本更新的 DLL。");
-                    progress.Report(100);
-                    return;
-                }
-            }
+            var candidate = AssemblyName.GetAssemblyName(temporary);
+            if (candidate.Name != "DD.Danmaku")
+                throw new InvalidDataException("更新文件名称不匹配。");
             token.ThrowIfCancellationRequested();
             // 同目录替换并保留旧文件；不截断加载中的 DLL，也不在失败后退回直接覆盖。
             // 若宿主/文件系统不支持替换，任务失败并保留原文件，管理员可手动更新。

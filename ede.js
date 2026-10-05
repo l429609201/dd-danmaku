@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.3.5
+// @version      1.3.6
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -70,7 +70,7 @@
 
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.3.5', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.3.6', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -1294,6 +1294,34 @@
                 return PatchedDanmaku;
             }
         },
+        {
+            name: 'media-time-position-fix',
+            description: '媒体时间统一定位：倍速切换不跳动，暂停与缓冲不沿墙钟空跑',
+            apply(DanmakuClass) {
+                return class extends DanmakuClass {
+                    constructor(opts) {
+                        super(opts);
+                        if (!this.media || typeof this._?.engine?.render !== 'function'
+                            || typeof this._?.listener?.pause !== 'function'
+                            || typeof this._?.listener?.play !== 'function') return;
+                        const renderer = this._.engine.render;
+                        const running = !this._.paused;
+                        // 原库在启动时绑定 render；只重启本实例帧循环，不发事件、不清空弹幕。
+                        if (running) this._.listener.pause();
+                        this._.engine = { ...this._.engine, render: (stage, comment) => {
+                            if (comment.mode === 'rtl' || comment.mode === 'ltr') {
+                                // currentTime 已包含倍速，不能再将累计媒体时间差乘当前速率。
+                                const distance = (this._.width + comment.width)
+                                    * (this.media.currentTime - comment.time) / this._.duration;
+                                comment.x = comment.mode === 'rtl' ? this._.width - distance : distance - comment.width;
+                            }
+                            renderer.call(this, stage, comment);
+                        } };
+                        if (running) this._.listener.play();
+                    }
+                };
+            }
+        },
         // 后续补丁在此追加，格式同上：
         // { name: 'xxx', description: 'xxx', apply(DanmakuClass) { ... return PatchedClass; } },
     ];
@@ -1757,7 +1785,7 @@
         const offset = manager.getCurrentTicks(player) / 1e7 - player.currentTime() / 1000;
         return Number.isFinite(offset) ? offset : 0;
     }
-    // 独立弹幕时钟：后端状态驱动，本地媒体即时响应与断线兜底，绝不回写视频。
+    // 独立弹幕时钟：真实媒体时间优先，后端为虚拟播放器提供锚点，绝不回写真实视频。
     let danmakuClock = null;
     function createDanmakuClock(manager, player, key, generation) {
         // 仅允许当前播放器创建时钟，后续同一媒体换播放器由 refresh 接续。
@@ -1777,17 +1805,25 @@
         const local = () => {
             const currentPlayer = manager.getCurrentPlayer();
             const offset = media && currentPlayer ? getDanmakuPlaybackOffset(manager, currentPlayer, media) : 0;
+            const playState = media?.id === eleIds.h5VideoAdapter ? manager.getPlayerState?.()?.PlayState : null;
             return { position: (media?.currentTime || 0) + offset,
-                paused: !media || media.paused || media.readyState < 2,
-                rate: media?.playbackRate > 0 ? media.playbackRate : 1 };
+                paused: playState ? playState.IsPaused === true : !media || media.paused || media.readyState < 2,
+                rate: Number.isFinite(playState?.PlaybackRate) && playState.PlaybackRate > 0
+                    ? playState.PlaybackRate : media?.playbackRate > 0 ? media.playbackRate : 1 };
+        };
+        const releaseRemote = () => {
+            if (remote && media?.id === eleIds.h5VideoAdapter) {
+                media.currentTime = remote.position + (remote.paused ? 0 : (performance.now() - remote.at) / 1000 * remote.rate);
+                if (media.playbackRate !== remote.rate) media.playbackRate = remote.rate;
+            }
+            remote = null;
         };
         const state = () => {
             const now = performance.now(), actual = local();
-            // 真实 HTML 媒体掌握即时暂停/恢复和倍速；服务器上报可能滞后于换轨恢复。
-            // 保留后端位置锚点，但状态冲突时退回完整本地时钟，避免冻结或缓冲时空跑。
-            const realMedia = media && media.id !== eleIds.h5VideoAdapter;
-            if (realMedia && remote && (remote.paused !== actual.paused || remote.rate !== actual.rate)) remote = null;
-            if (!remote || now - remote.at > 15000) return actual;
+            // 真实视频时间已包含倍速；迟到的服务端进度不能重新锚定正在渲染的本地视频。
+            if (media && media.id !== eleIds.h5VideoAdapter) return actual;
+            if (remote && now - remote.at > 15000) { releaseRemote(); return local(); }
+            if (!remote) return actual;
             return { position: remote.position + (remote.paused ? 0 : (now - remote.at) / 1000 * remote.rate),
                 paused: remote.paused, rate: remote.rate };
         };
@@ -1796,14 +1832,15 @@
             if (disposed) return;
             const next = state(), now = performance.now();
             const expected = last ? last.position + (last.paused ? 0 : (now - last.at) / 1000 * last.rate) : next.position;
-            if (seek || (last && (Math.abs(next.position - expected) > 1 || next.rate !== last.rate))) emit('seeking');
-            if (!last || last.paused !== next.paused || seek) emit(next.paused ? 'pause' : 'playing');
+            // 倍速切换只改变后续斜率，不清空正在滚动的弹幕；真正拖动进度仍重新定位。
+            if (seek || (last && next.rate === last.rate && Math.abs(next.position - expected) > 1)) emit('seeking');
+            if (!last || last.paused !== next.paused) emit(next.paused ? 'pause' : 'playing');
             last = { ...next, at: now };
         };
         const localEvent = event => {
-            // 用户刚操作时立即用真实媒体状态，不等待下一次服务器上报。
-            remote = null;
-            sync(event.type === 'seeking' || event.type === 'seeked' || event.type === 'loadedmetadata' || event.type === 'ratechange');
+            // 虚拟适配器的合成暂停/播放事件不能清除刚确认的服务端锚点。
+            if (media?.id !== eleIds.h5VideoAdapter) remote = null;
+            sync(event.type === 'seeking');
         };
         const bind = () => {
             const next = getPlaybackMedia();
@@ -1822,7 +1859,8 @@
             removeEventListener: events.removeEventListener.bind(events),
             refresh() {
                 if (!valid()) { clock.dispose(); return; }
-                sync(bind());
+                bind();
+                sync();
                 const container = media?.closest(`.graphicContentContainer, ${playbackViewSelector}`)
                     || activePlaybackView;
                 if (overlay && container?.isConnected && overlay.parentElement !== container) {
@@ -1833,14 +1871,16 @@
             accept(data) {
                 if (disposed || !valid()) return;
                 bind();
+                if (media && media.id !== eleIds.h5VideoAdapter) { sync(); return; }
                 const previous = state();
-                const rate = Number.isFinite(data.playbackRate) && data.playbackRate > 0 ? data.playbackRate : local().rate;
-                // 接收时建立单调时钟锚点，不使用可能有时差的服务器墙上时钟推算。
-                remote = { position: Number.isFinite(data.positionSeconds) ? data.positionSeconds : previous.position,
+                const rate = Number.isFinite(data.playbackRate) && data.playbackRate > 0 ? data.playbackRate : previous.rate;
+                const position = Number.isFinite(data.positionSeconds) && data.positionSeconds >= 0 ? data.positionSeconds : previous.position;
+                // 虚拟播放器忽略一秒内的上报抖动，大幅位置变化仍交给跳转检测。
+                remote = { position: Math.abs(position - previous.position) <= 1 ? previous.position : position,
                     paused: data.isPaused === true, rate, at: performance.now() };
                 sync();
             },
-            fallback() { remote = null; if (!disposed) sync(); },
+            fallback() { releaseRemote(); if (!disposed) sync(); },
             dispose() {
                 if (disposed) return;
                 disposed = true;
@@ -12648,7 +12688,7 @@
         const generation = playbackViewGeneration;
         let _media = getPlaybackMedia();
         if (_media) {
-            if (_media.id) { // 若是手动创建的<video>
+            if (_media.id === eleIds.h5VideoAdapter) {
                 videoTimeUpdateInterval(_media, true);
             }
             return;
@@ -12690,7 +12730,8 @@
                     const playerState = playbackManager.getPlayerState();
                     // 使用可选链 (?.) 避免 undefined 报错
                     const embyPlaybackRate = playerState?.PlayState?.PlaybackRate;
-                    _media.playbackRate = embyPlaybackRate ? embyPlaybackRate : 1;
+                    const rate = Number.isFinite(embyPlaybackRate) && embyPlaybackRate > 0 ? embyPlaybackRate : _media.playbackRate || 1;
+                    if (_media.playbackRate !== rate) _media.playbackRate = rate;
 
                      // [修复] 跳过第一次时间更新（初始化时可能有大的时间差）
                     if (isFirstTimeUpdate) {
@@ -12729,16 +12770,21 @@
        logger.info('已创建虚拟 video 标签,适配器处理正确结束');
     }
 
-   // 平滑补充<video> timeupdate 中秒级间隔缺失的 100ms 间隙
+    // 虚拟播放器才补时；真实 video 的 currentTime 由浏览器推进，不得二次叠加。
     function videoTimeUpdateInterval(media, enable) {
         const _media = media || document.querySelector(mediaQueryStr);
         if (!_media) { return; }
-        if (enable && !_media.timeupdateIntervalId) {
-             // [修复] 移除重复的 setInterval 调用，只保留一个
-             _media.timeupdateIntervalId = setInterval(() => { _media.currentTime += 100 / 1000 }, 100);
-        } else if (!enable && _media.timeupdateIntervalId) {
-             clearInterval(_media.timeupdateIntervalId);
-             _media.timeupdateIntervalId = null;
+        if (enable && _media.id === eleIds.h5VideoAdapter && !_media.timeupdateIntervalId) {
+            let lastAt = performance.now();
+            _media.timeupdateIntervalId = setInterval(() => {
+                const now = performance.now(), elapsed = (now - lastAt) / 1000;
+                lastAt = now;
+                const rate = _media.playbackRate > 0 ? _media.playbackRate : 1;
+                _media.currentTime += elapsed * rate;
+            }, 100);
+        } else if ((!enable || _media.id !== eleIds.h5VideoAdapter) && _media.timeupdateIntervalId) {
+            clearInterval(_media.timeupdateIntervalId);
+            _media.timeupdateIntervalId = null;
         }
     }
 
@@ -12862,7 +12908,7 @@
             // 提前探测 DLL 并加载会话级默认值；失败静默回退普通 JS 模式。
             ddBackend.prepare().then(state => {
                 const version = String(state?.version ?? state?.Version ?? '离线');
-                logger.info(`[运行版本] 脚本修订=local-poster-info-v1，DLL=${/^[0-9.]{3,30}$/.test(version) ? version : '离线'}`);
+                logger.info(`[运行版本] 脚本修订=playback-rate-sync-v1，DLL=${/^[0-9.]{3,30}$/.test(version) ? version : '离线'}`);
                 if (window.ede && !window.ede.danmaku) lsCache.clear();
                 // 只有纯 JS 官方源需要浏览器签名，DLL 在线时完全交给后端。
                 if (!state && lsGetItem(lsKeys.useOfficialApi.id)) ddSign.warmup();
