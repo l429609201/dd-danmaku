@@ -1,5 +1,6 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, provide } from 'vue'
+import { useUiRef, useDetailsState } from './useUiState.js'
 import { parameterFields } from './parameterFields.js'
 import { parameterSections as sections, parameterChoices as extraChoices } from './parameterSections.js'
 import { choices } from './defaultFields.js'
@@ -8,8 +9,17 @@ import PlayerApiSettings from './PlayerApiSettings.vue'
 import PlayerListEditor from './PlayerListEditor.vue'
 // 编辑器仅发出草稿修改，保存、敏感清除和用户权限仍由文件管理页负责。
 const props = defineProps({ values: Object, enabled: Object, clear: Object, rows: Array, namespace: String, userId: String, search: String, busy: Boolean })
-const emit = defineEmits(['value', 'enabled', 'clear'])
-const tab = ref('弹幕设置')
+const emit = defineEmits(['value', 'enabled', 'clear', 'draft'])
+const stateKey = `file-editor:${props.userId}:${props.namespace}`
+provide('parameterDraftScope', computed(() => stateKey))
+const tab = useUiRef(`${stateKey}:tab`, '弹幕设置', value => ['弹幕设置', '弹幕 API', '高级设置'].includes(value))
+const details = useDetailsState(`${stateKey}:details`)
+function stageInput(event) {
+  const field = parameterFields.find(item => `param-${item.key}` === event.target.id)
+  if (!field) return
+  const value = field.type === 'number' ? (event.target.value === '' ? '' : Number(event.target.value)) : event.target.value
+  emit('draft', field.id, value)
+}
 const groups = computed(() => sections.filter(([page]) => props.search || page === tab.value).map(([, title, keys]) => ({ title, fields: keys.split(' ').map(key => parameterFields.find(f => f.key === key)).filter(f => f && (!props.search || `${f.label} ${f.id}`.toLowerCase().includes(props.search.toLowerCase()))) })).filter(g => g.fields.length))
 function options(field) { return choices[field.key] || extraChoices[field.key] || [] }
 function arrayValue(field) {
@@ -28,11 +38,11 @@ function preview(key) { const field = parameterFields.find(f => f.key === key); 
 </script>
 
 <template>
-  <div class="ede-editor">
+  <div class="ede-editor" @input="stageInput">
     <div class="tabs" role="tablist" aria-label="播放器参数分类">
       <button v-for="name in ['弹幕设置', '弹幕 API', '高级设置']" :key="name" type="button" role="tab" :aria-selected="tab === name" @click="tab = name">{{ name }}</button>
     </div>
-    <component :is="group.title === '基础设置' ? 'section' : 'details'" v-for="group in groups" :key="group.title" :open="!!search || group.title === '弹幕屏蔽'">
+    <component :is="group.title === '基础设置' ? 'section' : 'details'" v-for="group in groups" :key="group.title" :open="!!search || details.isOpen(group.title, group.title === '弹幕屏蔽')" @toggle="!search && details.toggle(group.title, $event)">
       <summary v-if="group.title !== '基础设置'">{{ group.title }}</summary>
       <div class="content" :class="{ basic: group.title === '基础设置' }">
         <PlayerApiSettings v-if="group.title === 'API选择、自定义API配置'" :key="`${userId}:${namespace}`" :official="preview('useOfficialApi')" :custom="preview('useCustomApi')" :priority="preview('apiPriority')" :sources="values.danmakuCustomApiList || undefined" :saved="rows.find(r => r.namespace === namespace && r.key === 'danmakuCustomApiList')?.value || '[]'" :disabled="busy" @change="(key, value) => emit('value', parameterFields.find(f => f.key === key).id, value)">
@@ -42,7 +52,7 @@ function preview(key) { const field = parameterFields.find(f => f.key === key); 
           <div class="row" :class="{ stacked: field.type === 'json' || field.sensitive }">
             <label v-if="field.type !== 'boolean'" :for="`param-${field.key}`">{{ field.label.replace(/（JSON.*?）/, '') }}</label>
             <template v-if="field.sensitive">
-              <SavedSecretInput :key="`${userId}:${namespace}:${field.id}`" commit-on-change :model-value="values[field.id]" :value="rows.find(r => r.namespace === namespace && r.key === field.id)?.value || ''" :disabled="busy" @update:model-value="v => emit('value', field.id, v)" />
+              <SavedSecretInput :key="`${userId}:${namespace}:${field.id}`" commit-on-change :model-value="values[field.id]" :value="rows.find(r => r.namespace === namespace && r.key === field.id)?.value || ''" :disabled="busy" @draft="v => emit('draft', field.id, v)" @update:model-value="v => emit('value', field.id, v)" />
               <!-- 清除独立确认，不把空白替换框误认为删除。 -->
               <el-popconfirm title="确认清除此项已保存内容？" @confirm="emit('clear', field.id)"><template #reference><button type="button" class="clear-secret" :disabled="busy">清除已保存内容</button></template></el-popconfirm>
             </template>
@@ -59,11 +69,11 @@ function preview(key) { const field = parameterFields.find(f => f.key === key); 
             </div>
             <!-- 滑块使用 change，拖动期间不产生网络请求；原版离散数值仍以滑块展示。 -->
             <template v-else-if="field.type === 'number' && field.min != null && field.max != null && field.key !== 'chConvert'">
-              <input :id="`param-${field.key}`" type="range" :min="field.min" :max="field.max" :value="values[field.id]" :disabled="busy" @change="emit('value', field.id, Number($event.target.value))">
+              <input :id="`param-${field.key}`" type="range" :min="field.min" :max="field.max" :step="field.step || 1" :value="values[field.id]" :disabled="busy" @change="emit('value', field.id, Number($event.target.value))">
               <output>{{ options(field).find(([id]) => id === values[field.id])?.[1] ?? values[field.id] }}</output>
             </template>
             <div v-else-if="options(field).length" class="segments"><button v-for="[id, title] in options(field)" :key="id" type="button" :aria-pressed="values[field.id] === id" :disabled="busy" @click="emit('value', field.id, id)">{{ title }}</button></div>
-            <input v-else-if="field.type === 'number'" :id="`param-${field.key}`" type="number" :value="values[field.id]" :disabled="busy" @change="emit('value', field.id, $event.target.value === '' ? NaN : Number($event.target.value))">
+            <input v-else-if="field.type === 'number'" :id="`param-${field.key}`" type="number" :min="field.min" :max="field.max" :step="field.step || 'any'" :value="values[field.id]" :disabled="busy" @change="emit('value', field.id, $event.target.value === '' ? NaN : Number($event.target.value))">
             <textarea v-else-if="field.type === 'json' || field.key === 'filterKeywords'" :id="`param-${field.key}`" :value="values[field.id]" rows="5" :disabled="busy" @change="emit('value', field.id, $event.target.value)" />
             <input v-else :id="`param-${field.key}`" type="text" :value="values[field.id]" :disabled="busy" @change="emit('value', field.id, $event.target.value)" @keydown.enter="$event.target.blur()">
           </div>

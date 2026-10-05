@@ -47,8 +47,10 @@ public sealed class SaveDanmakuRequest : IRequiresRequestStream
 {
     /// <summary>目标 Emby 媒体标识。</summary>
     public string ItemId { get; set; } = "";
-    /// <summary>仅管理员显式确认覆盖时传入 true；自动保存同来源更新也使用此字段。</summary>
+    /// <summary>显式覆盖意图；仍需对应授权及服务器校验的旧文件版本。</summary>
     public bool Overwrite { get; set; }
+    /// <summary>保存用途：upload 为浏览器上传，auto 为自动保存；未知用途拒绝。</summary>
+    public string SavePurpose { get; set; } = "upload";
     /// <summary>可选弹幕来源；为空时使用媒体固定同名 XML。</summary>
     public string? Source { get; set; }
     /// <summary>待保存弹幕 XML 的请求体。</summary>

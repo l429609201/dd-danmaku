@@ -78,7 +78,19 @@ public sealed record PlaybackQueryDto(
     bool RefreshRequired,
     string? RefreshReason,
     string? StorageLocation,
-    MatchSummaryDto? Match);
+    MatchSummaryDto? Match)
+{
+    /// <summary>已读取正文的 SHA256 版本；不改变既有位置构造参数。</summary>
+    public string? ContentVersion { get; init; }
+}
+
+/// <summary>与已读取本地正文版本绑定的安全媒体展示信息。</summary>
+public sealed record LocalPlaybackInfoDto(string ItemId, string ContentVersion, string StorageLocation,
+    string Source, string SourceName, string MediaName, string? EpisodeName,
+    int? SeasonNumber, int? EpisodeNumber, string? SourceAnimeId, string? SourceEpisodeId, PosterDto? Poster);
+
+/// <summary>仅提供 Emby 图片项标识，不包含路径或鉴权信息。</summary>
+public sealed record PosterDto(string ItemId, string ImageType, string Level);
 
 /// <summary>传递给前端的单条弹幕。</summary>
 /// <param name="Text">正文。</param>

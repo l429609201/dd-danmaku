@@ -54,22 +54,43 @@ public sealed partial class DanmakuApiService
     {
         using var document = JsonDocument.Parse(bytes);
         var root = document.RootElement;
-        if (root.ValueKind != JsonValueKind.Object
-            || root.TryGetProperty("success", out var success) && success.ValueKind == JsonValueKind.False)
+        if (root.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array)
+            || root.ValueKind == JsonValueKind.Object
+                && (root.TryGetProperty("success", out var success) && success.ValueKind == JsonValueKind.False
+                    || root.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.String
+                        && status.GetString() == "pending"))
             throw new InvalidDataException("上游未成功返回弹幕");
-        var payload = root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object ? data : root;
-        if (!payload.TryGetProperty("comments", out var array) || array.ValueKind != JsonValueKind.Array
-            || array.GetArrayLength() > DanmakuXml.MaxComments)
+        // 与浏览器按相同优先级兼容四种正文包装，字段类型和 XML 验证仍严格检查。
+        var array = root;
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            if (root.TryGetProperty("comments", out var direct)) array = direct;
+            else if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object
+                && data.TryGetProperty("comments", out var nested)) array = nested;
+            else if (root.TryGetProperty("result", out var result)) array = result;
+        }
+        if (array.ValueKind != JsonValueKind.Array || array.GetArrayLength() > DanmakuXml.MaxComments)
             throw new InvalidDataException("弹幕正文缺失或超过限制");
         var comments = new List<DanmakuComment>();
         foreach (var entry in array.EnumerateArray())
         {
-            var fields = entry.GetProperty("p").GetString()?.Split(',') ?? [];
+            if (entry.ValueKind != JsonValueKind.Object
+                || !entry.TryGetProperty("p", out var p) || p.ValueKind != JsonValueKind.String
+                || !entry.TryGetProperty("m", out var m) || m.ValueKind != JsonValueKind.String)
+                throw new InvalidDataException("上游弹幕字段无效");
+            var fields = p.GetString()!.Split(',');
             if (fields.Length < 3) throw new InvalidDataException("上游弹幕字段无效");
-            var comment = new DanmakuComment(entry.GetProperty("m").GetString() ?? "",
+            string? commentId = null;
+            if (entry.TryGetProperty("cid", out var cid) && cid.ValueKind != JsonValueKind.Null)
+            {
+                if (cid.ValueKind is not (JsonValueKind.String or JsonValueKind.Number))
+                    throw new InvalidDataException("上游弹幕标识无效");
+                commentId = cid.ToString();
+            }
+            var comment = new DanmakuComment(m.GetString()!,
                 double.Parse(fields[0], CultureInfo.InvariantCulture), int.Parse(fields[1], CultureInfo.InvariantCulture),
                 int.Parse(fields[2], CultureInfo.InvariantCulture), fields.Length > 3 ? fields[3] : null,
-                Cid: entry.TryGetProperty("cid", out var cid) ? cid.ToString() : null);
+                Cid: commentId);
             DanmakuXml.Validate(comment);
             comments.Add(comment);
         }

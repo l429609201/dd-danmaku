@@ -36,32 +36,41 @@ public sealed partial class DanmakuApiService
         EmbyAccessControl.RequireAdministrator(user);
         var body = await ApiHttpResult.ReadBodyAsync(request.RequestStream, Request, 256 * 1024, "application/json");
         var input = ApiHttpResult.Parse<SelectionSettingsDto>(body);
-        if (input.SharedFreshHours is < 1 or > 8760 || input.TemporaryHours is < 1 or > 8760
-            || input.SelectionDays is < 1 or > 3650 || (long)input.SelectionDays * 24 < input.TemporaryHours
-            || input.CacheLimitMiB is < 32 or > 1048576 || input.SelectionLimitPerUser is < 1 or > 10000)
-            throw new ArgumentException("缓存期限或容量无效，选择期限不能短于正文期限");
-        var selection = NormalizeGrantIds(input.SelectionUserIds);
-        var create = NormalizeGrantIds(input.CreateSharedUserIds);
-        var refresh = NormalizeGrantIds(input.RefreshSharedUserIds);
-        var replace = NormalizeGrantIds(input.ReplaceSharedUserIds);
-        var upload = NormalizeGrantIds(input.UploadSharedUserIds);
+        var selection = ValidateSelectionSettings(input);
         lock (PluginConfigurationService.ConfigurationGate)
         {
             var copy = plugin.Configuration.CopyForUpdate();
-            copy.SharedDanmakuFreshHours = input.SharedFreshHours;
-            copy.TemporaryDanmakuHours = input.TemporaryHours;
-            copy.DanmakuSelectionDays = input.SelectionDays;
-            copy.TemporaryDanmakuLimitMiB = input.CacheLimitMiB;
-            copy.DanmakuSelectionLimitPerUser = input.SelectionLimitPerUser;
-            copy.DanmakuSelectionUserIds = selection;
-            copy.DanmakuCreateSharedUserIds = create;
-            copy.DanmakuRefreshSharedUserIds = refresh;
-            copy.DanmakuReplaceSharedUserIds = replace;
-            copy.DanmakuUploadSharedUserIds = upload;
+            ApplySelectionSettings(copy, selection);
             plugin.UpdateConfiguration(copy);
             return ApiHttpResult.Success(SelectionSettingsView(copy));
         }
     });
+
+    // 新旧接口共用完整校验；无效缓存或任一授权清单均不能提交其他字段。
+    private static SelectionSettingsDto ValidateSelectionSettings(SelectionSettingsDto input)
+    {
+        ValidateRetentionSettings(new RetentionSettingsDto(input.SharedFreshHours, input.TemporaryHours,
+            input.SelectionDays, input.CacheLimitMiB, input.SelectionLimitPerUser));
+        return input with
+        {
+            SelectionUserIds = NormalizeGrantIds(input.SelectionUserIds),
+            CreateSharedUserIds = NormalizeGrantIds(input.CreateSharedUserIds),
+            RefreshSharedUserIds = NormalizeGrantIds(input.RefreshSharedUserIds),
+            ReplaceSharedUserIds = NormalizeGrantIds(input.ReplaceSharedUserIds),
+            UploadSharedUserIds = NormalizeGrantIds(input.UploadSharedUserIds)
+        };
+    }
+
+    private static void ApplySelectionSettings(PluginConfiguration copy, SelectionSettingsDto input)
+    {
+        ApplyRetentionSettings(copy, new RetentionSettingsDto(input.SharedFreshHours, input.TemporaryHours,
+            input.SelectionDays, input.CacheLimitMiB, input.SelectionLimitPerUser));
+        copy.DanmakuSelectionUserIds = input.SelectionUserIds;
+        copy.DanmakuCreateSharedUserIds = input.CreateSharedUserIds;
+        copy.DanmakuRefreshSharedUserIds = input.RefreshSharedUserIds;
+        copy.DanmakuReplaceSharedUserIds = input.ReplaceSharedUserIds;
+        copy.DanmakuUploadSharedUserIds = input.UploadSharedUserIds;
+    }
 
     private static string[] NormalizeGrantIds(string[]? values)
     {

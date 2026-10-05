@@ -8,7 +8,8 @@ export const defaultParameterGroups = parameterSections.map(([tab, title, keys])
   fields: keys.split(' ').map(key => {
     const field = parameterFields.find(item => item.key === key)
     const value = field.type === 'json' && !nativeDefaultArrays.has(key) ? JSON.stringify(field.value) : field.value
-    return [key, field.label.replace(/（JSON.*?）/, ''), value, field.min, field.max]
+    // 保留步长，避免默认参数控件退回浏览器的一单位步进。
+    return [key, field.label.replace(/（JSON.*?）/, ''), value, field.min, field.max, field.step]
   }),
 }))
 export const defaultParameterFields = defaultParameterGroups.flatMap(group => group.fields)

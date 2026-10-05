@@ -1,10 +1,10 @@
 <script setup>
 import { onDeactivated, ref, watch } from 'vue'
 const props = defineProps({ value: { type: String, default: '' }, modelValue: { type: String, default: '' }, disabled: Boolean, commitOnChange: Boolean })
-const emit = defineEmits(['update:modelValue'])
+const emit = defineEmits(['update:modelValue', 'draft'])
 const visible = ref(false), text = ref(props.modelValue || props.value)
 // 参数页完成编辑再提交；其他设置页维持原有草稿事件。
-function edit(value) { text.value = value; if (!props.commitOnChange) emit('update:modelValue', value) }
+function edit(value) { text.value = value; emit('draft', value); if (!props.commitOnChange) emit('update:modelValue', value) }
 function commit() { if (props.commitOnChange) emit('update:modelValue', text.value) }
 onDeactivated(() => { visible.value = false })
 watch(() => props.value, value => { if (!props.modelValue) text.value = value; visible.value = false })

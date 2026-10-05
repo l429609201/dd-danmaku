@@ -1,9 +1,9 @@
 <script setup>
-import { ref } from 'vue'
+import { useUiRef } from './useUiState.js'
 import FrontendDefaultsPanel from './FrontendDefaultsPanel.vue'
 import ParameterFilesPanel from './ParameterFilesPanel.vue'
 import ProxySettingsPanel from './ProxySettingsPanel.vue'
-const active = ref('files')
+const active = useUiRef('parameter-page', 'files', value => ['files', 'defaults', 'proxy'].includes(value))
 </script>
 
 <template>

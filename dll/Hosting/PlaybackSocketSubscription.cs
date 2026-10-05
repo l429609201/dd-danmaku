@@ -22,20 +22,22 @@ internal sealed class PlaybackSocketSubscription : IDisposable
     internal string DeviceId { get; }
     internal long UserId { get; }
     internal bool Expired => Volatile.Read(ref _disposed) != 0
-        || Environment.TickCount64 - Interlocked.Read(ref _lastPing) > 35000;
+        || Environment.TickCount64 - Interlocked.Read(ref _lastPing) > 120000;
 
     private readonly Func<PlaybackSocketSubscription, bool> _valid;
+    private readonly Action<string>? _log;
     private readonly HashSet<string> _retired = new(StringComparer.Ordinal);
     private string? _playSession;
 
     internal PlaybackSocketSubscription(IWebSocketConnection connection, string sessionId, string deviceId,
-        long userId, Func<PlaybackSocketSubscription, bool> valid)
+        long userId, Func<PlaybackSocketSubscription, bool> valid, Action<string>? log = null)
     {
         Connection = connection;
         SessionId = sessionId;
         DeviceId = deviceId;
         UserId = userId;
         _valid = valid;
+        _log = log;
         // 发布到订阅表前先排入握手，避免首条播放消息先于 Ready 到达。
         Ping();
         _ = SendLoop();
@@ -68,7 +70,7 @@ internal sealed class PlaybackSocketSubscription : IDisposable
             _playSession = value.PlaySessionId;
             if (name == "stopped") _retired.Add(value.PlaySessionId);
             // 有界保存旧播放标识；达到上限让浏览器重连，不丢弃旧标识后重新接受迟到事件。
-            if (_retired.Count >= 256) { Dispose(); return; }
+            if (_retired.Count >= 256) { Dispose("PLAY_SESSION_LIMIT"); return; }
             _sequence = value.Sequence;
             Enqueue(PlaybackSocketProtocol.State, value);
         }
@@ -78,7 +80,7 @@ internal sealed class PlaybackSocketSubscription : IDisposable
     {
         var payload = JsonSerializer.Serialize(data, MatchJson.Options);
         var message = "{\"MessageType\":" + JsonSerializer.Serialize(type) + ",\"Data\":" + payload + "}";
-        if (!_outbound.Writer.TryWrite(message)) Dispose();
+        if (!_outbound.Writer.TryWrite(message)) Dispose("QUEUE_LIMIT");
     }
 
     private async Task SendLoop()
@@ -88,13 +90,15 @@ internal sealed class PlaybackSocketSubscription : IDisposable
             await foreach (var message in _outbound.Reader.ReadAllAsync(_stop.Token).ConfigureAwait(false))
             {
                 // 入队之后也可能退出登录或更换会话；发送前再次核对，不能排空旧身份的积压消息。
-                if (Expired || !_valid(this)) break;
+                if (Expired || !_valid(this)) { Dispose("AUTH_OR_SESSION_INVALID"); break; }
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
                 timeout.CancelAfter(TimeSpan.FromSeconds(5));
                 await Connection.SendAsync(message.AsMemory(), timeout.Token).ConfigureAwait(false);
             }
         }
-        catch (Exception) { /* 传输或宿主校验失败只停用该订阅。 */ }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+        catch (OperationCanceledException) { Dispose("SEND_TIMEOUT"); }
+        catch (Exception) { Dispose("SEND_FAILED"); }
         finally
         {
             Dispose();
@@ -102,11 +106,14 @@ internal sealed class PlaybackSocketSubscription : IDisposable
         }
     }
 
-    public void Dispose()
+    public void Dispose() => Dispose("SUBSCRIPTION_RELEASED");
+
+    internal void Dispose(string reason)
     {
         lock (_gate)
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            try { _log?.Invoke(reason); } catch (Exception) { /* 日志失败不阻断资源回收。 */ }
             // 与消费循环的 CTS 释放串行，防止完成队列后 Cancel 访问已释放的 CTS。
             _stop.Cancel();
             _outbound.Writer.TryComplete();

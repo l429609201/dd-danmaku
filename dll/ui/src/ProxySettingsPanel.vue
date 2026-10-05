@@ -1,8 +1,16 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
+import { useSafeDrafts } from './useUiState.js'
 import { api } from './api.js'
 const form = reactive({ enabled: false, baseUrl: '', sourceId: '', serverType: 'generic', appId: '', appSecret: '', clearSecret: false })
 const busy = ref(false), error = ref(''), notice = ref(''), hasSecret = ref(false)
+const drafts = useSafeDrafts('proxy-settings', key => ['enabled', 'sourceId', 'serverType'].includes(key))
+let filling = false
+watch(form, value => {
+  if (busy.value || filling) return
+  for (const [key, item] of Object.entries(value)) drafts.stage(key, item)
+}, { flush: 'sync' })
+function discardDraft() { drafts.discard(); void load() }
 function applySettings(data) {
   // 只读状态单独保存，不能回传到严格校验的配置接口。
   Object.assign(form, { enabled: data.enabled, baseUrl: data.baseUrl || '', sourceId: data.sourceId || '',
@@ -11,7 +19,13 @@ function applySettings(data) {
 }
 async function load() {
   busy.value = true; error.value = ''
-  try { applySettings(await api.proxySettings()) }
+  try {
+    applySettings(await api.proxySettings())
+    drafts.select('instance')
+    filling = true
+    Object.assign(form, drafts.entries.value)
+    filling = false
+  }
   catch (e) { error.value = e.message }
   finally { busy.value = false }
 }
@@ -20,6 +34,7 @@ async function save() {
   try {
     const { enabled, baseUrl, sourceId, serverType, appId, appSecret, clearSecret } = form
     const data = await api.saveProxySettings({ enabled, baseUrl, sourceId, serverType, appId, appSecret, clearSecret })
+    drafts.discard()
     applySettings(data)
     notice.value = '配置已保存；请验证当前上游可用性。'
   } catch (e) { error.value = e.message }
@@ -40,6 +55,7 @@ onMounted(load)
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <el-alert v-if="notice" :title="notice" type="success" :closable="false" />
     <p>此设置对当前 Emby 实例生效。播放器通过 Emby 中转访问下方配置的弹幕 API。请使用可信地址；中转请求不会携带 Emby 登录令牌。</p>
+    <div v-if="drafts.count.value" role="status">已保留未保存草稿 <el-button link :disabled="busy" @click="discardDraft">丢弃草稿</el-button></div>
     <el-form :model="form" :disabled="busy" label-position="top" @submit.prevent="save">
       <el-form-item label="启用代理"><el-switch v-model="form.enabled" /></el-form-item>
       <el-form-item label="上游 API 前缀"><el-input v-model="form.baseUrl" maxlength="2048" placeholder="填写服务提供的完整 API 前缀" /><p class="field-hint">按服务提供的地址填写，例如 /api/v2 或 /api/v1/访问令牌；保留原有路径，不需要改成 /api/v2，也不要附加 /search/anime 等具体接口。</p></el-form-item>

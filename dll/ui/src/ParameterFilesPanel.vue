@@ -1,16 +1,21 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { api } from './api.js'
 // 已保存敏感值独立显示，不将回显内容当成新的替换输入。
 import PlayerParameterEditor from './PlayerParameterEditor.vue'
 import { parameterFields, parseParameter, serializeParameter } from './parameterFields.js'
 import ParameterMigrationSwitch from './ParameterMigrationSwitch.vue'
 import { useParameterAutosave } from './useParameterAutosave.js'
+import { useUiRef, useSafeDrafts } from './useUiState.js'
 import './playerSettings.css'
 
-const files = ref([]), users = ref([]), selected = ref(''), namespace = ref('dd-danmaku')
+const files = ref([]), users = ref([])
+const selected = useUiRef('files-user', '', value => typeof value === 'string')
+const namespace = useUiRef('files-namespace', 'dd-danmaku', value => typeof value === 'string' && value.length <= 256)
+const drafts = useSafeDrafts('parameter-files', id => parameterFields.some(field => field.id === id && !field.sensitive))
 const rows = ref([]), values = ref({}), enabled = ref({}), clear = ref({}), busy = ref(false), error = ref(''), message = ref('')
-const target = ref(''), copyDialog = ref(false), search = ref('')
+const target = ref(''), copyDialog = ref(false)
+const search = useUiRef('files-search', '', value => typeof value === 'string' && value.length <= 256)
 const namespaces = computed(() => [...new Set(['dd-danmaku', ...rows.value.map(r => r.namespace)])])
 const unknown = computed(() => rows.value.filter(r => r.namespace === namespace.value && !parameterFields.some(f => f.id === r.key)))
 // 保存任务捕获用户及命名空间，不因后续切换而写到其他用户。
@@ -19,6 +24,7 @@ const autosave = useParameterAutosave(async ({ userId, space, entry: draft, clea
   const field = parameterFields.find(f => f.id === draft.key)
   const entry = { ...draft, value: clearing ? '' : serializeParameter(field, draft.value) }
   await api.saveParameterFile(userId, { namespace: space, parameters: [entry], clearSecrets: clearing ? [entry.key] : [] })
+  drafts.acknowledgeAt(JSON.stringify([userId, space]), entry.key, draft.value)
   if (selected.value === userId && namespace.value === space) {
     const row = rows.value.find(r => r.namespace === space && r.key === entry.key)
     if (row) row.value = entry.value
@@ -35,27 +41,50 @@ function fill() {
     values.value[field.id] = field.sensitive ? '' : row ? parseParameter(field, row.value)
       : field.type === 'json' ? JSON.stringify(field.value, null, 2) : field.value
   }
+  drafts.select(JSON.stringify([selected.value, namespace.value]))
+  for (const [id, value] of Object.entries(drafts.entries.value)) {
+    if (parameterFields.some(field => field.id === id)) values.value[id] = value
+  }
 }
+function stage(id, value) {
+  if (!selected.value || busy.value || error.value) return
+  values.value[id] = value
+  drafts.stage(id, value)
+}
+function saveRestored() {
+  for (const [id, value] of Object.entries(drafts.entries.value)) commit(id, value)
+}
+function discardRestored() { drafts.discard(); fill() }
+let readController, readGeneration = 0
 async function load() {
-  if (!selected.value) return
+  readController?.abort()
+  const id = selected.value, generation = ++readGeneration
+  if (!id) { rows.value = []; return }
+  readController = new AbortController()
   busy.value = true; error.value = ''; message.value = ''
-  try { rows.value = await api.parameterFile(selected.value); fill() }
-  catch (e) { rows.value = []; error.value = e.message }
-  finally { busy.value = false }
+  try {
+    const data = await api.parameterFile(id, readController.signal)
+    if (generation !== readGeneration || id !== selected.value) return
+    rows.value = data; fill()
+  } catch (e) {
+    if (generation === readGeneration && e.name !== 'AbortError') { rows.value = []; error.value = e.message }
+  } finally { if (generation === readGeneration) busy.value = false }
 }
+onBeforeUnmount(() => { ++readGeneration; readController?.abort() })
 function commit(id, value, clearing = false) {
   const field = parameterFields.find(f => f.id === id)
   if (!field || !selected.value || busy.value || error.value) return
   values.value[id] = value
   // 留空不清除敏感值；清除必须来自独立确认操作。
-  if (field.sensitive && !value && !clearing) return
+  if (field.sensitive && !value && !clearing) { drafts.acknowledge(id, value); return }
+  drafts.stage(id, value)
   const entry = { key: id, value, type: field.type, description: field.label }
   autosave.submit(`${selected.value}:${namespace.value}:${id}`, { userId: selected.value, space: namespace.value, entry, clearing })
 }
 async function remove() {
   if (!window.confirm('确认清空此用户整份主动参数？不影响账号和用户专属默认。播放器本地缓存可能再次同步上传。')) return
   busy.value = true; error.value = ''
-  try { await api.deleteParameterFile(selected.value); rows.value = []; fill(); await refresh(); message.value = '已清空，保留空文件阻止旧参数回退' }
+  try { await api.deleteParameterFile(selected.value); drafts.discard(); rows.value = []; fill(); await refresh(); message.value = '已清空，保留空文件阻止旧参数回退' }
   catch (e) { error.value = e.message } finally { busy.value = false }
 }
 async function copy() {
@@ -66,7 +95,14 @@ async function copy() {
   try { const result = await api.copyParameterFile(selected.value, { targetUserId: target.value, overwrite }); await refresh(); copyDialog.value = false; message.value = `已复制 ${result.copied} 项，跳过 ${result.skipped} 项` }
   catch (e) { error.value = e.message } finally { busy.value = false }
 }
-onMounted(async () => { busy.value = true; try { await refresh() } catch (e) { error.value = e.message } finally { busy.value = false } })
+onMounted(async () => {
+  busy.value = true
+  try {
+    await refresh()
+    if (selected.value && !users.value.some(user => user.id === selected.value)) selected.value = ''
+    if (selected.value) await load()
+  } catch (e) { error.value = e.message } finally { busy.value = false }
+})
 </script>
 <template>
   <section v-loading="busy" class="file-manager ede-surface">
@@ -82,8 +118,9 @@ onMounted(async () => { busy.value = true; try { await refresh() } catch (e) { e
       <div class="toolbar"><el-select v-model="namespace" filterable allow-create default-first-option :disabled="busy || saving || !!saveError" @change="fill"><el-option v-for="n in namespaces" :key="n" :label="n" :value="n" /></el-select><el-input v-model="search" placeholder="搜索参数名或键" clearable /></div>
       <div class="save-status" role="status" aria-live="polite">{{ saveError || saveMessage || '修改后自动保存' }} <el-button v-if="saveError" link @click="autosave.retry">重试保存</el-button></div>
       <!-- 控件完成编辑才提交；不再用独立勾选决定是否保存。 -->
-      <PlayerParameterEditor :values="values" :enabled="enabled" :clear="clear" :rows="rows" :namespace="namespace" :user-id="selected" :search="search" :busy="busy || !!error"
-        @value="commit" @clear="id => commit(id, '', true)" />
+      <div v-if="drafts.count.value && !saving" class="save-status" role="status">已保留 {{ drafts.count.value }} 项未保存草稿 <el-button link @click="saveRestored">保存草稿</el-button><el-button link @click="discardRestored">丢弃草稿</el-button></div>
+      <PlayerParameterEditor :key="`${selected}:${namespace}`" :values="values" :enabled="enabled" :clear="clear" :rows="rows" :namespace="namespace" :user-id="selected" :search="search" :busy="busy || !!error"
+        @value="commit" @draft="stage" @clear="id => commit(id, '', true)" />
       <el-alert v-if="unknown.length" :title="`此命名空间另有 ${unknown.length} 项扩展参数，保持不变。`" type="info" :closable="false" />
     </el-card>
     <el-dialog v-model="copyDialog" title="复制用户参数" width="min(520px, 95vw)"><el-select v-model="target" filterable placeholder="选择目标用户" :disabled="busy"><el-option v-for="u in users.filter(u => u.id !== selected)" :key="u.id" :label="u.name" :value="u.id" /></el-select><template #footer><el-button :disabled="busy" @click="copyDialog = false">取消</el-button><el-button type="primary" :disabled="!target || busy" @click="copy">确认复制</el-button></template></el-dialog>

@@ -1,27 +1,42 @@
 <script setup>
-import { onMounted, ref } from 'vue'
-import { Setting, VideoPlay, Files, Connection, DataAnalysis } from '@element-plus/icons-vue'
-import { api } from './api.js'
+import { computed, nextTick, onMounted, ref } from 'vue'
+import { useUiRef, usePagePosition } from './useUiState.js'
+import { Setting, VideoPlay, Files, Connection, DataAnalysis, Document } from '@element-plus/icons-vue'
+import { api, currentUserId } from './api.js'
 import PluginSettings from './PluginSettings.vue'
 import AiServicePanel from './AiServicePanel.vue'
 import ParameterSettingsPanel from './ParameterSettingsPanel.vue'
 import RecordsPanel from './RecordsPanel.vue'
 import MatchingPanel from './MatchingPanel.vue'
 import DashboardPanel from './DashboardPanel.vue'
+import FrontendLogsPanel from './FrontendLogsPanel.vue'
 const version = ref('版本未知')
-const active = ref('dashboard'), refresh = ref(0), authorized = ref(false), error = ref('')
-// 管理 API 鉴权成功后才展示导航，普通用户只在 ede.js 中管理本人参数。
+const sectionIds = ['dashboard', 'settings', 'ai', 'parameters', 'records', 'matching', 'frontend-logs']
+const active = useUiRef('active-section', 'dashboard', value => sectionIds.includes(value))
+if (new URLSearchParams(window.location.search).get('view') === 'frontend-logs') active.value = 'frontend-logs'
+const position = usePagePosition(active)
+const refresh = ref(0), authorized = ref(false), administrator = ref(false), userId = ref(''), error = ref('')
+// 普通用户仅可进入本人日志；管理员权限仍由配置接口与服务器共同校验。
 onMounted(async () => {
   try {
+    userId.value = currentUserId()
     await api.config()
-    authorized.value = true
+    administrator.value = true; authorized.value = true
     // 版本读取失败不阻断已经通过鉴权的其他管理页面。
     try { const overview = await api.dashboard(); version.value = overview?.version || '版本未知' }
     catch { version.value = '版本未知' }
+  } catch (e) {
+    if (e.status !== 403) { error.value = e.message; return }
+    try {
+      const capabilities = await api.capabilities()
+      if (!capabilities?.capabilities?.FrontendLogs) throw new Error('当前实例未提供前端日志访问')
+      active.value = 'frontend-logs'; authorized.value = true
+      version.value = capabilities.version || '版本未知'
+    } catch (failure) { error.value = failure.message }
   }
-  catch (e) { error.value = e.status === 403 ? '仅管理员可访问后台；请在 ede.js 播放器中维护自己的参数。' : e.message }
+  if (authorized.value) { await nextTick(); position.restore() }
 })
-const sections = [
+const allSections = [
   { id: 'dashboard', label: '仪表盘', icon: DataAnalysis, component: DashboardPanel },
   { id: 'settings', label: '插件设置', icon: Setting, component: PluginSettings },
   { id: 'ai', label: 'AI 服务', icon: Connection, component: AiServicePanel },
@@ -29,7 +44,9 @@ const sections = [
   { id: 'parameters', label: '用户配置', icon: Files, component: ParameterSettingsPanel },
   { id: 'records', label: '弹幕记录', icon: VideoPlay, component: RecordsPanel },
   { id: 'matching', label: '媒体匹配', icon: Connection, component: MatchingPanel },
+  { id: 'frontend-logs', label: '前端日志', icon: Document, component: FrontendLogsPanel },
 ]
+const sections = computed(() => administrator.value ? allSections : allSections.filter(item => item.id === 'frontend-logs'))
 </script>
 
 <template>
@@ -47,7 +64,7 @@ const sections = [
           </a>
         </header>
         <KeepAlive>
-          <component :is="sections.find(item => item.id === active)?.component" :key="active" :refresh-token="refresh" />
+          <component :is="sections.find(item => item.id === active)?.component" :key="active" :refresh-token="refresh" v-bind="active === 'frontend-logs' ? { administrator, currentUserId: userId } : {}" />
         </KeepAlive>
         <footer>DD-Danmaku · 插件配置存储在当前 Emby 实例</footer>
       </template>

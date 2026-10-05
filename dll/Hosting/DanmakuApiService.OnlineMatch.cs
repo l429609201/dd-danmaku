@@ -21,7 +21,8 @@ internal sealed record OnlineMatchInput(string ItemId, string Title, string? Fil
     IReadOnlyList<string>? SourcePriority = null, string MatchMode = "fileNameOnly",
     string? FileHash = null, long? FileSize = null, int? VideoDuration = null,
     bool MatchApiEnabled = true, string? OperationId = null,
-    string? AnimeBlacklist = null, string? EpisodeBlacklist = null, bool ApplyCustomBlacklist = false);
+    string? AnimeBlacklist = null, string? EpisodeBlacklist = null, bool ApplyCustomBlacklist = false,
+    string? PreferredAnimeId = null, int? PreferredEpisodeNumber = null);
 
 internal sealed record OnlineEpisode(string? AnimeId, string? AnimeTitle, string? EpisodeId,
     string? EpisodeTitle, int? EpisodeNumber = null, string? ImageUrl = null, decimal? Score = null);
@@ -97,6 +98,9 @@ public sealed partial class DanmakuApiService
             || input.SourcePriority is { Count: > 2 }
             || input.OperationId is { Length: > 128 }
             || input.AnimeBlacklist is { Length: > 512 } || input.EpisodeBlacklist is { Length: > 512 }
+            || (input.PreferredAnimeId is not null || input.PreferredEpisodeNumber is not null)
+                && (input.MediaType != "episode" || input.PreferredAnimeId is null
+                    || input.PreferredEpisodeNumber is < 1 or > 99999 || !OnlineId(input.PreferredAnimeId))
             || new[] { input.ItemId, input.Title, input.FileName ?? "", input.OperationId ?? "",
                 input.AnimeBlacklist ?? "", input.EpisodeBlacklist ?? "" }
                 .Any(s => s.Any(char.IsControl)))
@@ -134,6 +138,28 @@ public sealed partial class DanmakuApiService
         bool Allowed(OnlineEpisode candidate) =>
             (animeFilter is null || !animeFilter.IsMatch(candidate.AnimeTitle ?? ""))
             && (episodeFilter is null || !episodeFilter.IsMatch(candidate.EpisodeTitle ?? ""));
+        if (input.PreferredAnimeId is not null && input.PreferredEpisodeNumber is not null)
+        {
+            Progress("detail");
+            var preferredDetail = await OnlineFetchAsync(source, config, userId,
+                "/bangumi/" + ProxyIdentifier(input.PreferredAnimeId), null, token);
+            using var preferredDocument = JsonDocument.Parse(preferredDetail);
+            var root = preferredDocument.RootElement;
+            if (root.TryGetProperty("bangumi", out var bangumi) && bangumi.ValueKind == JsonValueKind.Object)
+                root = bangumi;
+            var title = OnlineString(root, "animeTitle");
+            if (title is not null && (animeFilter is null || !animeFilter.IsMatch(title)))
+            {
+                var preferred = new OnlineEpisode(input.PreferredAnimeId, title, null, null);
+                var preferredEpisodes = OnlineParseEpisodes(preferredDetail, preferred);
+                // 仅复用唯一明确的上游集号，不推断 episodeId 是否连续。
+                var preferredMatches = preferredEpisodes.Where(ep => ep.EpisodeNumber == input.PreferredEpisodeNumber && Allowed(ep)).ToArray();
+                if (preferredEpisodes.Count > 100 || preferredMatches.Length > 1)
+                    return new("ambiguous", sourceId, source, null, preferredMatches.Take(20).ToArray(), true, "user-confirmed-work");
+                if (preferredMatches.Length == 1)
+                    return new("matched", sourceId, source, preferredMatches[0], preferredMatches, false, "user-confirmed-work");
+            }
+        }
         var works = new List<OnlineEpisode>();
         var exactFound = false;
         if (input.MatchApiEnabled && !string.IsNullOrWhiteSpace(input.FileName))

@@ -55,15 +55,34 @@ public sealed partial class Plugin : BasePlugin<PluginConfiguration>, MediaBrows
         lock (_lifecycleGate)
         {
             if (Host is not null) return;
-            // 首次升级仅迁移旧值 10；持久化标记后允许管理员重新选择 10。
+            // 启动前持久化一次迁移；仅修改副本，保存失败不发布宿主或预先标记完成。
             lock (Web.Api.PluginConfigurationService.ConfigurationGate)
             {
-                if (!Configuration.AiCandidateLimitMigrated)
+                var current = Configuration;
+                if (!current.AiCandidateLimitMigrated || !current.AutoSaveDanmakuMigrated)
                 {
-                    var migrated = Configuration.CopyForUpdate();
-                    if (migrated.AiMaxCandidates == 10) migrated.AiMaxCandidates = 200;
-                    migrated.AiCandidateLimitMigrated = true;
-                    UpdateConfiguration(migrated);
+                    var migrated = current.CopyForUpdate();
+                    // 首次升级仅迁移旧值 10；迁移后允许管理员重新选择 10。
+                    if (!current.AiCandidateLimitMigrated)
+                    {
+                        if (migrated.AiMaxCandidates == 10) migrated.AiMaxCandidates = 200;
+                        migrated.AiCandidateLimitMigrated = true;
+                    }
+                    // 默认开启不扩大授权，不修改 XML 总开关、写开关或白名单。
+                    if (!current.AutoSaveDanmakuMigrated)
+                    {
+                        migrated.AutoSaveDanmaku = true;
+                        migrated.AutoSaveDanmakuMigrated = true;
+                    }
+                    try { UpdateConfiguration(migrated); }
+                    catch
+                    {
+                        // Emby SDK 先替换内存再写盘；失败恢复原实例，下一次启动才能重新执行迁移。
+                        Configuration = current;
+                        throw;
+                    }
+                    if (!current.AutoSaveDanmakuMigrated)
+                        logger.Info("XML 自动保存默认策略已迁移为开启；仍按当前用户授权及总开关、写入开关判定。");
                 }
             }
             // 将宿主原生日志传入匹配链路，不另建日志文件。

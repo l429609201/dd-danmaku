@@ -29,7 +29,21 @@
 | `GET` | `/plugin/danmu/raw/{Id}` |
 | `GET` | `/api/danmu/{Id}/raw` |
 
-其中 `{Id}` 是 Emby 媒体项 ID。实际 URL 需要加上 Emby 服务器地址及部署时的 API 前缀；常见形式是 `/emby`，但反向代理或服务器配置不同可能有所变化，不能固定假定为 `/emby`。请求必须携带有效的 Emby 用户认证（推荐使用 `X-Emby-Token`，也可由 Emby 支持的认证方式提供），并且该用户必须有权访问对应媒体。
+其中 `{Id}` 是 Emby 媒体项 ID。实际 URL 需要加上 Emby 服务器地址及部署时的 API 前缀；常见形式是 `/emby`，但反向代理或服务器配置不同可能有所变化，不能固定假定为 `/emby`。请求必须携带有效的 Emby 用户令牌，本文的可操作示例使用 `X-Emby-Token` 请求头；只有用户令牌能通过宿主 Emby 认证，不能用没有用户身份的服务器 API Key 代替。该用户还必须有权访问对应媒体。
+
+兼容接口属于普通业务 API，不是公开接口。DLL 的管理页面和 `ede.js` 静态资源可以公开 GET，但业务请求仍由宿主认证；公开静态资源不代表可以匿名读取弹幕、配置或媒体信息。Web 页面通常从同源宿主 `ApiClient.accessToken()` 取得当前用户令牌；独立客户端必须先通过 Emby 登录流程取得宿主响应中的 `AccessToken`，再以 `X-Emby-Token` 发送请求。DLL 不签发用户令牌，不能用 `UserId` 冒充认证身份，也不承诺 `Authorization: Bearer` 可作为 DLL 的认证头。
+
+示例（`TOKEN` 只表示当前 Emby 用户的令牌，不要把真实凭据写入文档或 shell 历史）：
+
+```bash
+curl -H 'X-Emby-Token: TOKEN' \
+  'https://emby.example/emby/api/danmu/12345?Option=GetJsonById&Mode=single'
+
+curl -H 'X-Emby-Token: TOKEN' \
+  'https://emby.example/emby/dd-danmaku/api/capabilities'
+```
+
+管理员配置、状态、记录和存储策略接口还要求该用户具有 Emby 管理员策略；普通播放和能力探测不要求管理员，但仍要求用户身份和媒体可见性。没有有效用户认证返回 `401`，管理员接口缺少管理员权限返回 `403`。不要将外部弹幕服务的认证头转发给 DLL：自定义上游由 DLL 根据固定的服务器配置生成 `X-AppId`、`X-Timestamp`、`X-Signature`，签名原文是 `AppId + UnixTimestamp + target.AbsolutePath + AppSecret`，对 UTF-8 原文计算 SHA-256 后 Base64 编码；客户端只向 DLL 提交自己的 Emby 用户令牌。官方上游由 DLL 使用构建时配置的 relay 签名，内部头为 `X-Ddd-User`、`X-Ddd-Ts`、`X-Ddd-Sign`，签名原文为 `markedUser:timestamp:apiPath`，使用构建密钥计算 HMAC-SHA256。AI 上游的 `Authorization: Bearer` 是另一套仅供服务端访问 AI 的认证方式。
 
 #### 兼容接口参数
 
@@ -53,11 +67,55 @@
 #### 返回内容与边界
 
 - `Option=DownloadXml`：返回 `application/xml` 弹幕文件内容。
-- `Option=GetJsonById`：返回 JSON 对象，包含 `hasNext`、`data`、`extra`；`data` 按来源分组，每组包含 `source`、`sourceName`、`opened` 和 `danmuEvents`。
+- `Option=GetJsonById`：返回 JSON 对象，包含 `hasNext`、`data`、`extra`；`data` 直接是来源分组数组，每项包含 `source`、`sourceName`、`opened` 和 `danmuEvents`，不是再包一层 `group` 字段。
 - `Option=select`：返回 `{ "sources": [...] }`，用于枚举服务器上可读取的来源。
-- 接口只读取服务器上已经存在的本地弹幕文件，不负责搜索、匹配、刷新、下载或写入弹幕。
-- 未找到弹幕返回 `404`；参数无效返回 `400`；没有有效认证返回 `401`；没有媒体访问权限返回 `403`。具体错误响应由 DLL 的 API 错误格式返回。
+- 接口读取已有共享正文或本人临时正文；当对应授权绑定已过期时，可能尝试受限刷新，失败时保留可用旧正文或回退到共享正文。不负责搜索、下载或写入。
+- 未找到弹幕返回 `404`；参数无效返回 `400`；没有有效用户认证返回 `401`；用户无法访问对应媒体时由媒体可见性校验返回 `404`；管理员接口缺少管理员权限才返回 `403`。具体错误响应由 DLL 的 API 错误格式返回。
 - `/raw` 只是兼容路径的一部分，不会绕过认证、媒体权限、读取开关或其他安全限制。
+
+### 本地媒体信息与海报接口
+
+DLL 提供只读接口，将已经读取的本地弹幕正文版本与 Emby 媒体展示信息绑定：
+
+```text
+GET /dd-danmaku/api/playback/{ItemId}/info
+```
+
+请求必须显式提供 `Source`（空字符串表示无来源共享文件）、`StorageLocation=sidecar|temporary` 和正文 `ContentVersion`（64 位十六进制 SHA-256，大小写不敏感）。接口要求当前 Emby 用户令牌、媒体可见性以及 XML 总开关和读取开关，不要求管理员或写入权限；不会刷新上游、改变个人选择或写入文件。
+
+返回的 `MediaName`、季集、来源、来源作品/集数 ID 和 `Poster` 均从当前可见的 Emby 媒体及已读取正文取得。海报只描述 Emby 图片项标识、`Primary` 类型和 `series`/`season`/`item` 层级，不返回带令牌 URL，不查询外部图片，也不根据外部 ID 猜测媒体。正文来源、存储位置或版本变化返回 `409 PLAYBACK_INFO_CHANGED`；媒体不存在或不可见返回 `404`。
+
+示例（不写入真实令牌）：
+
+```bash
+curl -H 'X-Emby-Token: TOKEN' \
+  --get 'https://emby.example/emby/dd-danmaku/api/playback/{ItemId}/info' \
+  --data-urlencode 'Source=' \
+  --data-urlencode 'StorageLocation=sidecar' \
+  --data-urlencode 'ContentVersion=CONTENT_VERSION_FROM_BODY'
+```
+
+上例中的 `{ItemId}` 和 `CONTENT_VERSION_FROM_BODY` 只是占位符，不能直接作为真实请求值；必须从同一次正文读取响应中原样取得，否则会得到 `409 PLAYBACK_INFO_CHANGED`。
+
+先读取正文响应中的绑定字段，再调用 `info`；不要自行生成 hash，也不要把第三方作品/集数 ID 当作 Emby `ItemId`：
+
+```bash
+body="$(curl -fsS -H 'X-Emby-Token: TOKEN' \
+  'https://emby.example/emby/api/danmu/12345?Option=GetJsonById&Mode=single')"
+item_id="$(printf '%s' "$body" | jq -r '.data[0].itemId')"
+source="$(printf '%s' "$body" | jq -r '.data[0].source // ""')"
+storage_location="$(printf '%s' "$body" | jq -r '.data[0].storageLocation')"
+content_version="$(printf '%s' "$body" | jq -r '.data[0].contentVersion')"
+curl -fsS -H 'X-Emby-Token: TOKEN' \
+  --get "https://emby.example/emby/dd-danmaku/api/playback/${item_id}/info" \
+  --data-urlencode "Source=$source" \
+  --data-urlencode "StorageLocation=$storage_location" \
+  --data-urlencode "ContentVersion=$content_version"
+```
+
+示例中的 `item_id` 必须来自当前正文响应并与请求媒体一致；`ContentVersion` 必须原样使用同一响应的 64 位十六进制值，任意演示 hash 会得到 `409 PLAYBACK_INFO_CHANGED`。其中 `jq` 仅用于解析响应，不改变凭据或字段。
+
+`ede.js` 先显示正文已有的基础信息，再用同一个 Emby 用户令牌请求 `/Items/{poster.itemId}/Images/Primary?maxWidth=480&quality=90&format=jpg`，将响应转为当前加载持有的 blob URL；切集或退出时取消请求并释放 URL。外部 API 不接触 Emby token，也不会把上游作品 ID 构造成在线匹配对象。完整字段、版本匹配和错误边界见 [DLL 播放链路契约](dll/架构.md#163-播放链路-dto)。
 
 ### XML 格式与规范化
 

@@ -85,7 +85,7 @@ internal sealed partial class DanmakuSelectionService
 
     /// <summary>只返回仍属于当前用户选择且新鲜的正文，缺失或过期交给播放层刷新。</summary>
     internal async Task<IReadOnlyList<DanmakuComment>?> ReadFreshAsync(UserDanmakuSelection selection,
-        CancellationToken token)
+        CancellationToken token, bool touchAccess = true)
     {
         await _gate.WaitAsync(token);
         try
@@ -97,7 +97,8 @@ internal sealed partial class DanmakuSelectionService
             if (body is null || !body.IsFresh(now, _configuration().TemporaryDanmakuHours)) return null;
             var comments = await _bodies.ReadAsync(body.CacheKey, token);
             if (comments is null) return null;
-            await _store.MutateAsync(current =>
+            // 信息查询只验证当前正文，不更新缓存访问时间或其他持久化数据。
+            if (touchAccess) await _store.MutateAsync(current =>
             {
                 var index = current.Contents.FindIndex(x => x.CacheKey == body.CacheKey);
                 if (index >= 0) current.Contents[index] = body with { LastAccessAt = now };
