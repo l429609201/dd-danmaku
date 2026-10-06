@@ -79,7 +79,7 @@ jobs:
           @{ Secret = $env:DD_SIGN_SECRET; BrandMark = $env:DD_BRAND_MARK; ObfuscationKey = $env:DD_OBF_KEY; RelayPrefix = $env:DD_RELAY_PREFIX; UserAgent = $env:DD_UPSTREAM_UA } | ConvertTo-Json -Compress | Set-Content -LiteralPath $signingFile -Encoding UTF8
           # 正式版使用 vX.Y.Z 标签；测试版从 ede.js 的 @version 读取基础版本，再追加 Actions 运行号。
           $scriptText = Get-Content -LiteralPath 'ede.js' -Raw
-          $versionMatch = [regex]::Match($scriptText, '(?m)^//\s*@version\s+(\d+\.\d+\.\d+)$')
+          $versionMatch = [regex]::Match($scriptText, '(?m)^//[\t ]*@version[\t ]+(\d+\.\d+\.\d+)[\t ]*\r?$')
           if (-not $versionMatch.Success) { throw 'ede.js 缺少有效的 @version（必须为主.次.修订）' }
           $scriptVersion = $versionMatch.Groups[1].Value
           $assemblyVersion = if ($env:GITHUB_REF -like 'refs/tags/v*') {
