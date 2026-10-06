@@ -77,11 +77,15 @@ jobs:
           # 密钥只写 CI 临时文件，不输出内容，不随 release 目录上传。
           $signingFile = Join-Path $env:RUNNER_TEMP 'dd-official-signing.json'
           @{ Secret = $env:DD_SIGN_SECRET; BrandMark = $env:DD_BRAND_MARK; ObfuscationKey = $env:DD_OBF_KEY; RelayPrefix = $env:DD_RELAY_PREFIX; UserAgent = $env:DD_UPSTREAM_UA } | ConvertTo-Json -Compress | Set-Content -LiteralPath $signingFile -Encoding UTF8
-          # 正式版使用 vX.Y.Z 标签；测试版追加 Actions 运行号，确保每次 test 构建都高于已安装版本。
+          # 正式版使用 vX.Y.Z 标签；测试版从 ede.js 的 @version 读取基础版本，再追加 Actions 运行号。
+          $scriptText = Get-Content -LiteralPath 'ede.js' -Raw
+          $versionMatch = [regex]::Match($scriptText, '(?m)^//\s*@version\s+(\d+\.\d+\.\d+)$')
+          if (-not $versionMatch.Success) { throw 'ede.js 缺少有效的 @version（必须为主.次.修订）' }
+          $scriptVersion = $versionMatch.Groups[1].Value
           $assemblyVersion = if ($env:GITHUB_REF -like 'refs/tags/v*') {
             $env:GITHUB_REF_NAME.Substring(1)
           } else {
-            "1.3.3.$env:GITHUB_RUN_NUMBER"
+            "${scriptVersion}.$env:GITHUB_RUN_NUMBER"
           }
           if ($assemblyVersion -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { throw "无效的程序集版本：$assemblyVersion" }
           dotnet build dll/DD.Danmaku.csproj --configuration Release --nologo "-p:Version=$assemblyVersion" "-p:OfficialSigningFile=$signingFile"

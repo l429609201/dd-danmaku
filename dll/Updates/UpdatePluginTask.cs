@@ -114,7 +114,9 @@ public sealed class UpdatePluginTask : IScheduledTask
             File.Replace(temporary, target, target + ".bak");
             temporary = null;
             _host.NotifyPendingRestart();
-            _logger.Info("插件已更新至 {0}，旧版保留为 DD.Danmaku.dll.bak，请手动重启 Emby。", release.Version);
+            var installedVersion = candidate.Version?.ToString() ?? "未知";
+            _logger.Info("插件已更新至 {0}（程序集 {1}），旧版保留为 DD.Danmaku.dll.bak，请手动重启 Emby。",
+                release.IsTest ? "test-release" : release.Version.ToString(), installedVersion);
             progress.Report(100);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
