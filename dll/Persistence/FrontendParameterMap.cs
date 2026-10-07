@@ -26,7 +26,7 @@ internal static class FrontendParameterMap
         ["ConvertTopTo"] = "danmakuConvertTopTo", ["ConvertBottomTo"] = "danmakuConvertBottomTo",
         ["UseOfficialApi"] = "danmakuUseOfficialApi", ["UseCustomApi"] = "danmakuUseCustomApi",
         ["MatchApiEnable"] = "danmakuMatchApiEnable", ["AppendSeasonEpisode"] = "danmakuAppendSeasonEpisode",
-        ["MatchMode"] = "danmakuMatchMode", ["CustomApiList"] = "danmakuCustomApiList",
+        ["MatchMode"] = "danmakuMatchMode", ["NormalizeSeasonEpisode"] = "danmakuNormalizeSeasonEpisode", ["CustomApiList"] = "danmakuCustomApiList",
         ["ApiPriority"] = "danmakuApiPriority", ["CustomApiPrefix"] = "danmakuCustomApiPrefix",
         ["CustomeCorsProxyUrl"] = "danmakuCustomeCorsProxyUrl",
         ["CustomeGetCommentUrl"] = "danmakuCustomeGetCommentUrl",

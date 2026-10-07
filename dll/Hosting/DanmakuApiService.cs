@@ -13,6 +13,7 @@ public sealed partial class DanmakuApiService : IService, IRequiresRequest
 {
     private readonly EmbyAccessControl _access;
     private readonly IUserManager _users;
+    private readonly IMediaSourceManager _mediaSources;
     private readonly MediaBrowser.Model.Tasks.ITaskManager _tasks;
     /// <summary>由 Emby 请求管线设置的当前请求上下文。</summary>
     public IRequest Request { get; set; } = null!;
@@ -22,10 +23,11 @@ public sealed partial class DanmakuApiService : IService, IRequiresRequest
     /// <summary>接收宿主认证、授权、媒体库、用户和原生日志服务。</summary>
     public DanmakuApiService(IAuthService authentication, IAuthorizationContext authorization,
         ILibraryManager library, IUserManager users, MediaBrowser.Model.Tasks.ITaskManager tasks,
-        MediaBrowser.Model.Logging.ILogManager logs)
+        MediaBrowser.Model.Logging.ILogManager logs, IMediaSourceManager mediaSources)
     {
         _access = new EmbyAccessControl(authentication, authorization, library);
         _users = users;
+        _mediaSources = mediaSources;
         _tasks = tasks;
         _matchLogger = logs.GetLogger("DD.Danmaku");
     }
@@ -45,6 +47,7 @@ public sealed partial class DanmakuApiService : IService, IRequiresRequest
             var plugin = Plugin.Instance;
             if (plugin?.Host is not { } host)
                 return Error(503, "HOST_UNAVAILABLE", "插件宿主尚未就绪");
+            StartDownloadRecovery(plugin, host);
             // 保存按统一写入授权判定，删除仍保留管理员边界。
             if (Request.Dto is SaveDanmakuRequest or DeleteDanmakuRequest)
             {
@@ -64,7 +67,13 @@ public sealed partial class DanmakuApiService : IService, IRequiresRequest
             return await action(user, plugin, host);
         }
         catch (OperationCanceledException) when (Request.CancellationToken.IsCancellationRequested) { throw; }
-        catch (ApiAccessException e) { return Error(e.Status, e.Code, e.Message); }
+        catch (ApiAccessException e)
+        {
+            // 上游错误保留原状态与正文；本地权限、协议和配置错误仍走脱敏封装。
+            return e.UpstreamReply is { } reply
+                ? new ApiHttpResult(reply.StatusCode, reply.Body, "application/json; charset=utf-8")
+                : Error(e.Status, e.Code, e.Message);
+        }
         // AI 领域错误已有脱敏消息，保留状态码，不能全部降为内部错误。
         catch (Matching.MatchRequestException e) { return Error(e.StatusCode, e.ErrorCode, e.Message); }
         // 领域异常先分类，服务端损坏文件不能伪装成客户端 JSON 错误。

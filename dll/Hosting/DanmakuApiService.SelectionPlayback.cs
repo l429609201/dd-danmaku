@@ -22,7 +22,8 @@ public sealed partial class DanmakuApiService
         string? failure = null;
         try
         {
-            var comments = await host.Selections.ReadFreshAsync(selection, token);
+            // 播放查询不触碰缓存索引；过期正文仅在内存中获取。
+            var comments = await host.Selections.ReadFreshAsync(selection, token, touchAccess: false);
             if (comments is null)
             {
                 void Authorize()

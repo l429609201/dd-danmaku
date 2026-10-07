@@ -151,6 +151,9 @@ public sealed record ResolveMatchRequest(
     // 仅在服务端传递日志关联号，客户端 JSON 不可覆盖。
     [System.Text.Json.Serialization.JsonIgnore]
     internal string? TraceId { get; init; }
+    // 内部进度回调不接受 JSON 输入，统一向本人任务订阅发布判断细节。
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal Action<string, string>? Progress { get; init; }
 }
 
 /// <summary>具有提供者和作用范围的外部元数据标识。</summary>
@@ -190,6 +193,7 @@ public sealed record TargetMediaDto(
 /// <param name="EpisodeNumber">集编号。</param>
 /// <param name="Year">发行年份。</param>
 /// <param name="ProviderIds">外部元数据标识集合。</param>
+/// <param name="UpstreamFields">后端保留的上游白名单原字段，不包含来源凭据。</param>
 public sealed record MatchCandidateInput(
     string CandidateId,
     string SourceId,
@@ -201,7 +205,8 @@ public sealed record MatchCandidateInput(
     int? SeasonNumber = null,
     int? EpisodeNumber = null,
     int? Year = null,
-    IReadOnlyList<ProviderIdDto>? ProviderIds = null);
+    IReadOnlyList<ProviderIdDto>? ProviderIds = null,
+    System.Text.Json.JsonElement? UpstreamFields = null);
 
 // Basis: manual / tmdb / filename。均为调用方声明，不代表后端独立核验。
 /// <summary>针对指定来源的季集编号映射声明。</summary>

@@ -14,10 +14,12 @@ public sealed partial class FrontendDefaults
     public bool? MatchApiEnable { get; set; }
     /// <summary>搜索文件名时是否拼接季集号。</summary>
     public bool? AppendSeasonEpisode { get; set; }
-    /// <summary>前端搜索所使用的匹配模式。</summary>
-    public string? MatchMode { get; set; }
+    /// <summary>官方源返回跨季累计集号时，按季首集归一化。</summary>
+    public bool? NormalizeSeasonEpisode { get; set; }
     /// <summary>自定义弹幕来源列表的 JSON 文本。</summary>
     public string? CustomApiList { get; set; }
+    /// <summary>前端搜索所使用的匹配模式。</summary>
+    public string? MatchMode { get; set; }
     /// <summary>官方与自定义接口优先级的 JSON 数组。</summary>
     public string? ApiPriority { get; set; }
     /// <summary>自定义 API 的基础地址。</summary>
@@ -94,6 +96,7 @@ public sealed partial class FrontendDefaults
         result.MatchApiEnable = user.MatchApiEnable ?? global.MatchApiEnable;
         result.AppendSeasonEpisode = user.AppendSeasonEpisode ?? global.AppendSeasonEpisode;
         result.MatchMode = user.MatchMode ?? global.MatchMode;
+        result.NormalizeSeasonEpisode = user.NormalizeSeasonEpisode ?? global.NormalizeSeasonEpisode;
         result.CustomApiList = user.CustomApiList ?? global.CustomApiList;
         result.ApiPriority = user.ApiPriority ?? global.ApiPriority;
         result.CustomApiPrefix = user.CustomApiPrefix ?? global.CustomApiPrefix;

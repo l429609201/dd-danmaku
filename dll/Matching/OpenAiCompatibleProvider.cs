@@ -9,10 +9,19 @@ public sealed class OpenAiCompatibleProvider : IAiProvider, IDisposable
 {
     private readonly Func<PluginConfiguration> _configuration;
     // 禁止自动重定向，避免向另一主机发送匹配内容或凭据。
-    private readonly HttpClient _client = new(new HttpClientHandler { AllowAutoRedirect = false })
-    { Timeout = Timeout.InfiniteTimeSpan };
+    private readonly HttpClient _client;
+    private readonly Action<string, long>? _diagnostic;
     /// <summary>使用服务端配置创建不自动重定向的 AI 客户端。</summary>
-    public OpenAiCompatibleProvider(Func<PluginConfiguration> configuration) => _configuration = configuration;
+    public OpenAiCompatibleProvider(Func<PluginConfiguration> configuration)
+        : this(configuration, new HttpClientHandler { AllowAutoRedirect = false }) { }
+    /// <summary>注入传输及脱敏耗时观察器，测试与运行使用同一请求解析逻辑。</summary>
+    public OpenAiCompatibleProvider(Func<PluginConfiguration> configuration, HttpMessageHandler handler,
+        Action<string, long>? diagnostic = null)
+    {
+        _configuration = configuration;
+        _client = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        _diagnostic = diagnostic;
+    }
     /// <summary>兼容提供者的标识名称。</summary>
     public string Name => "openai-compatible";
     /// <summary>是否存在可用的服务端 AI 端点。</summary>
@@ -44,6 +53,7 @@ public sealed class OpenAiCompatibleProvider : IAiProvider, IDisposable
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         var endpoint = GetEndpoint(config)
             ?? throw new MatchRequestException("AI 提供者未配置", "AI_UNAVAILABLE", 503);
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             var path = endpoint.BaseUrl.AbsolutePath;
@@ -60,8 +70,12 @@ public sealed class OpenAiCompatibleProvider : IAiProvider, IDisposable
             }
             return await SendAsync(endpoint, prompt, false, linked.Token);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        { throw new MatchRequestException("AI 服务请求超时", "AI_TIMEOUT", 504); }
+        catch (OperationCanceledException)
+        {
+            try { _diagnostic?.Invoke("request:cancelled-or-timeout", elapsed.ElapsedMilliseconds); } catch { }
+            if (cancellationToken.IsCancellationRequested) throw;
+            throw new MatchRequestException("AI 服务请求超时", "AI_TIMEOUT", 504);
+        }
         catch (HttpRequestException error)
         {
             // 只公开固定分类和 HTTP 数字，不返回上游正文、地址或认证头。
@@ -85,16 +99,33 @@ public sealed class OpenAiCompatibleProvider : IAiProvider, IDisposable
 
     private async Task<string> SendAsync(Endpoint endpoint, string prompt, bool responses, CancellationToken token)
     {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var protocol = responses ? "responses" : "chat-completions";
+        var requestId = Guid.NewGuid().ToString("N")[..8];
+        var phase = "构造请求";
+        var requestBytes = 0;
+        long responseBytes = 0;
+        int? httpStatus = null;
+        void Observe(string stage) { try { _diagnostic?.Invoke(protocol + ":" + stage + $"，请求={requestId}，阶段={phase}，请求字节={requestBytes}，已读响应字节={responseBytes}，HTTP={httpStatus?.ToString() ?? "未收到"}", clock.ElapsedMilliseconds); } catch { } }
+        Observe("started");
+        try
+        {
         using var request = new HttpRequestMessage(HttpMethod.Post, BuildEndpoint(endpoint.BaseUrl, responses));
         if (endpoint.Key is not null) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", endpoint.Key);
         var json = responses
             ? JsonSerializer.Serialize(new { model = endpoint.Model, input = prompt, store = false, text = new { format = new { type = "json_object" } } })
             : JsonSerializer.Serialize(new { model = endpoint.Model, stream = false, store = false, response_format = new { type = "json_object" }, messages = new[] { new { role = "user", content = prompt } } });
+        requestBytes = Encoding.UTF8.GetByteCount(json);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        phase = "等待响应头（连接、服务排队或生成）";
+        Observe("sending");
         using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
+        httpStatus = (int)response.StatusCode;
+        Observe("http-" + (int)response.StatusCode);
         response.EnsureSuccessStatusCode();
         const int limit = 512 * 1024;
         if (response.Content.Headers.ContentLength > limit) throw InvalidResponse();
+        phase = "读取响应正文";
         await using var stream = await response.Content.ReadAsStreamAsync(token);
         using var bodyStream = new MemoryStream();
         var buffer = new byte[8192]; int read;
@@ -102,33 +133,57 @@ public sealed class OpenAiCompatibleProvider : IAiProvider, IDisposable
         {
             if (bodyStream.Length + read > limit) throw InvalidResponse();
             bodyStream.Write(buffer, 0, read);
+            responseBytes = bodyStream.Length;
         }
+        phase = "解析协议响应";
         try
         {
             using var document = JsonDocument.Parse(bodyStream.ToArray(), new JsonDocumentOptions { MaxDepth = 32 });
             var root = document.RootElement;
             string? output = responses ? ReadResponseText(root) : ReadChatText(root);
             if (string.IsNullOrWhiteSpace(output) || output.Length > 65536) throw InvalidResponse();
+            Observe("parsed");
             return output;
         }
         catch (JsonException) { throw InvalidResponse(); }
+        }
+        catch (OperationCanceledException) { Observe("中止：取消或到达总超时"); throw; }
+        catch (HttpRequestException) { Observe("失败：HTTP或连接错误"); throw; }
+        catch (IOException) { Observe("失败：正文读取错误"); throw; }
+        catch (MatchRequestException error) { Observe("失败：" + error.ErrorCode); throw; }
     }
 
     private static string? ReadChatText(JsonElement root)
     {
+        if (root.ValueKind != JsonValueKind.Object) throw InvalidResponse();
         if (!root.TryGetProperty("choices", out var choices) || choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() != 1) throw InvalidResponse();
         var choice = choices[0];
-        if (!choice.TryGetProperty("message", out var message) || !message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.String) throw InvalidResponse();
+        if (choice.ValueKind != JsonValueKind.Object || !choice.TryGetProperty("message", out var message)
+            || message.ValueKind != JsonValueKind.Object || !message.TryGetProperty("content", out var content)
+            || content.ValueKind != JsonValueKind.String) throw InvalidResponse();
         return content.GetString();
     }
 
     private static string? ReadResponseText(JsonElement root)
     {
-        if (!root.TryGetProperty("output", out var output) || output.ValueKind != JsonValueKind.Array) throw InvalidResponse();
-        var texts = output.EnumerateArray().SelectMany(item => item.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array
-            ? content.EnumerateArray().Where(x => x.TryGetProperty("type", out var type) && type.GetString() == "output_text").Select(x => x.TryGetProperty("text", out var text) ? text.GetString() : null)
-            : []);
-        return string.Join("", texts.Where(x => !string.IsNullOrEmpty(x)));
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("output", out var output)
+            || output.ValueKind != JsonValueKind.Array) throw InvalidResponse();
+        var texts = new List<string>();
+        foreach (var item in output.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object) throw InvalidResponse();
+            if (!item.TryGetProperty("content", out var content)) continue; // 合法 reasoning 条目没有正文。
+            if (content.ValueKind != JsonValueKind.Array) throw InvalidResponse();
+            foreach (var part in content.EnumerateArray())
+            {
+                if (part.ValueKind != JsonValueKind.Object || !part.TryGetProperty("type", out var type)
+                    || type.ValueKind != JsonValueKind.String) throw InvalidResponse();
+                if (type.GetString() != "output_text") continue;
+                if (!part.TryGetProperty("text", out var text) || text.ValueKind != JsonValueKind.String) throw InvalidResponse();
+                texts.Add(text.GetString()!);
+            }
+        }
+        return string.Join("", texts);
     }
 
     /// <summary>使用已保存配置请求模型列表，不向客户端暴露密钥。</summary>

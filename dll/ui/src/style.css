@@ -42,6 +42,11 @@ h1 { margin: 0; font-size: 25px; letter-spacing: -.02em; }
 .placeholder { max-width: 760px; }
 footer { margin-top: 30px; color: #94a3b8; font-size: 11px; }
 footer span { color: #64748b; }
+/* 日志独占视口，页头与筛选不滚动，只允许日志正文滚动。 */
+.logs-page-shell { height: 100dvh; min-height: 0; overflow: hidden; }
+.logs-page-shell .main { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
+.logs-page-shell .topbar { flex: 0 0 auto; margin-bottom: 12px; }
+.logs-page-shell .main > footer { display: none; }
 @media (max-width: 1100px) { .main { padding: 24px; } .sidebar { width: 210px; } }
 
 /* 管理台容器允许收缩；宽表仅使用 Element Plus 自身的横向滚动。 */

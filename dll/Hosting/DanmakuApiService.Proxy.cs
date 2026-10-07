@@ -125,6 +125,9 @@ public sealed partial class DanmakuApiService
             headers["X-Signature"] = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(raw)));
         }
         // 匹配正文经独立路由校验；GET 与 POST 共用同一签名和传输限制。
-        return DanmakuProxyTransport.SendAsync(target, body is null ? HttpMethod.Get : HttpMethod.Post, headers, body, token);
+        return DanmakuProxyTransport.SendAsync(target, body is null ? HttpMethod.Get : HttpMethod.Post, headers, body, token,
+            BackendSourceAuthorization.AllowPrivate(c)
+                || ReferenceEquals(c, Plugin.Instance?.Configuration)
+                    && BackendSourcePolicy.IsApprovedPrivateBase(new Uri(c.DanmakuProxyBaseUrl), c));
     }
 }

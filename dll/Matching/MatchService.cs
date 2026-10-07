@@ -28,7 +28,10 @@ public sealed class MatchService : IMatchService
         var warnings = new List<string>();
         // 使用内部关联号；不记录媒体路径、用户数据、提示词或服务凭据。
         var trace = request.TraceId ?? Guid.NewGuid().ToString("N")[..8];
-        void Warn(string message) { warnings.Add(message); _warn?.Invoke($"匹配 #{trace}：{message}"); }
+        void Warn(string message) {
+            warnings.Add(message); _warn?.Invoke($"匹配 #{trace}：{message}");
+            request.Progress?.Invoke("resolve", message);
+        }
         var target = request.Target!;
         _info?.Invoke($"匹配 #{trace}：开始，范围={request.SelectionScope}，策略={(preferAi ? "AI 优先" : "传统优先")}，作品候选数={request.Candidates!.Count}，类型={target.MediaType ?? "未知"}，季={target.SeasonNumber}，集={target.EpisodeNumber}，年份={target.Year}，平台标识数={target.ProviderIds?.Count ?? 0}，AI候选上限={config.AiMaxCandidates}，AI超时秒={config.AiTimeoutSeconds}");
         var assessments = new List<CandidateAssessment>();
@@ -57,6 +60,7 @@ public sealed class MatchService : IMatchService
                 if (unavailable is not null) Warn($"{unavailable}，使用传统匹配");
                 else
                 {
+                    request.Progress?.Invoke("resolve", $"开始 AI 辅助判断，候选数={traditional.Count}，超时={config.AiTimeoutSeconds}秒");
                     _info?.Invoke($"匹配 #{trace}：开始 AI 辅助判断");
                     ranked = _ranking.Rank(await _ai.RerankAsync(request, traditional, cancellationToken));
                     modeUsed = preferAi ? "ai" : "ai-fallback";
@@ -86,7 +90,7 @@ public sealed class MatchService : IMatchService
             {
                 ranked = traditional;
                 modeUsed = "traditional";
-                Warn("AI 无法唯一确认，已回退到传统匹配");
+                Warn($"AI 未满足确认条件：分数={best?.Result.Score}，阈值={_ai.MatchThreshold}，元数据充分={best?.MetadataSufficient}，需确认={best?.RequiresConfirmation}，候选截断={request.CandidatesTruncated}；已回退到传统匹配");
             }
         }
         cancellationToken.ThrowIfCancellationRequested();
@@ -107,7 +111,10 @@ public sealed class MatchService : IMatchService
             }
             else if (eligible.Any(c => !c.MetadataSufficient)) status = "insufficient_metadata";
         }
-        _info?.Invoke($"匹配 #{trace}：完成，实际模式={modeUsed}，状态={status}，需确认={status != "matched"}");
+        var chosen = ranked.FirstOrDefault(candidate => candidate.Result.CandidateId == selected);
+        var outcome = $"完成，实际模式={modeUsed}，状态={status}，选中候选={selected ?? "无"}，作品ID={chosen?.Result.AnimeId}，章节ID={chosen?.Result.EpisodeId}，标题={chosen?.Result.Title}，分数={chosen?.Result.Score}";
+        _info?.Invoke($"匹配 #{trace}：{outcome}");
+        request.Progress?.Invoke("resolve", outcome);
         return new ResolveMatchResponse(modeUsed, status, selected, status != "matched",
             ranked.Take(request.ResultLimit).Select(c => c.Result).ToArray(), warnings.Distinct().ToArray());
     }

@@ -9,6 +9,7 @@ using MediaBrowser.Model.IO;
 internal sealed class EmbyHostServices : IDisposable
 {
     private readonly Plugin _plugin;
+    private readonly MediaBrowser.Model.Logging.ILogger _logger;
     private readonly Matching.OpenAiCompatibleProvider _aiProvider;
     private readonly MediaSidecarPathResolver _paths;
     private int _disposed;
@@ -17,6 +18,8 @@ internal sealed class EmbyHostServices : IDisposable
     internal DanmakuStorageService Storage { get; }
     internal ISidecarStorageService Sidecar { get; }
     internal Matching.MatchApiService Matches { get; }
+    internal EmbyPlaybackFileResolver PlaybackFiles { get; }
+    internal BackendTaskCoordinator BackendTasks { get; private set; } = null!;
     internal bool AiProviderReady => _aiProvider.IsAvailable;
     // 草稿仅用于本次管理员模型查询，不持久化或影响运行配置。
     internal Task<IReadOnlyList<string>> GetAiModelsAsync(CancellationToken token, PluginConfiguration? draft = null)
@@ -31,14 +34,19 @@ internal sealed class EmbyHostServices : IDisposable
     {
         _library = libraryManager;
         _plugin = plugin;
+        _logger = logger;
         var playbackFiles = new EmbyPlaybackFileResolver(libraryManager, fileSystem);
+        PlaybackFiles = playbackFiles;
         _paths = new MediaSidecarPathResolver(playbackFiles.ResolveAsync, GetConfiguration);
         var files = new DanmakuFileService();
         Storage = new DanmakuStorageService(_paths, files);
         // 显式适配二参数委托，旁车配置继续使用默认来源路径。
         Sidecar = new SidecarStorageService((itemId, token) => _paths.ResolveAsync(itemId, token), files);
         Configuration = new PluginConfigurationService(GetConfiguration, SaveConfiguration);
-        _aiProvider = new Matching.OpenAiCompatibleProvider(GetConfiguration);
+        // 请求诊断仅包含协议、阶段和耗时，不输出端点、密钥或提示词。
+        _aiProvider = new Matching.OpenAiCompatibleProvider(GetConfiguration,
+            new System.Net.Http.HttpClientHandler { AllowAutoRedirect = false },
+            (stage, elapsed) => logger.Info("AI请求：阶段={0}，耗时毫秒={1}", stage, elapsed));
         // 日志委托保持匹配业务与宿主 SDK 解耦，实际输出到 Emby 日志。
         Matches = new Matching.MatchApiService(new Matching.MatchService(new Matching.RuleMatcher(),
             new Matching.IntelligentMatcher(), new Matching.AiMatchService(GetConfiguration, _aiProvider),
@@ -67,6 +75,9 @@ internal sealed class EmbyHostServices : IDisposable
         FrontendLogs = new FrontendLogStore(Path.GetDirectoryName(Path.GetFullPath(dataDirectory))
             ?? throw new ArgumentException("插件数据目录无效", nameof(dataDirectory)));
         // 所有请求复用唯一选择协调器，不能逐请求创建独立锁。
+        // 后台工作不经过请求日志管线，显式接入 Emby 日志以追踪阶段和脱敏异常。
+        BackendTasks = new BackendTaskCoordinator(Path.Combine(dataDirectory, "backend-tasks"),
+            message => _logger.Info("{0}", message), message => _logger.Error("{0}", message));
         Selections = new DanmakuSelectionService(Path.Combine(dataDirectory, "selections"), GetConfiguration);
         Playback = new LocalPlaybackService(_paths, new JsonDanmakuRecordStore(dataDirectory));
         Scan = new LibraryScanCoordinator(_library, dataDirectory, Playback);
@@ -98,6 +109,7 @@ internal sealed class EmbyHostServices : IDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _cleanupStop.Cancel();
         _cleanupStop.Dispose();
+        BackendTasks?.Dispose();
         Scan?.Dispose();
         FrontendLogs?.Dispose();
         _aiProvider.Dispose();

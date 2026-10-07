@@ -58,18 +58,12 @@
         <LogicalName>DD.Danmaku.$([System.String]::Copy('%(EmbeddedResource.Identity)').Replace('\', '/'))</LogicalName>
       </EmbeddedResource>
     </ItemGroup>
-    <!-- CI 可显式提供资源文件；本地构建从环境变量生成，空值也覆盖旧内容。 -->
-    <PropertyGroup>
-      <GenerateOfficialSigningFromEnvironment Condition="'$(OfficialSigningFile)' == ''">true</GenerateOfficialSigningFromEnvironment>
-      <OfficialSigningFile Condition="'$(OfficialSigningFile)' == ''">$(MSBuildProjectDirectory)/$(IntermediateOutputPath)dd-official-signing.json</OfficialSigningFile>
-    </PropertyGroup>
-    <Exec Condition="'$(GenerateOfficialSigningFromEnvironment)' == 'true'"
-          Command="pwsh -NoProfile -NonInteractive -File &quot;$(MSBuildProjectDirectory)/Build/WriteOfficialSigning.ps1&quot; -OutputPath &quot;$(OfficialSigningFile)&quot;" />
-    <Error Condition="!Exists('$(OfficialSigningFile)')" Text="官方签名构建资源不存在，停止构建以避免错误发布。" />
-    <!-- 不放入 HTTP 资源目录，但嵌入 DLL 的值仍可被提取，并非保密存储。 -->
-    <ItemGroup>
+    <!-- 签名资源由 CI 或本地构建参数显式提供，不依赖 Windows 构建脚本。 -->
+    <Error Condition="'$(OfficialSigningFile)' != '' and !Exists('$(OfficialSigningFile)')"
+           Text="指定的官方签名构建资源不存在，停止构建以避免错误发布。" />
+    <ItemGroup Condition="'$(OfficialSigningFile)' != ''">
+      <!-- 不放入 HTTP 资源目录，但嵌入 DLL 的值仍可被提取，并非保密存储。 -->
       <EmbeddedResource Include="$(OfficialSigningFile)" LogicalName="DD.Danmaku.OfficialSigning.json" />
-      <FileWrites Include="$(OfficialSigningFile)" Condition="'$(GenerateOfficialSigningFromEnvironment)' == 'true'" />
     </ItemGroup>
   </Target>
 </Project>

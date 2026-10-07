@@ -4,6 +4,9 @@ namespace DD.Danmaku.Danmaku;
 internal sealed partial class DanmakuSelectionService
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly Dictionary<(string User, string Item), (string Id, DateTimeOffset CreatedAt)> _intents = new();
+    private static readonly TimeSpan IntentTtl = TimeSpan.FromMinutes(20);
+    private const int MaxIntents = 1024;
     private readonly DanmakuSelectionStore _store;
     private readonly SelectionBodyStore _bodies;
     private readonly Func<PluginConfiguration> _configuration;
@@ -13,6 +16,41 @@ internal sealed partial class DanmakuSelectionService
         _store = new(directory);
         _bodies = new(Path.Combine(directory, "bodies"));
         _configuration = configuration;
+    }
+
+    /// <summary>在正文事务锁内接受最新选择意图；相同用户和媒体的旧下载不能再提交选择。</summary>
+    internal async Task<string> ReserveIntentAsync(string userId, string itemId, CancellationToken token)
+    {
+        if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(itemId))
+            throw new ArgumentException("用户或媒体标识无效");
+        await _gate.WaitAsync(token);
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            PruneIntents(now);
+            var key = (userId, itemId);
+            if (!_intents.ContainsKey(key) && _intents.Count >= MaxIntents)
+                _intents.Remove(_intents.MinBy(entry => entry.Value.CreatedAt).Key);
+            var id = Guid.NewGuid().ToString("N");
+            _intents[key] = (id, now);
+            return id;
+        }
+        finally { _gate.Release(); }
+    }
+
+    // 淘汰后只能拒绝该意图，不能把缺失记录解释成允许旧下载重新提交。
+    private void PruneIntents(DateTimeOffset now)
+    {
+        foreach (var key in _intents.Where(entry => now - entry.Value.CreatedAt >= IntentTtl)
+            .Select(entry => entry.Key).ToArray()) _intents.Remove(key);
+    }
+
+    private void RequireIntent(string userId, string itemId, string? intent)
+    {
+        if (intent is null) return;
+        if (!Guid.TryParseExact(intent, "N", out _) || !_intents.TryGetValue((userId, itemId), out var current)
+            || current.Id != intent || DateTimeOffset.UtcNow - current.CreatedAt >= IntentTtl)
+            throw new InvalidOperationException("用户选择已变化，请重新查询");
     }
 
     internal async Task<UserDanmakuSelection?> FindAsync(string userId, string itemId, CancellationToken token)
@@ -37,6 +75,7 @@ internal sealed partial class DanmakuSelectionService
             {
                 // 在锁内重新鉴权；只移除本人选择，不删除其他引用或共享文件。
                 authorize();
+                _intents.Remove((userId, itemId));
                 snapshot.Selections.RemoveAll(x => x.UserId == userId && x.Content.ItemId == itemId);
             }, token);
         }

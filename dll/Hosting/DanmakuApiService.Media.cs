@@ -56,21 +56,11 @@ public sealed partial class DanmakuApiService
     {
         if (request.SavePurpose is not ("upload" or "auto"))
             throw new ApiAccessException(400, "INVALID_SAVE_PURPOSE", "保存用途无效");
+        // 自动播放上传没有后端手动分集证明，必须在读取 XML 正文前拒绝。
         if (request.SavePurpose == "auto")
-        {
-            if (request.Overwrite)
-                throw new ApiAccessException(400, "AUTO_SAVE_OVERWRITE_FORBIDDEN", "自动保存不允许覆盖");
-            // 浏览器自动保存也检查统一保存资格；提交前仍复查实际新建操作。
-            DanmakuWritePolicy.Require(user, plugin.Configuration, DanmakuWritePolicy.Operation.UploadShared);
-            DanmakuWritePolicy.Require(user, plugin.Configuration, DanmakuWritePolicy.Operation.CreateShared);
-            if (!plugin.Configuration.AutoSaveDanmaku)
-                throw new ApiAccessException(403, "AUTO_SAVE_DISABLED", "自动保存已关闭");
-        }
-        else
-        {
-            // 直传正文始终需要 Upload；新建所需 Create 由保存服务在锁内再次判定。
-            DanmakuWritePolicy.Require(user, plugin.Configuration, DanmakuWritePolicy.Operation.UploadShared);
-        }
+            throw new ApiAccessException(403, "MANUAL_SELECTION_REQUIRED", "保存需要手动搜索并明确选择分集");
+        // 独立明确上传保留原管理授权；新建所需 Create 在保存锁内再次判定。
+        DanmakuWritePolicy.Require(user, plugin.Configuration, DanmakuWritePolicy.Operation.UploadShared);
         if (request.Overwrite && !plugin.Configuration.XmlOverwriteEnabled)
             throw new ApiAccessException(403, "XML_OVERWRITE_DISABLED", "覆盖已有 XML 已关闭");
         var id = _access.RequireVideo(user, request.ItemId);
@@ -97,12 +87,6 @@ public sealed partial class DanmakuApiService
             if (current.Id != user.Id) throw new ApiAccessException(403, "USER_CHANGED", "用户身份已变化");
             _access.RequireVideo(current, id);
             DanmakuWritePolicy.Require(current, plugin.Configuration, operation);
-            if (request.SavePurpose == "auto")
-            {
-                DanmakuWritePolicy.Require(current, plugin.Configuration, DanmakuWritePolicy.Operation.CreateShared);
-                if (!plugin.Configuration.AutoSaveDanmaku)
-                    throw new ApiAccessException(403, "AUTO_SAVE_DISABLED", "自动保存已关闭");
-            }
         }
         await host.Playback.SaveUploadAsync(id, request.Source, comments, metadata, request.Overwrite,
             Request.QueryString["ExpectedHash"], Authorize, Request.CancellationToken);

@@ -14,4 +14,6 @@ public sealed partial class PluginConfiguration
     public string DanmakuProxyAppId { get; set; } = "";
     /// <summary>仅服务端使用的上游签名密钥。</summary>
     public string DanmakuProxyAppSecret { get; set; } = "";
+    /// <summary>管理员明确授权的内网业务 API 前缀；用户参数不能开启此权限。</summary>
+    public string[] BackendPrivateSourcePrefixes { get; set; } = [];
 }

@@ -25,7 +25,7 @@ public sealed class FrontendLogEntryInput
 {
     /// <summary>debug、info、warn 或 error。</summary>
     public string Level { get; set; } = "";
-    /// <summary>最长 2048 字符的日志文本。</summary>
+    /// <summary>最长 24000 字符的日志文本，允许展开 JSON。</summary>
     public string Message { get; set; } = "";
     /// <summary>前端事件时间。</summary>
     public DateTimeOffset? Timestamp { get; set; }
@@ -57,7 +57,7 @@ public sealed class QueryFrontendLogsRequest
     public int PageSize { get; set; } = 100;
 }
 
-/// <summary>以 NDJSON 导出目标用户的一个固定日志文件。</summary>
+/// <summary>以可读 UTF-8 文本导出目标用户的一个固定日志文件。</summary>
 [Route("/dd-danmaku/api/frontend-logs/export", "GET")]
 public sealed class ExportFrontendLogsRequest
 {
@@ -67,6 +67,8 @@ public sealed class ExportFrontendLogsRequest
     public string? UserId { get; set; }
     /// <summary>可选日志等级。</summary>
     public string? Level { get; set; }
+    /// <summary>逗号分隔的导出等级白名单；省略为全部，空字符串为不导出。</summary>
+    public string? Levels { get; set; }
     /// <summary>最长 200 字符的文本关键词。</summary>
     public string? Keyword { get; set; }
 }
@@ -87,7 +89,7 @@ public sealed partial class DanmakuApiService
         var store = RequireFrontendLogs(host);
         var bytes = await ApiHttpResult.ReadBodyAsync(request.RequestStream, Request, 128 * 1024, "application/json");
         var batch = ApiHttpResult.Parse<FrontendLogBatch>(bytes);
-        if (batch.SessionId?.Length > 128 || batch.Entries?.Any(entry => entry?.Message?.Length > 2048) == true)
+        if (batch.SessionId?.Length > 128 || batch.Entries?.Any(entry => entry?.Message?.Length > FrontendLogStore.MaxMessageChars) == true)
             throw new ArgumentException("日志文本超过长度限制");
         // 当前请求携带的令牌也按精确值清理，避免无字段名的日志文本泄露凭据。
         foreach (var credential in new[] { Request.Headers["X-Emby-Token"], Request.Headers["X-MediaBrowser-Token"],
@@ -125,8 +127,18 @@ public sealed partial class DanmakuApiService
     public Task<object> Get(ExportFrontendLogsRequest request) => Execute(async (user, plugin, host) =>
     {
         var userId = FrontendLogUser(user, request.UserId);
+        HashSet<string>? levels = null;
+        if (request.Levels is not null)
+        {
+            // 导出独立等级集合，不改变查询接口的单等级筛选契约。
+            var values = request.Levels.Length == 0 ? [] : request.Levels.Split(',');
+            if (request.Levels.Length > 32 || values.Any(value => value is not ("debug" or "info" or "warn" or "error")))
+                throw new ArgumentException("日志导出等级无效");
+            levels = new HashSet<string>(values, StringComparer.Ordinal);
+        }
         var entries = await RequireFrontendLogs(host).ReadAsync(request.FileId, userId, request.Level, request.Keyword, Request.CancellationToken);
-        return new ApiHttpResult(200, FrontendLogStore.Export(entries), "application/x-ndjson; charset=utf-8");
+        // 下载采用独立可读文本格式，内部结构化改写格式保持不变。
+        return new ApiHttpResult(200, FrontendLogStore.ExportText(entries.Where(entry => levels is null || levels.Contains(entry.Level))), "text/plain; charset=utf-8");
     });
 
     /// <summary>清除目标用户全部保留日志，不触及其他用户数据。</summary>
