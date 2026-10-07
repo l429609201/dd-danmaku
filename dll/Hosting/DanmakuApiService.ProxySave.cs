@@ -5,11 +5,14 @@ using System.Text.Json;
 using DD.Danmaku.Danmaku;
 using MediaBrowser.Controller.Entities;
 
+// 脱离 HTTP 请求的任务只携带原始用途、取消令牌及保存前的来源复核。
+internal sealed record BackendSaveContext(string Purpose, CancellationToken Token, Action VerifySource, string? SelectionIntent = null);
+
 public sealed partial class DanmakuApiService
 {
     // 中转已取得正文时直接写文件，不要求浏览器再次上传；失败状态附加在 JSON 中。
     private async Task<byte[]> SaveProxyCommentsAsync(byte[] body, string? itemId, string source,
-        string episodeId, User user, Plugin plugin, EmbyHostServices host, string upstreamRevision, int chConvert)
+        string episodeId, User user, Plugin plugin, EmbyHostServices host, string upstreamRevision, int chConvert, BackendSaveContext? background = null)
     {
         JsonDocument document;
         try { document = JsonDocument.Parse(body); }
@@ -24,30 +27,29 @@ public sealed partial class DanmakuApiService
             if (!string.IsNullOrWhiteSpace(itemId))
             {
                 var id = _access.RequireVideo(user, itemId);
-                var purpose = Request.QueryString["SavePurpose"] ?? "auto";
+                var purpose = background?.Purpose ?? Request.QueryString["SavePurpose"] ?? "auto";
                 if (purpose is not ("auto" or "selection" or "none")) throw new ArgumentException("保存用途无效");
-                var operation = purpose == "selection" ? DanmakuWritePolicy.Operation.Selection
-                    : DanmakuWritePolicy.Operation.CreateShared;
+                var operation = DanmakuWritePolicy.Operation.Selection;
                 void Authorize()
                 {
-                    var current = _access.Authenticate(Request);
+                    var current = background is null ? _access.Authenticate(Request) : _users.GetUserById(user.Id);
+                    if (current is null || current.Policy is null || current.Policy.IsDisabled || current.IsLockedOut)
+                        throw new ApiAccessException(401, "AUTH_REQUIRED", "原任务用户已无保存权限");
                     if (current.Id != user.Id) throw new ApiAccessException(403, "USER_CHANGED", "用户身份已变化");
                     _access.RequireVideo(current, id);
                     var currentConfiguration = plugin.Configuration;
-                    // 与播放策略使用同一阻断顺序，提交前仍重新认证并核验媒体权限。
-                    if (purpose == "auto" && DanmakuWritePolicy.AutoSaveBlockReason(current, currentConfiguration) is { } blocked)
-                        throw new ApiAccessException(403, blocked, "当前自动保存策略不允许写入");
+                    // 提交前重新认证并核验媒体权限。
                     DanmakuWritePolicy.Require(current, currentConfiguration, operation);
-                    if (upstreamRevision != SelectionUpstreamRevision(source, currentConfiguration))
+                    background?.VerifySource();
+                    if (background is null && upstreamRevision != SelectionUpstreamRevision(source, currentConfiguration))
                         throw new ApiAccessException(409, "UPSTREAM_CHANGED", "弹幕上游配置已变化");
                 }
                 var configuration = plugin.Configuration;
-                var autoSaveBlockReason = purpose == "auto"
-                    ? DanmakuWritePolicy.AutoSaveBlockReason(user, configuration) : null;
                 if (string.IsNullOrWhiteSpace(source)) code = "SOURCE_NOT_CONFIGURED";
-                else if (purpose == "none") code = "SAVE_NOT_REQUESTED";
-                // 自动保存与播放策略共用阻断码；本人选择保留原有文件开关与操作边界。
-                else if (autoSaveBlockReason is not null) code = autoSaveBlockReason;
+                // 播放获取只允许本人明确手动选择保存；旧客户端 auto 和恢复中的旧自动任务同样跳过。
+                else if (purpose != "selection") code = "MANUAL_SELECTION_REQUIRED";
+                // 旧代理查询串不是手动搜索证明；只有后端确认分集后预订的下载意图可保存。
+                else if (background?.SelectionIntent is null) code = "MANUAL_SELECTION_REQUIRED";
                 else if (!configuration.FilePersistenceEnabled) code = "FILE_PERSISTENCE_DISABLED";
                 else if (!configuration.FilePersistenceWriteEnabled) code = "XML_WRITE_DISABLED";
                 else if (!DanmakuWritePolicy.Can(user, configuration, operation)) code = "WRITE_NOT_AUTHORIZED";
@@ -57,31 +59,18 @@ public sealed partial class DanmakuApiService
                 {
                     var comments = ParseSelectionComments(body);
                     Authorize();
-                    if (purpose == "selection")
-                    {
-                        // 明确重搜只改变本人选择，不能顺带创建共享文件。
-                        await host.Selections.SaveAsync(user.Id.ToString("N"),
-                            new(id, source, episodeId, chConvert, upstreamRevision), comments,
-                            Authorize, Request.CancellationToken);
-                        status = "saved";
-                        code = "SELECTION_SAVED";
-                    }
-                    else if (comments.Count == 0) code = "EMPTY_COMMENTS";
-                    else
-                    {
-                        // 自动保存只创建；刷新和替换必须走独立授权流程。
-                        await host.Playback.SaveAsync(id, comments, Request.CancellationToken, false, source,
-                            new DanmakuXmlMetadata { SourceEpisodeId = episodeId,
-                                UpdatedByUserId = user.Id.ToString("N"), WriteMethod = "auto",
-                                FetchedAt = DateTimeOffset.UtcNow, UpstreamRevision = upstreamRevision,
-                                ChConvert = chConvert }, Authorize);
-                        status = "saved";
-                        code = "SAVED";
-                    }
+                    // 明确重搜只改变本人选择，不能顺带创建共享文件。
+                    await host.Selections.SaveAsync(user.Id.ToString("N"),
+                        new(id, source, episodeId, chConvert, upstreamRevision), comments,
+                        Authorize, background?.Token ?? Request.CancellationToken, selectionIntent: background?.SelectionIntent);
+                    status = "saved";
+                    code = "SELECTION_SAVED";
                 }
             }
         }
         catch (OperationCanceledException) { throw; }
+        catch (InvalidOperationException error) when (error.Message == "用户选择已变化，请重新查询")
+        { status = "skipped"; code = "SELECTION_CHANGED"; }
         catch (ApiAccessException error) { status = error.Code == "XML_EXISTS" ? "skipped" : "failed"; code = error.Code; }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException
             or InvalidDataException or FormatException or OverflowException or ArgumentException

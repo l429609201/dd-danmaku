@@ -7,12 +7,21 @@ internal sealed partial class DanmakuSelectionService
     /// <summary>明确选择可续期；播放刷新必须携带旧版本，不能复活已撤销或过期的选择。</summary>
     internal async Task<UserDanmakuSelection> SaveAsync(string userId, SelectionContentIdentity identity,
         IReadOnlyList<DanmakuComment> comments, Action authorize, CancellationToken token,
-        long? expectedRevision = null)
+        long? expectedRevision = null, string? selectionIntent = null)
     {
         await _gate.WaitAsync(token);
         try
         {
             authorize();
+            RequireIntent(userId, identity.ItemId, selectionIntent);
+            void AuthorizeIntent()
+            {
+                RequireIntent(userId, identity.ItemId, selectionIntent);
+                authorize();
+                RequireIntent(userId, identity.ItemId, selectionIntent);
+            }
+            // 显式旧接口选择取代在途下载；播放刷新仍按旧版本校验，不创建新意图。
+            if (selectionIntent is null && expectedRevision is null) _intents.Remove((userId, identity.ItemId));
             var config = _configuration();
             var now = DateTimeOffset.UtcNow;
             var snapshot = await _store.ReadAsync(token);
@@ -51,19 +60,19 @@ internal sealed partial class DanmakuSelectionService
             }
             if (size > limit) throw new IOException("临时缓存容量不足，长期保留正文不能自动淘汰");
             // 先完整计算可腾出空间，再删除；容量不足不会提前清空其他缓存。
-            foreach (var victim in victims) { authorize(); _bodies.Delete(victim.CacheKey); }
+            foreach (var victim in victims) { AuthorizeIntent(); _bodies.Delete(victim.CacheKey); }
             await _store.MutateAsync(current =>
             {
-                authorize();
+                AuthorizeIntent();
                 current.Selections.RemoveAll(x => !x.IsActive(now));
                 current.Contents.RemoveAll(x => victims.Any(v => v.CacheKey == x.CacheKey));
             }, token);
-            await _bodies.WriteAsync(key, bytes, authorize, token);
+            await _bodies.WriteAsync(key, bytes, AuthorizeIntent, token);
             try
             {
                 await _store.MutateAsync(current =>
                 {
-                    authorize();
+                    AuthorizeIntent();
                     current.Selections.RemoveAll(x => x.UserId == userId && x.Content.ItemId == identity.ItemId);
                     current.Selections.Add(selection);
                     current.Contents.RemoveAll(x => x.Identity == identity);

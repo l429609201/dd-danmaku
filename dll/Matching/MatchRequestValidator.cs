@@ -42,6 +42,21 @@ public static class MatchRequestValidator
                 Require(!string.IsNullOrWhiteSpace(alias), "别名不能为空"); Text(alias, 256);
             }
             Metadata(c.MediaType, c.SeasonNumber, c.EpisodeNumber, c.Year, c.ProviderIds);
+            if (c.UpstreamFields is { } raw)
+            {
+                Require(raw.ValueKind == System.Text.Json.JsonValueKind.Object && raw.GetRawText().Length <= 8192,
+                    "上游候选原字段必须是受限对象");
+                var allowed = new HashSet<string>(StringComparer.Ordinal) { "animeId", "bangumiId", "animeTitle", "episodeId",
+                    "matchedEpisodeId", "episodeTitle", "matchedEpisodeTitle", "episodeNumber", "type", "typeDescription", "shift", "imageUrl" };
+                var names = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var field in raw.EnumerateObject())
+                {
+                    Require(allowed.Contains(field.Name) && names.Add(field.Name), "上游候选含未知或重复字段");
+                    Require(field.Value.ValueKind is System.Text.Json.JsonValueKind.String or System.Text.Json.JsonValueKind.Number
+                        or System.Text.Json.JsonValueKind.Null, "上游候选字段必须是标量");
+                    if (field.Value.ValueKind == System.Text.Json.JsonValueKind.String) Text(field.Value.GetString(), 2048);
+                }
+            }
         }
         if (r.NumberingContext is not { } n) return;
         Identifier(n.SourceId);

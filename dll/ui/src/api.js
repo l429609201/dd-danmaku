@@ -102,6 +102,8 @@ export const api = {
   aiSettings: () => request('/config/ai'),
   // 草稿凭据仅通过请求正文发送，禁止放入 URL。
   aiModels: data => request('/config/ai/models', { method: 'POST', body: JSON.stringify(data) }),
+  // 连接测试只验证当前草稿，不保存配置或改变 AI 总开关。
+  testAi: data => request('/config/ai/test', { method: 'POST', body: JSON.stringify(data) }),
   saveAiSettings: (data) => request('/config/ai', { method: 'PUT', body: JSON.stringify(data) }),
   capabilities: () => request('/capabilities'),
   // 整合表单一次提交完整 XML、授权与缓存策略，避免跨接口部分成功。
@@ -122,7 +124,7 @@ export const api = {
     const response = await fetch(`${base}${prefix}/frontend-logs/export?${query}`, {
       signal, headers: { 'X-Emby-Token': token }, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
     })
-    if (!response.ok || !response.headers.get('content-type')?.toLowerCase().includes('application/x-ndjson')) {
+    if (!response.ok || !response.headers.get('content-type')?.toLowerCase().startsWith('text/plain')) {
       const body = await response.json().catch(() => null)
       throw new Error(body?.message || `日志导出失败（${response.status}）`)
     }

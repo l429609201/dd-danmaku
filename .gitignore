@@ -67,3 +67,6 @@ dll/Resources/ede.js
 dll/ui/dist/
 .cunzhi-memory/metadata.json
 AGENTS.md
+
+# 本地官方代理诊断工具，不参与插件构建或发布。
+/scripts/diagnose-official-proxy.mjs

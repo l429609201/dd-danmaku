@@ -89,4 +89,6 @@ internal sealed class ApiAccessException(int status, string code, string message
 {
     internal int Status { get; } = status;
     internal string Code { get; } = code;
+    // 仅受限传输层可附加已校验的上游 JSON；不携带请求认证头。
+    internal DanmakuProxyTransport.Reply? UpstreamReply { get; set; }
 }

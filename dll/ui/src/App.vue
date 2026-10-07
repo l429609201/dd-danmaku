@@ -50,7 +50,7 @@ const sections = computed(() => administrator.value ? allSections : allSections.
 </script>
 
 <template>
-  <div class="shell">
+  <div class="shell" :class="{ 'logs-page-shell': active === 'frontend-logs' && authorized }">
     <main class="main">
       <el-alert v-if="error" :title="error" type="error" :closable="false" />
       <template v-if="authorized">

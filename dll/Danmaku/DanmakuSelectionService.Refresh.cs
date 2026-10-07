@@ -15,13 +15,16 @@ internal sealed partial class DanmakuSelectionService
             var current = await FindAsync(expected.UserId, expected.Content.ItemId, token);
             if (current is null || current.SelectionId != expected.SelectionId || current.Content != expected.Content)
                 throw new InvalidOperationException("用户选择已撤销或变化");
-            // 前一个播放请求已刷新时复用新正文，不重复请求上游。
-            var fresh = await ReadFreshAsync(current, token);
+            // 自动播放仅复用正文，不更新持久访问时间或恢复缓存文件。
+            var fresh = await ReadFreshAsync(current, token, touchAccess: false);
             if (fresh is not null) return fresh;
             if (current.Revision != expected.Revision)
                 throw new InvalidOperationException("用户选择版本已变化");
             var comments = await fetch();
-            await SaveAsync(current.UserId, current.Content, comments, authorize, token, current.Revision);
+            authorize();
+            var latest = await FindAsync(expected.UserId, expected.Content.ItemId, token);
+            if (latest != current) throw new InvalidOperationException("用户选择已撤销或变化");
+            // 过期缓存恢复只供当前播放使用；重新落盘必须重新手动搜索并确认分集。
             return comments;
         }
         finally { _refreshGate.Release(); }

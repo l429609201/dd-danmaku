@@ -25,7 +25,8 @@ internal sealed record OnlineMatchInput(string ItemId, string Title, string? Fil
     string? PreferredAnimeId = null, int? PreferredEpisodeNumber = null);
 
 internal sealed record OnlineEpisode(string? AnimeId, string? AnimeTitle, string? EpisodeId,
-    string? EpisodeTitle, int? EpisodeNumber = null, string? ImageUrl = null, decimal? Score = null);
+    string? EpisodeTitle, int? EpisodeNumber = null, string? ImageUrl = null, decimal? Score = null,
+    JsonElement? UpstreamFields = null);
 
 internal sealed record OnlineMatchResult(string Status, string? SourceId, string? SourceType,
     OnlineEpisode? Selected, IReadOnlyList<OnlineEpisode> Candidates, bool RequiresConfirmation, string ModeUsed);
@@ -41,6 +42,7 @@ public sealed partial class DanmakuApiService
         if (operationId is not null && !OperationEventHub.IsOwned(user.Id, operationId))
             throw new ApiAccessException(404, "OPERATION_NOT_FOUND", "操作不存在或不可访问");
         var completion = "failed";
+        var failureCode = "UPSTREAM_ERROR";
         try
         {
         ValidateOnlineInput(input);
@@ -61,8 +63,20 @@ public sealed partial class DanmakuApiService
             var sourceId = source == "official" ? DanmakuXmlMetadata.OfficialSource
                 : plugin.Configuration.DanmakuProxySourceId;
             if (operationId is not null) OperationEventHub.Publish(user.Id, operationId, "source");
-            var matched = await MatchOnlineSourceAsync(input, target, source, sourceId, user.Id,
-                plugin.Configuration, host, token, operationId);
+            OnlineMatchResult matched;
+            try
+            {
+                matched = await MatchOnlineSourceAsync(input, target, source, sourceId, user.Id,
+                    plugin.Configuration, host, token, operationId);
+            }
+            catch (ApiAccessException error) when (source == "official" && error.Code == "UPSTREAM_RATE_LIMITED")
+            {
+                // 整个降级流程属于同一任务；不重试被流控的匹配或搜索接口。
+                if (operationId is not null) OperationEventHub.Publish(user.Id, operationId,
+                    "bgm_fallback", errorCode: error.Code);
+                matched = await MatchOnlineSourceAsync(input, target, source, sourceId, user.Id,
+                    plugin.Configuration, host, token, operationId, error);
+            }
             // Never silently switch upstream after an uncertain nonempty candidate set.
             if (matched.Status != "unmatched")
             {
@@ -78,10 +92,16 @@ public sealed partial class DanmakuApiService
             completion = "cancelled";
             throw;
         }
+        catch (ApiAccessException error)
+        {
+            // 事件流保留 HTTP 回包的具体错误，不输出上游正文。
+            failureCode = error.Code;
+            throw;
+        }
         finally
         {
             if (operationId is not null) OperationEventHub.Complete(user.Id, operationId, completion,
-                completion == "failed" ? "UPSTREAM_ERROR" : null);
+                completion == "failed" ? failureCode : null);
         }
     });
 
@@ -125,12 +145,32 @@ public sealed partial class DanmakuApiService
 
     private async Task<OnlineMatchResult> MatchOnlineSourceAsync(OnlineMatchInput input, TargetMediaDto target,
         string source, string sourceId, Guid userId, PluginConfiguration config,
-        EmbyHostServices host, CancellationToken token, string? operationId)
+        EmbyHostServices host, CancellationToken token, string? operationId, ApiAccessException? rateLimited = null,
+        bool aiAuthorized = false, bool allowDirectEpisode = true, Action<string, int?>? taskProgress = null, Action<string, string, int?>? taskDetail = null,
+        bool normalizeSeasonEpisode = true)
     {
         void Progress(string stage, int? count = null)
         {
-            if (operationId is not null) OperationEventHub.Publish(userId, operationId, stage, count);
+            // 后台任务统一维护阶段、Emby 日志和本人 SSE，失败时保留最后实际操作。
+            if (taskProgress is not null) { taskProgress(stage, count); return; }
+            // 旧同步路由仍同时记录日志和发布进度。
+            if (operationId is not null)
+            {
+                _matchLogger.Info("后端匹配：任务={0}，阶段={1}，数量={2}", operationId, stage, count);
+                OperationEventHub.Publish(userId, operationId, stage, count);
+            }
         }
+        // 仅发布明确业务字段，不序列化上游对象、请求地址或凭据。
+        void Detail(string stage, string text, int? count = null)
+        {
+            text = new string(text.Where(character => !char.IsControl(character) || character is '\n' or '\r' or '\t').Take(24000).ToArray());
+            if (taskDetail is not null) { taskDetail(stage, text, count); return; }
+            _matchLogger.Info("后端匹配：任务={0}，阶段={1}，{2}", operationId, stage, text);
+            if (operationId is not null) OperationEventHub.Publish(userId, operationId, stage, count, detail: text);
+        }
+        string Candidates(IEnumerable<OnlineEpisode> candidates) => "\n" + JsonSerializer.Serialize(candidates.Take(100),
+            new JsonSerializerOptions(MatchJson.Options) { WriteIndented = true,
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
         var searchTitle = input.SeasonNumber is > 1 ? $"{input.Title} 第{input.SeasonNumber}季" : input.Title;
         var applyBlacklist = source == "official" || input.ApplyCustomBlacklist;
         var animeFilter = applyBlacklist ? OnlineBlacklist(input.AnimeBlacklist) : null;
@@ -138,7 +178,7 @@ public sealed partial class DanmakuApiService
         bool Allowed(OnlineEpisode candidate) =>
             (animeFilter is null || !animeFilter.IsMatch(candidate.AnimeTitle ?? ""))
             && (episodeFilter is null || !episodeFilter.IsMatch(candidate.EpisodeTitle ?? ""));
-        if (input.PreferredAnimeId is not null && input.PreferredEpisodeNumber is not null)
+        if (rateLimited is null && input.PreferredAnimeId is not null && input.PreferredEpisodeNumber is not null)
         {
             Progress("detail");
             var preferredDetail = await OnlineFetchAsync(source, config, userId,
@@ -162,66 +202,186 @@ public sealed partial class DanmakuApiService
         }
         var works = new List<OnlineEpisode>();
         var exactFound = false;
-        if (input.MatchApiEnabled && !string.IsNullOrWhiteSpace(input.FileName))
+        Dictionary<string, byte[]>? bgmDetails = null;
+        if (rateLimited is not null)
         {
-            // An unavailable hash downgrades to filename-only. Never send a placeholder hash.
-            var hash = input.MatchMode == "hashAndFileName" ? input.FileHash : null;
+            var fallback = await OnlineBgmSearchAsync(searchTitle, userId, config, token, Progress);
+            works.AddRange(fallback.Works);
+            bgmDetails = fallback.Details;
+        }
+        // 仅文件名模式按上游协议携带全零占位值；哈希模式必须有真实哈希，否则走标题搜索。
+        var realHash = input.FileHash is { Length: 32 } && input.FileHash.All(Uri.IsHexDigit)
+            && input.FileHash.Any(character => character != '0');
+        if (rateLimited is null && input.MatchApiEnabled && !string.IsNullOrWhiteSpace(input.FileName)
+            && (input.MatchMode == "fileNameOnly" || input.MatchMode == "hashAndFileName" && realHash))
+        {
+            var hash = input.MatchMode == "fileNameOnly" ? new string('0', 32) : input.FileHash!;
             var matchBody = JsonSerializer.SerializeToUtf8Bytes(new
             {
-                fileName = input.FileName, fileHash = hash ?? "", fileSize = input.FileSize ?? 0,
+                fileName = input.FileName, fileHash = hash, fileSize = input.FileSize ?? 0,
                 videoDuration = input.VideoDuration ?? 0,
-                matchMode = hash is null ? "fileNameOnly" : "hashAndFileName"
+                matchMode = input.MatchMode
             });
             try
             {
-                Progress("upstream");
+                Detail("upstream", $"发送匹配请求，模式={input.MatchMode}，使用真实哈希={realHash && input.MatchMode == "hashAndFileName"}");
                 var match = await OnlineFetchAsync(source, config, userId, "/match", matchBody, token);
                 works.AddRange(OnlineParseList(match, "matches", "animes"));
                 using var matchDoc = JsonDocument.Parse(match);
                 exactFound = matchDoc.RootElement.TryGetProperty("isMatched", out var isMatched)
                     && isMatched.ValueKind == JsonValueKind.True
                     && works.Any(w => w.EpisodeId is not null);
+                Detail("upstream", $"匹配接口返回：精确命中={exactFound}，结果数={works.Count}，详情（最多100项）：{Candidates(works)}", works.Count);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
             catch (ApiAccessException error) when (error.Code == "UPSTREAM_MATCH_UNAVAILABLE")
-            { /* Optional /match is absent; title search remains available. */ }
+            { Progress("search"); }
+            catch (ApiAccessException error) when (error.Code == "UPSTREAM_BUSINESS_ERROR"
+                && IsMatchParameterRejection(error))
+            {
+                // 仅参数校验失败降级标题搜索；鉴权、流控和其它业务错误保持原语义。
+                Progress("match_fallback");
+            }
         }
-        if (!exactFound)
+        // 每个编号方案先过滤明确的季集冲突，再提交规则/AI，不能让高标题相似度覆盖季号。
+        bool CompatibleSeason(OnlineEpisode candidate)
         {
-            Progress("search");
+            if (input.MediaType != "episode" || target.SeasonNumber is null) return true;
+            var season = OnlineCandidateSeason(candidate);
+            return season is null || season == target.SeasonNumber;
+        }
+        bool CompatibleEpisode(OnlineEpisode candidate)
+        {
+            if (input.MediaType != "episode" || target.EpisodeNumber is null) return true;
+            var number = candidate.EpisodeNumber ?? MatchMetadata.Parse(candidate.EpisodeTitle, true).Episode;
+            return number is null || number == target.EpisodeNumber;
+        }
+        var matchEpisodes = works.Where(candidate => candidate.AnimeId is not null
+            && candidate.EpisodeId is not null && Allowed(candidate) && CompatibleSeason(candidate)
+            && CompatibleEpisode(candidate)).ToArray();
+        // 上游精确命中唯一章节且映射未改变目标时直接采用，不再调用智能判断或作品搜索。
+        if (rateLimited is null && exactFound && allowDirectEpisode
+            && matchEpisodes.Length > 0 && matchEpisodes.Select(candidate => candidate.EpisodeId).Distinct().Count() == 1)
+        {
+            var exactEpisode = matchEpisodes[0];
+            Detail("resolve", $"/match 精确命中，直接采用章节：{Candidates([exactEpisode])}");
+            return new("matched", sourceId, source, exactEpisode, [exactEpisode], false, "upstream-exact");
+        }
+        if (rateLimited is null && matchEpisodes.Length > 0)
+        {
+            var candidates = matchEpisodes.Take(50).ToArray();
+            Detail("resolve", $"优先判断 /match 章节候选：{Candidates(candidates)}", candidates.Length);
+            var reply = await host.Matches.ResolveAsync(new ResolveMatchRequest("online", target,
+                candidates.Select((candidate, index) => new MatchCandidateInput(index.ToString(), sourceId,
+                    candidate.AnimeId, candidate.EpisodeId, candidate.AnimeTitle, MediaType: input.MediaType,
+                    SeasonNumber: OnlineCandidateSeason(candidate),
+                    EpisodeNumber: candidate.EpisodeNumber ?? MatchMetadata.Parse(candidate.EpisodeTitle, true).Episode,
+                    UpstreamFields: candidate.UpstreamFields)).ToArray(),
+                20, CandidatesTruncated: matchEpisodes.Length > 50)
+                { AiAuthorized = aiAuthorized, TraceId = operationId ?? _matchTrace,
+                    Progress = (stage, message) => Detail(stage, message) }, token);
+            if (!reply.Body.Success || reply.Body.Data is not { } resolution)
+                throw new ApiAccessException(reply.StatusCode, "MATCH_FAILED", "后端匹配候选判断失败");
+            if (resolution.Status == "matched" && int.TryParse(resolution.SelectedCandidateId, out var index)
+                && index >= 0 && index < candidates.Length)
+            {
+                var selectedMatch = candidates[index];
+                var number = selectedMatch.EpisodeNumber ?? MatchMetadata.Parse(selectedMatch.EpisodeTitle, true).Episode;
+                if (input.MediaType == "movie" || number == target.EpisodeNumber
+                    || allowDirectEpisode && exactFound && matchEpisodes.Select(candidate => candidate.EpisodeId).Distinct().Count() == 1)
+                {
+                    Detail("resolve", $"/match 章节已确认，模式={resolution.ModeUsed}：{Candidates([selectedMatch])}");
+                    return new("matched", sourceId, source, selectedMatch, [selectedMatch], false, resolution.ModeUsed);
+                }
+            }
+            Detail("match_fallback", $"/match 章节未能确认，状态={resolution.Status}，继续标题搜索");
+        }
+        if (rateLimited is null)
+        {
+            // 搜索分支独立判断，不混入未确认的 /match 章节及其候选序号。
+            works.Clear();
+            exactFound = false;
+            Detail("search", $"开始标题搜索，关键词={searchTitle}");
             var search = await OnlineFetchAsync(source, config, userId,
                 "/search/anime?keyword=" + Uri.EscapeDataString(ProxyKeyword(searchTitle)), null, token);
             works.AddRange(OnlineParseList(search, "animes"));
         }
         var directEpisodeIds = works.Where(w => Allowed(w) && w.EpisodeId is not null)
             .Select(w => w.EpisodeId).Distinct().Take(2).Count();
-        works = works.Where(w => w.AnimeId is not null && Allowed(w))
+        // /match 的模糊结果可能已经带有 episodeId；保留这些分集候选，不能先按作品 ID 折叠。
+        var matchEpisodeWorks = works.Where(w => Allowed(w) && CompatibleSeason(w) && CompatibleEpisode(w) && w.EpisodeId is not null).ToArray();
+        works = works.Where(w => w.AnimeId is not null && Allowed(w) && CompatibleSeason(w))
             .DistinctBy(w => w.AnimeId).Take(51).ToList();
-        Progress("candidates", works.Count);
-        if (works.Count == 0) return new("unmatched", sourceId, source, null, [], true, "traditional");
+        var resolutionWorks = matchEpisodeWorks.Length > 0 ? matchEpisodeWorks : works.ToArray();
+        Detail("candidates", $"搜索及匹配结果：有效作品={works.Count}，带分集候选={matchEpisodeWorks.Length}，详情（最多100项）：{Candidates(resolutionWorks)}", resolutionWorks.Length);
+        if (works.Count == 0)
+        {
+            if (rateLimited is not null) throw rateLimited;
+            return new("unmatched", sourceId, source, null, [], true, "traditional");
+        }
         var limited = works.Take(50).ToArray();
-        Progress("resolve", limited.Length);
+        var limitedResolutionWorks = resolutionWorks.Take(100).ToArray();
+        if (rateLimited is not null && input.PreferredAnimeId is not null && input.PreferredEpisodeNumber is not null)
+        {
+            // 原详情被流控时，只复用 BGM 返回的同一作品；不能丢弃用户确认的集数偏移。
+            Progress("resolve", limited.Length);
+            var preferred = limited.SingleOrDefault(work => work.AnimeId == input.PreferredAnimeId);
+            if (preferred is not null && bgmDetails is not null && bgmDetails.TryGetValue(preferred.AnimeId!, out var bytes))
+            {
+                var preferredEpisodes = OnlineParseEpisodes(bytes, preferred);
+                var matches = preferredEpisodes.Where(ep => ep.EpisodeNumber == input.PreferredEpisodeNumber && Allowed(ep)).ToArray();
+                if (matches.Length == 1 && preferredEpisodes.Count <= 100)
+                    return new("matched", sourceId, source, matches[0], matches, false, "user-confirmed-work");
+            }
+            return new("ambiguous", sourceId, source, null, limited, true, "user-confirmed-work");
+        }
+        Progress("resolve", limitedResolutionWorks.Length);
         var workReply = await host.Matches.ResolveAsync(new ResolveMatchRequest("online", target,
-            limited.Select((w, i) => new MatchCandidateInput(i.ToString(), sourceId, w.AnimeId,
-                Title: w.AnimeTitle, MediaType: input.MediaType,
+            limitedResolutionWorks.Select((w, i) => new MatchCandidateInput(i.ToString(), sourceId, w.AnimeId,
+                Title: w.AnimeTitle, EpisodeId: w.EpisodeId, MediaType: input.MediaType,
                 SeasonNumber: MatchMetadata.Parse(w.AnimeTitle, true).Season
-                    ?? (input.MediaType == "episode" && input.SeasonNumber == 1 ? 1 : null))).ToArray(), 20,
-            CandidatesTruncated: works.Count > 50, SelectionScope: "work")
-            { AiAuthorized = false, TraceId = _matchTrace }, token);
+                    ?? (input.MediaType == "episode" && input.SeasonNumber == 1 ? 1 : null),
+                EpisodeNumber: w.EpisodeNumber, UpstreamFields: w.UpstreamFields)).ToArray(), 20,
+            CandidatesTruncated: resolutionWorks.Length > 100, SelectionScope: "work")
+            { AiAuthorized = aiAuthorized, TraceId = operationId ?? _matchTrace,
+                    Progress = (stage, message) => Detail(stage, message) }, token);
         if (!workReply.Body.Success || workReply.Body.Data is not { } workResolution)
             throw new ApiAccessException(workReply.StatusCode, "MATCH_FAILED", "后端作品判断失败");
+        Detail("resolve", $"作品判断结果：状态={workResolution.Status}，模式={workResolution.ModeUsed}，选中序号={workResolution.SelectedCandidateId}");
         if (workResolution.Status != "matched")
-            return OnlineUncertain(workResolution, limited, sourceId, source);
-        var work = limited[int.Parse(workResolution.SelectedCandidateId!, System.Globalization.CultureInfo.InvariantCulture)];
-        if (exactFound && directEpisodeIds == 1 && work.EpisodeId is not null)
+            return OnlineUncertain(workResolution, limitedResolutionWorks, sourceId, source);
+        var work = limitedResolutionWorks[int.Parse(workResolution.SelectedCandidateId!, System.Globalization.CultureInfo.InvariantCulture)];
+        if (allowDirectEpisode && exactFound && directEpisodeIds == 1 && work.EpisodeId is not null)
             return new("matched", sourceId, source, work, [work], false, workResolution.ModeUsed);
+        if (work.EpisodeId is not null && input.MediaType == "episode"
+            && work.EpisodeNumber == input.EpisodeNumber && Allowed(work))
+        {
+            // 模糊 /match 结果已由智能判断选出目标章节，避免再次读取整部作品分集。
+            Detail("resolve", $"/match 模糊结果已直接确认章节：作品={work.AnimeTitle}，作品ID={work.AnimeId}，章节={work.EpisodeTitle}，章节ID={work.EpisodeId}");
+            return new("matched", sourceId, source, work, [work], false, workResolution.ModeUsed);
+        }
         Progress("detail");
-        var detail = await OnlineFetchAsync(source, config, userId, "/bangumi/" + ProxyIdentifier(work.AnimeId), null, token);
-        var upstreamEpisodes = OnlineParseEpisodes(detail, work);
-        var episodes = upstreamEpisodes.Where(Allowed).ToList();
+        var detail = bgmDetails is not null && bgmDetails.TryGetValue(work.AnimeId!, out var cached)
+            ? cached : await OnlineFetchAsync(source, config, userId, "/bangumi/" + ProxyIdentifier(work.AnimeId), null, token);
+        var upstreamEpisodes = NormalizeSeasonEpisodes(OnlineParseEpisodes(detail, work),
+            normalizeSeasonEpisode && source == "official" && (MatchMetadata.Parse(work.AnimeTitle, true).Season ?? 1) > 1);
+        Detail("detail", $"分集读取结果：作品={work.AnimeTitle}，作品ID={work.AnimeId}，分集数={upstreamEpisodes.Count}，详情（最多100项）：{Candidates(upstreamEpisodes)}", upstreamEpisodes.Count);
+        var episodes = upstreamEpisodes.Where(episode => Allowed(episode) && CompatibleSeason(episode)).ToList();
         if (upstreamEpisodes.Count == 0 && !string.IsNullOrEmpty(work.EpisodeId) && Allowed(work)) episodes.Add(work);
         if (episodes.Count == 0)
             return new("ambiguous", sourceId, source, null, [work], true, workResolution.ModeUsed);
+        // 作品已确认后，按映射后的明确集号在完整详情内查找；不猜数组下标或连续 ID。
+        if (input.MediaType == "episode" && target.EpisodeNumber is not null && upstreamEpisodes.Count <= 100)
+        {
+            var numbered = episodes.Where(episode => episode.EpisodeNumber == target.EpisodeNumber
+                && !string.IsNullOrEmpty(episode.EpisodeId)).ToArray();
+            if (numbered.Length == 1)
+            {
+                Detail("resolve", $"目标集号唯一命中：{Candidates(numbered)}");
+                return new("matched", sourceId, source, numbered[0], numbered, false, "episode-number");
+            }
+            Detail("resolve", $"目标集号={target.EpisodeNumber}，同号候选={numbered.Length}，继续分集判断");
+        }
         var episodeCandidates = episodes.Take(100).ToArray();
         if (input.MediaType == "movie" && episodeCandidates.Length == 1 && episodes.Count == 1)
             return new("matched", sourceId, source, episodeCandidates[0], episodeCandidates, false, workResolution.ModeUsed);
@@ -230,11 +390,13 @@ public sealed partial class DanmakuApiService
                 ep.EpisodeId, work.AnimeTitle, MediaType: input.MediaType,
                 SeasonNumber: MatchMetadata.Parse(work.AnimeTitle, true).Season
                     ?? (input.SeasonNumber == 1 ? 1 : null),
-                EpisodeNumber: ep.EpisodeNumber, Year: null)).ToArray(),
+                EpisodeNumber: ep.EpisodeNumber, Year: null, UpstreamFields: ep.UpstreamFields)).ToArray(),
             20, CandidatesTruncated: episodes.Count > 100)
-            { AiAuthorized = false, TraceId = _matchTrace }, token);
+            { AiAuthorized = aiAuthorized, TraceId = operationId ?? _matchTrace,
+                    Progress = (stage, message) => Detail(stage, message) }, token);
         if (!episodeReply.Body.Success || episodeReply.Body.Data is not { } episodeResolution)
             throw new ApiAccessException(episodeReply.StatusCode, "MATCH_FAILED", "后端分集判断失败");
+        Detail("resolve", $"分集判断结果：状态={episodeResolution.Status}，模式={episodeResolution.ModeUsed}，选中序号={episodeResolution.SelectedCandidateId}");
         if (episodeResolution.Status != "matched") return OnlineUncertain(episodeResolution, episodeCandidates, sourceId, source);
         var selected = episodeCandidates[int.Parse(episodeResolution.SelectedCandidateId!, System.Globalization.CultureInfo.InvariantCulture)];
         return new("matched", sourceId, source, selected, [selected], false, episodeResolution.ModeUsed);
@@ -273,7 +435,8 @@ public sealed partial class DanmakuApiService
             var episode = OnlineString(entry, "episodeId") ?? OnlineString(entry, "matchedEpisodeId");
             result.Add(new(id, OnlineString(entry, "animeTitle"), episode is not null && OnlineId(episode) ? episode : null,
                 OnlineString(entry, "episodeTitle") ?? OnlineString(entry, "matchedEpisodeTitle"),
-                OnlineNumber(entry, "episodeNumber"), OnlineString(entry, "imageUrl")));
+                OnlineNumber(entry, "episodeNumber") ?? MatchMetadata.Parse(OnlineString(entry, "episodeTitle")
+                    ?? OnlineString(entry, "matchedEpisodeTitle"), true).Episode, OnlineString(entry, "imageUrl"), UpstreamFields: OnlineRawFields(entry)));
         }
         return result;
     }
@@ -294,9 +457,21 @@ public sealed partial class DanmakuApiService
             if (id is null || !OnlineId(id)) continue;
             var title = OnlineString(ep, "episodeTitle");
             result.Add(new(work.AnimeId, work.AnimeTitle, id, title,
-                OnlineNumber(ep, "episodeNumber") ?? MatchMetadata.Parse(title, true).Episode, work.ImageUrl));
+                OnlineNumber(ep, "episodeNumber") ?? MatchMetadata.Parse(title, true).Episode, work.ImageUrl,
+                UpstreamFields: OnlineRawFields(ep)));
         }
         return result;
+    }
+
+    private static JsonElement OnlineRawFields(JsonElement entry)
+    {
+        // 保留上游字段名与数值类型，未知字段及潜在凭据不进入模型输入。
+        var fields = new Dictionary<string, JsonElement>();
+        foreach (var name in new[] { "animeId", "bangumiId", "animeTitle", "episodeId", "matchedEpisodeId",
+            "episodeTitle", "matchedEpisodeTitle", "episodeNumber", "type", "typeDescription", "shift", "imageUrl" })
+            if (entry.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.String or JsonValueKind.Number or JsonValueKind.Null)
+                fields[name] = value.Clone();
+        return JsonSerializer.SerializeToElement(fields);
     }
 
     private static string? OnlineString(JsonElement element, string key)
@@ -310,6 +485,28 @@ public sealed partial class DanmakuApiService
         if (!element.TryGetProperty(key, out var value)) return null;
         return int.TryParse(value.ToString(), out var number) && number is >= 0 and <= 99999 ? number : null;
     }
+    private static bool IsMatchParameterRejection(ApiAccessException error)
+    {
+        if (error.UpstreamReply is not { StatusCode: 200 } reply) return false;
+        using var json = JsonDocument.Parse(reply.Body);
+        return json.RootElement.TryGetProperty("errorCode", out var code)
+            && code.ValueKind == JsonValueKind.Number && code.TryGetInt32(out var value) && value == 2;
+    }
+
+    internal static int? OnlineCandidateSeason(OnlineEpisode candidate) => MatchMetadata.Parse(candidate.AnimeTitle, true).Season;
+
+    private static IReadOnlyList<OnlineEpisode> NormalizeSeasonEpisodes(IReadOnlyList<OnlineEpisode> episodes, bool enabled)
+    {
+        if (!enabled || episodes.Count == 0 || episodes.Count > 100) return episodes;
+        var numbers = episodes.Where(episode => episode.EpisodeNumber is > 0)
+            .Select(episode => episode.EpisodeNumber!.Value).ToArray();
+        if (numbers.Length == 0 || numbers.Distinct().Count() != numbers.Length) return episodes;
+        var first = numbers.Min();
+        if (first <= 1) return episodes;
+        return episodes.Select(episode => episode.EpisodeNumber is > 0
+            ? episode with { EpisodeNumber = episode.EpisodeNumber.Value - first + 1 } : episode).ToArray();
+    }
+
     private static bool OnlineId(string value) => value.Length <= 160
         && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
 

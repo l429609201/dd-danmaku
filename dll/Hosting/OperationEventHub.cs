@@ -11,7 +11,7 @@ internal static class OperationEventHub
     private const int MaxSubscribers = 128;
     private const int MaxSubscribersPerOperation = 4;
     private const int MaxEvents = 64;
-    private static readonly TimeSpan CompletedTtl = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan CompletedTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ActiveTtl = TimeSpan.FromMinutes(3);
     private static readonly object Gate = new();
     private static readonly Dictionary<string, Operation> Operations = new(StringComparer.Ordinal);
@@ -21,7 +21,9 @@ internal static class OperationEventHub
     {
         "started", "progress", "fetch", "parse", "save", "verify", "normalize", "remove",
         "delete", "scan", "match", "upload", "refresh", "selection", "records", "complete",
-        "source", "search", "candidates", "resolve", "detail", "upstream", "completed", "failed"
+        "source", "search", "candidates", "resolve", "detail", "upstream", "completed", "failed",
+        "bgm_fallback", "bgm_search", "bgm_detail", "hash", "mapping", "poll", "characters", "collection",
+        "authorize", "metadata", "match_fallback"
     };
     private static readonly HashSet<string> Statuses = new(StringComparer.Ordinal)
     {
@@ -31,8 +33,17 @@ internal static class OperationEventHub
     {
         "AUTH_REQUIRED", "ADMIN_REQUIRED", "INVALID_REQUEST", "INVALID_DATA", "NOT_FOUND",
         "UPSTREAM_ERROR", "UPSTREAM_TIMEOUT", "STORAGE_ERROR", "STORAGE_DENIED",
+        // 固定诊断码同步到前端，不透传上游正文或认证信息。
+        "UPSTREAM_PROTOCOL_MISMATCH", "UPSTREAM_INVALID_RESPONSE", "UPSTREAM_BUSINESS_ERROR",
+        "UPSTREAM_RATE_LIMITED", "UPSTREAM_AUTH_REJECTED", "UPSTREAM_REJECTED", "UPSTREAM_UNAVAILABLE",
+        "UPSTREAM_MATCH_FAILED", "UPSTREAM_MATCH_UNAVAILABLE", "MATCH_FAILED",
+        "OFFICIAL_PROXY_UNAVAILABLE", "OFFICIAL_SIGNING_UNAVAILABLE", "OFFICIAL_USER_MARK_INCOMPLETE",
+        "PROXY_DISABLED", "PROXY_NOT_CONFIGURED",
         "XML_WRITE_DISABLED", "XML_READ_DISABLED", "USER_CHANGED", "INTERNAL_ERROR",
-        "OPERATION_CANCELLED", "OTHER_ERROR"
+        "OPERATION_CANCELLED", "OTHER_ERROR", "SOURCE_NOT_FOUND", "SOURCE_TARGET_DENIED", "SOURCE_TARGET_INVALID",
+        "SOURCE_DNS_FAILED", "SOURCE_NOT_CONFIGURED", "UPSTREAM_CHANGED", "TASK_RESULT_EXPIRED", "UPSTREAM_TASK_FAILED",
+        "BANGUMI_AUTH_REJECTED", "BANGUMI_NOT_FOUND", "BANGUMI_RATE_LIMITED", "BANGUMI_PROTOCOL_INVALID",
+        "BANGUMI_EPISODE_AMBIGUOUS", "BANGUMI_TOKEN_NOT_CONFIGURED", "BANGUMI_SUBJECT_INVALID", "BANGUMI_SOURCE_NOT_ALLOWED"
     };
 
     internal static string Start(Guid userId)
@@ -69,8 +80,14 @@ internal static class OperationEventHub
     }
 
     internal static bool Publish(Guid userId, string operationId, string stage, int? count = null,
-        string? status = null, string? errorCode = null)
+        string? status = null, string? errorCode = null, string? detail = null)
     {
+        // 详情只由后端构造；限制长度并移除控制字符，禁止将网络位置带入本人事件流。
+        if (detail is not null)
+        {
+            detail = new string(detail.Where(character => !char.IsControl(character) || character is '\n' or '\r' or '\t').Take(24000).ToArray());
+            detail = System.Text.RegularExpressions.Regex.Replace(detail, @"(?i)[a-z][a-z0-9+.-]*://[^\s""'<>]+", "[地址已脱敏]");
+        }
         lock (Gate)
         {
             Prune(DateTimeOffset.UtcNow);
@@ -78,7 +95,7 @@ internal static class OperationEventHub
             AddEvent(operation, new Event(Stages.Contains(stage) ? stage : "progress",
                 count is >= 0 and <= 1000000 ? count : null,
                 status is not null && Statuses.Contains(status) ? status : "running",
-                errorCode is null ? null : ErrorCodes.Contains(errorCode) ? errorCode : "OTHER_ERROR"));
+                errorCode is null ? null : ErrorCodes.Contains(errorCode) ? errorCode : "OTHER_ERROR", detail));
             return true;
         }
     }
@@ -120,6 +137,13 @@ internal static class OperationEventHub
         }
     }
 
+    // 续租仅供仍在执行的服务器任务调用，不发布伪造进度，也不接受客户端续租。
+    internal static void Touch(Guid owner, string id)
+    {
+        lock (Gate)
+            if (FindOwnedActive(owner, id, out var operation)) operation.LastActivityAt = DateTimeOffset.UtcNow;
+    }
+
     private static bool FindOwnedActive(Guid userId, string id, out Operation operation)
     {
         if (userId != Guid.Empty && Operations.TryGetValue(id, out operation!)
@@ -130,6 +154,8 @@ internal static class OperationEventHub
 
     private static void AddEvent(Operation operation, Event value)
     {
+        // 活动租约随真实业务进度续期，异步下载不会因创建时间超过三分钟而丢失订阅。
+        operation.LastActivityAt = DateTimeOffset.UtcNow;
         var payload = "data: " + JsonSerializer.Serialize(value, EventJsonOptions) + "\n\n";
         operation.Events.Enqueue(payload);
         if (operation.Events.Count > MaxEvents) operation.Events.Dequeue();
@@ -146,19 +172,20 @@ internal static class OperationEventHub
     {
         foreach (var pair in Operations.ToArray())
         {
-            if (now - (pair.Value.CompletedAt ?? pair.Value.CreatedAt)
+            if (now - (pair.Value.CompletedAt ?? pair.Value.LastActivityAt)
                 < (pair.Value.CompletedAt is null ? ActiveTtl : CompletedTtl)) continue;
             Operations.Remove(pair.Key);
             foreach (var subscriber in pair.Value.Subscribers) subscriber.Writer.TryComplete();
         }
     }
 
-    private sealed record Event(string Stage, int? Count, string Status, string? ErrorCode);
+    private sealed record Event(string Stage, int? Count, string Status, string? ErrorCode, string? Detail = null);
 
     internal sealed class Operation(Guid owner, DateTimeOffset createdAt)
     {
         internal Guid Owner { get; } = owner;
         internal DateTimeOffset CreatedAt { get; } = createdAt;
+        internal DateTimeOffset LastActivityAt { get; set; } = createdAt;
         internal DateTimeOffset? CompletedAt { get; set; }
         internal Queue<string> Events { get; } = new();
         internal HashSet<Channel<string>> Subscribers { get; } = new();

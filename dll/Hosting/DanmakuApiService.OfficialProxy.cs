@@ -58,8 +58,33 @@ public sealed partial class DanmakuApiService
         byte[]? body = post ? await ApiHttpResult.ReadBodyAsync(request.RequestStream, Request, 256 * 1024, "application/json") : null;
         // 中转前缀来自构建配置，不接受浏览器指定目标或认证身份。
         var target = new Uri(settings.RelayPrefix + upstream.AbsoluteUri);
-        var reply = await DanmakuProxyTransport.SendAsync(target, post ? HttpMethod.Post : HttpMethod.Get,
-            headers, body, Request.CancellationToken);
+        DanmakuProxyTransport.Reply reply;
+        try
+        {
+            reply = await DanmakuProxyTransport.SendAsync(target, post ? HttpMethod.Post : HttpMethod.Get,
+                headers, body, Request.CancellationToken);
+        }
+        catch (ApiAccessException error) when (!post && (tail is "search/anime" or "search/episodes")
+            && error.Code == "UPSTREAM_RATE_LIMITED")
+        {
+            ProxyProgress(user.Id, "bgm_fallback");
+            var query = System.Web.HttpUtility.ParseQueryString(upstream.Query);
+            var keyword = ProxyKeyword(query["keyword"] ?? query["anime"] ?? "");
+            var fallback = await OnlineBgmSearchAsync(keyword, user.Id, plugin.Configuration,
+                Request.CancellationToken, (stage, count) => ProxyProgress(user.Id, stage, count));
+            if (fallback.Works.Count == 0) throw;
+            var requestedEpisode = int.TryParse(query["episode"], out var number) && number is >= 0 and <= 99999
+                ? number : (int?)null;
+            var animes = fallback.Works.Select(work => new
+            {
+                animeId = work.AnimeId, animeTitle = work.AnimeTitle, imageUrl = work.ImageUrl,
+                episodes = OnlineParseEpisodes(fallback.Details[work.AnimeId!], work)
+                    .Where(episode => requestedEpisode is null || episode.EpisodeNumber == requestedEpisode).Select(episode => new
+                { episodeId = episode.EpisodeId, episodeTitle = episode.EpisodeTitle, episodeNumber = episode.EpisodeNumber }).ToArray()
+            }).Where(work => work.episodes.Length > 0).ToArray();
+            if (animes.Length == 0) throw;
+            reply = new(JsonSerializer.SerializeToUtf8Bytes(new { success = true, errorCode = 0, animes }), 200);
+        }
         // 仅弹幕正文请求可触发保存；媒体权限由保存编排再次核验。
         if (!post && reply.StatusCode is >= 200 and < 300 && tail.StartsWith("comment/", StringComparison.Ordinal))
             ProxyProgress(user.Id, "save");

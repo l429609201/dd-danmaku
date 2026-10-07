@@ -14,7 +14,7 @@ public sealed class SaveProxySettingsRequest : IRequiresRequestStream
 }
 /// <summary>空密钥保留原值，清除需显式指定。</summary>
 public sealed record ProxySettingsInput(bool Enabled, string BaseUrl, string ServerType,
-    string AppId, string? AppSecret, bool ClearSecret, string? SourceId = null);
+    string AppId, string? AppSecret, bool ClearSecret, string? SourceId = null, IReadOnlyList<string>? PrivateSourcePrefixes = null);
 
 public sealed partial class DanmakuApiService
 {
@@ -46,10 +46,24 @@ public sealed partial class DanmakuApiService
                 || uri.UserInfo.Length > 0 || uri.Query.Length > 0 || uri.Fragment.Length > 0)
                 throw new ArgumentException("代理地址必须是无凭据和查询参数的 HTTP API 前缀");
         }
+        string[]? privatePrefixes = null;
+        if (input.PrivateSourcePrefixes is { } prefixes)
+        {
+            if (prefixes.Count > 100) throw new ArgumentException("内网来源授权列表过长");
+            privatePrefixes = prefixes.Select(value =>
+            {
+                if (value is null || value.Length > 2048 || !Uri.TryCreate(value.Trim(), UriKind.Absolute, out var target)
+                    || target.Scheme is not ("http" or "https") || target.UserInfo.Length != 0
+                    || target.Query.Length != 0 || target.Fragment.Length != 0)
+                    throw new ArgumentException("内网来源授权前缀无效");
+                return target.AbsoluteUri.TrimEnd('/');
+            }).Distinct(StringComparer.Ordinal).ToArray();
+        }
         lock (DD.Danmaku.Web.Api.PluginConfigurationService.ConfigurationGate)
         {
             var c = plugin.Configuration.CopyForUpdate();
             c.DanmakuProxyEnabled = input.Enabled;
+            if (privatePrefixes is not null) c.BackendPrivateSourcePrefixes = privatePrefixes;
             c.DanmakuProxySourceId = source;
             c.DanmakuProxyBaseUrl = url;
             c.DanmakuProxyServerType = input.ServerType;
@@ -65,6 +79,7 @@ public sealed partial class DanmakuApiService
         Enabled = c.DanmakuProxyEnabled, BaseUrl = c.DanmakuProxyBaseUrl,
         SourceId = c.DanmakuProxySourceId,
         ServerType = c.DanmakuProxyServerType, AppId = c.DanmakuProxyAppId,
-        HasSecret = !string.IsNullOrEmpty(c.DanmakuProxyAppSecret)
+        HasSecret = !string.IsNullOrEmpty(c.DanmakuProxyAppSecret),
+        PrivateSourcePrefixes = c.BackendPrivateSourcePrefixes ?? []
     };
 }

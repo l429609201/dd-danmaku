@@ -126,14 +126,14 @@ async function copyVisible() {
   const text = displayEntries.value.map(row => `[${time(row.timestamp)}] ${String(row.level || '').toUpperCase()} ${row.message || ''}`).join('\n')
   if (!text) return
   try {
-    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text)
-    else {
+    let copied = false
+    try { if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); copied = true } } catch { /* 权限拒绝后继续使用传统复制。 */ }
+    if (!copied) {
       const previous = document.activeElement
       const area = document.createElement('textarea')
       area.value = text; area.setAttribute('readonly', ''); area.style.position = 'fixed'; area.style.opacity = '0'
-      document.body.appendChild(area); area.focus(); area.select()
-      let copied = false
-      try { copied = document.execCommand('copy') } finally { area.remove(); if (previous && typeof previous.focus === 'function') previous.focus() }
+      document.body.appendChild(area); area.focus({ preventScroll: true }); area.select()
+      try { copied = document.execCommand('copy') } finally { area.remove(); if (previous && typeof previous.focus === 'function') previous.focus({ preventScroll: true }) }
       if (!copied) throw new Error('copy command failed')
     }
     ElMessage.success('已复制当前显示日志')
@@ -162,7 +162,7 @@ async function exportLogs() {
   try {
     const blob = await api.exportFrontendLogs(snapshot, current.signal)
     if (version !== exportSequence || current.signal.aborted) return
-    const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = `frontend-logs-${snapshot.fileId}.ndjson`; document.body.appendChild(link)
+    const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = `frontend-logs-${snapshot.fileId}.log`; document.body.appendChild(link)
     try { link.click() } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000) }
   } catch (e) { if (version === exportSequence && !current.signal.aborted) exportError.value = e.message || '日志导出失败' }
   finally { if (version === exportSequence) exporting.value = false }
@@ -189,7 +189,7 @@ onBeforeUnmount(() => { disposed = true; active.value = false; document.removeEv
         <el-button text circle :icon="Refresh" :loading="refreshing" :disabled="clearing" title="刷新" aria-label="刷新" @click="load(true, { manual: true })" />
         <el-button text circle :icon="paused ? VideoPlay : VideoPause" :disabled="clearing" :title="paused ? '恢复自动刷新' : '暂停自动刷新'" :aria-label="paused ? '恢复自动刷新' : '暂停自动刷新'" @click="togglePause" />
         <el-button text circle :icon="CopyDocument" :disabled="!displayEntries.length" title="复制当前显示日志" aria-label="复制当前显示日志" @click="copyVisible" />
-        <el-button text circle :icon="Download" :loading="exporting" :disabled="clearing || !selectedFile" title="导出 NDJSON" aria-label="导出 NDJSON" @click="exportLogs" />
+        <el-button text circle :icon="Download" :loading="exporting" :disabled="clearing || !selectedFile" title="导出日志文本" aria-label="导出日志文本" @click="exportLogs" />
         <el-button text circle :icon="Bottom" :disabled="clearing" title="滚动到底部并查看最新" aria-label="滚动到底部并查看最新" @click="scrollBottom" />
         <el-button text circle :icon="Delete" :loading="clearing" :disabled="clearing || !files.length" title="清空全部日志" aria-label="清空全部日志" @click="clearLogs" />
       </div>
@@ -234,7 +234,11 @@ onBeforeUnmount(() => { disposed = true; active.value = false; document.removeEv
 </template>
 
 <style scoped>
-.frontend-logs { min-width: 0; color: var(--el-text-color-primary); }
+.frontend-logs { min-width: 0; min-height: 0; flex: 1 1 0; display: flex; flex-direction: column; overflow: hidden; color: var(--el-text-color-primary); }
+.frontend-logs > :not(.log-viewport) { flex-shrink: 0; }
+/* 日志正文接管剩余高度，取消固定 vh 高度造成的页面溢出。 */
+.frontend-logs .log-viewport { flex: 1 1 0; height: 0; min-height: 0; overscroll-behavior: contain; }
+.frontend-logs .logs-pagination { margin-top: 0; }
 .logs-heading, .heading-title, .logs-actions, .secondary-filter-row, .logs-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .logs-heading { justify-content: space-between; padding: 2px 0 14px; border-bottom: 1px solid var(--el-border-color-lighter); }
 .heading-title h2 { margin: 0; font-size: 17px; font-weight: 650; }.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--el-color-info); }.status-online { background: var(--el-color-success); }.status-loading { background: var(--el-color-warning); }.status-paused { background: var(--el-color-info); }.status-offline { background: var(--el-color-danger); }.status-history { background: var(--el-color-primary); }.status-label { color: var(--el-text-color-secondary); font-size: 12px; }

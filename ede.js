@@ -230,6 +230,8 @@
         check: 'check',
         edit: 'edit',
         layers_clear: 'layers_clear',
+        content_copy: 'content_copy',
+        download: 'download',
     };
 
     // 弹幕设置按钮自定义图标：圆形大框装"弹"字 + 右下角小齿轮角标
@@ -261,6 +263,7 @@
         { id: 'danmakuTab1', name: '手动匹配', buildMethod: buildSearchEpisode },
         { id: currentDanmakuInfoContainerId, name: '弹幕信息', buildMethod: buildCurrentDanmakuInfo },
         { id: 'danmakuTab3', name: '高级设置', buildMethod: buildProSetting },
+        { id: 'danmakuTabLogs', name: '日志', buildMethod: buildLogPage },
         { id: 'danmakuTab4', name: '关于', buildMethod: buildAbout },
         { id: tabIframeId, name: '内嵌网页', hidden: true, buildMethod: buildEmbeddedPage },
     ];
@@ -559,10 +562,13 @@
         const operationStages = {
             started: '开始', source: '选择来源', match: '请求匹配', search: '搜索作品',
             candidates: '整理候选', resolve: '判断候选', detail: '获取分集',
-            save: '检查保存', progress: '处理中',
-            completed: '完成', failed: '失败', upstream: '请求上游'
+            save: '检查保存', fetch: '获取弹幕正文', progress: '处理中', authorize: '重新授权', metadata: '读取媒体元数据',
+            mapping: '计算集数映射', hash: '计算视频哈希', poll: '轮询弹幕生成',
+            characters: '读取角色', collection: '更新收藏', match_fallback: '匹配参数被拒绝，改用标题搜索',
+            completed: '完成', failed: '失败', upstream: '请求上游',
+            bgm_fallback: '官方流控，BGM降级', bgm_search: 'BGM搜索作品', bgm_detail: 'BGM作品获取分集'
         };
-        async function readOperationEvents(url, token, signal, isCurrent) {
+        async function readOperationEvents(url, token, signal, isCurrent, onProgress = () => {}) {
             const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store',
                 redirect: 'error', signal, headers: { Accept: 'text/event-stream', 'X-Emby-Token': token } });
             if (!response.ok || !response.body) throw new Error('后端日志流不可用');
@@ -574,9 +580,9 @@
                     const { value, done } = await reader.read();
                     if (done) break;
                     buffer += decoder.decode(value, { stream: true });
-                    if (buffer.length > 16384) throw new Error('后端日志流格式无效');
                     let boundary;
                     while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+                        if (boundary > 262144) throw new Error('后端日志单事件超过限制');
                         const frame = buffer.slice(0, boundary).replace(/\r/g, '');
                         buffer = buffer.slice(boundary + 2);
                         const line = frame.split('\n').find(part => part.startsWith('data:'));
@@ -591,8 +597,13 @@
                         const details = [Number.isInteger(count) && count >= 0 ? `数量=${count}` : '',
                             /^[a-z_]{1,40}$/.test(status) ? `状态=${status}` : '',
                             /^[A-Z0-9_]{1,60}$/.test(code) ? `错误码=${code}` : ''].filter(Boolean).join('，');
-                        logger.info(`[DLL 操作] ${operationStages[stage]}${details ? `，${details}` : ''}`);
+                        const detail = typeof (event.detail ?? event.Detail) === 'string'
+                            ? String(event.detail ?? event.Detail).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ').slice(0, 24000) : '';
+                        logger.info(`[DLL 操作] ${operationStages[stage]}${details ? `，${details}` : ''}${detail ? `，${detail}` : ''}`);
+                        onProgress({ stage, status, code, count });
                     }
+                    // 对未完成的单帧限长，不把一个网络块中的多条合法事件合计误判为超限。
+                    if (buffer.length > 262144) throw new Error('后端日志单事件超过限制');
                 }
             } finally { reader.releaseLock(); }
         }
@@ -648,47 +659,135 @@
                 } catch (_) { return null; }
                 finally { clearTimeout(startTimer); }
             },
+            // 加载环只接受当前播放任务；poll 的数值才是百分比，候选数量不能当进度。
+            showTaskProgress({ stage, status, count, code }, isCurrent) {
+                if (!isCurrent()) return;
+                if (['failed', 'cancelled'].includes(status)) {
+                    ddClearLoadingRing();
+                    setOsdDanmakuText(`弹幕：后端${status === 'failed' ? '失败' : '已取消'}${code ? `（${code}）` : ''}`);
+                    return;
+                }
+                if (!['pending', 'running'].includes(status)) return;
+                const percent = stage === 'poll' && Number.isInteger(count) && count >= 0 && count <= 100 ? count : -1;
+                const tip = `后端：${operationStages[stage] || '处理中'}${percent >= 0 ? `（${percent}%）` : ''}`;
+                ddSetLoadingRing(percent, tip);
+                setOsdDanmakuText(tip);
+            },
+            async watchTask(taskId, isCurrent = () => true) {
+                const client = getHostApiClient();
+                const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
+                if (!this.has('OperationEvents') || !base || !client?.accessToken?.()) return { close() {} };
+                const controller = new AbortController();
+                // 监听仅负责显示；关闭页面订阅不取消已确定分集的后台下载。
+                const pending = readOperationEvents(`${base}/dd-danmaku/api/operations/${taskId}/events`,
+                    client.accessToken(), controller.signal, isCurrent,
+                    event => this.showTaskProgress(event, isCurrent)).catch(() => {
+                        if (!controller.signal.aborted && isCurrent()) logger.debug('[后端进度] SSE 不可用，状态轮询继续');
+                    });
+                return { async close() {
+                    await Promise.race([pending, new Promise(resolve => setTimeout(resolve, 200))]);
+                    controller.abort();
+                } };
+            },
             async resolveOnlineMatch(payload, isCurrent = () => true) {
                 const client = getHostApiClient();
                 if (!this.has('OnlineMatch') || !this.has('OperationEvents') || !client?.accessToken?.()) return null;
                 const session = resetIfSessionChanged();
+                // window.ede 跨集复用：新一轮自动匹配必须同时清除上一集手动分集任务，避免下载携带过期证明。
+                if (window.ede) { window.ede.backendMatchTaskId = ''; window.ede.backendEpisodeTaskId = ''; window.ede.backendSourceId = ''; }
                 const base = String(client.serverAddress()).replace(/\/$/, '');
                 const headers = { Accept: 'application/json', 'Content-Type': 'application/json',
                     'X-Emby-Token': client.accessToken() };
                 const controller = new AbortController();
                 const timer = setTimeout(() => controller.abort(), 130000);
                 let streamController, streamTask;
+                let operationFinished = false;
+                const currentOperation = () => isCurrent() && session === resetIfSessionChanged();
+                // 只同步当前在线匹配；手动搜索的并发代理事件不覆盖播放器状态。
+                const onProgress = ({ stage, status, count, code }) => {
+                    if (!currentOperation() || operationFinished) return;
+                    this.showTaskProgress({ stage, status, count, code }, currentOperation);
+                };
                 try {
-                    const begin = await fetch(`${base}/dd-danmaku/api/operations/start`, {
+                    // business/match 自己创建唯一任务及事件流，无需额外空 operation 造成重复“开始”和主动中止日志。
+                    const response = await fetch(`${base}/dd-danmaku/api/business/match`, {
                         method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error',
-                        headers, signal: controller.signal });
-                    const started = await begin.json().catch(() => null);
-                    const operationId = String(started?.data?.operationId ?? started?.data?.OperationId ?? '');
-                    if (!begin.ok || !/^[a-f0-9]{32}$/i.test(operationId) || !isCurrent()) return null;
-                    streamController = new AbortController();
-                    streamTask = readOperationEvents(`${base}/dd-danmaku/api/operations/${operationId}/events`,
-                        client.accessToken(), streamController.signal, isCurrent)
-                        .catch(() => { if (isCurrent()) logger.debug('[DLL 操作] 日志流不可用，匹配请求仍继续'); });
-                    const response = await fetch(`${base}/dd-danmaku/api/matches/online`, {
-                        method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error',
-                        headers, signal: controller.signal, body: JSON.stringify({ ...payload, operationId }) });
-                    const body = await response.json().catch(() => null);
+                        headers, signal: controller.signal,
+                        // operationId只属于前端事件订阅，不传入严格后端业务正文。
+                        body: JSON.stringify((() => {
+                            const allowed = ['itemId', 'mediaSourceId', 'preferredSourceId', 'preferredAnimeId', 'preferredEpisodeNumber'];
+                            return Object.fromEntries(allowed.filter(key => payload[key] !== undefined).map(key => [key, payload[key]]));
+                        })()) });
+                    let body = await response.json().catch(() => null);
                     if (!isCurrent() || session !== resetIfSessionChanged()) return null;
-                    if (!response.ok || body?.success !== true) {
-                        const code = String(body?.errorCode ?? 'UNKNOWN_ERROR');
-                        logger.warn(`[后端在线匹配] HTTP ${response.status}，错误码=${/^[A-Z0-9_]{1,60}$/.test(code) ? code : 'UNKNOWN_ERROR'}`);
-                        return null;
+                    if (!response.ok || body?.success !== true || !/^[a-f0-9]{32}$/i.test(String(body?.data?.id ?? ''))) {
+                        const upstreamCode = body?.errorCode;
+                        const code = response.status === 429 ? 'UPSTREAM_RATE_LIMITED' : String(upstreamCode ?? 'UNKNOWN_ERROR');
+                        const failure = new Error('后端在线匹配失败'); failure.code = /^[A-Z0-9_]{1,60}$/.test(code) ? code : 'UNKNOWN_ERROR';
+                        failure.upstreamResponse = body; failure.httpStatus = response.status; throw failure;
                     }
+                    const taskId = String(body.data.id);
+                    let taskCancelled = false;
+                    const cancelTaskOnSwitch = () => {
+                        if (taskCancelled || currentOperation()) return;
+                        taskCancelled = true;
+                        void fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/cancel`, {
+                            method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers,
+                            body: JSON.stringify({ playbackEnded: true }) }).catch(() => {});
+                    };
+                    streamController?.abort();
+                    streamController = new AbortController();
+                    streamTask = readOperationEvents(`${base}/dd-danmaku/api/operations/${taskId}/events`,
+                        client.accessToken(), streamController.signal, currentOperation, onProgress)
+                        .catch(() => { if (currentOperation()) logger.debug('[DLL 任务] SSE 不可用，轮询仍继续'); });
+                    const taskDeadline = Date.now() + 180000;
+                    while (Date.now() < taskDeadline) {
+                        if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
+                        const statusResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}`, {
+                            credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers, signal: controller.signal });
+                        const statusBody = await statusResponse.json().catch(() => null);
+                        if (!statusResponse.ok || statusBody?.success !== true) throw new Error('后端在线匹配状态读取失败');
+                        const task = statusBody.data || {};
+                        if (task.status === 'failed' || task.status === 'cancelled') {
+                            // 保留后端终态错误码与任务关联号，不能将内部错误误报为上游网络失败。
+                            const failure = new Error('后端在线匹配任务失败');
+                            const code = String(task.errorCode || 'UNKNOWN_ERROR');
+                            failure.code = /^[A-Z0-9_]{1,60}$/.test(code) ? code : 'UNKNOWN_ERROR';
+                            failure.taskId = taskId;
+                            throw failure;
+                        }
+                        if (task.status === 'succeeded') {
+                            const resultResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/result`, {
+                                credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers, signal: controller.signal });
+                            body = await resultResponse.json().catch(() => null);
+                            if (!resultResponse.ok || body?.success !== true) throw new Error('后端在线匹配结果读取失败');
+                            break;
+                        }
+                    }
+                    if (!body?.data?.Match && !body?.data?.match) throw new Error('后端在线匹配任务超时');
                     const data = body.data;
+                    window.ede.backendMatchTaskId = taskId;
+                    window.ede.backendSourceId = data.SourceId || data.sourceId || '';
+                    const match = data.Match || data.match;
+                    data.status = String(match.Status || match.status || '').toLowerCase();
+                    data.selected = match.Selected || match.selected || null;
+                    data.candidates = match.Candidates || match.candidates || [];
+                    data.requiresConfirmation = match.RequiresConfirmation ?? match.requiresConfirmation;
+                    data.modeUsed = match.ModeUsed || match.modeUsed;
                     if (!data || !['matched', 'ambiguous', 'unmatched', 'insufficient_metadata'].includes(data.status))
                         throw new Error('在线匹配响应协议无效');
                     // 完成事件可能略晚于 HTTP 响应；短暂等待，不阻塞渲染。
                     await Promise.race([streamTask, new Promise(resolve => setTimeout(resolve, 300))]);
                     return data;
                 } catch (error) {
-                    if (isCurrent()) logger.warn(`[后端在线匹配] ${error?.name === 'AbortError' ? '请求超时' : '请求失败'}`);
-                    return null;
+                    if (!currentOperation()) return null;
+                    if (!error.code) error.code = error?.name === 'AbortError' ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_UNAVAILABLE';
+                    logger.warn(`[后端在线匹配] ${error?.name === 'AbortError' ? '请求超时' : '请求失败'}，错误码=${error.code}${error.taskId ? `，任务=${error.taskId}` : ''}`);
+                    throw error;
                 } finally {
+                    operationFinished = true;
                     clearTimeout(timer); controller.abort(); streamController?.abort();
                     if (streamTask) void streamTask;
                 }
@@ -1126,10 +1225,12 @@
     // 后端日志与控制台互不依赖；仅上传受限文本和白名单诊断字段。
     const frontendLogs = (() => {
         const queue = [];
+        const listeners = new Set();
         const fields = new Set(['isMatched', 'success', 'errorCode', 'status', 'code',
             'episodeId', 'matchedEpisodeId', 'animeId', 'bangumiId', 'episodeNumber',
             'seasonNumber', 'count', 'commentCount', 'sourceType', 'requiresConfirmation']);
         let owner = '', timer = null, sending = false, retryAfter = 0;
+        let clearing = false, flight = Promise.resolve();
         const sessionId = window.crypto?.randomUUID?.() || `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
         function context() {
             const client = getHostApiClient();
@@ -1139,17 +1240,15 @@
             return base && user && token ? { base, user, token, key: JSON.stringify([base, user, token]) } : null;
         }
         function redact(value, token = '') {
-            let text = String(value).slice(0, 8192);
-            // 部分旧调用预先 stringify；保留消息前缀但不上传原始对象正文。
-            const bodyStart = text.search(/\{|\[\s*(?:"|'|\[|\d|true\b|false\b|null\b)/);
-            if (bodyStart >= 0) text = text.slice(0, bodyStart) + '[结构化内容已省略]';
+            let text = String(value).slice(0, 24000);
+            // 保留展开 JSON 的换行与缩进，仍对凭据和网络地址进行脱敏。
             if (token.length >= 6) text = text.split(token).join('[已脱敏]');
             return text.replace(/\bBearer\s+[^\s,;"']+/gi, 'Bearer [已脱敏]')
                 .replace(/(?:https?|wss?|emby-proxy):\/\/[^\s"'<>]+/gi, '[URL已脱敏]')
                 .replace(/((?:authorization|bearer|token|api[_-]?key|app[_-]?secret|secret|password|cookie|fileName|fileHash|payload|path)\s*["']?\s*[:=]\s*)[^\s,;}]+/gi, '$1[已脱敏]')
                 .replace(/(?:[A-Za-z]:\\|\\\\)[^\s"'<>]+|\/(?:[^\s/"'<>]+\/)+[^\s"'<>]*/g, '[路径已脱敏]')
                 .replace(/\b[a-f0-9]{32,64}\b/gi, '[哈希已脱敏]')
-                .replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 2048);
+                .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ').slice(0, 24000);
         }
         function describe(value, token, depth = 0) {
             if (typeof value === 'string') return redact(value, token);
@@ -1171,20 +1270,31 @@
             return Object.keys(safe).length ? Object.entries(safe).map(([key, entry]) => `${key}=${entry}`).join(', ') : '[对象详情已省略]';
         }
         function schedule() {
-            if (timer === null && queue.length) timer = setTimeout(() => { timer = null; void flush(); }, 3000);
+            if (!clearing && timer === null && queue.length) timer = setTimeout(() => { timer = null; void flush(); }, 500);
         }
         async function flush(keepalive = false) {
-            if (sending) return;
+            if (sending || clearing) return;
             const current = context();
             if (!current || current.key !== owner) { queue.length = 0; owner = current?.key || ''; return; }
             const now = Date.now();
             while (queue.length && now - queue[0].created > 120000) queue.shift();
             if (!queue.length) return;
             if (now < retryAfter || !ddBackend.isDll() || !ddBackend.has('FrontendLogs')) { schedule(); return; }
-            const entries = queue.splice(0, keepalive ? 6 : 12).map(({ created, ...entry }) => entry);
+            // 按 UTF-8 请求大小组批：短日志一次多发，长 JSON 仍守住接口及 keepalive 限额。
+            const entries = [];
+            const budget = keepalive ? 48000 : 96000;
+            while (queue.length && entries.length < 100) {
+                const { created, ...entry } = queue[0];
+                const bytes = new TextEncoder().encode(JSON.stringify({ sessionId, entries: [...entries, entry] })).length;
+                if (bytes > budget) break;
+                entries.push(entry); queue.shift();
+            }
+            if (!entries.length) { schedule(); return; }
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 5000);
             sending = true;
+            let completeFlight;
+            flight = new Promise(resolve => { completeFlight = resolve; });
             try {
                 // 不使用 fetchJson，避免上传错误再次进入 logger；不重试已发批次。
                 const response = await fetch(`${current.base}/dd-danmaku/api/frontend-logs`, {
@@ -1196,9 +1306,10 @@
                 if (!response.ok && context()?.key === current.key) retryAfter = Date.now() + (response.status === 429 ? 10000 : 60000);
             } catch (_) {
                 if (context()?.key === current.key) retryAfter = Date.now() + 60000;
-            } finally { clearTimeout(timeout); sending = false; schedule(); }
+            } finally { clearTimeout(timeout); sending = false; completeFlight(); schedule(); }
         }
         return {
+            subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
             enqueue(level, args) {
                 try {
                     const current = context();
@@ -1207,12 +1318,21 @@
                     const message = redact(args.slice(0, 8).map(value => describe(value, current.token)).join(' '), current.token);
                     if (!message) return;
                     if (queue.length >= 200) queue.shift();
-                    queue.push({ level, message, timestamp: new Date().toISOString(), created: Date.now() });
+                    const entry = { level, message, timestamp: new Date().toISOString(), created: Date.now() };
+                    queue.push(entry);
+                    // 当前页面直接显示已脱敏日志，落盘上传独立进行，不等上传后轮询读回来。
+                    for (const listener of listeners) { try { listener(entry, current.key, sessionId); } catch (_) {} }
                     schedule();
                 } catch (_) { /* 诊断失败不能影响播放器。 */ }
             },
-            // 清空本人服务端日志时同时丢弃尚未发送的旧日志。
-            discard() { queue.length = 0; clearTimeout(timer); timer = null; },
+            // 清空与上传串行：先等已发批次结束，再删除历史；不关闭后续日志收集。
+            async clearHistory(remove) {
+                if (clearing) return;
+                clearing = true;
+                queue.length = 0; clearTimeout(timer); timer = null;
+                try { await flight; await remove(); }
+                finally { clearing = false; retryAfter = 0; schedule(); }
+            },
             flush
         };
     })();
@@ -2191,10 +2311,15 @@
         const searchResult = await fetchJson(searchUrl, Object.keys(signHeaders).length > 0 ? { headers: signHeaders } : {})
             .catch((error) => {
                 logger.error(`[API请求] /search/anime 查询失败: ${error.message}`);
-                return null;
+                throw error;
             });
 
-        if (!searchResult || !searchResult.animes || searchResult.animes.length === 0) {
+        if (!searchResult || searchResult.success === false || !Array.isArray(searchResult.animes)) {
+            const failure = new Error('搜索响应无效');
+            failure.code = 'UPSTREAM_PROTOCOL_MISMATCH';
+            throw failure;
+        }
+        if (searchResult.animes.length === 0) {
             logger.debug(`[API请求] /search/anime 查询结果为空`);
             return { animes: [] };
         }
@@ -3122,14 +3247,15 @@
         const manualSelection = manualDanmakuSelection?.key === manualDanmakuKey(itemId);
         const comments = await fetchNetworkComments(episodeId, overridePrefix, appId, appSecret);
         if (!validSource) logger.warn('[XML联动] 来源名称无效或使用官方保留名称，跳过自动保存');
-        // 官方 DLL 中转已在服务端处理保存（含跳过/失败），浏览器不得重复回传。
-        const serverManagedSave = ddBackend.isDll() && (actualPrefix === 'emby-proxy://custom'
-            || ddSign.isProxiedOfficial(`${actualPrefix}/comment/${episodeId}`));
+        // fetchNetworkComments 在 DLL 在线时统一提交后端下载任务，即使原配置是自定义 URL。
+        // 保存归属按实际执行路径判断，不按原始地址判断，禁止后端保存后浏览器再次上传。
+        const serverManagedSave = ddBackend.isDll();
+        const frontendCustomSource = !official && actualPrefix !== 'emby-proxy://custom' && Boolean(custom);
         // 手动重搜只更新本人选择；外部直连不能顺带写共享 XML。
         if (!serverManagedSave && manualSelection && ddBackend.isDll()) {
             logger.info('[XML联动] 手动直连来源不创建共享 XML，状态=MANUAL_SELECTION_ONLY');
         }
-        if (!serverManagedSave && !manualSelection && validSource && current() && ddBackend.isDll() && Array.isArray(comments) && comments.length) {
+        if (!serverManagedSave && frontendCustomSource && manualSelection && validSource && current() && ddBackend.isDll() && Array.isArray(comments) && comments.length) {
             // 不等待落盘，不阻塞播放；同一加载同一来源最多尝试一次。
             const key = `${base}|${userId}|${itemId}|${source}|${loadId}|${generation}`;
             if (!xmlSaveAttempts.has(key)) {
@@ -3142,67 +3268,8 @@
     }
 
     async function saveNetworkXml(comments, itemId, source, base, token, current) {
-        // 直连沿用现有上传授权，结果与跳过原因必须可见，但不暴露响应正文。
-        const codeOf = body => {
-            const code = String(body?.errorCode ?? body?.ErrorCode ?? 'UNKNOWN');
-            return /^[A-Z0-9_]{1,60}$/.test(code) ? code : 'UNKNOWN';
-        };
-        const skipped = reason => {
-            const hints = { AUTO_SAVE_DISABLED: '管理员已关闭自动保存', WRITE_NOT_AUTHORIZED: '当前播放用户未获 XML 保存授权',
-                FILE_PERSISTENCE_DISABLED: 'XML 联动总开关已关闭', XML_WRITE_DISABLED: 'XML 写入已关闭' };
-            logger.info(`[XML联动] 自动保存已跳过，状态=${reason}${hints[reason] ? `，原因=${hints[reason]}` : ''}`);
-        };
-        if (!ddBackend.isDll()) { skipped('BACKEND_OFFLINE'); return; }
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 15000);
-        try {
-            const options = { credentials: 'same-origin', redirect: 'error', cache: 'no-store',
-                signal: controller.signal, headers: { 'X-Emby-Token': token, Accept: 'application/json' } };
-            const response = await fetch(`${base}/dd-danmaku/api/playback-policy`, options);
-            if (!current()) { skipped('PLAYBACK_CHANGED'); return; }
-            if (!response.ok) {
-                const errorBody = await response.json().catch(() => null);
-                logger.warn(`[XML联动] 无法读取保存策略，HTTP=${response.status}，状态=${codeOf(errorBody)}`);
-                return;
-            }
-            const body = await response.json();
-            const policy = body?.data ?? body?.Data ?? body;
-            if (!current()) { skipped('PLAYBACK_CHANGED'); return; }
-            // 保存授权由服务端按当前用户计算，未授权时不序列化、不上传 XML。
-            const blocked = policy?.autoSaveBlockReason ?? policy?.AutoSaveBlockReason;
-            if (blocked != null) {
-                skipped(typeof blocked === 'string' && /^[A-Z0-9_]{1,60}$/.test(blocked) ? blocked : 'INVALID_SAVE_POLICY');
-                return;
-            }
-            if ((policy?.canWrite ?? policy?.CanWrite) !== true) { skipped('WRITE_NOT_AUTHORIZED'); return; }
-            if ((policy?.autoSave ?? policy?.AutoSave) !== true) { skipped('AUTO_SAVE_DISABLED'); return; }
-            const xml = document.implementation.createDocument('', 'i', null);
-            for (const comment of comments) {
-                const fields = String(comment?.p || '').split(',');
-                if (fields.length < 3 || typeof comment?.m !== 'string') { skipped('INVALID_COMMENTS'); return; }
-                const node = xml.createElement('d');
-                node.setAttribute('p', [fields[0], fields[1], 25, fields[2], 0, 0,
-                    fields[3] || '', comment.cid || 0, 0].join(','));
-                node.textContent = comment.m;
-                xml.documentElement.appendChild(node);
-            }
-            const payload = new XMLSerializer().serializeToString(xml);
-            if (!current()) { skipped('PLAYBACK_CHANGED'); return; }
-            if (new Blob([payload]).size > 32 * 1024 * 1024) { skipped('XML_TOO_LARGE'); return; }
-            logger.info('[XML联动] 正在请求服务器保存网络弹幕');
-            const saved = await fetch(`${base}/api/danmu/${encodeURIComponent(itemId)}?Overwrite=false&SavePurpose=auto&Source=${encodeURIComponent(source)}`, {
-                ...options, method: 'PUT', headers: { ...options.headers, 'Content-Type': 'application/xml' }, body: payload
-            });
-            if (saved.ok) logger.info('[XML联动] 网络弹幕已保存到服务器');
-            else {
-                const errorBody = await saved.json().catch(() => null);
-                const code = codeOf(errorBody);
-                if (saved.status === 409 && code === 'XML_EXISTS') skipped('XML_EXISTS');
-                else logger.warn(`[XML联动] 自动保存未完成，HTTP=${saved.status}，状态=${code}，不影响播放`);
-            }
-        } catch (error) {
-            logger.warn(`[XML联动] 自动保存未完成，状态=${error?.name === 'AbortError' ? 'SAVE_TIMEOUT' : 'SAVE_REQUEST_FAILED'}，不影响播放`);
-        } finally { clearTimeout(timer); }
+        // 浏览器正文上传无法证明手动分集，统一交给后端带搜索证明的下载任务保存。
+        logger.info('[XML联动] 浏览器保存已跳过，状态=MANUAL_SELECTION_REQUIRED');
     }
 
     async function fetchNetworkComments(episodeId, overridePrefix, appId, appSecret) {
@@ -3211,7 +3278,9 @@
         const commentAppId = appId || window.ede.episode_info?.apiAppId || '';
         const commentAppSecret = appSecret || window.ede.episode_info?.apiAppSecret || '';
         // [兼容] 规范化 prefix：兜底处理缓存中遗留的旧格式（如缺少 /api/v2 的 dandanplay 地址）
-        const prefix = normalizeCustomApiPrefix(rawPrefix, commentAppId, commentAppSecret);
+        const prefix = ddBackend.isDll()
+            ? (String(rawPrefix).includes('dandanplay') ? corsProxy + 'https://api.dandanplay.net/api/v2' : 'emby-proxy://custom')
+            : normalizeCustomApiPrefix(rawPrefix, commentAppId, commentAppSecret);
         // 轮询使用本次加载快照；不能引用外层另一个函数的局部 current。
         const playback = window.ede;
         const requestItemId = playback?.itemId;
@@ -3318,9 +3387,9 @@
                         const rawCode = String(data.ddSave.code || 'UNKNOWN');
                         const code = /^[A-Z0-9_]{1,60}$/.test(rawCode) ? rawCode : 'UNKNOWN';
                         if (data.ddSave.status === 'saved' && code === 'SELECTION_SAVED') logger.info('[选择记录] 本人弹幕选择已保存，不写共享 XML');
-                        else if (data.ddSave.status === 'saved') logger.info(`[XML联动] 中转弹幕已保存到服务器，状态=${code}`);
-                        else if (data.ddSave.status === 'failed') logger.warn(`[XML联动] 中转保存失败，状态=${code}，不影响播放`);
-                        else logger.info(`[XML联动] 中转保存已跳过，状态=${code}`);
+                        else if (data.ddSave.status === 'saved') logger.info(`[后端保存] 弹幕已保存到服务器，状态=${code}`);
+                        else if (data.ddSave.status === 'failed') logger.warn(`[后端保存] 保存失败，状态=${code}，不影响播放`);
+                        else logger.info(`[后端保存] 保存已跳过，状态=${code}`);
                     }
                     logger.info(`[API请求] comment 获取弹幕成功, 耗时: ${duration}ms, 数量: ${comments.length}`);
                     return comments;
@@ -3374,7 +3443,78 @@
     }
 
     function isHttpStatus(error, status) {
-        return new RegExp(`Status:\\s*${status}\\b`).test(String(error?.message || ''));
+        // 新请求错误携带状态属性，兼容旧版文本错误。
+        return Number(error?.httpStatus) === Number(status)
+            || new RegExp(`Status:\\s*${status}\\b`).test(String(error?.message || ''));
+    }
+
+    function getBangumiScopeKey(token = lsGetItem(lsKeys.bangumiToken.id)) {
+        const client = getHostApiClient();
+        // 只保存绑定指纹，不把令牌或账号写入键；HTTP 离线环境也可计算。
+        const binding = JSON.stringify([String(client?.serverAddress?.() || '').replace(/\/+$/, ''),
+            String(client?.getCurrentUserId?.() || ''), String(bangumiApi.prefix || ''), String(token || '')]);
+        return Array.from(sha256Pure(binding), byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+
+    function captureBangumiContext(episodeInfo, token = lsGetItem(lsKeys.bangumiToken.id), publish = true) {
+        const owner = window.ede, generation = playbackViewGeneration;
+        const loadId = owner?.lastLoadId, itemId = owner?.itemId;
+        const episodeId = episodeInfo?.episodeId, animeId = episodeInfo?.animeId;
+        const scopeKey = getBangumiScopeKey(token);
+        return { scopeKey, owner, generation, loadId, itemId,
+            isCurrent: () => publish && window.ede === owner && generation === playbackViewGeneration
+                && loadId === owner?.lastLoadId && itemId === owner?.itemId
+                && owner?.episode_info === episodeInfo && episodeId === episodeInfo?.episodeId
+                && animeId === episodeInfo?.animeId && scopeKey === getBangumiScopeKey() };
+    }
+
+    function readBangumiCache(key) {
+        try { return JSON.parse(localStorage.getItem(key) || 'null'); }
+        catch (_) { logger.warn('Bangumi 缓存格式无效，重新获取'); return null; }
+    }
+
+    function saveBangumiInfo(bangumiInfo, context) {
+        // 原会话可完成自己的缓存，但不能覆盖新媒体或新账号的页面状态。
+        if (context.isCurrent()) context.owner.bangumiInfo = bangumiInfo;
+        localStorage.setItem(bangumiInfo._bangumi_key, JSON.stringify(bangumiInfo));
+    }
+
+    const bangumiCharactersPending = new Map();
+
+    function loadBangumiCharacters(episodeInfo, context = captureBangumiContext(episodeInfo)) {
+        const key = JSON.stringify([context.scopeKey, context.generation, context.loadId, context.itemId,
+            episodeInfo?.episodeId, episodeInfo?.animeId, episodeInfo?.apiPrefix || '']);
+        const pending = bangumiCharactersPending.get(key);
+        if (pending?.owner === context.owner && pending.episodeInfo === episodeInfo) return pending.task;
+        // 同一媒体会话重复点击共用请求，失败或过期完成后允许重试。
+        const task = (async () => {
+            if (!context.isCurrent()) return null;
+            const relation = ddBackend.isDll() ? { animeId: episodeInfo.animeId } : await getEpisodeBangumiRel(episodeInfo, {}, context);
+            if (!context.isCurrent()) return null;
+            let characters;
+            if (ddBackend.isDll()) {
+                const client = getHostApiClient();
+                const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
+                const sourceId = String(window.ede?.backendSourceId || (episodeInfo.apiPrefix ? '' : 'official'));
+                const response = await fetch(`${base}/dd-danmaku/api/bangumi/characters?ItemId=${encodeURIComponent(context.itemId)}&SourceId=${encodeURIComponent(sourceId)}&AnimeId=${encodeURIComponent(episodeInfo.animeId || relation.animeId || '')}`, {
+                    credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: { Accept: 'application/json', 'X-Emby-Token': client?.accessToken?.() || '' } });
+                const payload = await response.json().catch(() => null);
+                if (!response.ok || payload?.success !== true) throw new Error('后端 Bangumi 角色读取失败');
+                characters = payload.data?.Characters || payload.data?.characters || [];
+            } else {
+                characters = Array.isArray(relation.characters) ? relation.characters
+                    : await fetchJson(bangumiApi.getCharacters(relation.subjectId));
+            }
+            if (!Array.isArray(characters)) throw new Error('Bangumi 角色列表格式无效');
+            if (!context.isCurrent()) return null;
+            relation.characters = characters;
+            saveBangumiInfo(relation, context);
+            return characters;
+        })().finally(() => {
+            if (bangumiCharactersPending.get(key)?.task === task) bangumiCharactersPending.delete(key);
+        });
+        bangumiCharactersPending.set(key, { task, owner: context.owner, episodeInfo });
+        return task;
     }
 
     function deriveBgmEpisodeIndex(previousInfo, fallbackEpisodeIndex, delta) {
@@ -3387,13 +3527,14 @@
         return isValidEpisodeIndex(fallbackEpisodeIndex) ? Number(fallbackEpisodeIndex) : null;
     }
 
-    async function getEpisodeBangumiRel(episode_info = window.ede.episode_info, fetchOpts = {}) {
+    async function getEpisodeBangumiRel(episode_info = window.ede.episode_info, fetchOpts = {}, context = captureBangumiContext(episode_info)) {
         if (!episode_info) { throw new Error('未获取到 episode_info'); }
-        const _bangumi_key = lsLocalKeys.bangumiEpInfoPrefix + episode_info.episodeId;
-        let bangumiInfoLs = localStorage.getItem(_bangumi_key);
-        if (bangumiInfoLs) {
-            bangumiInfoLs = JSON.parse(bangumiInfoLs);
-        }
+        const targetEpisodeInfo = episode_info;
+        // 异步关系查询只修改快照，不让旧任务改写新播放对象。
+        episode_info = { ...episode_info };
+        const sourceKey = encodeURIComponent(episode_info.apiPrefix || dandanplayApi.prefix || '');
+        const _bangumi_key = lsLocalKeys.bangumiEpInfoPrefix + 'v2:' + context.scopeKey + ':' + sourceKey + ':' + episode_info.episodeId;
+        const bangumiInfoLs = readBangumiCache(_bangumi_key);
         let bangumiEpsRes = bangumiInfoLs ? bangumiInfoLs.bangumiEpsRes : null;
         let subjectId = bangumiInfoLs ? bangumiInfoLs.subjectId : null;
         let bangumiUrl = bangumiInfoLs ? bangumiInfoLs.bangumiUrl : null;
@@ -3427,9 +3568,10 @@
         }
         const episodeIndex = episode_info ? episode_info.episodeIndex : null;
         const bgmEpisodeIndex = episode_info ? episode_info.bgmEpisodeIndex : null;
-        const bangumiInfo = { animeId, bangumiId, bangumiUrl, subjectId, episodeIndex, bgmEpisodeIndex, bangumiEpsRes, _bangumi_key };
-        window.ede.bangumiInfo = bangumiInfo;
-        localStorage.setItem(bangumiInfo._bangumi_key, JSON.stringify(bangumiInfo));
+        const bangumiInfo = { animeId, bangumiId, bangumiUrl, subjectId, episodeIndex, bgmEpisodeIndex, bangumiEpsRes, _bangumi_key,
+            scopeKey: context.scopeKey, characters: bangumiInfoLs?.characters };
+        if (context.isCurrent()) targetEpisodeInfo.bgmEpisodeIndex = bgmEpisodeIndex;
+        saveBangumiInfo(bangumiInfo, context);
         return bangumiInfo;
     }
 
@@ -3480,19 +3622,82 @@
 
     async function putBangumiEpStatus(token, opts = {}) {
         const fetchOpts = opts.fetchOpts || {};
-        const bangumiInfo = await getEpisodeBangumiRel(opts.episodeInfo, fetchOpts);
+        // 停播收藏独立完成原章节，不向当前媒体发布关系或章节状态。
+        const targetEpisodeInfo = opts.episodeInfo || window.ede.episode_info;
+        if (!targetEpisodeInfo) throw new Error('未获取到 episode_info');
+        const episodeInfo = { ...targetEpisodeInfo };
+        const context = captureBangumiContext(episodeInfo, token, false);
+        if (ddBackend.isDll()) {
+            const client = getHostApiClient();
+            const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
+            const embyToken = client?.accessToken?.();
+            const sourceId = String(episodeInfo.backendSourceId || window.ede?.backendSourceId || (episodeInfo.apiPrefix ? '' : 'official'));
+            const animeId = String(episodeInfo.animeId || '');
+            const episodeNumber = Number(episodeInfo.episodeNumber ?? episodeInfo.episode ?? episodeInfo.episodeIndex);
+            if (!base || !embyToken || !sourceId || !animeId || !Number.isInteger(episodeNumber) || episodeNumber < 0)
+                throw new Error('后端 Bangumi 来源或章节绑定不可用');
+            const headers = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Emby-Token': embyToken };
+            const response = await fetch(`${base}/dd-danmaku/api/bangumi/watch`, { method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers,
+                body: JSON.stringify({ itemId: String(context.itemId || ''), sourceId, animeId, episodeNumber }) });
+            let result = await response.json().catch(() => null);
+            const taskId = String(result?.data?.id || '');
+            if (!response.ok || !/^[a-f0-9]{32}$/i.test(taskId)) throw new Error('后端 Bangumi 收藏任务未创建');
+            const deadline = Date.now() + 180000;
+            while (Date.now() < deadline) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+                const stateResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
+                const state = await stateResponse.json().catch(() => null);
+                if (!stateResponse.ok || state?.success !== true) throw new Error('后端 Bangumi 收藏状态读取失败');
+                if (['failed', 'cancelled'].includes(state.data?.status)) throw new Error('后端 Bangumi 收藏任务失败');
+                if (state.data?.status === 'succeeded') {
+                    const finalResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/result`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
+                    result = await finalResponse.json().catch(() => null);
+                    if (!finalResponse.ok) throw new Error('后端 Bangumi 收藏结果读取失败');
+                    return result?.data || result;
+                }
+            }
+            throw new Error('后端 Bangumi 收藏任务超时');
+        }
+        const bangumiInfo = await getEpisodeBangumiRel(episodeInfo, fetchOpts, context);
         const { subjectId, bgmEpisodeIndex, } = bangumiInfo;
         const episodeIndex = isValidEpisodeIndex(bgmEpisodeIndex) ? Number(bgmEpisodeIndex) : Number(bangumiInfo.episodeIndex);
         if (!isValidEpisodeIndex(episodeIndex)) {
             throw new Error('未获取到有效 Bangumi 章节索引');
         }
-        logger.debug('准备校验 Bangumi 条目收藏状态是否为看过');
-        let bangumiMe = localStorage.getItem(lsLocalKeys.bangumiMe);
-        if (bangumiMe) {
-            bangumiMe = JSON.parse(bangumiMe);
-        } else {
-            bangumiMe = await fetchBangumiApiGetMe(token, fetchOpts);
+        if (ddBackend.isDll()) {
+            const client = getHostApiClient();
+            const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
+            const embyToken = client?.accessToken?.();
+            const sourceId = String(window.ede?.backendSourceId || (episodeInfo.apiPrefix ? '' : 'official'));
+            const animeId = String(bangumiInfo.animeId || episodeInfo.animeId || '');
+            if (!base || !embyToken || !sourceId || !animeId) throw new Error('后端 Bangumi 来源绑定不可用');
+            const headers = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Emby-Token': embyToken };
+            const start = await fetch(`${base}/dd-danmaku/api/bangumi/watch`, { method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers,
+                body: JSON.stringify({ itemId: String(window.ede?.itemId || ''), sourceId, animeId,
+                    episodeNumber: Number(bangumiInfo.bangumiEpsRes?.data?.[episodeIndex]?.episode?.sort ?? episodeIndex + 1) }) });
+            let result = await start.json().catch(() => null);
+            const watchTask = String(result?.data?.id || '');
+            if (!start.ok || !/^[a-f0-9]{32}$/i.test(watchTask)) throw new Error('后端 Bangumi 收藏任务未创建');
+            const deadline = Date.now() + 180000;
+            while (Date.now() < deadline) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+                const stateResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${watchTask}`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
+                const state = await stateResponse.json().catch(() => null);
+                if (!stateResponse.ok || state?.success !== true) throw new Error('后端 Bangumi 收藏状态读取失败');
+                if (['failed', 'cancelled'].includes(state.data?.status)) throw new Error('后端 Bangumi 收藏任务失败');
+                if (state.data?.status === 'succeeded') {
+                    const finalResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${watchTask}/result`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
+                    result = await finalResponse.json().catch(() => null);
+                    if (!finalResponse.ok) throw new Error('后端 Bangumi 收藏结果读取失败');
+                    return result?.data || result;
+                }
+            }
+            throw new Error('后端 Bangumi 收藏任务超时');
         }
+        logger.debug('准备校验 Bangumi 条目收藏状态是否为看过');
+        const meKey = lsLocalKeys.bangumiMe + ':v2:' + context.scopeKey;
+        const bangumiMe = readBangumiCache(meKey)
+            || await fetchBangumiApiGetMe(token, fetchOpts, context.scopeKey);
         let msg = '';
         let bangumiUserColl = null;
         try {
@@ -3527,8 +3732,7 @@
             const patchedSubject = await patchBangumiSubjectDoneIfAllEpisodesWatched(token, bangumiInfo, fetchOpts);
             if (patchedSubject) {
                 bangumiInfo.subjectMarkedDone = true;
-                window.ede.bangumiInfo = bangumiInfo;
-                localStorage.setItem(bangumiInfo._bangumi_key, JSON.stringify(bangumiInfo));
+                saveBangumiInfo(bangumiInfo, context);
                 return bangumiInfo;
             }
             throw new Error(msg);
@@ -3539,8 +3743,7 @@
         bangumiEpColl.type = body.type;
         logger.info(`成功更新 Bangumi 章节收藏状态, 在看 => 看过, 详情: `, bangumiEp);
         bangumiInfo.subjectMarkedDone = await patchBangumiSubjectDoneIfAllEpisodesWatched(token, bangumiInfo, fetchOpts);
-        window.ede.bangumiInfo = bangumiInfo;
-        localStorage.setItem(bangumiInfo._bangumi_key, JSON.stringify(bangumiInfo));
+        saveBangumiInfo(bangumiInfo, context);
         return bangumiInfo;
     }
 
@@ -3567,9 +3770,71 @@
     if (headers) Object.assign(requestHeaders, headers);
 
     // 插件代理使用内部虚拟前缀，绝不把该地址发到网络或退回浏览器直连。
-    // 明确手动选择才写本人缓存；普通自动匹配只允许创建共享。
+    // 后端在线且本人明确手动搜索选择才保存；自动匹配仅取弹幕，不写 XML。
     const savePurpose = manualDanmakuSelection?.key === manualDanmakuKey(window.ede?.itemId)
-        ? 'selection' : 'auto';
+        ? 'selection' : 'none';
+    if (ddBackend.isDll() && (url.startsWith('emby-proxy://custom/') || ddSign.isProxiedOfficial(url))) {
+        const target = url.startsWith('emby-proxy://custom/') ? new URL(url) : new URL(url.slice(corsProxy.length));
+        if (target.pathname.startsWith('/comment/') || target.pathname.match(/\/api\/v2\/comment\//)) {
+            const client = getHostApiClient();
+            const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
+            const embyToken = client?.accessToken?.();
+            const selectionTaskId = String(window.ede?.backendEpisodeTaskId || window.ede?.backendMatchTaskId || '');
+            const sourceId = url.startsWith('emby-proxy://custom/')
+                ? String(window.ede?.backendSourceId || '') : 'official';
+            const itemId = String(window.ede?.itemId || '');
+            const episodeId = target.pathname.startsWith('/comment/')
+                ? target.pathname.slice('/comment/'.length)
+                : target.pathname.slice(target.pathname.indexOf('/comment/') + '/comment/'.length);
+            if (!base || !embyToken || !selectionTaskId || !sourceId || !itemId || !/^[A-Za-z0-9_-]{1,160}$/.test(episodeId))
+                throw new Error('后端下载所需匹配任务不存在，拒绝浏览器直连');
+            const backendHeaders = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Emby-Token': embyToken };
+            const start = await fetch(`${base}/dd-danmaku/api/business/download`, { method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: backendHeaders,
+                body: JSON.stringify({ itemId, sourceId, episodeId, selectionTaskId, savePurpose }) });
+            let taskBody = await start.json().catch(() => null);
+            const taskId = String(taskBody?.data?.id || '');
+            if (!start.ok || !/^[a-f0-9]{32}$/i.test(taskId)) throw new Error('后端下载任务未创建');
+            logger.info(`[后端下载] 已受理，任务=${taskId}，来源=${sourceId}`);
+            const view = window.ede, loadId = view?.lastLoadId, generation = playbackViewGeneration;
+            const currentDownloadView = () => window.ede === view && view?.itemId === itemId
+                && view?.lastLoadId === loadId && generation === playbackViewGeneration;
+            ddBackend.showTaskProgress({ stage: 'fetch', status: 'pending' }, currentDownloadView);
+            const subscription = await ddBackend.watchTask(taskId, currentDownloadView);
+            try {
+            const deadline = Date.now() + 600000;
+            let lastTaskStatus = '';
+            while (Date.now() < deadline) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                const stateResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: backendHeaders });
+                const state = await stateResponse.json().catch(() => null);
+                if (!stateResponse.ok || state?.success !== true) throw new Error('后端下载状态读取失败');
+                const taskStatus = String(state.data?.status || 'unknown');
+                if (taskStatus !== lastTaskStatus) {
+                    logger.info(`[后端下载] 任务=${taskId}，状态=${taskStatus}`);
+                    lastTaskStatus = taskStatus;
+                }
+                if (['failed', 'cancelled'].includes(taskStatus)) {
+                    const rawCode = String(state.data?.errorCode || 'UNKNOWN_ERROR');
+                    const code = /^[A-Z0-9_]{1,60}$/.test(rawCode) ? rawCode : 'UNKNOWN_ERROR';
+                    ddBackend.showTaskProgress({ status: taskStatus, code }, currentDownloadView);
+                    throw new Error(`后端下载任务失败，错误码=${code}，任务=${taskId}`);
+                }
+                if (state.data?.status === 'succeeded') {
+                    const resultResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/result`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: backendHeaders });
+                    taskBody = await resultResponse.json().catch(() => null);
+                    if (!resultResponse.ok) throw new Error('后端下载结果读取失败');
+                    return taskBody?.data || taskBody;
+                }
+            }
+            throw new Error('后端下载任务超时');
+            } finally {
+                await subscription.close();
+                // HTTP 结果才是正文到位的证明；结束后交给解析阶段，不让 SSE 完成事件提前熄灭加载环。
+                if (currentDownloadView()) ddClearLoadingRing();
+            }
+        }
+    }
+
     if (url.startsWith('emby-proxy://custom/')) {
         if (!ddBackend.isDll()) throw new Error('Emby 插件代理不可用');
         const target = new URL(url);
@@ -3680,19 +3945,25 @@
         // 统一日志输出
         logger.debug(`[Network] ${apiPath} | status=${response.status} | ttfb=${ttfbMs}ms | download=${downloadMs}ms | total=${totalMs}ms`);
 
-        if (!response.ok) {
-            logger.warn(`[Network] ${apiPath} 错误响应 | status=${response.status} | total=${totalMs}ms`);
-            throw new Error(`HTTP error! Status: ${response.status}`);
-        }
-
+        let parsed;
         if (responseText?.length > 0) {
-            try {
-                return JSON.parse(responseText);
-            } catch (parseError) {
-                logger.warn('responseText is not JSON:', parseError);
-            }
+            try { parsed = JSON.parse(responseText); }
+            catch (parseError) { logger.warn('responseText is not JSON:', parseError); }
         }
-        return { success: true };
+        const upstreamCode = parsed?.errorCode;
+        if (!response.ok || parsed?.success === false || (upstreamCode != null && Number.isFinite(Number(upstreamCode)) && Number(upstreamCode) !== 0)) {
+            const code = response.status === 429 || Number(upstreamCode) === 429 ? 'UPSTREAM_RATE_LIMITED'
+                : [401, 403].includes(response.status) || [401, 403].includes(Number(upstreamCode))
+                    ? 'UPSTREAM_AUTH_REJECTED' : /^[A-Z0-9_]{1,60}$/.test(String(upstreamCode ?? ''))
+                        ? String(upstreamCode) : 'UPSTREAM_BUSINESS_ERROR';
+            logger.warn(`[Network] ${apiPath} 错误响应 | status=${response.status} | code=${code} | total=${totalMs}ms`);
+            const failure = new Error(`上游请求失败 (${code})`);
+            failure.code = code;
+            failure.httpStatus = response.status;
+            failure.upstreamResponse = parsed;
+            throw failure;
+        }
+        return parsed ?? { success: true };
     } catch (error) {
         clearTimeout(timeoutId);
         const endTime = performance.now();
@@ -4319,233 +4590,55 @@
         };
     }
 
-    async function resolveOnlineSource(itemInfoMap, config, sourceId, payload, isCurrent) {
-        const episode = itemInfoMap.episode;
-        const movie = episode === 'movie';
-        const hash = payload?.fileHash;
-        const hasHash = payload?.matchMode === 'hashAndFileName' && /^[a-f0-9]{32}$/i.test(hash || '')
-            && hash !== 'a1b2c3d4e5f67890abcd1234ef567890';
-        const animeBlacklist = String(lsGetItem(lsKeys.animeTitleBlacklist.id) || '');
-        const episodeBlacklist = String(lsGetItem(lsKeys.episodeTitleBlacklist.id) || '');
-        if (animeBlacklist.length > 512 || episodeBlacklist.length > 512) {
-            logger.warn('[后端在线匹配] 黑名单规则超过后端限制，停止自动匹配');
-            return { needsConfirmation: true };
-        }
-        let preferredAnimeId, preferredEpisodeNumber;
-        if (!movie && itemInfoMap.seriesOrMovieId && itemInfoMap.seasonNumber != null
-            && Number.isInteger(Number(itemInfoMap.seasonNumber))) {
-            let preference;
-            try { preference = JSON.parse(localStorage.getItem(manualWorkKey(
-                itemInfoMap.seriesOrMovieId, itemInfoMap.seasonNumber)) || 'null'); } catch (_) {}
-            const mapped = Number(episode) + Number(preference?.episodeOffset);
-            if (preference?.apiPrefix === config.prefix
-                && /^[A-Za-z0-9_-]{1,160}$/.test(String(preference?.animeId || ''))
-                && Number.isInteger(mapped) && mapped > 0 && mapped <= 99999) {
-                preferredAnimeId = preference.animeId;
-                preferredEpisodeNumber = mapped;
-            }
-        }
-        const result = await ddBackend.resolveOnlineMatch({
-            itemId: String(window.ede?.itemId || ''), title: itemInfoMap.seriesName || parseAnimeName(itemInfoMap.animeName).title,
-            animeBlacklist, episodeBlacklist,
-            preferredAnimeId, preferredEpisodeNumber,
-            applyCustomBlacklist: Boolean(lsGetItem(lsKeys.blacklistApplyToCustomApi.id)),
-            fileName: itemInfoMap.animeName, mediaType: movie ? 'movie' : 'episode',
-            seasonNumber: movie ? null : itemInfoMap.seasonNumber,
-            episodeNumber: movie ? null : Number(episode) || null,
-            sourcePriority: [sourceId === 'official' ? 'official' : 'custom'],
-            matchApiEnabled: Boolean(payload), matchMode: hasHash ? 'hashAndFileName' : 'fileNameOnly',
-            fileHash: hasHash ? hash : null, fileSize: Number(itemInfoMap.size) || 0,
-            videoDuration: Math.floor(Number(itemInfoMap.duration) || 0)
-        }, isCurrent);
-        if (!isCurrent() || result?.status !== 'matched' || !result.selected?.episodeId) {
-            if (isCurrent() && result?.status === 'ambiguous' && result.candidates?.length) {
-                logger.info('[后端在线匹配] 当前来源候选未能唯一确认，等待手动选择');
-                return { needsConfirmation: true };
-            }
-            return null;
-        }
-        const selected = result.selected;
-        if (result.sourceType !== (sourceId === 'official' ? 'official' : 'custom')) return null;
-        const allowed = applySearchBlacklist([{ ...selected, episodes: [selected] }], true, sourceId);
-        if (!allowed?.length || !allowed[0].episodes?.length) {
-            logger.info('[后端在线匹配] 选中结果命中黑名单，跳过此来源');
-            return null;
-        }
-        logger.info(`[后端在线匹配] 来源=${config.name}，状态=matched`);
-        return { backendResolved: true, directMatch: true,
-            episodeInfo: { ...selected, episodes: [selected] }, apiPrefix: config.prefix,
-            apiName: config.name, apiAppId: '', apiAppSecret: '' };
-    }
-
     function manualWorkKey(seriesId, season) {
         const client = getHostApiClient();
         return `_dd_confirmed_work_${JSON.stringify([client?.serverAddress?.(),
             client?.getCurrentUserId?.(), String(seriesId || ''), Number(season)])}`;
     }
 
-    // DLL 按源优先级串行处理；当前源成功即短路，不混合低优先级源的候选。
-    async function collectBackendRound(itemInfoMap, configs, priority, payload, mappings, isCurrent) {
-        let preferredPrefix;
-        if (itemInfoMap.episode !== 'movie' && itemInfoMap.seasonNumber != null
-            && itemInfoMap.seriesOrMovieId) {
-            try {
-                preferredPrefix = JSON.parse(localStorage.getItem(manualWorkKey(
-                    itemInfoMap.seriesOrMovieId, itemInfoMap.seasonNumber)) || 'null')?.apiPrefix;
-            } catch (_) {}
+    // DLL 在线模式：整轮多源匹配只提交一次后端任务，由后端按本人配置的 sourceId 读取地址与凭据，
+    // 浏览器不再逐源直连 /match、/search、/bangumi，也不在前端计算映射或哈希。
+    async function collectBackendRound(itemInfoMap, isCurrent) {
+        if (!ddBackend.has('OnlineMatch') || !ddBackend.has('OperationEvents')) {
+            // 能力不足时明确失败，不静默退回浏览器直连。
+            const error = new Error('DLL 后端缺少在线匹配能力，已拒绝浏览器直连');
+            error.code = 'BACKEND_CAPABILITY_MISSING';
+            throw error;
         }
-        const sources = [...new Set(priority)];
-        if (preferredPrefix) sources.sort((a, b) =>
-            Number(configs[b]?.prefix === preferredPrefix) - Number(configs[a]?.prefix === preferredPrefix));
-        for (const sourceId of sources) {
-            const config = configs[sourceId];
-            if (!config?.enabled || !config.prefix) continue;
-            if (!isCurrent()) return null;
-            logger.info(`[自动匹配] 开始使用来源=${config.name}（${sourceId}）匹配`);
-            try {
-                const serverSource = sourceId === 'official' || config.prefix === 'emby-proxy://custom';
-                const result = serverSource && ddBackend.has('OnlineMatch') && ddBackend.has('OperationEvents')
-                    ? await resolveOnlineSource(itemInfoMap, config, sourceId, payload, isCurrent)
-                    : await resolveBackendSource(itemInfoMap, configs, [sourceId], payload, mappings, isCurrent);
-                if (!isCurrent()) return null;
-                if (result?.needsConfirmation) return null;
-                if (result) return result;
-            } catch (error) {
-                logger.warn(`[自动匹配] 来源 ${config.name} 判断失败，继续下一来源`);
+        const payload = { itemId: String(window.ede?.itemId || '') };
+        if (itemInfoMap.episode !== 'movie' && itemInfoMap.seriesOrMovieId && itemInfoMap.seasonNumber != null) {
+            // 本人手动确认过的作品作为后端首选；后端仍会重新校验来源归属与分集。
+            let preference = null;
+            try { preference = JSON.parse(localStorage.getItem(manualWorkKey(
+                itemInfoMap.seriesOrMovieId, itemInfoMap.seasonNumber)) || 'null'); } catch (_) {}
+            const mapped = Number(itemInfoMap.episode) + Number(preference?.episodeOffset);
+            if (/^[A-Za-z0-9_-]{1,160}$/.test(String(preference?.backendSourceId || ''))
+                && /^[A-Za-z0-9_-]{1,160}$/.test(String(preference?.animeId || ''))
+                && Number.isInteger(mapped) && mapped >= 0 && mapped <= 99999) {
+                payload.preferredSourceId = preference.backendSourceId;
+                payload.preferredAnimeId = String(preference.animeId);
+                payload.preferredEpisodeNumber = mapped;
             }
         }
-        return null;
-    }
-
-    // 单源先处理精确结果；只有未确认的候选才提交 DLL。
-    async function resolveBackendSource(itemInfoMap, configs, priority, payload, mappings, isCurrent) {
-        const entries = new Map();
-        const { animeName, episode, seasonNumber, seriesOrMovieId } = itemInfoMap;
-        const base = parseAnimeName(animeName).title || animeName;
-        for (const sourceId of [...new Set(priority)]) {
-            const config = configs[sourceId];
-            if (!config?.enabled || !config.prefix) continue;
-            if (!isCurrent()) return null;
-            const add = (animes, mapping, direct = false) => {
-                const filtered = direct && sourceId === 'official'
-                    ? applyEpisodeBlacklist(animes || []) : applySearchBlacklist(animes || [], true, sourceId);
-                for (const candidate of filtered) {
-                    const identity = candidate.animeId ?? candidate.bangumiId;
-                    // 无作品标识时用完整标题及已知元数据去重，不混用不同源的编号。
-                    const key = JSON.stringify([sourceId, identity == null
-                        ? [candidate.animeTitle ?? candidate.title, candidate.seasonNumber, candidate.year] : String(identity)]);
-                    const existing = entries.get(key);
-                    if (!existing) entries.set(key, { candidate: { ...candidate }, sourceId, config, mapping, direct });
-                    else {
-                        // 同作品只补齐明确缺失的元数据，不覆盖首次匹配分集，也不推测季度。
-                        for (const field of ['animeTitle', 'title', 'seasonNumber', 'year', 'productionYear',
-                            'mediaType', 'type', 'typeDescription', 'aliases', 'providerIds', 'imageUrl', 'episodes']) {
-                            const value = existing.candidate[field];
-                            if (value == null || value === '' || (Array.isArray(value) && !value.length)) {
-                                if (candidate[field] != null) existing.candidate[field] = candidate[field];
-                            }
-                        }
-                    }
-                }
-            };
-            const search = async (title, mapping) => {
-                if (!isCurrent()) return;
-                const url = `${config.prefix}/search/anime?keyword=${encodeURIComponent(title)}`;
-                const headers = await buildCustomApiSignHeaders(config.appId, config.appSecret, url);
-                if (!isCurrent()) return;
-                const response = await fetchJson(url, Object.keys(headers).length ? { headers } : {}).catch(() => null);
-                if (isCurrent()) add(response?.animes, mapping);
-            };
-            try {
-                if (payload) {
-                    // 单个源的 /match 失败不妨碍继续收集它的标题搜索结果。
-                    const response = await fetchMatchApi(payload, config.prefix, config.appId, config.appSecret).catch(() => null);
-                    if (!isCurrent()) return null;
-                    // 精确标记不等于候选数组；沿用 1.3.0 黑名单与标题二次校验。
-                    const matches = sourceId === 'official'
-                        ? applyEpisodeBlacklist(response?.animes || [])
-                        : applySearchBlacklist(response?.animes || [], true, sourceId);
-                    const exact = matches[0];
-                    const directId = exact?.episodeId ?? exact?.matchedEpisodeId;
-                    if (response?.isMatched === true && exact && directId != null) {
-                        const similarity = calculateStringSimilarity(normalizeTitle(animeName), normalizeTitle(exact.animeTitle || ''));
-                        if (similarity >= 0.4) {
-                            logger.info(`[自动匹配] 来源 ${config.name} 精确命中，二次验证通过，跳过后端匹配`);
-                            const episodeInfo = { ...exact, episodeId: directId,
-                                episodeTitle: exact.episodeTitle ?? exact.matchedEpisodeTitle };
-                            return { apiExactMatched: true, directMatch: true,
-                                episodeInfo: { ...episodeInfo, episodes: [episodeInfo] },
-                                apiPrefix: config.prefix, apiName: config.name,
-                                apiAppId: config.appId || '', apiAppSecret: config.appSecret || '' };
-                        }
-                        logger.warn(`[自动匹配] 来源 ${config.name} 精确结果未通过标题二次校验，转候选判断`);
-                    }
-                    add(matches, { season: seasonNumber, episode }, true);
-                }
-                const beforeSearch = entries.size;
-                const searched = new Set();
-                for (const mapping of mappings) {
-                    const season = mapping.season ?? seasonNumber;
-                    const title = season > 1 ? `${base} 第${season}季` : base;
-                    if (searched.has(title)) continue;
-                    searched.add(title);
-                    await search(title, mapping);
-                    if (!isCurrent()) return null;
-                }
-                if (entries.size === beforeSearch) {
-                    if (!searched.has(animeName)) await search(animeName, mappings[0]);
-                    if (!isCurrent()) return null;
-                    const work = await fatchEmbyItemInfo(seriesOrMovieId).catch(() => null);
-                    if (work?.OriginalTitle && !searched.has(work.OriginalTitle)) await search(work.OriginalTitle, mappings[0]);
-                }
-            } catch (error) {
-                logger.warn(`[自动匹配] 来源 ${config.name} 收集失败，保留其他来源候选`);
-            }
-        }
-        if (!isCurrent() || !entries.size) return null;
-        // 前端仅执行协议安全硬上限，AI 的可调上限由 DLL 独立检查。
-        if (entries.size > 1000) {
-            logger.warn(`[后端匹配] 当前源作品 ${entries.size} 个，超过 1000 个上限；未截断、未拆分提交`);
-            embyToast({ text: '作品候选超过1000个，请缩小搜索范围或手动选择来源' });
+        logger.info('[自动匹配] 已提交后端多源匹配任务（来源、映射与哈希均由后端处理）');
+        const result = await ddBackend.resolveOnlineMatch(payload, isCurrent);
+        if (!isCurrent() || !result) return null;
+        if (result.status !== 'matched' || !result.selected?.episodeId) {
+            if (result.status === 'ambiguous' && result.candidates?.length)
+                logger.info('[后端在线匹配] 候选未能唯一确认，等待手动选择');
+            else logger.info(`[后端在线匹配] 状态=${result.status || 'unknown'}`);
             return null;
         }
-        const origins = [...entries.values()];
-        const candidates = origins.map(entry => entry.candidate);
-        // sourceId 回调仅用于协议映射；不向 DLL 或 AI 发送源地址、AppId、密钥。
-        const match = await resolveBackendCandidates(animeName, episode, seasonNumber,
-            candidates, index => origins[index].sourceId, isCurrent);
-        if (!isCurrent() || !match?.selected) return null;
-        const origin = origins[candidates.indexOf(match.selected)];
-        const { candidate, config, mapping, direct } = origin;
-        let selectedEpisode = direct ? { episodeId: candidate.episodeId ?? candidate.matchedEpisodeId,
-            episodeTitle: candidate.episodeTitle ?? candidate.matchedEpisodeTitle } : null;
-        if (selectedEpisode?.episodeId == null) {
-            let episodes = candidate.episodes;
-            const id = candidate.bangumiId ?? candidate.animeId;
-            if (id != null) {
-                const url = `${config.prefix}/bangumi/${encodeURIComponent(id)}`;
-                const headers = await buildCustomApiSignHeaders(config.appId, config.appSecret, url);
-                if (!isCurrent()) return null;
-                const detail = await fetchJson(url, Object.keys(headers).length ? { headers } : {}).catch(() => null);
-                episodes = detail?.bangumi?.episodes ?? detail?.episodes ?? episodes;
-            }
-            if (!isCurrent()) return null;
-            // 电影标记不是集号：单条正文直接采用，多条不明确时交给用户确认。
-            if (episode === 'movie') {
-                selectedEpisode = episodes?.length === 1 ? episodes[0] : null;
-                if (!selectedEpisode) logger.warn(`[后端匹配] 来源 ${config.name} 作品已确认，但电影分集不唯一或为空，请手动选择`);
-            } else {
-                selectedEpisode = findBestEpisode(episodes, mapping?.episode ?? episode);
-                if (!selectedEpisode && !episode && episodes?.length === 1) selectedEpisode = episodes[0];
-            }
-        }
-        if (!isCurrent() || selectedEpisode?.episodeId == null) return null;
-        // 每个源的候选仅提交一次；成功后外层循环不再请求低优先级源。
-        logger.info(`[后端匹配] 当前源一次判断完成，采用来源=${config.name}`);
-        return { backendResolved: true, directMatch: true,
-            episodeInfo: { ...candidate, ...selectedEpisode, episodes: [selectedEpisode] },
-            apiPrefix: config.prefix, apiName: config.name,
-            apiAppId: config.appId || '', apiAppSecret: config.appSecret || '' };
+        const sourceId = String(result.SourceId || result.sourceId || '');
+        const official = sourceId === 'official';
+        const selected = result.selected;
+        logger.info(`[后端在线匹配] 来源=${result.SourceName || result.sourceName || sourceId}，状态=matched`);
+        return { backendResolved: true, directMatch: true, backendSourceId: sourceId,
+            episodeInfo: { ...selected, episodes: [selected] },
+            // 虚拟前缀只用于前端分流到后端下载任务，不代表任何真实上游地址。
+            apiPrefix: official ? corsProxy + 'https://api.dandanplay.net/api/v2' : 'emby-proxy://custom',
+            apiName: String(result.SourceName || result.sourceName || (official ? '弹弹play' : sourceId)),
+            apiAppId: '', apiAppSecret: '' };
     }
 
     // --- 优化：串行请求 (节省流量) & 耗时日志 ---
@@ -4558,7 +4651,10 @@
         // 初始化等待期间任务也可能被手动选择或切集淘汰。
         if (!isCurrent()) return null;
         const backendOnline = Boolean(backendState && ddBackend.isDll());
+        let lastSourceError = null;
         logger.info(`[匹配 #${matchId}] DLL 后端状态：${backendOnline ? '在线，启用后端匹配' : '不可用，使用纯 JS 流程'}`);
+        // DLL 在线：偏移规则、TMDB 映射、哈希与多源匹配全部交给后端，前端不再预处理或直连上游。
+        if (backendOnline) return collectBackendRound(itemInfoMap, isCurrent);
 
         const { animeName, episode, seriesOrMovieId, streamUrl, size, duration, seriesName, seasonNumber } = itemInfoMap;
         logger.debug(`[匹配 #${matchId}] searchEpisodes调用 - streamUrl: ${streamUrl ? '已获取' : '未获取'}, size: ${size}, duration: ${duration}`);
@@ -4660,10 +4756,8 @@
             logger.info(`[匹配 #${matchId}] /match 接口已关闭, 将直接使用 /search/episodes 接口`);
         }
 
-        // DLL 路径到此分流，绝不再进入下面逐源提交的旧流程。
+        // 以下仅为独立离线 JS 路径；DLL 在线已在函数开头分流到后端任务。
         if (!isCurrent()) return null;
-        if (backendOnline) return collectBackendRound(itemInfoMap, apiConfigs,
-            actualPriority, matchPayload, seasonEpisodeCandidates, isCurrent);
         logger.info(`[自动匹配] 开始串行搜索... 目标: ${animeName}`);
 
         // --- 3. 串行执行逻辑 (回归) ---
@@ -4918,11 +5012,13 @@
                 }
 
             } catch (e) {
+                lastSourceError = e;
                 logger.warn(`[自动匹配] 源 ${config.name} 发生错误:`, e);
                 // 继续下一个循环
             }
         }
 
+        if (lastSourceError) throw lastSourceError;
         logger.info(`[自动匹配] 所有源均未匹配成功, 总耗时: ${(performance.now() - startTime).toFixed(0)}ms`);
         return null;
     }
@@ -4967,7 +5063,8 @@
         // episodeId±1 仅用于相邻集推测，获取不到弹幕时降级匹配。
         const previous_info = window.ede.previous_episode_info;
         logger.debug(`[推理诊断] is_auto=${is_auto} | previous_info存在=${!!previous_info} | previous episodeId=${previous_info?.episodeId} | previous seriesOrMovieId=${previous_info?.seriesOrMovieId} | current seriesOrMovieId=${seriesOrMovieId} | previous episodeIndex=${previous_info?.episodeIndex} | current episode=${episode} | commentsLoaded=${previous_info?.commentsLoaded === true} | previous embyEpisodeNumber=${previous_info?.embyEpisodeNumber} | previous seasonNumber=${previous_info?.seasonNumber} | current seasonNumber=${itemInfoMap.seasonNumber}`);
-        if (is_auto && previous_info?.commentsLoaded === true && previous_info.episodeId
+        // DLL 在线时相邻集推理会绕过后端匹配证明，由后端任务统一处理。
+        if (!ddBackend.isDll() && is_auto && previous_info?.commentsLoaded === true && previous_info.episodeId
             && previous_info.seriesOrMovieId === seriesOrMovieId
             && previous_info.seasonNumber != null && itemInfoMap.seasonNumber != null
             && Number(previous_info.seasonNumber) === Number(itemInfoMap.seasonNumber)) {
@@ -5051,7 +5148,8 @@
             return false;
         });
         const unique_episode_key = `_api_${enabledApis.join('_')}_` + _episode_key;
-        if (useCache && window.localStorage.getItem(unique_episode_key)) {
+        // DLL 在线时本地缓存没有当前后端匹配任务，下载会被拒绝；始终重新提交后端任务。
+        if (useCache && !ddBackend.isDll() && window.localStorage.getItem(unique_episode_key)) {
             const cachedInfo = JSON.parse(window.localStorage.getItem(unique_episode_key));
             // 手动确认独立于自动判定，只在相同服务器、用户和媒体条目下复用。
             const client = getHostApiClient();
@@ -5888,7 +5986,9 @@
                 (msg) => {
                     if (!isCurrent()) return;
                     if (msg) logger.debug(msg);
-                    setOsdDanmakuText('弹幕：未匹配到弹幕');
+                    ddClearLoadingRing();
+                    const code = /^[A-Z0-9_]{1,60}$/.test(msg?.code || '') ? msg.code : '';
+                    setOsdDanmakuText(code ? `弹幕：请求失败（${code}）` : '弹幕：未匹配到弹幕');
                 },
             )
             .then(() => {
@@ -6518,11 +6618,13 @@
         formDialogHeader = formDialogHeader || dialogContainer;
         const tabsMenuContainer = document.createElement('div');
         tabsMenuContainer.className = classes.embyTabsMenu;
+        const logLayout = setupLogPageLayout(dialogContainer, formDialogHeader, formDialogFooter);
         tabsMenuContainer.append(embyTabs(danmakuTabOpts, danmakuTabOpts[0].id, 'id', 'name', (value) => {
             danmakuTabOpts.forEach(obj => {
                 const elem = getById(obj.id);
                 if (elem) { elem.hidden = obj.id !== value.id; }
             });
+            logLayout(value.id === 'danmakuTabLogs');
         }));
         formDialogHeader.append(tabsMenuContainer);
         formDialogHeader.style = 'width: 100%; padding: 0; height: auto;';
@@ -7773,6 +7875,8 @@
     }
 
     function buildExtInfo(container) {
+        const episodeInfo = window.ede?.episode_info;
+        const context = captureBangumiContext(episodeInfo);
         getById(eleIds.characterImgHeihtDiv, container).append(embySlider(
             { labelId: eleIds.characterImgHeihtLabel, value: '12', min: 12, max: 100, step: 1 }
             , (val, opts) => {
@@ -7785,25 +7889,24 @@
         const extInfoCtrlDiv = getById(eleIds.extInfoCtrlDiv, container);
         extInfoCtrlDiv.append(
             embyButton({ label: '额外信息', iconKey: iconKeys.more }, (e) => {
+                // 旧面板事件不操作新媒体的控件。
+                if (!episodeInfo || !context.isCurrent()) return;
                 const xChecked = !e.target.xChecked;
                 e.target.xChecked = xChecked;
                 e.target.title = xChecked ? '关闭' : '额外信息';
                 e.target.firstChild.innerHTML = xChecked ? iconKeys.close : iconKeys.more;
-                const extInfoDiv = getById(eleIds.extInfoDiv);
+                const extInfoDiv = getById(eleIds.extInfoDiv, container);
+                if (!extInfoDiv) return;
                 extInfoDiv.hidden = !xChecked;
-                const charactersDiv = getById(eleIds.charactersDiv);
-                if (charactersDiv.firstChild) { return; }
-                const bangumiInfo = window.ede.bangumiInfo;
-                if (bangumiInfo && bangumiInfo.characters
-                    && bangumiInfo.animeId === window.ede.episode_info.animeId
-                ) {
-                    return renderBangumiCharacters(charactersDiv, bangumiInfo.characters);
-                }
-                getEpisodeBangumiRel().then(bangumiInfo => {
-                    return fetchJson(bangumiApi.getCharacters(bangumiInfo.subjectId));
-                }).then(characters => {
-                    bangumiInfo.characters = characters;
+                const charactersDiv = getById(eleIds.charactersDiv, container);
+                if (!xChecked || !charactersDiv || charactersDiv.firstChild || !episodeInfo || !context.isCurrent()) { return; }
+                loadBangumiCharacters(episodeInfo, context).then(characters => {
+                    // 面板重建或媒体切换后不渲染旧请求；重复点击只渲染一次。
+                    if (!characters || !context.isCurrent() || !charactersDiv.isConnected
+                        || getById(eleIds.charactersDiv, container) !== charactersDiv || charactersDiv.firstChild) return;
                     renderBangumiCharacters(charactersDiv, characters);
+                }).catch(error => {
+                    logger.warn('Bangumi 角色加载失败，可重新打开重试', error);
                 });
                 function renderBangumiCharacters(container, characters) {
                     // 图片域名替换：将默认 lain.bgm.tv 替换为用户自定义域名
@@ -7818,8 +7921,9 @@
                     characters.map(c => {
                         const characterDiv = document.createElement('div');
                         characterDiv.style = 'width: 31%; display: flex; margin: .5em;';
-                        let embyImgButtonInner = embyImg(replaceBgmImageDomain(c.images.large), 'object-position: top;');
-                        if (!c.images.large) {
+                        const image = c.imageUrl || c.images?.large || '';
+                        let embyImgButtonInner = image ? embyImg(replaceBgmImageDomain(image), 'object-position: top;') : embyI(iconKeys.person, classes.cardImageIcon);
+                        if (!image) {
                             embyImgButtonInner = embyI(iconKeys.person, classes.cardImageIcon);
                         }
                         characterDiv.append(embyImgButton(embyImgButtonInner));
@@ -7829,9 +7933,11 @@
                         characterNameDiv.textContent = c.relation + ': ' + c.name;
                         characterRightDiv.append(characterNameDiv);
                         const characterCvDiv = document.createElement('div');
-                        characterCvDiv.textContent = 'CV: ' + c.actors.map(a => a.name).join();
-                        if (c.actors[0]) {
-                            characterCvDiv.append(embyImgButton(embyImg(replaceBgmImageDomain(c.actors[0].images.large))));
+                        const actors = Array.isArray(c.actors) ? c.actors : [];
+                        characterCvDiv.textContent = 'CV: ' + actors.map(a => typeof a === 'string' ? a : a?.name || '').filter(Boolean).join();
+                        const actorImage = actors[0] && (typeof actors[0] === 'object' ? actors[0].images?.large : '');
+                        if (actorImage) {
+                            characterCvDiv.append(embyImgButton(embyImg(replaceBgmImageDomain(actorImage))));
                         }
                         characterRightDiv.append(characterCvDiv);
                         characterDiv.append(characterRightDiv);
@@ -8429,21 +8535,36 @@
         const bangumiToken = getById(eleIds.bangumiTokenInput).value.trim();
         lsSetItem(lsKeys.bangumiToken.id, bangumiToken);
         const label = getById(eleIds.bangumiTokenLabel);
-        fetchBangumiApiGetMe(bangumiToken).then(res => {
+        const scopeKey = getBangumiScopeKey(bangumiToken);
+        fetchBangumiApiGetMe(bangumiToken, {}, scopeKey).then(res => {
+            if (scopeKey !== getBangumiScopeKey() || getById(eleIds.bangumiTokenLabel) !== label) return;
             label.innerText = 'Bangumi Token 验证成功';
             label.style.color = 'green';
         }).catch(error => {
+            if (scopeKey !== getBangumiScopeKey() || getById(eleIds.bangumiTokenLabel) !== label) return;
             label.innerText = 'Bangumi Token 验证失败';
             label.style.color = 'red';
             logger.error('Bangumi Token 校验按钮处理失败', error);
         });
     }
 
-    async function fetchBangumiApiGetMe(bangumiToken, fetchOpts = {}) {
+    async function fetchBangumiApiGetMe(bangumiToken, fetchOpts = {}, scopeKey = getBangumiScopeKey(bangumiToken)) {
         try {
-            const res = await fetchJson(bangumiApi.getMe(), { ...fetchOpts, token: bangumiToken });
+            let res;
+            if (ddBackend.isDll()) {
+                const client = getHostApiClient();
+                const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
+                const headers = { Accept: 'application/json', 'X-Emby-Token': client?.accessToken?.() || '' };
+                const response = await fetch(`${base}/dd-danmaku/api/bangumi/me`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
+                const payload = await response.json().catch(() => null);
+                if (!response.ok || payload?.success !== true) throw new Error('后端 Bangumi 身份校验失败');
+                res = payload.data || payload;
+            } else {
+                res = await fetchJson(bangumiApi.getMe(), { ...fetchOpts, token: bangumiToken });
+            }
             logger.debug('Bangumi Token 验证成功', res);
-            localStorage.setItem(lsLocalKeys.bangumiMe, JSON.stringify(res));
+            // 请求开始时绑定账号，完成时不借用可能已切换的当前账号。
+            localStorage.setItem(lsLocalKeys.bangumiMe + ':v2:' + scopeKey, JSON.stringify(res));
             return res;
         } catch (error) {
             logger.error('Bangumi Token 验证失败', error);
@@ -8709,37 +8830,14 @@
                 // 等待首次读取完服务器参数，账号切换后丢弃旧会话的异步写入。
                 await prepareUserParameters();
                 if (identity !== persistenceIdentity() || !ddBackend.has('ParameterPersistence')) return;
-                const userId = getHostApiClient()?.getCurrentUserId?.() || '';
-                // 先尝试 Update，如果不存在则 Create
-                let resp = await fetch(`${getPersistenceBaseUrl()}/Update`, {
-                    method: 'POST',
-                    headers: getPersistenceHeaders(),
-                    body: JSON.stringify({
-                        userid: userId,
-                        Namespace: getPersistenceNamespace(),
-                        Key: key,
-                        Value: typeof value === 'object' ? JSON.stringify(value) : String(value),
-                        Type: typeof value === 'object' ? 'json' : typeof value
-                    })
-                });
-                let result = await resp.json();
-                if (!result.Success && identity === persistenceIdentity()) {
-                    // 不存在则创建
-                    resp = await fetch(`${getPersistenceBaseUrl()}/Create`, {
-                        method: 'POST',
-                        headers: getPersistenceHeaders(),
-                        body: JSON.stringify({
-                            userid: userId,
-                            Namespace: getPersistenceNamespace(),
-                            Key: key,
-                            Value: typeof value === 'object' ? JSON.stringify(value) : String(value),
-                            Type: typeof value === 'object' ? 'json' : typeof value,
-                            Description: lsGetKeyById(key) ? lsKeys[lsGetKeyById(key)].name : key
-                        })
-                    });
-                }
+                // 会话固定并核验每次写入结果；只为查询确认不存在的键创建，不能把任意失败当作缺失。
+                await persistenceSaveBatch({ [key]: value });
+                if (identity === persistenceIdentity()) logger.info(`[持久化] 实时同步成功：${key}`);
+
             } catch (error) {
-                logger.debug(`[持久化] 同步 ${key} 失败:`, error.message);
+                logger.warn(`[持久化] 实时同步 ${key} 失败:`, error.message);
+            } finally {
+                delete _persistenceSaveTimers[timerKey];
             }
         }, 1000); // 1秒防抖
     }
@@ -9379,20 +9477,6 @@
         if (!container) { return; }
         const template = `
             <div style="height: 30em;">
-                <div id="${eleIds.consoleLogCtrl}" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;">
-                    <div id="${eleIds.consoleLogCtrlLeft}" style="display: flex; align-items: center;"></div>
-                    <div id="${eleIds.logLevelDiv}" style="display: flex; align-items: center;"></div>
-                </div>
-                <div id="${eleIds.consoleLogSearchInput}" style="margin-top:4px;"></div>
-                <div id="${eleIds.consoleLogInfo}">
-                    <!-- 恢复 Emby 主题组件；锁定日志视口，避免自动增高把滚动转移到外层弹窗。 -->
-                    <textarea id="${eleIds.consoleLogText}" readOnly style="resize: none; width: 100%; box-sizing: border-box; height: min(24em, 60vh) !important; min-height: 0 !important; max-height: min(24em, 60vh) !important; overflow-y: auto !important; scroll-behavior: auto; margin-top: 0.6em;"
-                        rows="12" is="emby-textarea" class="txtOverview emby-textarea"></textarea>
-                    <textarea id="${eleIds.consoleLogTextInput}" hidden style="resize: vertical;"
-                        rows="1" is="emby-textarea" class="txtOverview emby-textarea"></textarea>
-                </div>
-                <div class="${classes.embyFieldDesc}">注意开启后原本控制台中调用方信息将被覆盖,不使用请保持关闭状态</div>
-                <div id="${eleIds.consoleLogCtrl}"></div>
                 <div is="emby-collapse" title="开发者选项">
                     <div class="${classes.collapseContentNav}">
                         <label class="${classes.embyLabel}">调试开关: </label>
@@ -9407,10 +9491,81 @@
             </div>
         `;
         container.innerHTML = template.trim();
-        buildConsoleLog(container);
         buildDebugCheckbox(container);
         buildDebugButton(container);
         buildOpenSourceLicense(container);
+    }
+
+    // 日志页占满剩余视口，祖先滚动只在此页签禁用，切换其他设置时恢复。
+    function setupLogPageLayout(container, header, footer) {
+        const ancestors = [];
+        for (let node = container.parentElement; node && node !== document.body; node = node.parentElement) {
+            ancestors.push({ node, overflow: node.style.getPropertyValue('overflow'), priority: node.style.getPropertyPriority('overflow') });
+            if (node.classList.contains(classes.dialogContainer)) break;
+        }
+        let enabled = false;
+        const resize = () => {
+            if (!enabled || !container.isConnected) return;
+            // footer 的位置会随正文高度变化，不能反过来用它计算正文，否则会循环收缩至零。
+            // 从视口和固定工具区预算可用高度；保留日志正文的最小阅读空间。
+            const top = container.getBoundingClientRect().top;
+            const footerHeight = footer?.getBoundingClientRect().height || 48;
+            const available = Math.max(180, window.innerHeight - top - footerHeight - 32);
+            container.style.height = `${Math.min(available, Math.max(300, window.innerHeight * 0.68))}px`;
+        };
+        const observer = new ResizeObserver(resize);
+        if (header) observer.observe(header);
+        if (footer) observer.observe(footer);
+        const abort = new AbortController();
+        window.addEventListener('resize', resize, { signal: abort.signal });
+        const removal = new MutationObserver(() => {
+            if (!container.isConnected) { observer.disconnect(); removal.disconnect(); abort.abort(); }
+        });
+        removal.observe(document.body, { childList: true, subtree: true });
+        return value => {
+            enabled = value;
+            for (const { node, overflow, priority } of ancestors) {
+                if (value) node.style.setProperty('overflow', 'hidden', 'important');
+                else if (overflow) node.style.setProperty('overflow', overflow, priority);
+                else node.style.removeProperty('overflow');
+            }
+            container.style.overflow = value ? 'hidden' : '';
+            if (!value) container.style.height = '';
+            if (value) { for (const { node } of ancestors) node.scrollTop = 0; resize(); requestAnimationFrame(resize); }
+        };
+    }
+
+    function buildLogPage(containerId) {
+        const container = getById(containerId);
+        if (!container) return;
+        // 工具栏固定，只有日志正文使用剩余空间并允许滚动。
+        container.innerHTML = `
+            <style>
+                #danmakuTabLogs:not([hidden]) { display:flex; flex-direction:column; height:100%; min-height:0; overflow:hidden; }
+                #danmakuTabLogs > :not(#${eleIds.consoleLogInfo}) { flex-shrink:0; }
+                #danmakuTabLogs #${eleIds.consoleLogInfo} { flex:1 1 0; min-height:0; overflow:hidden; display:flex; flex-direction:column; }
+                #danmakuTabLogs #${eleIds.consoleLogInfo} > .emby-textarea-container,
+                #danmakuTabLogs #${eleIds.consoleLogInfo} > .textareaContainer { display:flex; flex:1 1 0; min-height:0; overflow:hidden; }
+                #danmakuTabLogs #${eleIds.consoleLogText} { flex:1 1 0; height:100% !important; min-height:0 !important; max-height:none !important; width:100%; box-sizing:border-box; resize:none; overflow:auto !important; margin:6px 0 0; scroll-behavior:auto; }
+            </style>
+            <div id="${eleIds.consoleLogCtrl}"><div id="${eleIds.consoleLogCtrlLeft}"></div><div id="${eleIds.logLevelDiv}"></div></div>
+            <div id="${eleIds.consoleLogSearchInput}"></div>
+            <div id="${eleIds.consoleLogInfo}">
+                <textarea id="${eleIds.consoleLogText}" readonly rows="1" class="txtOverview emby-textarea"></textarea>
+                <textarea id="${eleIds.consoleLogTextInput}" hidden rows="1" is="emby-textarea" class="txtOverview emby-textarea"></textarea>
+            </div>`;
+        buildConsoleLog(container);
+    }
+
+    // 剪贴板 API 被拒绝或不可用时回退传统复制，始终复制当前页完整正文。
+    async function copyConsoleLogText(text) {
+        try { if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return; } } catch (_) {}
+        const previous = document.activeElement;
+        const area = document.createElement('textarea');
+        area.value = text; area.readOnly = true; area.style.cssText = 'position:fixed;left:0;top:0;opacity:0;';
+        document.body.append(area); area.focus({ preventScroll: true }); area.select();
+        try { if (!document.execCommand('copy')) throw new Error('复制失败，请检查浏览器剪贴板权限'); }
+        finally { area.remove(); previous?.focus?.({ preventScroll: true }); }
     }
 
     // 合并密集日志更新，并在 Emby 组件完成本轮布局后再次校正底部。
@@ -9435,12 +9590,36 @@
         const consoleLogEnable = lsGetItem(lsKeys.consoleLogEnable.id);
         getById(eleIds.consoleLogInfo, container).style.display = consoleLogEnable ? '' : 'none';
         if (consoleLogEnable) { doConsoleLogChange(consoleLogEnable); }
-        // 左侧：日志开关、清空按钮、搜索框
+        // 显式分成状态行和文件操作行；窄屏只在各行内部按组换行，不依赖外层溢出。
+        const toolbar = getById(eleIds.consoleLogCtrl, container);
         const consoleLogCtrlLeftEle = getById(eleIds.consoleLogCtrlLeft, container);
+        const logControls = getById(eleIds.logLevelDiv, container);
+        toolbar.classList.add('dd-console-log-toolbar');
+        toolbar.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr);gap:4px;width:100%;min-width:0;';
+        consoleLogCtrlLeftEle.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;min-width:0;';
+        logControls.classList.add('dd-console-log-files');
+        logControls.style.cssText = 'align-items:center;flex-wrap:wrap;gap:4px 8px;min-width:0;';
+        const toolbarStyle = document.createElement('style');
+        toolbarStyle.textContent = `
+            .dd-console-log-toolbar > .dd-console-log-files { display:flex; }
+            .dd-console-log-toolbar > .dd-console-log-files:empty { display:none; }
+            .dd-console-log-toolbar button { flex:0 0 auto; min-width:2.4em; height:2.4em; box-sizing:border-box; margin:0; padding:0.3em 0.5em; }
+            .dd-console-log-toolbar .emby-checkbox-label { flex:0 0 auto; min-height:2.4em; display:inline-flex; align-items:center; margin:0; white-space:nowrap; }
+            .dd-console-log-toolbar .dd-console-log-file-select { flex:1 1 12em; width:12em; min-width:0; max-width:100%; }
+            @media (max-width:480px) {
+                .dd-console-log-toolbar .dd-console-log-file-select { flex-basis:100%; width:100%; }
+            }
+        `;
+        toolbar.append(toolbarStyle);
         consoleLogCtrlLeftEle.append(embyCheckbox({ label: lsKeys.consoleLogEnable.name }, consoleLogEnable, doConsoleLogChange));
         const consoleLogCountLabel = document.createElement('label');
         consoleLogCountLabel.id = eleIds.consoleLogCountLabel;
+        consoleLogCountLabel.style.cssText = 'flex:0 1 auto;min-width:0;min-height:2.4em;display:inline-flex;align-items:center;overflow-wrap:anywhere;font-size:0.85em;';
         consoleLogCtrlLeftEle.append(
+            embyButton({ iconKey: iconKeys.content_copy, title: '复制当前页全部日志', 'aria-label': '复制当前页全部日志' }, async () => {
+                try { await copyConsoleLogText(getById(eleIds.consoleLogText, container).value); embyToast({ text: '已复制当前页全部日志' }); }
+                catch (error) { embyToast({ text: error.message || '日志复制失败' }); }
+            }),
             embyButton({ label: '清空', iconKey: iconKeys.block }, () => {
                 const serverView = getById(eleIds.consoleLogText, container)._serverLogView;
                 if (serverView?.active()) { void serverView.clear(); return; }
@@ -9453,8 +9632,9 @@
             })
             , consoleLogCountLabel
         );
-        // 搜索框：独立一行，全宽，挂到第二行容器（template 里已预留 consoleLogSearchInput div）
+        // 搜索独立于两行工具栏，始终全宽。
         const searchRow = getById(eleIds.consoleLogSearchInput, container);
+        searchRow.style.cssText = 'margin-top:4px;width:100%;min-width:0;';
         const searchInput = document.createElement('input');
         searchInput.type = 'text';
         searchInput.placeholder = '搜索日志...';
@@ -9491,23 +9671,25 @@
             doLogLevelChange({ id: levelSelect.value, name: levelSelect.options[levelSelect.selectedIndex].text });
             getById(eleIds.consoleLogText, container)._serverLogView?.refresh();
         });
-        getById(eleIds.logLevelDiv, container).append(levelSelect);
+        const viewControls = document.createElement('div');
+        viewControls.style.cssText = 'display:flex;align-items:center;gap:8px;flex:0 0 auto;max-width:100%;flex-wrap:wrap;';
+        viewControls.append(levelSelect);
+        consoleLogCtrlLeftEle.append(viewControls);
         // 默认跟随最新日志；关闭后保持阅读位置，重新开启立即跳到底部。
         const logText = getById(eleIds.consoleLogText, container);
         logText.dataset.autoScroll = 'true';
         const autoScrollLabel = document.createElement('label');
-        autoScrollLabel.style.cssText = 'display:inline-flex;align-items:center;gap:0.3em;margin-left:0.6em;white-space:nowrap;';
+        autoScrollLabel.style.cssText = 'display:inline-flex;align-items:center;gap:0.3em;min-height:2.4em;margin:0;white-space:nowrap;';
         const autoScroll = document.createElement('input');
         autoScroll.type = 'checkbox';
         autoScroll.checked = true;
         autoScroll.addEventListener('change', () => {
             logText.dataset.autoScroll = String(autoScroll.checked);
+            if (autoScroll.checked) logText._serverLogView?.followLatest();
             scrollConsoleLogToBottom(logText);
         });
         autoScrollLabel.append(autoScroll, document.createTextNode('自动滚动'));
-        const logControls = getById(eleIds.logLevelDiv, container);
-        logControls.style.flexWrap = 'wrap';
-        logControls.append(autoScrollLabel);
+        viewControls.append(autoScrollLabel);
         attachServerConsoleLog(container, logControls, logText, searchInput);
         const consoleLogTextInput = getById(eleIds.consoleLogTextInput, container);
         consoleLogTextInput.style.display = consoleLogEnable && lsGetItem(lsKeys.quickDebugOn.id) ? '' : 'none';
@@ -9527,12 +9709,28 @@
         if (!ddBackend.isDll() || !ddBackend.has('FrontendLogs')) return;
         // 播放页无用户或来源选择，管理员也固定读取当前认证用户。
         const fileSelect = document.createElement('select');
-        fileSelect.style.cssText = 'max-width:100%;min-height:2.4em;padding:0.3em;background:#242424;color:#fff;border:1px solid #666;border-radius:4px;';
+        fileSelect.classList.add('dd-console-log-file-select');
+        fileSelect.style.cssText = 'min-height:2.4em;box-sizing:border-box;padding:0.3em 0.5em;background:#242424;color:#fff;border:1px solid #666;border-radius:4px;';
         fileSelect.setAttribute('aria-label', '日志文件');
         const pageLabel = document.createElement('span');
-        pageLabel.style.cssText = 'font-size:0.85em;white-space:nowrap;';
+        pageLabel.style.cssText = 'font-size:0.85em;white-space:nowrap;min-width:5ch;text-align:center;font-variant-numeric:tabular-nums;';
         let page = 1, total = 0, sequence = 0, controller, exportController, timer, poll, clearing = false;
-        let owner = '', files = [], rows = [];
+        let owner = '', files = [], rows = [], rowScope = '';
+        let liveRows = [];
+        const logKey = entry => JSON.stringify([entry.timestamp, entry.sessionId, String(entry.level).toLowerCase(), entry.message]);
+        const stopLive = frontendLogs.subscribe((entry, identity, sessionId) => {
+            if (!container.isConnected) { stopLive(); return; }
+            if (!active() || clearing || page !== 1 || (fileSelect.value && fileSelect.value !== 'current')) return;
+            let current;
+            try { current = context(); } catch (_) { return; }
+            if (current.key !== identity) return;
+            if (owner !== identity) { owner = identity; resetView(); }
+            const row = { ...entry, sessionId, level: entry.level.toLowerCase() };
+            liveRows.unshift(row);
+            if (liveRows.length > 200) liveRows.length = 200;
+            rows.unshift(row);
+            total++; render();
+        });
         const active = () => logText.dataset.logSource === 'server';
         const context = () => {
             const client = getHostApiClient();
@@ -9546,14 +9744,15 @@
         const visible = entry => (ranks[String(entry.level).toLowerCase()] || 4) <= logLevel;
         // 切换账号或失去登录态立即清掉旧文本、文件信息和计数。
         function resetView() {
-            files = []; rows = []; total = 0; page = 1; logText.value = '';
+            files = []; rows = []; liveRows = []; rowScope = ''; total = 0; page = 1; logText.value = '';
             fileSelect.replaceChildren(); fileSelect.disabled = true; exportButton.disabled = true;
             previous.disabled = true; next.disabled = true; pageLabel.textContent = '1 / 1';
             getById(eleIds.consoleLogCountLabel, container).textContent = '共 0 行';
         }
         function render() {
             const position = logText.scrollTop;
-            logText.value = rows.filter(visible).slice().reverse().map(entry =>
+            const keyword = searchInput.value.trim().toLowerCase();
+            logText.value = rows.filter(entry => visible(entry) && (!keyword || entry.message.toLowerCase().includes(keyword))).slice().reverse().map(entry =>
                 `[${new Date(entry.timestamp || entry.receivedAt).toLocaleString()}] [${String(entry.level).toUpperCase()}] : ${entry.message}\n`).join('');
             logText.scrollTop = position;
             scrollConsoleLogToBottom(logText);
@@ -9577,7 +9776,7 @@
                 if (context().key !== current.key) throw new Error('登录身份已变化，请刷新日志');
                 if (!response.ok) throw new Error(`日志请求失败（HTTP ${response.status}）`);
                 if (options.export) {
-                    if (!String(response.headers.get('Content-Type') || '').startsWith('application/x-ndjson')) throw new Error('日志导出格式无效');
+                    if (!String(response.headers.get('Content-Type') || '').toLowerCase().startsWith('text/plain')) throw new Error('日志导出格式无效');
                     const text = await response.text();
                     if (text.length > 4 * 1024 * 1024) throw new Error('日志导出超过限制');
                     if (context().key !== current.key) throw new Error('登录身份已变化，请刷新日志');
@@ -9613,14 +9812,29 @@
                     if (files.some(file => file.id === selected)) fileSelect.value = selected;
                     else page = 1;
                 }
-                if (!files.length) { rows = []; total = 0; render(); return; }
+                if (!files.length) { rows = liveRows.slice(); total = rows.length; render(); return; }
                 const data = await request(`?${new URLSearchParams({ FileId: fileSelect.value, Page: page, PageSize: 200, Keyword: searchInput.value.trim() })}`, {}, current.signal);
                 if (version !== sequence || !active() || context().key !== session) return;
                 if (!Array.isArray(data?.entries)) throw new Error('日志响应格式无效');
-                total = Math.max(0, Number(data.total) || 0);
+                if (page === 1 && fileSelect.value === 'current') {
+                    // 相同浏览器日志落盘回读后去重，未上传的实时条目保持在末尾。
+                    const stored = new Set(data.entries.map(logKey));
+                    liveRows = liveRows.filter(entry => !stored.has(logKey(entry)));
+                    data.entries = [...liveRows, ...data.entries];
+                }
+                total = Math.max(0, Number(data.total) || 0) + liveRows.length;
                 const lastPage = Math.max(1, Math.ceil(total / 200));
                 if (page > lastPage) { page = lastPage; return refresh(); }
-                rows = data.entries; render();
+                // 同一页关闭跟随时保留旧日志并追加新日志，不能用滑动的最近200条替换阅读内容。
+                const scope = JSON.stringify([session, fileSelect.value, page, searchInput.value.trim()]);
+                if (logText.dataset.autoScroll === 'false' && rowScope === scope && rows.length) {
+                    const identity = logKey;
+                    const known = new Set(rows.map(identity));
+                    const additions = data.entries.filter(entry => !known.has(identity(entry)));
+                    rows = [...additions, ...rows];
+                } else rows = data.entries;
+                rowScope = scope;
+                render();
             } catch (error) {
                 if (version === sequence && active() && !current.signal.aborted) {
                     try { if (context().key !== owner) { owner = ''; resetView(); } } catch (_) { owner = ''; resetView(); }
@@ -9639,11 +9853,11 @@
             const selected = fileSelect.value;
             exportButton.disabled = true;
             try {
-                const text = await request(`/export?${new URLSearchParams({ FileId: selected, Keyword: searchInput.value.trim() })}`, { export: true }, current.signal);
+                const levels = Object.keys(ranks).filter(level => ranks[level] <= logLevel).join(',');
+                const text = await request(`/export?${new URLSearchParams({ FileId: selected, Keyword: searchInput.value.trim(), Levels: levels })}`, { export: true }, current.signal);
                 if (current.signal.aborted || !active() || context().key !== session) return;
-                const lines = text.split('\n').filter(Boolean).filter(line => visible(JSON.parse(line))).join('\n');
-                const url = URL.createObjectURL(new Blob([lines ? lines + '\n' : ''], { type: 'application/x-ndjson' }));
-                const link = document.createElement('a'); link.href = url; link.download = `frontend-logs-${selected}.ndjson`;
+                const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+                const link = document.createElement('a'); link.href = url; link.download = `frontend-logs-${selected}.log`;
                 document.body.append(link);
                 try { link.click(); } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
             } catch (error) { if (!current.signal.aborted && active()) embyToast({ text: error.message || '日志导出失败' }); }
@@ -9652,11 +9866,22 @@
         const previous = embyButton({ iconKey: 'chevron_left', title: '较新日志', 'aria-label': '较新日志' }, () => { page--; void refresh(); });
         const next = embyButton({ iconKey: 'chevron_right', title: '较早日志', 'aria-label': '较早日志' }, () => { page++; void refresh(); });
         const serverControls = [fileSelect, refreshButton, exportButton, previous, pageLabel, next];
-        logControls.append(...serverControls);
+        // 分页作为完整一组换行，避免方向按钮和页码被拆散。
+        const fileActions = document.createElement('div');
+        fileActions.style.cssText = 'display:flex;align-items:center;gap:4px;flex:0 0 auto;';
+        fileActions.append(refreshButton, exportButton);
+        const pagination = document.createElement('div');
+        pagination.style.cssText = 'display:flex;align-items:center;gap:4px;flex:0 0 auto;margin-left:auto;';
+        pagination.append(previous, pageLabel, next);
+        logControls.append(fileSelect, fileActions, pagination);
         fileSelect.addEventListener('change', () => { page = 1; void refresh(); });
         logText._serverLogView = {
             active,
             search() { clearTimeout(timer); controller?.abort(); ++sequence; page = 1; timer = setTimeout(() => void refresh(), 300); },
+            followLatest() {
+                // 重新开启跟随时切回当前文件第一页，等待新正文后滚到底部。
+                page = 1; rowScope = ''; if (active()) void refresh(true);
+            },
             refresh() { if (active()) void refresh(); },
             async clear() {
                 if (!active() || clearing) return;
@@ -9668,9 +9893,9 @@
                 clearing = true; controller?.abort(); exportController?.abort(); ++sequence; clearTimeout(timer);
                 for (const control of serverControls) control.disabled = true;
                 try {
-                    await request('', { method: 'DELETE' });
-                    frontendLogs.discard();
-                    if (context().key === session) { rows = []; files = []; total = 0; page = 1; logText.value = ''; }
+                    await frontendLogs.clearHistory(() => request('', { method: 'DELETE' }));
+                    logger.info('[前端日志] 历史已清空，后续日志继续记录');
+                    if (context().key === session) { rows = []; liveRows = []; rowScope = ''; files = []; total = 0; page = 1; logText.value = ''; }
                 } catch (error) { embyToast({ text: error.message || '清空日志失败' }); }
                 finally { clearing = false; if (active()) await refresh(true); }
             }
@@ -9678,10 +9903,11 @@
         logText.dataset.logSource = 'server';
         void refresh(true);
         function follow() {
-            if (!container.isConnected) { controller?.abort(); exportController?.abort(); clearTimeout(timer); return; }
+            if (!container.isConnected) { stopLive(); controller?.abort(); exportController?.abort(); clearTimeout(timer); return; }
             let changed = false;
             try { changed = context().key !== owner; } catch (_) { changed = owner !== ''; }
-            if (active() && (changed || (logText.clientHeight && logText.dataset.autoScroll !== 'false' && page === 1 && document.visibilityState !== 'hidden'))) void refresh(true);
+            // 自动滚动只控制阅读位置，不控制日志采集和刷新；清空后即使文本框为空也要重新发现文件。
+            if (active() && (changed || (page === 1 && document.visibilityState !== 'hidden'))) void refresh(true);
             poll = setTimeout(follow, 5000);
         }
         poll = setTimeout(follow, 5000);
@@ -10109,7 +10335,74 @@
         danmakuRemarkEle.parentNode.hidden = false;
         danmakuRemarkEle.innerText = searchName ? '' : '请填写标题';
         const spinnerEle = getByClass(classes.mdlSpinner);
-        spinnerEle && spinnerEle.classList.remove('hide');
+        let allAnimes = [];
+        let failedSources = 0;
+
+        if (ddBackend.isDll()) {
+            try {
+                const client = getHostApiClient();
+                const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
+                const headers = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Emby-Token': client?.accessToken?.() || '' };
+                if (!base || !headers['X-Emby-Token']) throw new Error('后端搜索会话不可用');
+                const start = await fetch(`${base}/dd-danmaku/api/business/search`, {
+                    method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers,
+                    body: JSON.stringify({ itemId: String(window.ede?.itemId || ''), keyword: searchName }) });
+                let started = await start.json().catch(() => null);
+                const taskId = String(started?.data?.id || '');
+                if (!start.ok || !/^[a-f0-9]{32}$/i.test(taskId)) throw new Error('后端搜索任务未创建');
+                const deadline = Date.now() + 180000;
+                while (Date.now() < deadline) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    const status = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
+                    const statusBody = await status.json().catch(() => null);
+                    if (!status.ok || statusBody?.success !== true) throw new Error('后端搜索状态读取失败');
+                    if (['failed', 'cancelled'].includes(statusBody.data?.status)) throw new Error('后端搜索任务失败');
+                    if (statusBody.data?.status === 'succeeded') {
+                        const result = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/result`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
+                        started = await result.json().catch(() => null);
+                        if (!result.ok || started?.success !== true) throw new Error('后端搜索结果读取失败');
+                        break;
+                    }
+                }
+                const rows = (started?.data?.Results || started?.data?.results || []).flatMap(row =>
+                    (row.Works || row.works || []).map(work => ({
+                        animeId: work.AnimeId || work.animeId || '', animeTitle: work.AnimeTitle || work.animeTitle || '',
+                        episodeId: work.EpisodeId || work.episodeId || null, episodeTitle: work.EpisodeTitle || work.episodeTitle || '',
+                        apiName: row.SourceName || row.sourceName || row.SourceId || row.sourceId || '', sourceId: row.SourceId || row.sourceId || '',
+                        backendSearchTaskId: taskId })));
+                window.ede.backendSearchTaskId = taskId;
+                allAnimes = rows;
+                failedSources = (started?.data?.Results || started?.data?.results || []).filter(row => (row.Status || row.status) === 'failed').length;
+                logger.info(`[后端手动搜索] 完成，共找到 ${allAnimes.length} 个结果`);
+            } catch (error) {
+                logger.warn('[后端手动搜索] 请求失败，拒绝回退浏览器直连', error);
+                danmakuRemarkEle.innerText = '后端搜索不可用，请检查插件能力';
+            } finally {
+                spinnerEle && spinnerEle.classList.add('hide');
+            }
+            spinnerEle && spinnerEle.classList.add('hide');
+            if (allAnimes.length < 1) {
+                danmakuRemarkEle.innerText = failedSources ? '后端搜索请求失败，请检查来源或稍后重试' : '搜索结果为空';
+                getById(eleIds.danmakuSwitchEpisode).disabled = true;
+                getById(eleIds.danmakuEpisodeFlag).hidden = true;
+                return;
+            }
+            danmakuRemarkEle.innerText = '';
+            const danmakuAnimeDiv = getById(eleIds.danmakuAnimeDiv);
+            const danmakuEpisodeNumDiv = getById(eleIds.danmakuEpisodeNumDiv);
+            danmakuAnimeDiv.innerHTML = '';
+            danmakuEpisodeNumDiv.innerHTML = '';
+            window.ede.searchDanmakuOpts.animes = allAnimes;
+            let selectAnimeIdx = allAnimes.findIndex(anime => anime.animeId == window.ede.searchDanmakuOpts.animeId);
+            selectAnimeIdx = selectAnimeIdx !== -1 ? selectAnimeIdx : 0;
+            const animeSelect = embySelect({ id: eleIds.danmakuAnimeSelect, label: '剧集: ', style: 'width: auto;max-width: 100%;' },
+                selectAnimeIdx, allAnimes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription || ''} 来源：${opt.apiName}`, doDanmakuAnimeSelect);
+            danmakuAnimeDiv.append(animeSelect);
+            getById(eleIds.danmakuEpisodeFlag).hidden = false;
+            getById(eleIds.danmakuSwitchEpisode).disabled = false;
+            doDanmakuAnimeSelect(null, selectAnimeIdx, allAnimes[selectAnimeIdx]);
+            return;
+        }
 
         // --- 1. 准备 API 配置 ---
         const apiPriority = lsGetItem(lsKeys.apiPriority.id);
@@ -10131,7 +10424,6 @@
             else if (key === 'custom') customApiList.forEach((item, i) => item.enabled && actualPriority.push(`custom_${i}`));
         }
 
-        let allAnimes = [];
         logger.info(`[手动匹配] 开始并行搜索: ${searchName}`);
 
         // --- 2. 定义单个搜索任务 ---
@@ -10167,7 +10459,8 @@
                     return animaInfo.animes;
                 }
             } catch (e) {
-                logger.warn(`[手动匹配] 源 ${config.name} 搜索失败`, e);
+                failedSources++;
+                logger.warn(`[手动匹配] 源 ${config.name} 搜索失败`);
             }
             return [];
         };
@@ -10185,11 +10478,13 @@
             }
         }
 
-        logger.info(`[手动匹配] 搜索完成，共找到 ${allAnimes.length} 个结果`);
+        if (failedSources) logger.warn(`[手动匹配] 搜索存在请求失败，失败来源=${failedSources}，可用结果=${allAnimes.length}`);
+        else logger.info(`[手动匹配] 搜索完成，共找到 ${allAnimes.length} 个结果`);
 
         // [降级] 主源搜索为空且开启 BGM 搜索兜底时，用 Bangumi 搜索 + 弹弹play新接口兜底
         // 仅在手动搜索页生效（本函数即手动搜索入口）
-        if (allAnimes.length < 1 && lsGetItem(lsKeys.bgmSearchFallbackEnable.id)) {
+        // 后端在线时，官方流控降级已由代理任务完成，前端不能再重复检索。
+        if (allAnimes.length < 1 && !ddBackend.isDll() && lsGetItem(lsKeys.bgmSearchFallbackEnable.id)) {
             danmakuRemarkEle.innerText = '主源无结果，正在尝试 BGM 搜索兜底...';
             logger.info(`[手动匹配] 主源无结果，启用 BGM 搜索兜底: ${searchName}`);
             const officialPrefix = corsProxy + 'https://api.dandanplay.net/api/v2';
@@ -10206,7 +10501,7 @@
 
         spinnerEle && spinnerEle.classList.add('hide');
         if (allAnimes.length < 1) {
-            danmakuRemarkEle.innerText = '搜索结果为空';
+            danmakuRemarkEle.innerText = failedSources ? '搜索请求失败，请检查来源或稍后重试' : '搜索结果为空';
             getById(eleIds.danmakuSwitchEpisode).disabled = true;
             getById(eleIds.danmakuEpisodeFlag).hidden = true;
             return;
@@ -10280,35 +10575,58 @@
 
         // [修复] 条件修正：episodes 不存在或为空数组时都需要拉取分集
         // 原条件 `!anime.episodes` 会导致空数组 [] 跳过获取
-        const needFetch = (!anime.episodes || anime.episodes.length === 0) && anime.bangumiId;
+        const needFetch = (!anime.episodes || anime.episodes.length === 0) && (anime.bangumiId || anime.animeId);
         if (needFetch) {
             logger.debug(`[手动匹配] 动画 ${anime.animeTitle} 缺少分集信息，正在获取...`);
             numDiv.innerHTML = '<span style="color: #52b54b;">正在加载分集信息...</span>';
 
-            const apiPrefix = anime.apiPrefix || window.ede.searchDanmakuOpts.apiPrefix;
-            const bangumiUrl = `${apiPrefix}/bangumi/${anime.bangumiId}`;
-
             try {
-                const bangumiSignHeaders = anime.apiAppId && anime.apiAppSecret ? await buildCustomApiSignHeaders(anime.apiAppId, anime.apiAppSecret, bangumiUrl) : {};
-                const bangumiResult = await fetchJson(bangumiUrl, Object.keys(bangumiSignHeaders).length > 0 ? { headers: bangumiSignHeaders } : {});
-                // [修复] 兼容多种返回格式：{ bangumi: { episodes } } 或 { episodes }
-                const eps = bangumiResult?.bangumi?.episodes || bangumiResult?.episodes;
-                const seas = bangumiResult?.bangumi?.seasons || bangumiResult?.seasons;
-                if (eps && eps.length > 0) {
-                    anime.episodes = eps;
-                    anime.seasons = seas;
-                    logger.info(`[手动匹配] 获取分集信息成功: ${anime.animeTitle}, 共 ${anime.episodes.length} 集`);
+                if (ddBackend.isDll()) {
+                    const client = getHostApiClient();
+                    const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
+                    const headers = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Emby-Token': client?.accessToken?.() || '' };
+                    const start = await fetch(`${base}/dd-danmaku/api/business/episodes`, { method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers,
+                        body: JSON.stringify({ itemId: String(window.ede?.itemId || ''), sourceId: anime.sourceId || 'official', animeId: anime.animeId || anime.bangumiId }) });
+                    let result = await start.json().catch(() => null);
+                    const taskId = String(result?.data?.id || '');
+                    if (!start.ok || !/^[a-f0-9]{32}$/i.test(taskId)) throw new Error('后端分集任务未创建');
+                    const deadline = Date.now() + 180000;
+                    while (Date.now() < deadline) {
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        const stateResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
+                        const state = await stateResponse.json().catch(() => null);
+                        if (!stateResponse.ok || state?.success !== true) throw new Error('后端分集状态读取失败');
+                        if (['failed', 'cancelled'].includes(state.data?.status)) throw new Error('后端分集任务失败');
+                        if (state.data?.status === 'succeeded') {
+                            const finalResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/result`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
+                            result = await finalResponse.json().catch(() => null);
+                            if (!finalResponse.ok || result?.success !== true) throw new Error('后端分集结果读取失败');
+                            break;
+                        }
+                    }
+                    const episodes = result?.data?.Episodes || result?.data?.episodes;
+                    if (!Array.isArray(episodes)) throw new Error('后端分集响应格式无效');
+                    anime.backendEpisodeTaskId = taskId;
+                    anime.backendSourceId = anime.sourceId || 'official';
+                    window.ede.backendEpisodeTaskId = taskId;
+                    window.ede.backendSourceId = anime.backendSourceId;
+                    anime.episodes = episodes; anime.seasons = [];
                 } else {
-                    logger.error(`[手动匹配] 获取分集信息失败: 返回数据为空或格式错误`);
-                    numDiv.innerHTML = '<span style="color: #e23636;">获取分集信息失败（返回为空）</span>';
-                    return;
+                    const apiPrefix = anime.apiPrefix || window.ede.searchDanmakuOpts.apiPrefix;
+                    const bangumiUrl = `${apiPrefix}/bangumi/${anime.bangumiId}`;
+                    const bangumiSignHeaders = anime.apiAppId && anime.apiAppSecret ? await buildCustomApiSignHeaders(anime.apiAppId, anime.apiAppSecret, bangumiUrl) : {};
+                    const bangumiResult = await fetchJson(bangumiUrl, Object.keys(bangumiSignHeaders).length > 0 ? { headers: bangumiSignHeaders } : {});
+                    const eps = bangumiResult?.bangumi?.episodes || bangumiResult?.episodes;
+                    const seas = bangumiResult?.bangumi?.seasons || bangumiResult?.seasons;
+                    if (!eps || eps.length === 0) throw new Error('返回数据为空或格式错误');
+                    anime.episodes = eps; anime.seasons = seas;
                 }
+                logger.info(`[手动匹配] 获取分集信息成功: ${anime.animeTitle}, 共 ${anime.episodes.length} 集`);
             } catch (error) {
                 logger.error(`[手动匹配] 获取分集信息失败: ${error.message}`);
                 numDiv.innerHTML = '<span style="color: #e23636;">获取分集信息失败</span>';
                 return;
             }
-
             numDiv.innerHTML = '';
         }
 
@@ -10436,6 +10754,8 @@
             && /^[A-Za-z0-9_-]{1,160}$/.test(String(anime.bangumiId || anime.animeId || ''))) {
             localStorage.setItem(manualWorkKey(item.SeriesId, season), JSON.stringify({
                 animeId: String(anime.bangumiId || anime.animeId), apiPrefix: anime.apiPrefix,
+                // DLL 在线时后端按 sourceId 读取本人来源配置，作为下次自动匹配首选。
+                backendSourceId: String(anime.backendSourceId || anime.sourceId || ''),
                 episodeOffset: sourceEpisode - embyEpisode
             }));
         }
@@ -11316,9 +11636,11 @@
                     try {
                         const meta = await detectApiServerType(item.url);
                         if (meta && meta.serverName) {
-                            item.serverName = meta.serverName;
-                            item.serverVersion = meta.version || '';
-                            changed = true;
+                            if (item.serverName !== meta.serverName || (item.serverVersion || '') !== (meta.version || '')) {
+                                item.serverName = meta.serverName;
+                                item.serverVersion = meta.version || '';
+                                changed = true;
+                            }
                             logger.debug(`[自定义源] 服务端校验成功: ${item.name || item.url} → ${meta.serverName} ${meta.version || ''}`);
                         } else {
                             logger.warn(`[自定义源] 服务端校验未返回 serverName，可能不可达或不兼容: ${item.url}`);
@@ -11936,7 +12258,7 @@
      */
     function lsBatchSet(keyValues, needCheck = true) {
         if (needCheck) {
-            return objectEntries(keyValues).reduce((acc, [id, value]) => (acc || lsCheckSet(id, value)), false);
+            return objectEntries(keyValues).reduce((acc, [id, value]) => (lsCheckSet(id, value) || acc), false);
         } else {
             objectEntries(keyValues).forEach(([key, value]) => lsSetItem(key, value));
         }

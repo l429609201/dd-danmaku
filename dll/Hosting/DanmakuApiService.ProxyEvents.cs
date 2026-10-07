@@ -10,6 +10,7 @@ public sealed partial class DanmakuApiService
             throw new ApiAccessException(404, "OPERATION_NOT_FOUND", "操作不存在或不可访问");
         OperationEventHub.Publish(userId, operationId, "upstream");
         var status = "failed";
+        var failureCode = "UPSTREAM_ERROR";
         try
         {
             var result = await action();
@@ -21,16 +22,22 @@ public sealed partial class DanmakuApiService
             status = "cancelled";
             throw;
         }
+        catch (ApiAccessException error)
+        {
+            // 代理请求和订阅事件使用同一错误码。
+            failureCode = error.Code;
+            throw;
+        }
         finally
         {
             OperationEventHub.Complete(userId, operationId, status,
-                status == "failed" ? "UPSTREAM_ERROR" : null);
+                status == "failed" ? failureCode : null);
         }
     }
 
-    private void ProxyProgress(Guid userId, string stage)
+    private void ProxyProgress(Guid userId, string stage, int? count = null)
     {
         var operationId = Request.QueryString["OperationId"];
-        if (!string.IsNullOrEmpty(operationId)) OperationEventHub.Publish(userId, operationId, stage);
+        if (!string.IsNullOrEmpty(operationId)) OperationEventHub.Publish(userId, operationId, stage, count);
     }
 }

@@ -9,6 +9,9 @@ internal sealed class FrontendLogStore : IDisposable
 {
     internal const int MaxFileBytes = 2 * 1024 * 1024;
     internal const int MaxFiles = 5;
+    internal const int MaxMessageChars = 24000;
+    // JSON 最坏每个字符转义为六字节，记录上限需覆盖完整展开消息。
+    private const int MaxRecordBytes = 192 * 1024;
     private readonly string _directory;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<string, Queue<long>> _uploads = new(StringComparer.Ordinal);
@@ -23,7 +26,7 @@ internal sealed class FrontendLogStore : IDisposable
     private static readonly Regex Headers = new(@"(?im)\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=][^\r\n]*",
         RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
     private static readonly Regex Locations = new(
-        @"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>""']+|(?:[a-z]:[\\/]|\\\\|/)[^\s<>""']+|\b(?:[\w.-]+[\\/])+[^\s<>""']+|\b(?:bearer|basic)\s+[^\s,;]+|\beyJ[a-z0-9_-]+\.[a-z0-9_-]+(?:\.[a-z0-9_-]+)?|\b[a-f0-9]{32,64}\b",
+        @"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>""',}\]]+|(?:[a-z]:[\\/]|\\\\)[^\s<>""',}\]]+|(?<![\w/])/(?:[^\s<>""',}\]/]+/)+[^\s<>""',}\]/]*|\b(?:[\w.-]+[\\/])+[^\s<>""',}\]/]+|\b(?:bearer|basic)\s+[^\s,""';]+|\beyJ[a-z0-9_-]+\.[a-z0-9_-]+(?:\.[a-z0-9_-]+)?|\b[a-f0-9]{32,64}\b",
         RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
 
     internal FrontendLogStore(string dataDirectory)
@@ -36,7 +39,11 @@ internal sealed class FrontendLogStore : IDisposable
             var temporary = CheckedPath("rewrite.tmp");
             if (File.Exists(temporary)) File.Delete(temporary);
             // 重启仅恢复容量内的完整合法行，丢弃损坏尾行和超限内容。
-            foreach (var id in Ids()) Repair(id);
+            foreach (var id in Ids())
+            {
+                MigrateLegacy(id);
+                Repair(id);
+            }
             Ready = true;
         }
         catch (IOException) { Ready = false; }
@@ -53,9 +60,9 @@ internal sealed class FrontendLogStore : IDisposable
         var lines = new List<byte[]>(batch.Entries.Count);
         foreach (var item in batch.Entries)
         {
-            if (item is null || item.Message is null || item.Message.Length > 2048 || item.Timestamp is null)
+            if (item is null || item.Message is null || item.Message.Length > MaxMessageChars || item.Timestamp is null)
                 throw new ArgumentException("日志条目无效");
-            lines.Add(Encode(new(item.Timestamp.Value, now, userId, session, NormalizeLevel(item.Level), Sanitize(item.Message))));
+            lines.Add(Encode(new(item.Timestamp.Value, now, userId, session, NormalizeLevel(item.Level), SanitizeMessage(item.Message))));
         }
         await _gate.WaitAsync(token);
         try
@@ -147,6 +154,22 @@ internal sealed class FrontendLogStore : IDisposable
         foreach (var entry in entries) output.Write(Encode(entry));
         return output.ToArray();
     }
+    // 下载文本与内部改写分离，中文和多行 JSON 不再作为 JSON 字符串转义。
+    internal static byte[] ExportText(IEnumerable<Entry> entries)
+    {
+        var output = new StringBuilder();
+        foreach (var entry in entries)
+            output.Append('[').Append(entry.Timestamp.ToString("O", System.Globalization.CultureInfo.InvariantCulture))
+                .Append("] [").Append(entry.Level.ToUpperInvariant()).Append("] ")
+                .Append(entry.Message).Append('\n');
+        return Encoding.UTF8.GetBytes(output.ToString());
+    }
+    private static string SanitizeMessage(string message)
+    {
+        var sanitized = Sanitize(message);
+        // 脱敏占位符可能比原地址更长，仍保证保存后可由同一长度约束读回。
+        return sanitized.Length <= MaxMessageChars ? sanitized : sanitized[..MaxMessageChars];
+    }
     private static string NormalizeLevel(string? value) => value?.ToLowerInvariant() switch
     {
         "debug" => "debug", "info" => "info", "warn" or "warning" => "warn", "error" => "error",
@@ -155,15 +178,13 @@ internal sealed class FrontendLogStore : IDisposable
 
     internal static string Sanitize(string text)
     {
-        // 原始对象和响应体不入库；方括号日志分类与数组计数标签仍保留。
+        // 允许展开业务 JSON；持久化仍按凭据、URL 与路径规则脱敏，保留换行和缩进。
         try
         {
-            if (text.Contains('{') || Regex.IsMatch(text, @"\[\s*(?:""|'|\[|\d|true\b|false\b|null\b)", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100)))
-                return "[已移除结构化内容]";
             text = Headers.Replace(text, "[已脱敏凭据]");
             text = Locations.Replace(text, "[已脱敏地址]");
             text = Secrets.Replace(text, "[已脱敏凭据]");
-            return new string(text.Select(c => char.IsControl(c) || c is '\u2028' or '\u2029' ? ' ' : c).ToArray());
+            return new string(text.Select(c => char.IsControl(c) && c is not ('\n' or '\r' or '\t') || c is '\u2028' or '\u2029' ? ' ' : c).ToArray());
         }
         catch (RegexMatchTimeoutException) { return "[已移除复杂内容]"; }
     }
@@ -202,6 +223,30 @@ internal sealed class FrontendLogStore : IDisposable
         var repaired = Export(ReadEntries(path));
         // 改写与清除共用一个固定临时文件，避免失败时截断原文件。
         ReplaceFile(id, repaired);
+    }
+    private void MigrateLegacy(string id)
+    {
+        var legacy = CheckedPath(id + ".jsonl");
+        if (!File.Exists(legacy)) return;
+        var target = FilePath(id);
+        if (!File.Exists(target))
+        {
+            File.Move(CheckedPath(id + ".jsonl"), FilePath(id));
+            return;
+        }
+        // 两种后缀共存时优先保留新记录；先原子落盘再删除旧文件，重试去重。
+        var retained = new List<Entry>();
+        var bytes = 0;
+        foreach (var entry in ReadEntries(legacy).Concat(ReadEntries(target)).Distinct().Reverse())
+        {
+            var length = Encode(entry).Length;
+            if (bytes + length > MaxFileBytes) break;
+            retained.Add(entry);
+            bytes += length;
+        }
+        retained.Reverse();
+        ReplaceFile(id, Export(retained));
+        File.Delete(CheckedPath(id + ".jsonl"));
     }
     private void ReplaceFile(string id, byte[] bytes)
     {
@@ -246,16 +291,16 @@ internal sealed class FrontendLogStore : IDisposable
         for (var i = 0; i < count; i++)
         {
             if (buffer[i] != '\n') continue;
-            if (i - start is > 0 and <= 32 * 1024)
+            if (i - start is > 0 and <= MaxRecordBytes)
             {
                 try
                 {
                     var entry = JsonSerializer.Deserialize<Entry>(buffer.AsSpan(start, i - start), Json);
-                    if (entry is not null && entry.Message is not null && entry.Message.Length <= 2048
+                    if (entry is not null && entry.Message is not null && entry.Message.Length <= MaxMessageChars
                         && entry.SessionId is not null && entry.SessionId.Length <= 128
                         && Guid.TryParseExact(entry.UserId, "N", out var user) && user != Guid.Empty)
                     {
-                        entry = entry with { Message = Sanitize(entry.Message), SessionId = Sanitize(entry.SessionId), Level = NormalizeLevel(entry.Level) };
+                        entry = entry with { Message = SanitizeMessage(entry.Message), SessionId = Sanitize(entry.SessionId), Level = NormalizeLevel(entry.Level) };
                         var length = Encode(entry).Length;
                         if (outputBytes + length <= MaxFileBytes) { entries.Add(entry); outputBytes += length; }
                     }
@@ -272,7 +317,7 @@ internal sealed class FrontendLogStore : IDisposable
     private string FilePath(string id)
     {
         if (!Ids().Contains(id, StringComparer.Ordinal)) throw new ArgumentException("日志文件标识无效");
-        return CheckedPath(id + ".jsonl");
+        return CheckedPath(id + ".log");
     }
     private string CheckedPath(string fileName)
     {
