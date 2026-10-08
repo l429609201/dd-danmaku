@@ -97,6 +97,12 @@ public sealed partial class DanmakuApiService
                 return true;
             }, Request.CancellationToken);
         }
+        await MetadataSavedAsync(plugin, id);
+        if (!id.HasValue)
+        {
+            // 全局模板变化后只立即检查当前管理员的有效配置，其余用户在读取时按本人身份启动。
+            await MetadataSavedAsync(plugin, user.Id);
+        }
         return ApiHttpResult.Success(new { Saved = true });
     });
 
@@ -112,6 +118,7 @@ public sealed partial class DanmakuApiService
             return true;
         }, Request.CancellationToken);
         RemoveLegacyDefaults(plugin, id);
+        await MetadataSavedAsync(plugin, id);
         return ApiHttpResult.Success(new { Reset = true });
     });
 
@@ -140,30 +147,37 @@ public sealed partial class DanmakuApiService
 
     private static async Task<FrontendDefaults> GlobalDefaults(Plugin plugin)
     {
-        FrontendDefaults legacy;
-        lock (PluginConfigurationService.ConfigurationGate)
-            legacy = (plugin.Configuration.GlobalFrontendDefaults ?? new()).Copy();
-        // 仅首次以旧全局值创建模板；已有 Defaults.json 始终是唯一权威。
-        await plugin.Parameters.Defaults.InitializeAsync(FrontendParameterMap.ToEntries(legacy), CancellationToken.None);
+        // 旧全局值也只在模板首次创建时读取；后续查询仍实时读取权威 Defaults.json。
+        await plugin.Parameters.Defaults.InitializeAsync(_ =>
+        {
+            FrontendDefaults legacy;
+            lock (PluginConfigurationService.ConfigurationGate)
+                legacy = (plugin.Configuration.GlobalFrontendDefaults ?? new()).Copy();
+            return Task.FromResult<IReadOnlyList<ParameterEntry>>(FrontendParameterMap.ToEntries(legacy));
+        }, CancellationToken.None);
         return FrontendParameterMap.FromEntries(await plugin.Parameters.Defaults.QueryAsync(null, null, null, CancellationToken.None));
     }
 
-    private static async Task<bool> InitializeParameters(Plugin plugin, Guid id, CancellationToken token)
+    private static Task<bool> InitializeParameters(Plugin plugin, Guid id, CancellationToken token)
     {
-        await GlobalDefaults(plugin);
-        FrontendDefaults legacy;
-        lock (PluginConfigurationService.ConfigurationGate)
-            legacy = (plugin.Configuration.UserFrontendDefaults ?? [])
-                .FirstOrDefault(x => x is not null && SameUser(x.UserId, id))?.Values?.Copy() ?? new();
-        var personal = await plugin.UserDefaults.ReadAsync(id, legacy);
-        var defaults = (await plugin.Parameters.Defaults.QueryAsync(null, null, null, token)).ToList();
-        // 模板中的任意命名空间都要复制；旧用户播放器覆盖项仅替换对应字段。
-        foreach (var row in FrontendParameterMap.ToEntries(personal))
+        // 是否需要迁移由用户存储锁内判断；成熟文件不再准备已无效的旧默认值。
+        return plugin.Parameters.InitializeForAsync(id, async initializationToken =>
         {
-            defaults.RemoveAll(current => current.Namespace == row.Namespace && current.Key == row.Key);
-            defaults.Add(row);
-        }
-        return await plugin.Parameters.InitializeForAsync(id, defaults, token);
+            await GlobalDefaults(plugin);
+            FrontendDefaults legacy;
+            lock (PluginConfigurationService.ConfigurationGate)
+                legacy = (plugin.Configuration.UserFrontendDefaults ?? [])
+                    .FirstOrDefault(x => x is not null && SameUser(x.UserId, id))?.Values?.Copy() ?? new();
+            var personal = await plugin.UserDefaults.ReadAsync(id, legacy);
+            var defaults = (await plugin.Parameters.Defaults.QueryAsync(null, null, null, initializationToken)).ToList();
+            // 模板中的任意命名空间都要复制；旧用户播放器覆盖项仅替换对应字段。
+            foreach (var row in FrontendParameterMap.ToEntries(personal))
+            {
+                defaults.RemoveAll(current => current.Namespace == row.Namespace && current.Key == row.Key);
+                defaults.Add(row);
+            }
+            return defaults;
+        }, token);
     }
 
     private static async Task<object> DefaultView(Plugin plugin, Guid id)

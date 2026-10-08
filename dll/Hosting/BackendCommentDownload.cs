@@ -53,9 +53,12 @@ internal static class BackendCommentDownload
                     return raw;
                 }
             }
+            var firstPoll = true;
             while (true)
             {
-                await Task.Delay(TimeSpan.FromSeconds(1), token);
+                // 已受理任务首次立即核验状态，后续仍保持一秒节流，避免人为增加首轮等待。
+                if (!firstPoll) await Task.Delay(TimeSpan.FromSeconds(1), token);
+                firstPoll = false;
                 await authorize(token);
                 token.ThrowIfCancellationRequested();
                 context.Progress("poll");
@@ -69,8 +72,11 @@ internal static class BackendCommentDownload
                     throw new ApiAccessException(502, "UPSTREAM_TASK_FAILED", "上游弹幕生成任务失败");
                 if (status is "completed" or "complete" or "success" or "succeeded" or "done" or "finished")
                 {
+                    context.Progress("authorize");
                     await authorize(token);
                     token.ThrowIfCancellationRequested();
+                    // 生成100%不等于正文已到位，切换阶段避免一直显示轮询完成而实际仍等待下载。
+                    context.Progress("fetch");
                     var finalRaw = await fetch(commentPath, token);
                     using var final = Parse(finalRaw);
                     if (Status(TaskPayload(final.RootElement)) is not null || !Comments(final.RootElement)) throw Protocol();

@@ -93,6 +93,18 @@ public sealed partial class DanmakuApiService
             "update" => await service.UpdateAsync(mutation, body.Parameters, Request.CancellationToken),
             _ => await service.DeleteAsync(body.Namespace, body.Key, body.Keys, body.Parameters, Request.CancellationToken)
         };
+        // 自动个人参数保存也按认证用户启动；只关心元数据字段，避免播放滑块写入反复重测。
+        static bool MetadataKey(string? key)
+        {
+            if (key is null) return false;
+            if (key.StartsWith("danmaku", StringComparison.OrdinalIgnoreCase)) key = key[7..];
+            return new[] { "TmdbApiKey", "TmdbApiBaseUrl", "TmdbEpisodeMappingEnable", "BangumiToken",
+                "BangumiApiPrefix", "BangumiEnable", "BgmSearchFallbackEnable" }.Contains(key, StringComparer.OrdinalIgnoreCase);
+        }
+        if (result.Success && (body.Namespace is null or "dd-danmaku")
+            && (MetadataKey(body.Key) || (body.Keys ?? []).Any(MetadataKey)
+            || (body.Parameters ?? []).Any(item => (item.Namespace is null or "dd-danmaku") && MetadataKey(item.Key))))
+            await MetadataSavedAsync(plugin, user.Id);
         return ParameterResult(result);
     });
 

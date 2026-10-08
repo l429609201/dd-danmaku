@@ -13,10 +13,10 @@ const active = useUiRef('parameter-page', 'files', value => ['files', 'defaults'
     <!-- 各面板独立保存；标签页加载后持续挂载，切换时保留未保存草稿。 -->
     <el-tabs v-model="active">
       <el-tab-pane label="用户完整配置" name="files">
-        <ParameterFilesPanel />
+        <ParameterFilesPanel :active="active === 'files'" />
       </el-tab-pane>
       <el-tab-pane label="默认配置（全局／用户）" name="defaults" lazy>
-        <FrontendDefaultsPanel />
+        <FrontendDefaultsPanel :active="active === 'defaults'" />
       </el-tab-pane>
       <el-tab-pane label="本地中转 API" name="proxy" lazy>
         <ProxySettingsPanel />

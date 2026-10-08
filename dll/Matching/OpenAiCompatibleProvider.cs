@@ -133,7 +133,10 @@ public sealed class OpenAiCompatibleProvider : IAiProvider, IDisposable
         {
             if (bodyStream.Length + read > limit) throw InvalidResponse();
             bodyStream.Write(buffer, 0, read);
+            var firstChunk = responseBytes == 0;
             responseBytes = bodyStream.Length;
+            // 分离上游生成等待与正文传输耗时，便于真实宿主性能复测。
+            if (firstChunk) Observe("first-body-byte");
         }
         phase = "解析协议响应";
         try

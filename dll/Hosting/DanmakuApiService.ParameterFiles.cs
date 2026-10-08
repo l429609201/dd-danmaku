@@ -105,6 +105,7 @@ public sealed partial class DanmakuApiService
             }
             return true;
         }, Request.CancellationToken);
+        await MetadataSavedAsync(plugin, id);
         return ApiHttpResult.Success(new { Saved = true });
     });
 
@@ -115,6 +116,7 @@ public sealed partial class DanmakuApiService
         var id = DefaultUserId(request.UserId, false);
         // 空文件作为持久化删除屏障，保留旧文件但永不回退；后续同步可重新写入。
         await plugin.Parameters.StoreFor(id).MutateAsync(rows => { rows.Clear(); return true; }, Request.CancellationToken);
+        await MetadataSavedAsync(plugin, id);
         return ApiHttpResult.Success(new { Deleted = true });
     });
 
@@ -136,6 +138,7 @@ public sealed partial class DanmakuApiService
                 throw new ApiAccessException(409, "OVERWRITE_REQUIRED", "目标已有参数，请确认覆盖");
             rows.Clear(); rows.AddRange(copies); return true;
         }, Request.CancellationToken);
+        await MetadataSavedAsync(plugin, target);
         return ApiHttpResult.Success(new { Copied = copies.Length, Skipped = snapshot.Count - copies.Length });
     });
 }

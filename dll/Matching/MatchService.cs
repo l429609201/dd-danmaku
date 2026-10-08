@@ -20,6 +20,7 @@ public sealed class MatchService : IMatchService
     /// <summary>验证候选后按配置策略执行规则及 AI 匹配。</summary>
     public async Task<ResolveMatchResponse> ResolveAsync(ResolveMatchRequest request, CancellationToken cancellationToken)
     {
+        var matchClock = System.Diagnostics.Stopwatch.StartNew();
         MatchRequestValidator.Validate(request);
         cancellationToken.ThrowIfCancellationRequested();
         var config = _configuration();
@@ -48,7 +49,19 @@ public sealed class MatchService : IMatchService
         var traditional = _ranking.Rank(assessments);
         IReadOnlyList<CandidateAssessment> ranked = traditional;
         var modeUsed = "traditional";
-        var tryAi = preferAi || (allowFallback && traditional.Count > 0 && !IsConfirmed(traditional, request));
+        var fastRuleMatch = request.PreferReliableRules && IsConfirmed(traditional, request)
+            && traditional.First(candidate => candidate.Result.Eligible).Result.Score >= (request.SelectionScope == "work" ? 0.95m : 0.90m);
+        if (fastRuleMatch)
+            request.Progress?.Invoke("resolve", "可靠规则已唯一确认，跳过AI等待");
+        // 在线章节没有任何可自动确认项时，模型改分也无法补足规则元数据，直接交给作品/详情后备。
+        // 管理AI测试仍执行完整评分；候选中只要存在可确认项，模糊评分路径就保持不变。
+        var ineffectiveEpisodeAi = request.PreferReliableRules && request.SelectionScope == "episode"
+            && traditional.Count > 0 && !traditional.Any(candidate => candidate.Result.Eligible
+                && candidate.MetadataSufficient && !candidate.RequiresConfirmation);
+        if (ineffectiveEpisodeAi)
+            request.Progress?.Invoke("resolve", "章节候选无可自动确认的元数据证据，跳过无效AI评分，转作品及分集核验");
+        var tryAi = !fastRuleMatch && !ineffectiveEpisodeAi && traditional.Any(candidate => candidate.Result.Eligible)
+            && (preferAi || (allowFallback && !IsConfirmed(traditional, request)));
         if (tryAi)
         {
             // 故障降级不受策略回退开关限制；授权失败绝不调用提供者。
@@ -112,7 +125,7 @@ public sealed class MatchService : IMatchService
             else if (eligible.Any(c => !c.MetadataSufficient)) status = "insufficient_metadata";
         }
         var chosen = ranked.FirstOrDefault(candidate => candidate.Result.CandidateId == selected);
-        var outcome = $"完成，实际模式={modeUsed}，状态={status}，选中候选={selected ?? "无"}，作品ID={chosen?.Result.AnimeId}，章节ID={chosen?.Result.EpisodeId}，标题={chosen?.Result.Title}，分数={chosen?.Result.Score}";
+        var outcome = $"完成，实际模式={modeUsed}，状态={status}，选中候选={selected ?? "无"}，作品ID={chosen?.Result.AnimeId}，章节ID={chosen?.Result.EpisodeId}，标题={chosen?.Result.Title}，分数={chosen?.Result.Score}，判断耗时毫秒={matchClock.ElapsedMilliseconds}";
         _info?.Invoke($"匹配 #{trace}：{outcome}");
         request.Progress?.Invoke("resolve", outcome);
         return new ResolveMatchResponse(modeUsed, status, selected, status != "matched",

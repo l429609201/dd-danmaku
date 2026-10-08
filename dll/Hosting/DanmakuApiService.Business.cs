@@ -95,6 +95,15 @@ public sealed partial class DanmakuApiService
                 if (hash.Hash is null) hash = await BackendRemoteVideoHash.GetAsync(_access, current, item, _mediaSources,
                     configuration, context.Token, input.MediaSourceId);
             }
+            var reuseContext = new OnlineMatchReuseContext();
+            async Task<JsonElement?> LoadEvidenceAsync(TargetMediaDto target, CancellationToken evidenceToken)
+            {
+                // 网络查询前后重新确认本人媒体及配置，凭据始终留在后端。
+                await BusinessAuthorizeAsync(user.Id, item, revision, plugin, evidenceToken);
+                var evidence = await host.Metadata.GetEvidenceAsync(target, defaults, configuration, user.Id, evidenceToken);
+                await BusinessAuthorizeAsync(user.Id, item, revision, plugin, evidenceToken);
+                return evidence;
+            }
             var attempts = new List<object>();
             ApiAccessException? failure = null;
             (OnlineMatchResult Result, MetadataMappingResult Mapping, BackendBusinessSource Source)? ambiguous = null;
@@ -126,7 +135,7 @@ public sealed partial class DanmakuApiService
                                 result = await MatchOnlineSourceAsync(matchInput, target, source.Kind, source.XmlSource, user.Id,
                                     source.Configuration, host, context.Token, context.Id,
                                     aiAuthorized: EmbyAccessControl.CanUseAi(current, source.Configuration), allowDirectEpisode: true,
-                                    taskProgress: context.Progress, taskDetail: context.Detail, normalizeSeasonEpisode: defaults.NormalizeSeasonEpisode ?? true);
+                                    taskProgress: context.Progress, taskDetail: context.Detail, normalizeSeasonEpisode: defaults.NormalizeSeasonEpisode ?? true, reuseContext: reuseContext, evidenceProvider: LoadEvidenceAsync);
                             }
                             catch (ApiAccessException error) when (source.Kind == "official" && error.Code == "UPSTREAM_RATE_LIMITED")
                             {
@@ -137,7 +146,7 @@ public sealed partial class DanmakuApiService
                                 result = await MatchOnlineSourceAsync(matchInput, target, source.Kind, source.XmlSource, user.Id,
                                     source.Configuration, host, context.Token, context.Id, error,
                                     aiAuthorized: EmbyAccessControl.CanUseAi(current, source.Configuration), allowDirectEpisode: true,
-                                    taskProgress: context.Progress, taskDetail: context.Detail, normalizeSeasonEpisode: defaults.NormalizeSeasonEpisode ?? true);
+                                    taskProgress: context.Progress, taskDetail: context.Detail, normalizeSeasonEpisode: defaults.NormalizeSeasonEpisode ?? true, reuseContext: reuseContext, evidenceProvider: LoadEvidenceAsync);
                             }
                             // 即使后备上游失败，也保留之前已经过滤过的歧义，且不改变下载来源证明。
                             if (result.Status == "ambiguous" && (ambiguous is null
@@ -159,6 +168,7 @@ public sealed partial class DanmakuApiService
                     // 授权或配置失效不能被当作某个来源失败后继续执行。
                     if (error.Code is "AUTH_REQUIRED" or "UPSTREAM_CHANGED" or "ITEM_NOT_FOUND" or "ITEM_ACCESS_DENIED") throw;
                     failure = error;
+                    context.Detail("upstream", UpstreamErrorDiagnostic.Describe(error));
                     attempts.Add(new { SourceId = source.Id, Status = "failed", ErrorCode = error.Code });
                 }
             }
@@ -216,6 +226,7 @@ public sealed partial class DanmakuApiService
                 catch (ApiAccessException error)
                 {
                     lastFailure = error;
+                    context.Detail("upstream", UpstreamErrorDiagnostic.Describe(error));
                     results.Add(new(source.Id, source.Name, "failed", [], error.Code));
                 }
             }
