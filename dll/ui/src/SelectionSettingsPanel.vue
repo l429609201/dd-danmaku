@@ -9,7 +9,7 @@ const error = ref(''), message = ref(''), savedSnapshot = ref('')
 const playbackFields = [
   ['enabled', 'XML 联动总开关'], ['readEnabled', '允许读取 XML'],
   ['writeEnabled', '允许写入 XML'], ['preferLocal', '优先本地 XML'],
-  ['autoSave', '自动保存弹幕'],
+  ['autoSave', '旧参数：自动保存'],
 ]
 const retentionFields = [
   ['sharedFreshHours', '共享新鲜度（小时）', 1, 8760],
@@ -142,6 +142,7 @@ onBeforeUnmount(() => { disposed = true; sequence++; controller?.abort() })
     <el-form v-if="config" class="storage-form" label-width="150px" :disabled="disabled" @submit.prevent="save">
       <section class="storage-group" aria-labelledby="storage-xml-title">
         <h3 id="storage-xml-title">XML 策略</h3>
+        <p>自动播放不保存 XML；旧自动保存参数不用于本播放链路。手动选择可缓存本人选择；写入共享 XML 是另一个需授权的显式保存操作。</p>
         <div class="storage-grid">
           <el-form-item v-for="[key, label] in playbackFields" :key="key" :label="label">
             <el-switch v-model="config.playback[key]" :aria-label="label" inline-prompt active-text="开" inactive-text="关" :width="52" :disabled="switchDisabled(key)" />
@@ -156,7 +157,7 @@ onBeforeUnmount(() => { disposed = true; sequence++; controller?.abort() })
           </el-form-item>
           <el-form-item label="允许覆盖已有 XML">
             <template #label>
-              <el-tooltip content="自动保存只新增；手动覆盖仍需确认与版本校验。" placement="top"><span>允许覆盖已有 XML</span></el-tooltip>
+              <el-tooltip content="仅授权的显式共享 XML 保存可覆盖，仍需确认与版本校验；不影响本人选择缓存。" placement="top"><span>允许覆盖已有 XML</span></el-tooltip>
             </template>
             <el-switch v-model="config.authorization.allowOverwrite" aria-label="允许覆盖已有 XML" inline-prompt active-text="开" inactive-text="关" :width="52" />
           </el-form-item>

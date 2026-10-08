@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.3.7
+// @version      1.3.8
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -70,7 +70,7 @@
 
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.3.7', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.3.8', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -492,6 +492,7 @@
         let probePromise = null;
         // 按需重探测：成功缓存一分钟，失败缓存十秒，不增加后台轮询。
         let probeExpiresAt = 0;
+        let dllConfirmed = false;
 
         function resetIfSessionChanged() {
             // 外部单脚本注入器可能没有宿主 ApiClient；未定义时必须完整降级为纯 JS 模式。
@@ -500,6 +501,7 @@
             if (key !== sessionKey) {
                 sessionKey = key;
                 snapshot = null;
+                dllConfirmed = false;
                 defaults = null;
                 defaultsLoaded = false;
                 defaultsPromise = null;
@@ -533,7 +535,10 @@
         }
         async function probe() {
             const requestSessionKey = resetIfSessionChanged();
-            if (Date.now() < probeExpiresAt) return snapshot;
+            if (Date.now() < probeExpiresAt) {
+                if (dllConfirmed && !snapshot) throw new Error('DLL 后端暂不可用，不会回退浏览器直连');
+                return snapshot;
+            }
             if (!probePromise) {
                 let currentPromise;
                 currentPromise = request('/dd-danmaku/api/capabilities').then(data => {
@@ -544,12 +549,15 @@
                     const apiVersion = Number(data?.apiVersion ?? data?.ApiVersion);
                     snapshot = mode === 'dll' && apiVersion >= 1 && (data?.enabled ?? data?.Enabled) !== false
                         ? { ...data, capabilities: caps } : null;
+                    if (snapshot) dllConfirmed = true;
+                    if (dllConfirmed && !snapshot) throw new Error('DLL 后端能力响应不可用');
                     probeExpiresAt = Date.now() + (snapshot ? 60000 : 10000);
                     return snapshot;
                 }).catch(() => {
                     if (requestSessionKey === resetIfSessionChanged() && probePromise === currentPromise) {
                         snapshot = null;
                         probeExpiresAt = Date.now() + 10000;
+                        if (dllConfirmed) throw new Error('DLL 后端暂不可用，不会回退浏览器直连');
                     }
                     return null;
                 }).finally(() => {
@@ -594,12 +602,18 @@
                         const status = String(event.status ?? event.Status ?? '');
                         const code = String(event.errorCode ?? event.ErrorCode ?? '');
                         if (!Object.prototype.hasOwnProperty.call(operationStages, stage)) continue;
-                        const details = [Number.isInteger(count) && count >= 0 ? (stage === 'poll' ? `进度=${Math.min(count, 100)}%` : `数量=${count}`) : '',
-                            /^[a-z_]{1,40}$/.test(status) ? `状态=${status}` : '',
-                            /^[A-Z0-9_]{1,60}$/.test(code) ? `错误码=${code}` : ''].filter(Boolean).join('，');
+
                         const detail = typeof (event.detail ?? event.Detail) === 'string'
                             ? String(event.detail ?? event.Detail).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ').slice(0, 24000) : '';
-                        logger.info(`[DLL 操作] ${operationStages[stage]}${details ? `，${details}` : ''}${detail ? `，${detail}` : ''}`);
+                        // 详细下载日志自带关联号，避免再重复“获取正文、running”前缀。
+                        const statusLabel = ({ pending: '等待', running: '进行中', succeeded: '成功', failed: '失败', cancelled: '取消', skipped: '跳过' })[status] || '';
+                        const safeCode = /^[A-Z0-9_]{1,60}$/.test(code) ? code : '';
+                        const downloadDetail = /^\[下载(?: |处理\]|完成\])/.test(detail);
+                        const summary = [operationStages[stage],
+                            Number.isInteger(count) && count >= 0 ? (stage === 'poll' ? `${Math.min(count, 100)}%` : `${count} 项`) : '',
+                            statusLabel && status !== 'running' ? statusLabel : '', safeCode ? `错误 ${safeCode}` : ''].filter(Boolean).join(' · ');
+                        if (downloadDetail) logger.info(detail);
+                        else logger.info(`[DLL 操作] ${summary}${detail ? `\n${detail}` : ''}`);
                         onProgress({ stage, status, code, count });
                     }
                     // 对未完成的单帧限长，不把一个网络块中的多条合法事件合计误判为超限。
@@ -638,7 +652,7 @@
                 await defaultsPromise;
                 return requestSessionKey === resetIfSessionChanged() ? state : null;
             },
-            has(name) { return Boolean(snapshot?.capabilities?.[name]); },
+            has(name) { resetIfSessionChanged(); return Boolean(snapshot?.capabilities?.[name]); },
             async beginOperation(isCurrent = () => true) {
                 const client = getHostApiClient();
                 if (!this.has('OperationEvents') || !client?.accessToken?.() || !client.serverAddress?.()) return null;
@@ -957,7 +971,7 @@
                 }
                 return value;
             },
-            isDll() { return Boolean(snapshot); },
+            isDll() { resetIfSessionChanged(); return dllConfirmed; },
             resetCache() {
                 defaults = null;
                 defaultsLoaded = false;
@@ -7361,7 +7375,7 @@
             keyToggleBtn.append(keyThumb);
 
             const keyToggleLabel = document.createElement('span');
-            keyToggleLabel.textContent = '自定义弹弹官方key';
+keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             keyToggleLabel.style.cssText = 'font-size: 0.85em; opacity: 0.8; cursor: pointer; white-space: nowrap;';
             keyToggleLabel.onclick = () => keyToggleBtn.click();
 
@@ -7434,9 +7448,9 @@
             const proxyButton = document.createElement('button');
             proxyButton.type = 'button';
             proxyButton.className = 'raised emby-button';
-            proxyButton.textContent = 'Emby 中转';
-            proxyButton.title = '添加本地 Emby DLL 后端中转';
-            proxyButton.setAttribute('aria-label', '添加本地 Emby DLL 后端中转');
+            proxyButton.textContent = '引用实例共享来源';
+            proxyButton.title = '使用管理员已保存的共享 API；仅采用名称，不使用当前表单地址或密钥';
+            proxyButton.setAttribute('aria-label', '引用管理员已配置的 Emby 中转共享来源');
             proxyButton.style.cssText = 'height:2.5em;min-width:0;width:auto;flex:0 0 auto;margin:0;padding:0 .7em;font-size:.85em;white-space:nowrap;';
             proxyButton.onclick = async () => {
                 proxyButton.disabled = true;
@@ -7523,7 +7537,7 @@
                     editBtn.onclick = async () => {
                         // 代理条目的上游由管理员维护，避免进入直连 URL/密钥编辑流程。
                         if (item.type === 'emby-proxy') {
-                            embyToast({ text: '请在插件后台修改代理配置；播放器可禁用或移除此项' });
+                            embyToast({ text: '请在后台的实例共享来源设置中修改地址和凭据；此处仅启用、禁用或移除引用' });
                             return;
                         }
                         if (!isEditing) {
@@ -7607,7 +7621,7 @@
                             editAuthBtn.append(editAuthThumb);
 
                             const editAuthLabel = document.createElement('span');
-                            editAuthLabel.textContent = '自定义弹弹官方key';
+                            editAuthLabel.textContent = '此来源的 AppId / AppSecret';
                             editAuthLabel.style.cssText = 'font-size:0.78em;opacity:0.75;cursor:pointer;white-space:nowrap;';
                             editAuthLabel.onclick = () => editAuthBtn.click();
 

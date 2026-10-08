@@ -98,7 +98,7 @@ async function save(reset = false, explicit = false) {
     // 后台保存钩子启动自检；这里只刷新同一用户的只读状态。
     metadataRefresh.value++
     // 保存成功不重新挂载控件，保留展开状态和焦点。
-    message.value = reset ? '已恢复继承全局' : '已自动保存'
+    message.value = reset ? '已清除此视图支持的用户字段，恢复全局模板继承；其他用户参数保留' : '已自动保存'
   } catch (e) { error.value = `${e.message}；若连接中断，请重新读取确认服务器状态` }
   finally { saving.value = false }
 }
@@ -112,12 +112,12 @@ onBeforeUnmount(() => { ++generation; controller?.abort() })
 
 <template>
   <el-card shadow="never" v-loading="busy" class="ede-surface">
-    <template #header><strong>播放器默认参数</strong></template>
-    <el-alert title="优先级：用户主动设置 > 用户专属默认 > 全局默认 > 脚本内置。编辑后自动保存，继承值不会因打开页面而写入。" type="info" :closable="false" />
-    <el-alert v-if="tab !== '弹幕设置'" title="全局默认中的源凭据、令牌和 API Key 会共享给继承此配置的用户；个人凭据请设为对应用户的专属默认。" type="warning" :closable="false" />
+    <template #header><strong>全局模板／用户配置（简化视图）</strong></template>
+    <el-alert title="简化视图与完整视图读写同一份用户参数，不是两层独立配置。全局模板在用户参数首次初始化时复制，已复制字段不随模板变化；缺失字段继承全局模板，再回退脚本内置。编辑后自动保存，打开页面不会写入继承值。" type="info" :closable="false" />
+    <el-alert v-if="tab !== '弹幕设置'" title="全局模板中的源凭据、令牌和 API Key 会被复制或继承到用户配置；个人凭据请只填写在对应用户配置中。" type="warning" :closable="false" />
     <div class="scope-bar">
       <el-select v-model="selected" aria-label="配置范围" :disabled="saving || busy || !!error" @change="load">
-        <el-option label="全局默认" value="" /><el-option v-for="user in users" :key="user.id" :label="user.name" :value="user.id" />
+        <el-option label="全局模板" value="" /><el-option v-for="user in users" :key="user.id" :label="user.name" :value="user.id" />
       </el-select>
       <el-button :disabled="saving || busy" @click="load">重新读取</el-button>
       <el-button :disabled="saving" @click="loadUsers">刷新用户列表</el-button>
@@ -144,7 +144,7 @@ onBeforeUnmount(() => { ++generation; controller?.abort() })
           </div>
         </div>
       </component>
-      <div class="actions"><el-popconfirm v-if="selected" title="清除此用户全部专属默认并恢复继承？" @confirm="save(true)"><template #reference><el-button :disabled="saving || busy">恢复全局继承</el-button></template></el-popconfirm></div>
+      <div class="actions"><el-popconfirm v-if="selected" title="清除此视图支持的用户字段并恢复全局模板继承？完整视图中的对应字段也会清除，其他用户参数保留。" @confirm="save(true)"><template #reference><el-button :disabled="saving || busy">清除用户字段并继承模板</el-button></template></el-popconfirm></div>
     </fieldset>
   </el-card>
 </template>

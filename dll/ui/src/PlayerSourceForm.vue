@@ -28,7 +28,7 @@ function submit() {
   if (!value.name) { error.value = '请输入源名称'; return }
   try { if (!['http:', 'https:'].includes(new URL(value.url).protocol)) throw new Error() }
   catch { error.value = '请输入有效的 HTTP 或 HTTPS 接口地址'; return }
-  if (auth.value && (!value.appId || !value.appSecret)) { error.value = '开启自定义 key 后，请填写 AppId 和 AppSecret'; return }
+  if (auth.value && (!value.appId || !value.appSecret)) { error.value = '开启自定义 API Key 后，请填写 AppId 和 AppSecret'; return }
   if (props.editing && !auth.value && (props.source.appId || props.source.appSecret) && !window.confirm('确认清除此源已保存的 AppId 和 AppSecret？')) return
   error.value = ''; emit('submit', value)
 }
@@ -37,7 +37,7 @@ function submit() {
   <div class="source-form" :class="{ editing }" @keydown.enter="onEnter">
     <div class="pair identity"><label>源名称<input v-model="draft.name" :disabled="disabled" placeholder="必填"></label><label>API 地址<input v-model="draft.url" :disabled="disabled" placeholder="http://" autocomplete="off"></label></div>
     <div v-if="auth" class="pair"><label>AppId<input v-model="draft.appId" :disabled="disabled" placeholder="必填" autocomplete="off"></label><label>AppSecret<input v-model="draft.appSecret" :disabled="disabled" :type="reveal ? 'text' : 'password'" placeholder="必填" autocomplete="new-password"></label></div>
-    <div class="bottom"><button type="button" class="toggle" role="switch" aria-label="自定义弹弹官方key" :aria-checked="auth" :disabled="disabled" @click="auth = !auth"><span /></button><span>自定义弹弹官方key</span><button v-if="auth" type="button" :disabled="disabled" :aria-pressed="reveal" @click="reveal = !reveal">{{ reveal ? '隐藏' : '显示' }}</button><div class="actions"><button v-if="!editing" class="proxy" type="button" title="添加本地 Emby DLL 后端中转" aria-label="添加本地 Emby DLL 后端中转" :disabled="disabled" @click="emit('proxy', draft.name.trim())">Emby 中转</button><button class="submit" type="button" :disabled="disabled" @click="submit">{{ disabled ? '处理中…' : editing ? '保存' : '添加' }}</button><button v-if="editing" type="button" :disabled="disabled" @click="emit('cancel')">取消</button></div></div>
+    <div class="bottom"><button type="button" class="toggle" role="switch" aria-label="自定义 API Key（AppId/AppSecret，非插件官方签名）" :aria-checked="auth" :disabled="disabled" @click="auth = !auth"><span /></button><span title="此来源的 AppId/AppSecret，不是插件内置的官方签名">自定义 API Key</span><button v-if="auth" type="button" :disabled="disabled" :aria-pressed="reveal" @click="reveal = !reveal">{{ reveal ? '隐藏' : '显示' }}</button><div class="actions"><button v-if="!editing" class="proxy" type="button" title="引用管理员配置的实例共享来源；仅采用源名称，不使用当前表单地址或凭据" aria-label="添加实例共享来源（Emby 中转），仅采用源名称" :disabled="disabled" @click="emit('proxy', draft.name.trim())">Emby 中转</button><button class="submit" type="button" :disabled="disabled" @click="submit">{{ disabled ? '处理中…' : editing ? '保存' : '添加' }}</button><button v-if="editing" type="button" :disabled="disabled" @click="emit('cancel')">取消</button></div></div>
     <p v-if="error" role="alert">{{ error }}</p>
   </div>
 </template>

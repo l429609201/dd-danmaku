@@ -14,6 +14,7 @@ public sealed partial class DanmakuApiService : IService, IRequiresRequest
     private readonly EmbyAccessControl _access;
     private readonly IUserManager _users;
     private readonly IMediaSourceManager _mediaSources;
+    private readonly MediaBrowser.Controller.Configuration.IServerConfigurationManager _serverConfiguration;
     private readonly MediaBrowser.Model.Tasks.ITaskManager _tasks;
     /// <summary>由 Emby 请求管线设置的当前请求上下文。</summary>
     public IRequest Request { get; set; } = null!;
@@ -23,11 +24,13 @@ public sealed partial class DanmakuApiService : IService, IRequiresRequest
     /// <summary>接收宿主认证、授权、媒体库、用户和原生日志服务。</summary>
     public DanmakuApiService(IAuthService authentication, IAuthorizationContext authorization,
         ILibraryManager library, IUserManager users, MediaBrowser.Model.Tasks.ITaskManager tasks,
-        MediaBrowser.Model.Logging.ILogManager logs, IMediaSourceManager mediaSources)
+        MediaBrowser.Model.Logging.ILogManager logs, IMediaSourceManager mediaSources,
+        MediaBrowser.Controller.Configuration.IServerConfigurationManager serverConfiguration)
     {
         _access = new EmbyAccessControl(authentication, authorization, library);
         _users = users;
         _mediaSources = mediaSources;
+        _serverConfiguration = serverConfiguration;
         _tasks = tasks;
         _matchLogger = logs.GetLogger("DD.Danmaku");
     }

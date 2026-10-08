@@ -27,8 +27,8 @@ const state = value => value ? '开' : '关'
       <template #header><strong>服务器 XML 联动</strong></template>
       <p>总开关：{{ state(overview.xmlEnabled) }}</p>
       <p>有效读取 / 授权写入：{{ state(overview.xmlRead) }} / {{ state(overview.xmlWrite) }}</p>
-      <p>优先本地 / 授权用户自动保存：{{ state(overview.preferLocal) }} / {{ state(overview.autoSave) }}</p>
-      <small>自动保存只新增，不覆盖已有 XML。</small>
+      <p>优先本地 / 旧自动保存参数：{{ state(overview.preferLocal) }} / {{ state(overview.autoSave) }}</p>
+      <small>当前自动播放不写 XML；共享 XML 需授权用户显式保存。</small>
     </el-card>
     <el-card shadow="never">
       <template #header><strong>AI 服务</strong></template>
@@ -40,7 +40,8 @@ const state = value => value ? '开' : '关'
     <el-card shadow="never">
       <template #header><strong>弹弹play 中转连接</strong></template>
       <p>状态：{{ relayLabel(relay?.status) }}</p>
-      <p>延迟：{{ relay?.latencyMilliseconds != null ? `${relay.latencyMilliseconds} ms` : '—' }}</p>
+      <p>最近搜索自检耗时：{{ relay?.latencyMilliseconds != null ? `${relay.latencyMilliseconds} ms` : '—' }}</p>
+      <p>自检缓存时间：{{ relay?.checkedAt ? new Date(relay.checkedAt).toLocaleString() : '—' }}</p>
       <p v-if="relay?.httpStatus">HTTP：{{ relay.httpStatus }}</p>
       <p v-if="relay?.errorCode">错误码：{{ relay.errorCode }}</p>
       <small>测试搜索test是否有效</small>

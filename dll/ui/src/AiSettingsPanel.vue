@@ -96,7 +96,7 @@ onMounted(load)
           <el-form-item label="最低匹配分数（不是概率）"><el-input-number v-model="data.confidenceThreshold" :min="0" :max="1" :step="0.05" :precision="2" /></el-form-item>
           <!-- 与后端安全硬上限一致；默认值由服务端返回，不覆盖已保存配置。 -->
           <el-form-item label="最大候选数（默认200）"><el-input-number v-model="data.maxCandidates" :min="1" :max="1000" :precision="0" /></el-form-item>
-          <p>仍需开启上方 AI 总开关。请求会发送匹配所需的媒体信息，请仅配置可信服务；非受信网络应使用 HTTPS。</p>
+          <p>实际匹配还需开启 AI 并满足授权；以上测试不代表真实媒体匹配成功。请求会发送匹配所需的媒体信息，请仅配置可信服务；非受信网络应使用 HTTPS。</p>
         </section>
       </div>
       <!-- 默认值来自服务端；填充只修改草稿，保存后生效。 -->

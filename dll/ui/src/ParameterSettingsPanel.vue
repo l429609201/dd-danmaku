@@ -9,16 +9,16 @@ const active = useUiRef('parameter-page', 'files', value => ['files', 'defaults'
 <template>
   <section>
     <h2>用户配置</h2>
-    <p>管理用户播放器参数、全局及用户默认值，以及本地中转 API。用户参数按所选用户保存，本地中转 API 对当前 Emby 实例生效。</p>
+    <p>用户配置的完整视图与简化视图读写同一份用户参数。全局模板在用户参数首次初始化时复制，缺失字段继续继承模板；实例共享来源（Emby 中转）独立配置，需用户引用并启用，不影响个人独立源。</p>
     <!-- 各面板独立保存；标签页加载后持续挂载，切换时保留未保存草稿。 -->
     <el-tabs v-model="active">
-      <el-tab-pane label="用户完整配置" name="files">
+      <el-tab-pane label="用户配置（完整视图）" name="files">
         <ParameterFilesPanel :active="active === 'files'" />
       </el-tab-pane>
-      <el-tab-pane label="默认配置（全局／用户）" name="defaults" lazy>
+      <el-tab-pane label="全局模板／用户配置（简化视图）" name="defaults" lazy>
         <FrontendDefaultsPanel :active="active === 'defaults'" />
       </el-tab-pane>
-      <el-tab-pane label="本地中转 API" name="proxy" lazy>
+      <el-tab-pane label="实例共享来源（Emby 中转）" name="proxy" lazy>
         <ProxySettingsPanel />
       </el-tab-pane>
     </el-tabs>

@@ -27,16 +27,16 @@ add('Bangumi', [
   ['bangumiEnable', '启用 Bangumi', false], ['bangumiToken', '个人令牌', ''],
   ['bangumiPostPercent', '观看时长比（1–99）', 95, undefined, 1, 99, 1],
   ['bangumiApiPrefix', 'Bangumi API 地址', 'https://api.bgm.tv'],
-  ['bgmSearchFallbackEnable', 'BGM 搜索兜底', false],
+  ['bgmSearchFallbackEnable', '兼容 JS 搜索 / Bangumi AI 证据', false],
   ['bangumiImageDomain', 'Bangumi 图片域名', 'https://lain.bgm.tv'],
 ])
 add('TMDB', [
   ['tmdbApiKey', 'TMDB API Key', ''], ['tmdbApiBaseUrl', 'TMDB API 域名', 'https://api.themoviedb.org'],
-  ['tmdbEpisodeMappingEnable', '启用集数映射', false],
+  ['tmdbEpisodeMappingEnable', '集数映射后备（原始季集优先）', false],
 ])
 add('弹幕源与匹配', [
   // 与播放器的服务器缓存开关共用持久化键，默认不写入媒体目录。
-  ['cacheDanmakuToServer', '缓存弹幕到服务器（需 DLL 在线及写入权限）', false],
+  ['cacheDanmakuToServer', '本人手动选择缓存（非 XML 保存）', false],
   // 服务端读取统一由 DLL 策略控制，不再提供第二个 XML 开关。
   ['useOfficialApi', '使用弹弹play', true],
   ['useCustomApi', '使用自定义 API', false], ['matchApiEnable', '启用 /match 匹配', false],

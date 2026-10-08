@@ -44,6 +44,17 @@ internal sealed class EmbyAccessControl
         return _authorization.GetAuthorizationInfo(request).Token;
     }
 
+    // 后台任务只保存本人认证快照，不在请求结束后读取 Request，也不借用管理员密钥。
+    internal string AuthenticatedToken(IRequest request, Guid owner)
+    {
+        var user = Authenticate(request);
+        var info = _authorization.GetAuthorizationInfo(request);
+        if (user.Id != owner || info?.User?.Id != owner || string.IsNullOrWhiteSpace(info.Token)
+            || info.Token.Length > 4096 || info.Token.Any(char.IsControl))
+            throw new ApiAccessException(401, "AUTH_REQUIRED", "需要有效的本人 Emby 用户令牌");
+        return info.Token;
+    }
+
     internal static void RequireAdministrator(User user)
     {
         if (!user.Policy.IsAdministrator) throw new ApiAccessException(403, "ADMIN_REQUIRED", "仅管理员可操作");
