@@ -20,6 +20,8 @@ internal sealed class EmbyHostServices : IDisposable
     internal Matching.MatchApiService Matches { get; }
     internal EmbyPlaybackFileResolver PlaybackFiles { get; }
     internal BackendTaskCoordinator BackendTasks { get; private set; } = null!;
+    // 元数据健康与补充证据跟随宿主释放，不使用跨宿主静态后台任务。
+    internal HostingMetadataService Metadata { get; } = new();
     internal bool AiProviderReady => _aiProvider.IsAvailable;
     // 草稿仅用于本次管理员模型查询，不持久化或影响运行配置。
     internal Task<IReadOnlyList<string>> GetAiModelsAsync(CancellationToken token, PluginConfiguration? draft = null)
@@ -112,6 +114,7 @@ internal sealed class EmbyHostServices : IDisposable
         BackendTasks?.Dispose();
         Scan?.Dispose();
         FrontendLogs?.Dispose();
+        Metadata.Dispose();
         _aiProvider.Dispose();
     }
 }

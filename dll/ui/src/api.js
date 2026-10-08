@@ -105,6 +105,10 @@ export const api = {
   // 连接测试只验证当前草稿，不保存配置或改变 AI 总开关。
   testAi: data => request('/config/ai/test', { method: 'POST', body: JSON.stringify(data) }),
   saveAiSettings: (data) => request('/config/ai', { method: 'PUT', body: JSON.stringify(data) }),
+  officialRelayHealth: () => request('/proxy/official/health'),
+  // 不传 UserId 表示认证本人；指定用户只复用现有管理员选择，不读取密钥或地址。
+  metadataHealth: (userId = '', signal) => request(`/metadata/health${userId ? `?${new URLSearchParams({ UserId: userId })}` : ''}`, { signal }),
+  recheckMetadataHealth: (userId = '', signal) => request(`/metadata/health${userId ? `?${new URLSearchParams({ UserId: userId })}` : ''}`, { method: 'POST', signal }),
   capabilities: () => request('/capabilities'),
   // 整合表单一次提交完整 XML、授权与缓存策略，避免跨接口部分成功。
   storageSettings: signal => request('/config/storage', { signal }),

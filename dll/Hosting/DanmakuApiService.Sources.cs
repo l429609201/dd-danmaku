@@ -74,7 +74,10 @@ public sealed partial class DanmakuApiService
     {
         await InitializeParameters(plugin, userId, token);
         var rows = await plugin.Parameters.StoreFor(userId).QueryAsync(null, null, null, token);
-        return FrontendDefaults.Merge(await GlobalDefaults(plugin), FrontendParameterMap.FromEntries(rows));
+        var effective = FrontendDefaults.Merge(await GlobalDefaults(plugin), FrontendParameterMap.FromEntries(rows));
+        // 包含个人自动参数写入的兜底：读取有效配置时按真实所属用户非阻塞启动。
+        plugin.Host?.Metadata.EnsureStarted(userId, effective, plugin.Configuration);
+        return effective;
     }
 
     internal static IReadOnlyList<RegisteredBackendSource> BackendSources(FrontendDefaults defaults,

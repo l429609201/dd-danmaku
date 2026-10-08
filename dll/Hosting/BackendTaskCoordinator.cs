@@ -195,6 +195,9 @@ internal sealed class BackendTaskCoordinator : IDisposable
         {
             status = "failed"; code = error.Code;
             Diagnose(entry, code, error);
+            var detail = UpstreamErrorDiagnostic.Describe(error);
+            Log(entry, detail);
+            OperationEventHub.Publish(entry.Owner, entry.Id, "upstream", status: "failed", errorCode: code, detail: detail);
             reply = error.UpstreamReply is { } upstream ? new(upstream.StatusCode, upstream.Body)
                 : Failure(error.Status, error.Code, error.Message);
         }

@@ -148,6 +148,15 @@ public sealed record ResolveMatchRequest(
     // 只允许宿主注入授权结果，JSON 不能声明或覆盖权限；非宿主调用默认拒绝 AI。
     [System.Text.Json.Serialization.JsonIgnore]
     internal bool AiAuthorized { get; init; }
+    // 仅宿主在线编排启用可靠规则快捷路径，管理AI测试继续严格执行模型调用。
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal bool PreferReliableRules { get; init; }
+    // 仅宿主绑定授权媒体，模型调用前按需加载元数据证据；客户端无法指定查询或凭据。
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal Func<CancellationToken, Task<System.Text.Json.JsonElement?>>? EvidenceProvider { get; init; }
+    // 单次任务按本人、来源和配置隔离的AI原始评分缓存，客户端不能注入或跨任务复用。
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal DD.Danmaku.Matching.AiTaskScoreCache? ScoreCache { get; init; }
     // 仅在服务端传递日志关联号，客户端 JSON 不可覆盖。
     [System.Text.Json.Serialization.JsonIgnore]
     internal string? TraceId { get; init; }

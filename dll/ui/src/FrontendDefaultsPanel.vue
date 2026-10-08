@@ -2,6 +2,9 @@
 import { computed, provide, onMounted, onBeforeUnmount, ref } from 'vue'
 import { useUiRef, useDetailsState, useSafeDrafts } from './useUiState.js'
 import { api } from './api.js'
+import MetadataStatusPanel from './MetadataStatusPanel.vue'
+const props = defineProps({ active: { type: Boolean, default: true } })
+const metadataRefresh = ref(0)
 
 const users = ref([]), loadedId = ref('')
 const selected = useUiRef('defaults-user', '', value => typeof value === 'string')
@@ -92,6 +95,8 @@ async function save(reset = false, explicit = false) {
     if (reset) drafts.discard()
     else for (const [key, value] of Object.entries(data)) drafts.acknowledge(key, value)
     restoredDrafts.value = false
+    // 后台保存钩子启动自检；这里只刷新同一用户的只读状态。
+    metadataRefresh.value++
     // 保存成功不重新挂载控件，保留展开状态和焦点。
     message.value = reset ? '已恢复继承全局' : '已自动保存'
   } catch (e) { error.value = `${e.message}；若连接中断，请重新读取确认服务器状态` }
@@ -118,6 +123,7 @@ onBeforeUnmount(() => { ++generation; controller?.abort() })
       <el-button :disabled="saving" @click="loadUsers">刷新用户列表</el-button>
     </div>
     <div class="save-status" role="status" aria-live="polite">{{ error || (saving ? '正在保存…' : message || '修改后自动保存') }}<el-button v-if="error && values" link :disabled="saving" @click="save(false, true)">重试保存</el-button></div>
+    <MetadataStatusPanel v-if="values && !busy && loadedId === selected" :user-id="selected" :global-scope="!selected" :active="props.active" :refresh-token="metadataRefresh" />
     <!-- 默认配置接口为整份覆盖，保存期间禁用编辑确保快照顺序。 -->
     <div v-if="drafts.count.value" class="save-status" role="status">已保留 {{ drafts.count.value }} 项未保存草稿 <el-button link :disabled="saving || busy" @click="save(false, true)">保存草稿</el-button><el-button link :disabled="saving || busy" @click="discardRestored">丢弃草稿</el-button></div>
     <fieldset v-if="values" :key="selected" class="player-settings" :disabled="saving || busy" @input="stageInput">

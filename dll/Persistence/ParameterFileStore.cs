@@ -114,12 +114,19 @@ public sealed class ParameterFileStore : IParameterFileStore
 
 
     /// <summary>首次访问时复制默认参数；旧个人字段优先，旧文件不触发浏览器配置覆盖。</summary>
-    internal async Task<bool> InitializeAsync(IReadOnlyList<ParameterEntry> defaults, CancellationToken token)
+    internal Task<bool> InitializeAsync(IReadOnlyList<ParameterEntry> defaults, CancellationToken token)
+        => InitializeAsync(_ => Task.FromResult(defaults), token);
+
+    /// <summary>在初始化锁内按需读取模板；已有文件不读取旧默认值，也不改变实时查询行为。</summary>
+    internal async Task<bool> InitializeAsync(Func<CancellationToken, Task<IReadOnlyList<ParameterEntry>>> loadDefaults, CancellationToken token)
     {
         await _gate.WaitAsync(token);
         try
         {
             if (File.Exists(_filePath)) return false;
+            // 模板准备也在同一锁内，避免首次创建与重置/修改互相覆盖。
+            var defaults = await loadDefaults(token);
+            token.ThrowIfCancellationRequested();
             var hadLegacy = new[] { _legacyFilePath }.Concat(_additionalLegacyPaths)
                 .Any(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path));
             // 旧参数先读取并复制到新文件；其同名字段优先，默认值只补齐缺项。

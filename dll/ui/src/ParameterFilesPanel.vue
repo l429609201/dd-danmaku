@@ -8,6 +8,9 @@ import ParameterMigrationSwitch from './ParameterMigrationSwitch.vue'
 import { useParameterAutosave } from './useParameterAutosave.js'
 import { useUiRef, useSafeDrafts } from './useUiState.js'
 import './playerSettings.css'
+import MetadataStatusPanel from './MetadataStatusPanel.vue'
+const props = defineProps({ active: { type: Boolean, default: true } })
+const metadataRefresh = ref(0)
 
 const files = ref([]), users = ref([])
 const selected = useUiRef('files-user', '', value => typeof value === 'string')
@@ -26,6 +29,8 @@ const autosave = useParameterAutosave(async ({ userId, space, entry: draft, clea
   await api.saveParameterFile(userId, { namespace: space, parameters: [entry], clearSecrets: clearing ? [entry.key] : [] })
   drafts.acknowledgeAt(JSON.stringify([userId, space]), entry.key, draft.value)
   if (selected.value === userId && namespace.value === space) {
+    // 保存成功仅刷新当前用户状态，不把其他用户保存结果带入面板。
+    metadataRefresh.value++
     const row = rows.value.find(r => r.namespace === space && r.key === entry.key)
     if (row) row.value = entry.value
     else rows.value.push({ ...entry, namespace: space })
@@ -84,7 +89,7 @@ function commit(id, value, clearing = false) {
 async function remove() {
   if (!window.confirm('确认清空此用户整份主动参数？不影响账号和用户专属默认。播放器本地缓存可能再次同步上传。')) return
   busy.value = true; error.value = ''
-  try { await api.deleteParameterFile(selected.value); drafts.discard(); rows.value = []; fill(); await refresh(); message.value = '已清空，保留空文件阻止旧参数回退' }
+  try { await api.deleteParameterFile(selected.value); drafts.discard(); rows.value = []; fill(); metadataRefresh.value++; await refresh(); message.value = '已清空，保留空文件阻止旧参数回退' }
   catch (e) { error.value = e.message } finally { busy.value = false }
 }
 async function copy() {
@@ -113,7 +118,8 @@ onMounted(async () => {
       <el-table :data="files" stripe><el-table-column prop="name" label="用户" /><el-table-column prop="fileName" label="文件" min-width="250" /><el-table-column label="来源"><template #default="{ row }">{{ row.legacy ? '旧格式（保存后迁移）' : 'Data' }}</template></el-table-column><el-table-column prop="size" label="字节" width="100" /><el-table-column label="操作" width="90"><template #default="{ row }"><el-button link :disabled="busy || saving || !!saveError" @click="selected = row.userId; load()">管理</el-button></template></el-table-column></el-table>
       <div class="toolbar"><el-select v-model="selected" filterable placeholder="选择用户（可创建新文件）" :disabled="busy || saving || !!saveError" @change="load"><el-option v-for="u in users" :key="u.id" :label="u.name" :value="u.id" /></el-select><el-button :disabled="!selected || busy || saving || !!saveError" @click="target = ''; copyDialog = true">复制到用户</el-button><el-button type="danger" plain :disabled="!selected || busy || saving || !!saveError" @click="remove">删除整份参数</el-button></div>
     </el-card>
-    <ParameterMigrationSwitch v-if="selected" :key="selected" :user-id="selected" :files="files" :disabled="busy || saving || !!saveError" @converted="refresh().catch(e => { error = '转换成功，但列表刷新失败：' + e.message })" />
+    <MetadataStatusPanel v-if="selected && users.some(user => user.id === selected) && !busy && !error" :user-id="selected" :active="props.active" :refresh-token="metadataRefresh" />
+    <ParameterMigrationSwitch v-if="selected" :key="selected" :user-id="selected" :files="files" :disabled="busy || saving || !!saveError" @converted="metadataRefresh++; refresh().catch(e => { error = '转换成功，但列表刷新失败：' + e.message })" />
     <el-card v-if="selected" shadow="never"><template #header>完整播放器参数</template>
       <div class="toolbar"><el-select v-model="namespace" filterable allow-create default-first-option :disabled="busy || saving || !!saveError" @change="fill"><el-option v-for="n in namespaces" :key="n" :label="n" :value="n" /></el-select><el-input v-model="search" placeholder="搜索参数名或键" clearable /></div>
       <div class="save-status" role="status" aria-live="polite">{{ saveError || saveMessage || '修改后自动保存' }} <el-button v-if="saveError" link @click="autosave.retry">重试保存</el-button></div>

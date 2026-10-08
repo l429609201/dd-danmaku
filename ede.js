@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.3.6
+// @version      1.3.7
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -70,7 +70,7 @@
 
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.3.6', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.3.7', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -564,7 +564,7 @@
             candidates: '整理候选', resolve: '判断候选', detail: '获取分集',
             save: '检查保存', fetch: '获取弹幕正文', progress: '处理中', authorize: '重新授权', metadata: '读取媒体元数据',
             mapping: '计算集数映射', hash: '计算视频哈希', poll: '轮询弹幕生成',
-            characters: '读取角色', collection: '更新收藏', match_fallback: '匹配参数被拒绝，改用标题搜索',
+            characters: '读取角色', collection: '更新收藏', match_fallback: '匹配后备核验',
             completed: '完成', failed: '失败', upstream: '请求上游',
             bgm_fallback: '官方流控，BGM降级', bgm_search: 'BGM搜索作品', bgm_detail: 'BGM作品获取分集'
         };
@@ -594,7 +594,7 @@
                         const status = String(event.status ?? event.Status ?? '');
                         const code = String(event.errorCode ?? event.ErrorCode ?? '');
                         if (!Object.prototype.hasOwnProperty.call(operationStages, stage)) continue;
-                        const details = [Number.isInteger(count) && count >= 0 ? `数量=${count}` : '',
+                        const details = [Number.isInteger(count) && count >= 0 ? (stage === 'poll' ? `进度=${Math.min(count, 100)}%` : `数量=${count}`) : '',
                             /^[a-z_]{1,40}$/.test(status) ? `状态=${status}` : '',
                             /^[A-Z0-9_]{1,60}$/.test(code) ? `错误码=${code}` : ''].filter(Boolean).join('，');
                         const detail = typeof (event.detail ?? event.Detail) === 'string'
@@ -605,7 +605,11 @@
                     // 对未完成的单帧限长，不把一个网络块中的多条合法事件合计误判为超限。
                     if (buffer.length > 262144) throw new Error('后端日志单事件超过限制');
                 }
-            } finally { reader.releaseLock(); }
+            } finally {
+                // 切集/关闭时也释放尚未到 EOF 的流；只取消客户端 reader，不触碰业务任务。
+                void reader.cancel().catch(() => {});
+                reader.releaseLock();
+            }
         }
         return {
             async prepare() {
@@ -673,21 +677,56 @@
                 ddSetLoadingRing(percent, tip);
                 setOsdDanmakuText(tip);
             },
-            async watchTask(taskId, isCurrent = () => true) {
+            async watchTask(taskId, isCurrent = () => true, updateRing = true) {
                 const client = getHostApiClient();
                 const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
-                if (!this.has('OperationEvents') || !base || !client?.accessToken?.()) return { close() {} };
                 const controller = new AbortController();
-                // 监听仅负责显示；关闭页面订阅不取消已确定分集的后台下载。
-                const pending = readOperationEvents(`${base}/dd-danmaku/api/operations/${taskId}/events`,
-                    client.accessToken(), controller.signal, isCurrent,
-                    event => this.showTaskProgress(event, isCurrent)).catch(() => {
-                        if (!controller.signal.aborted && isCurrent()) logger.debug('[后端进度] SSE 不可用，状态轮询继续');
-                    });
-                return { async close() {
-                    await Promise.race([pending, new Promise(resolve => setTimeout(resolve, 200))]);
-                    controller.abort();
-                } };
+                let closed = false, terminalPending = false, terminalSeen = false, wakeWaiter = null, closePromise;
+                // 终态仅唤醒 HTTP 权威轮询；锁存一次通知，覆盖事件先于 wait 的竞态且避免重复终态忙轮询。
+                const onProgress = event => {
+                    if (closed || !isCurrent()) return;
+                    if (!terminalSeen && ['completed', 'failed'].includes(event.stage)
+                        && ['succeeded', 'failed', 'cancelled'].includes(event.status)) {
+                        terminalSeen = true; terminalPending = true; wakeWaiter?.();
+                    }
+                    if (updateRing) this.showTaskProgress(event, isCurrent);
+                };
+                // 监听不承担授权；断开 SSE 仍按 500ms 兜底，关闭页面不取消后台下载。
+                const pending = this.has('OperationEvents') && base && client?.accessToken?.()
+                    ? readOperationEvents(`${base}/dd-danmaku/api/operations/${taskId}/events`,
+                        client.accessToken(), controller.signal, isCurrent, onProgress).catch(() => {
+                            if (!controller.signal.aborted && isCurrent()) logger.debug('[后端进度] SSE 不可用，状态轮询继续');
+                        }) : Promise.resolve();
+                return {
+                    wait(timeoutMs = 500, signal) {
+                        if (closed || signal?.aborted || terminalPending) {
+                            terminalPending = false;
+                            return Promise.resolve();
+                        }
+                        return new Promise(resolve => {
+                            let timer;
+                            const finish = () => {
+                                clearTimeout(timer); signal?.removeEventListener('abort', finish);
+                                if (wakeWaiter === finish) wakeWaiter = null;
+                                terminalPending = false; resolve();
+                            };
+                            wakeWaiter = finish;
+                            timer = setTimeout(finish, timeoutMs);
+                            signal?.addEventListener('abort', finish, { once: true });
+                        });
+                    },
+                    close() {
+                        if (closePromise) return closePromise;
+                        closed = true; wakeWaiter?.();
+                        // 后台收尾保留稍晚到达的诊断日志，不把 drain 延迟加到业务结果返回上。
+                        closePromise = (async () => {
+                            let timer;
+                            try { await Promise.race([pending, new Promise(resolve => { timer = setTimeout(resolve, 200); })]); }
+                            finally { clearTimeout(timer); controller.abort(); }
+                        })();
+                        return closePromise;
+                    }
+                };
             },
             async resolveOnlineMatch(payload, isCurrent = () => true) {
                 const client = getHostApiClient();
@@ -700,14 +739,8 @@
                     'X-Emby-Token': client.accessToken() };
                 const controller = new AbortController();
                 const timer = setTimeout(() => controller.abort(), 130000);
-                let streamController, streamTask;
-                let operationFinished = false;
+                let subscription;
                 const currentOperation = () => isCurrent() && session === resetIfSessionChanged();
-                // 只同步当前在线匹配；手动搜索的并发代理事件不覆盖播放器状态。
-                const onProgress = ({ stage, status, count, code }) => {
-                    if (!currentOperation() || operationFinished) return;
-                    this.showTaskProgress({ stage, status, count, code }, currentOperation);
-                };
                 try {
                     // business/match 自己创建唯一任务及事件流，无需额外空 operation 造成重复“开始”和主动中止日志。
                     const response = await fetch(`${base}/dd-danmaku/api/business/match`, {
@@ -735,19 +768,19 @@
                             method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers,
                             body: JSON.stringify({ playbackEnded: true }) }).catch(() => {});
                     };
-                    streamController?.abort();
-                    streamController = new AbortController();
-                    streamTask = readOperationEvents(`${base}/dd-danmaku/api/operations/${taskId}/events`,
-                        client.accessToken(), streamController.signal, currentOperation, onProgress)
-                        .catch(() => { if (currentOperation()) logger.debug('[DLL 任务] SSE 不可用，轮询仍继续'); });
+                    // 共用终态唤醒订阅，结果仍须经过原登录会话的 HTTP 状态与 result 校验。
+                    subscription = await this.watchTask(taskId, currentOperation);
                     const taskDeadline = Date.now() + 180000;
                     while (Date.now() < taskDeadline) {
                         if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
-                        await new Promise(resolve => setTimeout(resolve, 500));
+                        await subscription.wait(500, controller.signal);
                         if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
                         const statusResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}`, {
                             credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers, signal: controller.signal });
+                        if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
                         const statusBody = await statusResponse.json().catch(() => null);
+                        // fetch 和正文读取均可能跨集，任何终态处理前必须复验身份。
+                        if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
                         if (!statusResponse.ok || statusBody?.success !== true) throw new Error('后端在线匹配状态读取失败');
                         const task = statusBody.data || {};
                         if (task.status === 'failed' || task.status === 'cancelled') {
@@ -761,11 +794,15 @@
                         if (task.status === 'succeeded') {
                             const resultResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/result`, {
                                 credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers, signal: controller.signal });
+                            if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
                             body = await resultResponse.json().catch(() => null);
+                            if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
                             if (!resultResponse.ok || body?.success !== true) throw new Error('后端在线匹配结果读取失败');
                             break;
                         }
                     }
+                    // 匹配证明只归当前任务所有，旧集结果不得写进复用的 window.ede。
+                    if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
                     if (!body?.data?.Match && !body?.data?.match) throw new Error('后端在线匹配任务超时');
                     const data = body.data;
                     window.ede.backendMatchTaskId = taskId;
@@ -778,8 +815,7 @@
                     data.modeUsed = match.ModeUsed || match.modeUsed;
                     if (!data || !['matched', 'ambiguous', 'unmatched', 'insufficient_metadata'].includes(data.status))
                         throw new Error('在线匹配响应协议无效');
-                    // 完成事件可能略晚于 HTTP 响应；短暂等待，不阻塞渲染。
-                    await Promise.race([streamTask, new Promise(resolve => setTimeout(resolve, 300))]);
+                    // HTTP 已确认的结果立即返回，日志订阅在 finally 后台收尾。
                     return data;
                 } catch (error) {
                     if (!currentOperation()) return null;
@@ -787,9 +823,8 @@
                     logger.warn(`[后端在线匹配] ${error?.name === 'AbortError' ? '请求超时' : '请求失败'}，错误码=${error.code}${error.taskId ? `，任务=${error.taskId}` : ''}`);
                     throw error;
                 } finally {
-                    operationFinished = true;
-                    clearTimeout(timer); controller.abort(); streamController?.abort();
-                    if (streamTask) void streamTask;
+                    clearTimeout(timer); controller.abort();
+                    if (subscription) void subscription.close();
                 }
             },
             async queryPlayback(itemId, source) {
@@ -3789,46 +3824,77 @@
             if (!base || !embyToken || !selectionTaskId || !sourceId || !itemId || !/^[A-Za-z0-9_-]{1,160}$/.test(episodeId))
                 throw new Error('后端下载所需匹配任务不存在，拒绝浏览器直连');
             const backendHeaders = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Emby-Token': embyToken };
-            const start = await fetch(`${base}/dd-danmaku/api/business/download`, { method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: backendHeaders,
-                body: JSON.stringify({ itemId, sourceId, episodeId, selectionTaskId, savePurpose }) });
-            let taskBody = await start.json().catch(() => null);
-            const taskId = String(taskBody?.data?.id || '');
-            if (!start.ok || !/^[a-f0-9]{32}$/i.test(taskId)) throw new Error('后端下载任务未创建');
-            logger.info(`[后端下载] 已受理，任务=${taskId}，来源=${sourceId}`);
+            // 请求开始前固定播放身份，不能把旧集的创建响应绑定到新集。
             const view = window.ede, loadId = view?.lastLoadId, generation = playbackViewGeneration;
             const currentDownloadView = () => window.ede === view && view?.itemId === itemId
                 && view?.lastLoadId === loadId && generation === playbackViewGeneration;
-            ddBackend.showTaskProgress({ stage: 'fetch', status: 'pending' }, currentDownloadView);
-            const subscription = await ddBackend.watchTask(taskId, currentDownloadView);
+            const controller = new AbortController();
+            const checkDownloadView = () => {
+                if (currentDownloadView() && !controller.signal.aborted) return;
+                controller.abort();
+                const error = new Error('下载页面任务已过期'); error.name = 'AbortError'; throw error;
+            };
+            // 只中止客户端请求/订阅，绝不 cancel 已明确下载的后台任务。
+            const viewTimer = setInterval(() => { if (!currentDownloadView()) controller.abort(); }, 250);
+            if (abortOnDestroy) view?.abortControllers?.add(controller);
+            let subscription;
+            const readDownloadTask = async (path, requestOpts = {}) => {
+                checkDownloadView();
+                // 超时涵盖响应正文读取，防止某次状态请求挂起到整个十分钟截止。
+                const requestTimer = setTimeout(() => controller.abort(), opts.timeoutMs || 30000);
+                try {
+                    const response = await fetch(`${base}${path}`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error',
+                        headers: backendHeaders, ...requestOpts, signal: controller.signal });
+                    checkDownloadView();
+                    const data = await response.json().catch(() => null);
+                    checkDownloadView();
+                    return { response, data };
+                } finally { clearTimeout(requestTimer); }
+            };
             try {
-            const deadline = Date.now() + 600000;
-            let lastTaskStatus = '';
-            while (Date.now() < deadline) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                const stateResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: backendHeaders });
-                const state = await stateResponse.json().catch(() => null);
-                if (!stateResponse.ok || state?.success !== true) throw new Error('后端下载状态读取失败');
-                const taskStatus = String(state.data?.status || 'unknown');
-                if (taskStatus !== lastTaskStatus) {
-                    logger.info(`[后端下载] 任务=${taskId}，状态=${taskStatus}`);
-                    lastTaskStatus = taskStatus;
+                const { response: start, data: startBody } = await readDownloadTask('/dd-danmaku/api/business/download', {
+                    method: 'POST', body: JSON.stringify({ itemId, sourceId, episodeId, selectionTaskId, savePurpose }) });
+                checkDownloadView();
+                const taskId = String(startBody?.data?.id || '');
+                if (!start.ok || !/^[a-f0-9]{32}$/i.test(taskId)) throw new Error('后端下载任务未创建');
+                logger.info(`[后端下载] 已受理，任务=${taskId}，来源=${sourceId}`);
+                ddBackend.showTaskProgress({ stage: 'fetch', status: 'pending' }, currentDownloadView);
+                checkDownloadView();
+                subscription = await ddBackend.watchTask(taskId, currentDownloadView);
+                checkDownloadView();
+                const deadline = Date.now() + 600000;
+                let lastTaskStatus = '';
+                while (Date.now() < deadline) {
+                    checkDownloadView();
+                    await subscription.wait(500, controller.signal);
+                    checkDownloadView();
+                    const { response: stateResponse, data: state } = await readDownloadTask(`/dd-danmaku/api/business/tasks/${taskId}`);
+                    checkDownloadView();
+                    if (!stateResponse.ok || state?.success !== true) throw new Error('后端下载状态读取失败');
+                    const taskStatus = String(state.data?.status || 'unknown');
+                    if (taskStatus !== lastTaskStatus) {
+                        logger.info(`[后端下载] 任务=${taskId}，状态=${taskStatus}`);
+                        lastTaskStatus = taskStatus;
+                    }
+                    if (['failed', 'cancelled'].includes(taskStatus)) {
+                        const rawCode = String(state.data?.errorCode || 'UNKNOWN_ERROR');
+                        const code = /^[A-Z0-9_]{1,60}$/.test(rawCode) ? rawCode : 'UNKNOWN_ERROR';
+                        ddBackend.showTaskProgress({ status: taskStatus, code }, currentDownloadView);
+                        throw new Error(`后端下载任务失败，错误码=${code}，任务=${taskId}`);
+                    }
+                    if (taskStatus === 'succeeded') {
+                        const { response: resultResponse, data: taskBody } = await readDownloadTask(`/dd-danmaku/api/business/tasks/${taskId}/result`);
+                        checkDownloadView();
+                        if (!resultResponse.ok) throw new Error('后端下载结果读取失败');
+                        return taskBody?.data || taskBody;
+                    }
                 }
-                if (['failed', 'cancelled'].includes(taskStatus)) {
-                    const rawCode = String(state.data?.errorCode || 'UNKNOWN_ERROR');
-                    const code = /^[A-Z0-9_]{1,60}$/.test(rawCode) ? rawCode : 'UNKNOWN_ERROR';
-                    ddBackend.showTaskProgress({ status: taskStatus, code }, currentDownloadView);
-                    throw new Error(`后端下载任务失败，错误码=${code}，任务=${taskId}`);
-                }
-                if (state.data?.status === 'succeeded') {
-                    const resultResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/result`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: backendHeaders });
-                    taskBody = await resultResponse.json().catch(() => null);
-                    if (!resultResponse.ok) throw new Error('后端下载结果读取失败');
-                    return taskBody?.data || taskBody;
-                }
-            }
-            throw new Error('后端下载任务超时');
+                throw new Error('后端下载任务超时');
             } finally {
-                await subscription.close();
+                clearInterval(viewTimer); controller.abort();
+                view?.abortControllers?.delete(controller);
+                // 订阅关闭只释放客户端；即使页面已过期也必须执行资源收尾。
+                if (subscription) void subscription.close();
                 // HTTP 结果才是正文到位的证明；结束后交给解析阶段，不让 SSE 完成事件提前熄灭加载环。
                 if (currentDownloadView()) ddClearLoadingRing();
             }
@@ -4322,6 +4388,7 @@
         // 防止旧请求在切集后回写播放条目标识。
         const playbackKey = manualDanmakuKey(window.ede?.itemId);
         let item = await getEmbyItemInfo();
+        if (playbackKey !== manualDanmakuKey(window.ede?.itemId)) return null;
         if (!item) {
             item = await fatchEmbyItemInfo(window.ede.itemId);
         }
@@ -4365,11 +4432,13 @@
         if (window.localStorage.getItem(_id_key)) {
             animeId = window.localStorage.getItem(_id_key);
         }
-        // 检查是否需要重新获取完整的item信息
-        if (!item.MediaSources || item.MediaSources.length === 0) {
+        // DLL 哈希由后端处理，已有条目元数据足够匹配，无须补取媒体源或拼接含用户令牌的流地址。
+        const dllMode = ddBackend.isDll();
+        if (!dllMode && (!item.MediaSources || item.MediaSources.length === 0)) {
             logger.debug(`[Stream] MediaSources为空，通过API重新获取完整信息...`);
             try {
                 const fullItem = await fatchEmbyItemInfo(item.Id);
+                if (playbackKey !== manualDanmakuKey(window.ede?.itemId)) return null;
                 if (fullItem && fullItem.MediaSources && fullItem.MediaSources.length > 0) {
                     item = fullItem;
                     logger.debug(`[Stream] 重新获取成功，MediaSources数量: ${item.MediaSources.length}`);
@@ -4381,12 +4450,13 @@
             }
         }
 
+        if (playbackKey !== manualDanmakuKey(window.ede?.itemId)) return null;
         const mediaSource = item.MediaSources && item.MediaSources[0];
         logger.debug(`[Stream] 最终MediaSources数量: ${item.MediaSources ? item.MediaSources.length : 0}`);
 
         // 参考embyToLocalPlayer项目的方式构建流媒体URL
         let streamUrl = null;
-        if (mediaSource) {
+        if (!dllMode && mediaSource) {
             const client = getHostApiClient();
             if (!client?.deviceId || !client.accessToken || !client.serverAddress) return null;
             const itemId = item.Id;
@@ -4404,7 +4474,7 @@
             streamUrl = `${serverAddress}${extraStr}/videos/${itemId}/stream?DeviceId=${deviceId}&MediaSourceId=${mediaSourceId}&api_key=${apiKey}&Static=true&Container=${container}`;
 
             logger.debug(`[Stream] 认证信息 - ApiKey: ${apiKey ? '已获取' : '未获取'}, DeviceId: ${deviceId ? '已获取' : '未获取'}`);
-        } else {
+        } else if (!dllMode) {
             logger.warn(`[Stream] 无MediaSource，无法构建流媒体URL`);
         }
 
@@ -5303,13 +5373,40 @@
     }
 
 
-    async function createDanmaku(comments, sessionId) {
+    // 只复用已就绪的当前正文，不作为匹配缓存；身份或来源变化必须完整加载。
+    let readyDanmakuRender = null;
+    function captureDanmakuRenderIdentity() {
+        const client = getHostApiClient();
+        const owner = window.ede;
+        const media = getPlaybackMedia();
+        return { owner, client, generation: playbackViewGeneration,
+            server: client?.serverAddress?.(), user: client?.getCurrentUserId?.(), token: client?.accessToken?.(),
+            itemId: owner?.itemId, media, src: media?.src,
+            episodeInfo: owner?.episode_info, localInfo: owner?.localDanmakuInfo,
+            selection: manualDanmakuSelection,
+            extensions: JSON.stringify(owner?.extCommentCache?.[owner?.itemId] || {}),
+            source: JSON.stringify([owner?.backendSourceId, owner?.backendMatchTaskId, owner?.backendEpisodeTaskId,
+                owner?.episode_info?.episodeId, owner?.episode_info?.animeId, owner?.episode_info?.apiPrefix,
+                owner?.episode_info?.apiAppId, owner?.episode_info?.apiAppSecret,
+                dandanplayApi.prefix, getCustomApiList()]) };
+    }
+    function isDanmakuRenderIdentityCurrent(identity) {
+        const current = captureDanmakuRenderIdentity();
+        return Object.keys(identity).every(key => identity[key] === current[key]);
+    }
+
+    async function createDanmaku(comments, sessionId, renderOnly = false) {
+        readyDanmakuRender = null;
         // 跨异步等待保持 view 与媒体身份，防止旧任务挂载到新播放器。
         const generation = playbackViewGeneration;
         const sourceMedia = getPlaybackMedia();
+        let renderIdentity;
+        let renderPlaybackCurrent = () => true;
         const isCurrent = () => generation === playbackViewGeneration
+            && renderPlaybackCurrent()
             && (!sessionId || sessionId === window.ede.lastLoadId)
-            && sourceMedia === getPlaybackMedia();
+            && sourceMedia === getPlaybackMedia()
+            && (!renderIdentity || isDanmakuRenderIdentityCurrent(renderIdentity));
         // [核心修复] 1. 入口身份核验
         // 如果调用者传了身份证(sessionId)，必须和全局最新的(lastLoadId)一致
         if (sessionId && window.ede && sessionId !== window.ede.lastLoadId) {
@@ -5320,6 +5417,7 @@
         // 成功标记只来自当前加载，不能信任缓存或上次请求留下的状态。
         const episodeInfo = window.ede.episode_info;
         if (episodeInfo?.episodeId) clearLocalDanmakuInfo();
+        renderIdentity = captureDanmakuRenderIdentity();
         if (episodeInfo) episodeInfo.commentsLoaded = false;
         if (!comments) { return; }
 
@@ -5328,6 +5426,10 @@
         if (!isCurrent()) return;
         const player = manager.getCurrentPlayer();
         const key = player && getDanmakuPlaybackKey(manager, player);
+        // 过滤/容器等待期间切集或更换 actor，也不能将旧正文挂载到同一个 video。
+        renderPlaybackCurrent = () => player === manager.getCurrentPlayer()
+            && key === (player && getDanmakuPlaybackKey(manager, player));
+        if (!isCurrent()) return;
         const offset = player && sourceMedia ? getDanmakuPlaybackOffset(manager, player, sourceMedia) : 0;
         danmakuPlaybackSnapshot = key && sourceMedia ? {
             manager, player, key, generation, sessionId: sessionId || window.ede.lastLoadId,
@@ -5337,8 +5439,8 @@
         // 适配器在过滤完成后才创建，避免旧异步任务遗留定时器。
         let engineMedia = sourceMedia;
 
-        // [优化] 保存弹幕到 IndexedDB 缓存
-        if (window.ede.episode_info && window.ede.episode_info.episodeId) {
+        // 样式重建只读当前正文，不重复写入持久缓存。
+        if (!renderOnly && window.ede.episode_info && window.ede.episode_info.episodeId) {
             const episodeId = window.ede.episode_info.episodeId;
             const animeId = window.ede.episode_info.animeId || 'unknown';
             IndexedDBCache.save(episodeId, animeId, comments).catch(error => {
@@ -5362,7 +5464,10 @@
         danmakuParseCache.clearAll();
 
         // 全量解析弹幕（带缓存，相同弹幕集不会重复解析）
-        const commentsParsed = parseAllDanmaku(comments);
+        const commentsParsed = parseAllDanmaku(comments).concat(
+            // 附加正文仍保留独立缓存，样式重建时统一解析过滤，不调用不存在的恢复接口。
+            Object.values(window.ede.extCommentCache[window.ede.itemId] || {})
+                .filter(Array.isArray).flatMap(value => danmakuParser(value)));
         window.ede.commentsParsed = commentsParsed;
 
         logger.debug('开始过滤和合并弹幕 (异步)...');
@@ -5379,7 +5484,8 @@
         if (!isCurrent()) return;
         // 用过滤前的有效弹幕判断获取成功，用户过滤全部弹幕不影响下一集推理。
         if (episodeInfo && window.ede.episode_info === episodeInfo && episodeInfo.episodeId) {
-            episodeInfo.commentsLoaded = Array.isArray(commentsParsed) && commentsParsed.length > 0;
+            // 附加弹幕不能冒充当前在线来源的有效正文，避免扩大下一集推理依据。
+            episodeInfo.commentsLoaded = parseAllDanmaku(comments).length > 0;
         }
         logger.info('弹幕加载成功: ' + _comments.length);
 
@@ -5560,6 +5666,8 @@
         }
         if (isCurrent() && danmakuPlaybackSnapshot?.sessionId === (sessionId || window.ede.lastLoadId)) {
             danmakuPlaybackSnapshot.ready = true;
+            readyDanmakuRender = { identity: renderIdentity, comments,
+                snapshot: danmakuPlaybackSnapshot, loadId: window.ede.lastLoadId };
         }
     }
 
@@ -5656,6 +5764,7 @@
 
     // [新增] 强制清理 UI 函数
     function clearDanmakuUI() {
+    readyDanmakuRender = null;
     // 清空同时释放时钟及媒体监听，禁止旧状态恢复已取消的弹幕。
     clearStoppedDanmaku();
     danmakuClock?.dispose();
@@ -5753,6 +5862,15 @@
             }
         }
 
+        // 仅正常就绪且完整身份未变时走纯渲染；SEARCH/REFRESH/换源仍走原本的全匹配链。
+        const render = readyDanmakuRender;
+        const snapshot = render?.snapshot;
+        const renderOnly = loadType === LOAD_TYPE.RELOAD && !window.ede.loading
+            && render?.loadId === window.ede.lastLoadId && snapshot?.ready
+            && snapshot === danmakuPlaybackSnapshot && window.ede.danmaku
+            && isDanmakuRenderIdentityCurrent(render.identity)
+            && snapshot.player === snapshot.manager.getCurrentPlayer()
+            && snapshot.key === getDanmakuPlaybackKey(snapshot.manager, snapshot.player);
         window.ede._loadViewGeneration = generation;
         // 在任何 await 前取得单调任务 ID，同一 view 快速切集也能淘汰旧请求。
         window.ede._loadSequence = (window.ede._loadSequence || 0) + 1;
@@ -5764,6 +5882,11 @@
         // 所有提前返回和异常统一收尾，只有本任务仍是当前加载时才关闭提示。
         window.ede.loading = true;
         try {
+            if (renderOnly) {
+                await createDanmaku(render.comments, currentSessionId, true);
+                if (isCurrentLoad()) logger.info('[样式重建] 当前正文已重新渲染，未重新匹配或请求网络');
+                return;
+            }
             logger.info('[dd-danmaku] 开始检查媒体库排除...');
             if (window.ede) {
                 // 在任何后端或 Emby 请求前清理上一集，避免 DLL 查询期间显示旧弹幕。
@@ -5940,13 +6063,8 @@
                         // 再次检查完整任务身份。
                         if (!isCurrent()) return;
 
-                        if (loadType === LOAD_TYPE.RELOAD && window.ede.danmuCache[episodeId]) {
-                            return createDanmaku(window.ede.danmuCache[episodeId], sessionId)
-                                .then(() => {
-                                    if (window.ede && sessionId === window.ede.lastLoadId)
-                                        logger.info('弹幕已从缓存加载就位');
-                                });
-                        } else {
+                        // 未命中严格当前正文时必须重新获取，不按裸 episodeId 跨来源复用。
+                        {
                             // [新增] 调用弹幕接口前更新状态卡片和 tooltip 提示
                             const fetchAnimeName = (window.ede.episode_info && window.ede.episode_info.animeTitle) || '';
                             setOsdDanmakuText('弹幕：正在获取弹幕');
@@ -5991,13 +6109,6 @@
                     setOsdDanmakuText(code ? `弹幕：请求失败（${code}）` : '弹幕：未匹配到弹幕');
                 },
             )
-            .then(() => {
-                if (!isCurrent()) return;
-                const extCommentCache = window.ede.extCommentCache[window.ede.itemId] || {};
-                objectEntries(extCommentCache).forEach(([key, val]) => {
-                    addExtComments(key, val);
-                });
-            })
             .catch((err) => {
                 if (!isCurrent()) return;
                 logger.debug(err);
@@ -8752,11 +8863,18 @@
             }
         };
     }
-    async function persistenceQueryAll(withMetadata = false, session = capturePersistenceSession()) {
+    async function persistenceQueryAll(withMetadata = false, session = capturePersistenceSession(), timeoutMs = 0) {
+        const controller = timeoutMs > 0 ? new AbortController() : null;
+        // 仅启动配置读取有界等待；超时覆盖响应正文，不改变保存请求的未知结果语义。
+        const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+        const sessionTimer = controller ? setInterval(() => {
+            try { session.check(); } catch (_) { controller.abort(); }
+        }, 250) : null;
         try {
             session.check();
             const url = `${session.base}/Query?Namespace=${encodeURIComponent(session.namespace)}`;
-            const response = await fetch(url, { method: 'GET', headers: session.headers, redirect: 'error', cache: 'no-store' });
+            const response = await fetch(url, { method: 'GET', headers: session.headers, redirect: 'error', cache: 'no-store',
+                ...(controller ? { signal: controller.signal } : {}) });
             session.check();
             if (!response.ok) throw new Error(`查询失败（HTTP ${response.status}）`);
             const result = await response.json();
@@ -8767,14 +8885,13 @@
         } catch (error) {
             logger.error('[持久化] 查询服务器配置失败:', error.message);
             return null;
-        }
+        } finally { clearTimeout(timer); clearInterval(sessionTimer); }
     }
 
     // 批量保存固定会话，保留原协议的 Create/Update 区分，不自动重试写入。
-    async function persistenceSaveBatch(paramsMap) {
+    async function persistenceSaveBatch(paramsMap, session = capturePersistenceSession()) {
         let created = 0, updated = 0, pendingOperation = '';
         try {
-            const session = capturePersistenceSession();
             session.check();
             // 在首次等待前序列化参数，避免调用者后续修改对象影响本批次。
             const parameters = Object.entries(paramsMap).map(([key, value]) => ({
@@ -8819,33 +8936,90 @@
         }
     }
 
-    // 保存单个配置到服务器（防抖）
-    const _persistenceSaveTimers = {};
-    function persistenceSaveOneDebounced(key, value) {
-        const identity = persistenceIdentity();
-        const timerKey = `${identity}:${key}`;
-        if (_persistenceSaveTimers[timerKey]) clearTimeout(_persistenceSaveTimers[timerKey]);
-        _persistenceSaveTimers[timerKey] = setTimeout(async () => {
-            try {
-                // 等待首次读取完服务器参数，账号切换后丢弃旧会话的异步写入。
-                await prepareUserParameters();
-                if (identity !== persistenceIdentity() || !ddBackend.has('ParameterPersistence')) return;
-                // 会话固定并核验每次写入结果；只为查询确认不存在的键创建，不能把任意失败当作缺失。
-                await persistenceSaveBatch({ [key]: value });
-                if (identity === persistenceIdentity()) logger.info(`[持久化] 实时同步成功：${key}`);
-
-            } catch (error) {
-                logger.warn(`[持久化] 实时同步 ${key} 失败:`, error.message);
-            } finally {
-                delete _persistenceSaveTimers[timerKey];
+    // 当前会话只保留一个合批桶；正在发送的快照不与下一批编辑混合。
+    let persistenceAutoBatch = null;
+    function persistenceAutoSyncEnabled() {
+        return lsGetItem(lsKeys.configPersistenceEnable.id) && lsGetItem(lsKeys.configPersistenceAutoSync.id);
+    }
+    function retirePersistenceAutoBatch() {
+        const bucket = persistenceAutoBatch;
+        if (!bucket) return;
+        bucket.retired = true;
+        clearTimeout(bucket.timer);
+        bucket.timer = null;
+        bucket.pendingMap.clear();
+        if (persistenceAutoBatch === bucket) persistenceAutoBatch = null;
+    }
+    function checkPersistenceAutoBatch() {
+        const bucket = persistenceAutoBatch;
+        if (!bucket) return;
+        try {
+            bucket.session.check();
+        } catch (_) {
+            retirePersistenceAutoBatch();
+        }
+    }
+    function schedulePersistenceAutoBatch(bucket) {
+        clearTimeout(bucket.timer);
+        bucket.timer = setTimeout(() => {
+            bucket.timer = null;
+            bucket.due = true;
+            flushPersistenceAutoBatch(bucket);
+        }, 1000);
+    }
+    async function flushPersistenceAutoBatch(bucket) {
+        if (bucket.retired || bucket.running || !bucket.due || !bucket.pendingMap.size) return;
+        bucket.running = true;
+        bucket.due = false;
+        // 先移出本批次，失败/未知 POST 结果均不放回、不自动重试。
+        const paramsMap = Object.fromEntries(bucket.pendingMap);
+        bucket.pendingMap.clear();
+        try {
+            bucket.session.check();
+            await prepareUserParameters();
+            bucket.session.check();
+            if (!ddBackend.has('ParameterPersistence')) return;
+            await persistenceSaveBatch(paramsMap, bucket.session);
+            logger.info(`[持久化] 实时合批同步成功：${Object.keys(paramsMap).length} 项`);
+        } catch (error) {
+            logger.warn('[持久化] 实时合批同步失败:', error.message);
+            checkPersistenceAutoBatch();
+        } finally {
+            // 只操作捕获的桶，旧请求结束不能清除新会话的定时器或 pending。
+            bucket.running = false;
+            if (!bucket.retired && bucket.due && bucket.pendingMap.size) flushPersistenceAutoBatch(bucket);
+        }
+    }
+    function persistenceSyncParameter(key, value, skipSync) {
+        checkPersistenceAutoBatch();
+        if (skipSync || !persistenceAutoSyncEnabled()
+            || key === lsKeys.configPersistenceEnable.id || key === lsKeys.configPersistenceAutoSync.id) return;
+        try {
+            // 入队即固定对象内容和全部会话凭据，而不是等本地延迟落盘后再捕获。
+            const snapshot = typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
+            if (!persistenceAutoBatch) {
+                const captured = capturePersistenceSession();
+                captured.check();
+                const bucket = { pendingMap: new Map(), timer: null, running: false, due: false, retired: false, session: null };
+                bucket.session = { ...captured, check() {
+                    captured.check();
+                    if (bucket.retired || !persistenceAutoSyncEnabled()) throw new Error('实时同步已关闭或原会话批次已失效');
+                } };
+                persistenceAutoBatch = bucket;
             }
-        }, 1000); // 1秒防抖
+            const bucket = persistenceAutoBatch;
+            bucket.pendingMap.set(key, snapshot);
+            bucket.due = false;
+            schedulePersistenceAutoBatch(bucket);
+        } catch (error) {
+            logger.warn('[持久化] 实时同步入队失败:', error.message);
+        }
     }
 
     // 从服务器加载所有配置到 localStorage
-    async function persistenceLoadAll(identity = '') {
+    async function persistenceLoadAll(identity = '', timeoutMs = 0) {
         try {
-            const result = await persistenceQueryAll(true);
+            const result = await persistenceQueryAll(true, capturePersistenceSession(), timeoutMs);
             if (!result || (identity && identity !== persistenceIdentity())) return -1;
             const list = result.DataList || [];
             // 服务端为当前用户的权威快照；移除本地已删除的个人项，避免重置后继续沿用旧值。
@@ -10339,6 +10513,8 @@
         let failedSources = 0;
 
         if (ddBackend.isDll()) {
+            let searchSubscription;
+            const searchItemId = window.ede?.itemId;
             try {
                 const client = getHostApiClient();
                 const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
@@ -10350,6 +10526,7 @@
                 let started = await start.json().catch(() => null);
                 const taskId = String(started?.data?.id || '');
                 if (!start.ok || !/^[a-f0-9]{32}$/i.test(taskId)) throw new Error('后端搜索任务未创建');
+                searchSubscription = await ddBackend.watchTask(taskId, () => window.ede?.itemId === searchItemId, false);
                 const deadline = Date.now() + 180000;
                 while (Date.now() < deadline) {
                     await new Promise(resolve => setTimeout(resolve, 500));
@@ -10378,6 +10555,7 @@
                 logger.warn('[后端手动搜索] 请求失败，拒绝回退浏览器直连', error);
                 danmakuRemarkEle.innerText = '后端搜索不可用，请检查插件能力';
             } finally {
+                await searchSubscription?.close();
                 spinnerEle && spinnerEle.classList.add('hide');
             }
             spinnerEle && spinnerEle.classList.add('hide');
@@ -10935,6 +11113,13 @@
     }
 
     function onSliderChange(val, opts) {
+        // range 的 value 是字符串；按配置默认值的数值类型归一化，避免无变化也重复保存。
+        const key = opts.key && lsGetKeyById(opts.key);
+        if (typeof key?.defaultValue === 'number') {
+            const numericValue = Number(val);
+            if (!Number.isFinite(numericValue)) return;
+            val = numericValue;
+        }
         onSliderChangeLabel(val, opts);
         if (opts.key && lsCheckSet(opts.key, val)) {
             let needReload = opts.needReload !== false;
@@ -11474,12 +11659,13 @@
                 return onSliding(e.target.value, opts);
             });
         }
-        if (options.value) {
+        if (options.value !== undefined && options.value !== null) {
             slider.setValue(options.value);
             waitForElement({ element: slider, needParent: true }, (ele) => {
-                const e = new Event('change');
-                e.isManual = true;
-                slider.dispatchEvent(e);
+                // 初始化只刷新显示标签，不能合成 change 触发配置保存（包括合法的零值）。
+                const nextEle = ele.parentNode.nextElementSibling;
+                opts.labelEle = nextEle.children.length > 0 ? nextEle.children[0] : nextEle;
+                if (typeof onSliding === 'function') onSliding(ele.value, opts);
             }).catch(error => {
                 logger.warn('waitForElement error:', error);
             });
@@ -12180,6 +12366,8 @@
     let persistenceSession = '';
     let persistenceReady = Promise.resolve();
     async function prepareUserParameters() {
+        // token/命名空间/开关变化不一定改变本地 identity，必须在提前返回前丢弃旧桶。
+        checkPersistenceAutoBatch();
         const client = getHostApiClient();
         const identity = persistenceIdentity();
         if (!client?.getCurrentUserId?.()) return;
@@ -12192,7 +12380,7 @@
         persistenceReady = (async () => {
             const state = await ddBackend.prepare();
             if (!state || !ddBackend.has('ParameterPersistence') || identity !== persistenceIdentity()) return;
-            const count = await persistenceLoadAll(identity);
+            const count = await persistenceLoadAll(identity, 8000);
             if (count > 0 && identity === persistenceIdentity()) {
                 logLevel = readLogLevel();
                 logger.info(`[持久化] 已恢复当前用户 ${count} 项配置`);
@@ -12272,16 +12460,10 @@
 
         const storageKey = localParameterKey(id);
         lsCache.set(storageKey, value);
+        // 同步独立于本地 500ms 落盘队列；开关关闭也会立即清理尚未发送的批次。
+        persistenceSyncParameter(id, value, skipSync);
         if (immediate) {
             lsFlushWrite(storageKey, value);
-            // 持久化同步
-            if (!skipSync
-                && lsGetItem(lsKeys.configPersistenceEnable.id)
-                && lsGetItem(lsKeys.configPersistenceAutoSync.id)
-                && id !== lsKeys.configPersistenceEnable.id
-                && id !== lsKeys.configPersistenceAutoSync.id) {
-                persistenceSaveOneDebounced(id, value);
-            }
             return;
         }
 
@@ -12316,17 +12498,9 @@
 
         logger.debug(`[localStorage] 批量写入 ${lsPendingWrites.size} 项`);
 
-        lsPendingWrites.forEach(({ id, value, skipSync, identity }, storageKey) => {
+        lsPendingWrites.forEach(({ value }, storageKey) => {
+            // 自动同步已在 lsSetItem 捕获会话并入队，此处仅按原用户键本地落盘。
             lsFlushWrite(storageKey, value);
-            // 防抖回调必须属于当前账号，不能把上一用户的参数写进新用户文件。
-            if (identity !== persistenceIdentity()) return;
-            if (!skipSync
-                && lsGetItem(lsKeys.configPersistenceEnable.id)
-                && lsGetItem(lsKeys.configPersistenceAutoSync.id)
-                && id !== lsKeys.configPersistenceEnable.id
-                && id !== lsKeys.configPersistenceAutoSync.id) {
-                persistenceSaveOneDebounced(id, value);
-            }
         });
 
         lsPendingWrites.clear();
@@ -12769,7 +12943,7 @@
         let socket = null, timer = null, key = '', generation = -1, epoch = '', session = '';
         let sequence = 0, lastReply = 0, retryAt = 0, playSession = '', itemId = '', itemGuid = '', remote = false;
         let pendingStop = null, manager = null, player = null, idleTimer = null;
-        let renewalAt = 0, lastTick = 0, lifecycle = 0;
+        let renewalAt = 0, healthProbeAt = 0, lastTick = 0, lifecycle = 0;
         // 传输归属于用户/设备播放会话，媒体 DOM 和控制栏重建不等于播放结束。
         const heartbeatMs = 5000, replyTimeoutMs = 20000, renewalTimeoutMs = 10000;
         function cancelIdle() { clearTimeout(idleTimer); idleTimer = null; }
@@ -12803,7 +12977,7 @@
             playSession = ''; itemId = ''; itemGuid = '';
             const previous = socket; socket = null;
             if (previous) { previous.onopen = previous.onmessage = previous.onclose = previous.onerror = null; previous.close(); }
-            retryAt = Date.now() + 5000; renewalAt = 0;
+            retryAt = Date.now() + 5000; renewalAt = 0; healthProbeAt = 0;
             if (hadConnection) logger.info(`[播放联动] 专用连接已关闭，原因=${reason}${Number.isInteger(code) ? `，关闭码=${code}` : ''}，继续本地事件处理`);
             finishStop(); // 传输失败不能丢掉已收到的本地停止事件。
         }
@@ -12827,13 +13001,13 @@
                 if (data?.protocolVersion !== 1 || !data.connectionEpoch || !data.sessionId
                     || (epoch && epoch !== data.connectionEpoch) || (session && session !== data.sessionId)) return close('INVALID_READY');
                 if (!epoch) logger.info('[播放联动] 后端订阅已确认，本地事件继续主导开始与切集');
-                epoch = data.connectionEpoch; session = data.sessionId; lastReply = Date.now(); renewalAt = 0;
+                epoch = data.connectionEpoch; session = data.sessionId; lastReply = Date.now(); renewalAt = 0; healthProbeAt = 0;
                 return; // 握手不等于当前媒体已获确认。
             }
             if (message.MessageType !== 'DDDanmaku.State' || !epoch || !data
                 || data.connectionEpoch !== epoch || data.sessionId !== session || data.protocolVersion !== 1
                 || !Number.isSafeInteger(data.sequence) || data.sequence <= sequence || !data.playSessionId || !data.itemId) return;
-            sequence = data.sequence; lastReply = Date.now();
+            sequence = data.sequence; lastReply = Date.now(); healthProbeAt = 0;
             if (data.event === 'stopped') {
                 // 停止必须保留本地 state（进度提交需要它），不能无参数调用 onPlaybackStop。
                 if (pendingStop && pendingStop.playSession === data.playSessionId && sameItem(data, pendingStop.itemId)) {
@@ -12864,7 +13038,8 @@
             if (!client?.serverAddress?.() || !client.accessToken?.() || !client.deviceId?.()) {
                 api.dispose('CLIENT_UNAVAILABLE'); return;
             }
-            const now = Date.now(), delayed = lastTick && now - lastTick > 15000;
+            const now = Date.now(), lastTickInterval = lastTick ? now - lastTick : 0;
+            const delayed = lastTickInterval > 15000;
             lastTick = now;
             // 即使换流暂时没有 video 或控制栏，仍维护已认证会话的传输与心跳。
             const currentPlayer = manager?.getCurrentPlayer();
@@ -12879,12 +13054,22 @@
                 if (renewalAt) {
                     if (now - renewalAt >= renewalTimeoutMs) return close('SUBSCRIPTION_TIMEOUT');
                     send('DDDanmaku.Subscribe', client.deviceId());
+                } else if (healthProbeAt) {
+                    // 后台节流不等于断线；先保留播放身份发心跳，只有确认窗口仍无回复才恢复订阅。
+                    if (!delayed && now - healthProbeAt >= renewalTimeoutMs) {
+                        danmakuClock?.fallback(); remote = false; epoch = ''; session = ''; sequence = 0;
+                        playSession = ''; itemId = ''; itemGuid = ''; healthProbeAt = 0; renewalAt = now;
+                        logger.warn('[播放联动] 心跳确认未回复，正在恢复当前连接订阅');
+                        send('DDDanmaku.Subscribe', client.deviceId());
+                    } else {
+                        // 标签页被节流期间不能把未得到运行机会的窗口算作网络超时。
+                        if (delayed) healthProbeAt = now;
+                        send(epoch ? 'DDDanmaku.Heartbeat' : 'DDDanmaku.Subscribe', client.deviceId());
+                    }
                 } else if (delayed || now - lastReply > replyTimeoutMs) {
-                    // 系统休眠或订阅清理后先在原连接恢复订阅，给回复留完整窗口，不立即关闭。
-                    danmakuClock?.fallback(); remote = false; epoch = ''; session = ''; sequence = 0;
-                    playSession = ''; itemId = ''; itemGuid = ''; renewalAt = now;
-                    logger.info('[播放联动] 回复延迟，正在确认当前连接订阅');
-                    send('DDDanmaku.Subscribe', client.deviceId());
+                    healthProbeAt = now;
+                    logger.debug(`[播放联动] ${delayed ? '页面调度延迟' : '心跳回复待确认'}，间隔毫秒=${lastTickInterval}，页面隐藏=${document.visibilityState === 'hidden'}，先确认心跳`);
+                    send(epoch ? 'DDDanmaku.Heartbeat' : 'DDDanmaku.Subscribe', client.deviceId());
                 } else send(epoch ? 'DDDanmaku.Heartbeat' : 'DDDanmaku.Subscribe', client.deviceId());
                 return;
             }

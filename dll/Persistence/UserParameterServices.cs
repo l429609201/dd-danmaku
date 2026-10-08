@@ -36,6 +36,11 @@ internal sealed class UserParameterServices(string pluginConfigurationsPath, str
     internal Task<bool> InitializeForAsync(Guid id, IReadOnlyList<ParameterEntry> defaults, CancellationToken token)
         => StoreFor(id).InitializeAsync(defaults, token);
 
+    // 工厂交由共享用户存储锁内调用；已有文件不读取迁移模板，首次并发只准备一次。
+    internal Task<bool> InitializeForAsync(Guid id,
+        Func<CancellationToken, Task<IReadOnlyList<ParameterEntry>>> loadDefaults, CancellationToken token)
+        => StoreFor(id).InitializeAsync(loadDefaults, token);
+
 
     internal ParameterFileStore StoreFor(Guid userId)
     {
