@@ -20,12 +20,12 @@ const parsed = computed(() => {
 })
 const locked = computed(() => props.disabled || detecting.value)
 function publish(list) { emit('update:modelValue', JSON.stringify(list)) }
-function origin(url) { if (url === 'emby-proxy://custom') return '本地 Emby DLL 后端中转'; try { return new URL(url).origin } catch { return '地址格式无效' } }
+function origin(url) { if (url === 'emby-proxy://custom') return '实例共享来源（Emby 中转）'; try { return new URL(url).origin } catch { return '地址格式无效' } }
 async function addProxy(name) {
   if (locked.value || editing.value >= 0 || !parsed.value) return
   error.value = ''
   if (parsed.value.some(item => item.type === 'emby-proxy' || item.url === 'emby-proxy://custom')) {
-    error.value = '已添加 Emby 中转'; return
+    error.value = '已引用实例共享来源（Emby 中转）'; return
   }
   detecting.value = true
   const original = JSON.stringify(parsed.value)
@@ -39,7 +39,7 @@ async function addProxy(name) {
       serverName: data.serverType ?? data.ServerType ?? 'generic' }])
     addingForm.value?.discardDraft()
     addingKey.value++
-  } catch (e) { if (active) error.value = e.message || '插件代理验证失败' }
+  } catch (e) { if (active) error.value = e.message || '实例共享来源验证失败' }
   finally { detecting.value = false }
 }
 async function submit(value, index = -1) {
@@ -88,7 +88,7 @@ function remove(index) {
           <template v-else>
             <input type="checkbox" :aria-label="`启用 ${source.name}`" :checked="source.enabled !== false" :disabled="locked || editing >= 0" @change="publish(parsed.map((item, i) => i === index ? { ...item, enabled: $event.target.checked } : item))">
             <div class="info" :class="{ muted: source.enabled === false }"><strong>{{ source.name || `自定义源${index + 1}` }}</strong><span v-if="source.appId && source.appSecret" title="已配置 AppId/AppSecret"> 🔒</span><span v-if="source.serverName === 'Misaka_Danmu_Server'" class="badge">御坂弹幕库 {{ source.serverVersion ? `v${source.serverVersion}` : '' }}</span><small>{{ origin(source.url) }}</small></div>
-            <div class="buttons"><button v-if="source.type !== 'emby-proxy'" type="button" :disabled="locked || editing >= 0" @click="editing = index">编辑</button><span v-else title="在用户配置的本地中转 API 中修改上游">后台管理</span><button type="button" aria-label="上移" :disabled="locked || editing >= 0 || index === 0" @click="move(index, -1)">↑</button><button type="button" aria-label="下移" :disabled="locked || editing >= 0 || index === parsed.length - 1" @click="move(index, 1)">↓</button><button type="button" :disabled="locked || editing >= 0" @click="remove(index)">删除</button></div>
+            <div class="buttons"><button v-if="source.type !== 'emby-proxy'" type="button" :disabled="locked || editing >= 0" @click="editing = index">编辑</button><span v-else title="上游地址和凭据由管理员在实例共享来源（Emby 中转）中配置">实例共享</span><button type="button" aria-label="上移" :disabled="locked || editing >= 0 || index === 0" @click="move(index, -1)">↑</button><button type="button" aria-label="下移" :disabled="locked || editing >= 0 || index === parsed.length - 1" @click="move(index, 1)">↓</button><button type="button" :disabled="locked || editing >= 0" @click="remove(index)">删除</button></div>
           </template>
         </div>
       </div>

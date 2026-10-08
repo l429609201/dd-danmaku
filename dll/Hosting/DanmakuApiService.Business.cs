@@ -60,8 +60,13 @@ public sealed partial class DanmakuApiService
             throw new ApiAccessException(404, "SOURCE_NOT_FOUND", "已确认来源已不可用");
         var revision = BusinessRevision(defaults, configuration);
         var fingerprint = revision + "/" + Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(input)));
+        // 在请求仍有效时捕获本人令牌和 DI 端口，后台任务禁止延迟读取 Request。
+        var hashToken = defaults.MatchMode == "hashAndFileName" ? _access.AuthenticatedToken(Request, user.Id) : null;
+        var hashBase = hashToken is null ? null : BackendEmbyRestHash.TrustedBase(_serverConfiguration);
         var task = host.BackendTasks.Start(user.Id, item, "match", fingerprint, async context =>
         {
+            try
+            {
             // 进入每个宿主调用前发布阶段，授权或元数据读取失败也能精确定位。
             context.Progress("authorize");
             var current = await BusinessAuthorizeAsync(user.Id, item, revision, plugin, context.Token);
@@ -88,12 +93,24 @@ public sealed partial class DanmakuApiService
                 context.Progress("hash");
                 // 指定其它版本时，不能误用主版本的本地文件哈希。
                 var trustedItem = _access.RequireVideoItem(current, item);
-                var nativeSources = BackendMediaSources.Read(_mediaSources, trustedItem, current);
-                var chosen = input.MediaSourceId is null ? nativeSources : nativeSources.Where(source => source.Id == input.MediaSourceId).ToList();
-                var primary = chosen.Count == 1 && string.Equals(chosen[0].Path, trustedItem.Path, StringComparison.Ordinal);
-                if (primary) hash = await BackendVideoHash.GetAsync(_access, current, item, host.PlaybackFiles, context.Token);
-                if (hash.Hash is null) hash = await BackendRemoteVideoHash.GetAsync(_access, current, item, _mediaSources,
-                    configuration, context.Token, input.MediaSourceId);
+                try
+                {
+                    var nativeSources = BackendMediaSources.Read(_mediaSources, trustedItem, current);
+                    var chosen = input.MediaSourceId is null ? nativeSources : nativeSources.Where(source => source.Id == input.MediaSourceId).ToList();
+                    var primary = chosen.Count == 1 && string.Equals(chosen[0].Path, trustedItem.Path, StringComparison.Ordinal);
+                    if (primary) hash = await BackendVideoHash.GetAsync(_access, current, item, host.PlaybackFiles, context.Token);
+                    if (hash.Hash is null) hash = await BackendRemoteVideoHash.GetAsync(_access, current, item, _mediaSources,
+                        configuration, context.Token, input.MediaSourceId);
+                }
+                catch (ApiAccessException error) when (error.Code == "MEDIA_SOURCE_API_UNAVAILABLE")
+                {
+                    // 旧 SDK 签名不可用时只以本人令牌读取配置指定的本机静态流。
+                    hash = await BackendEmbyRestHash.GetAsync(hashBase, user.Id, item, input.MediaSourceId,
+                        hashToken, async token => { await BusinessAuthorizeAsync(user.Id, item, revision, plugin, token); }, context.Token,
+                        current.InternalId, trustedItem.InternalId);
+                    context.Detail("hash", hash.Hash is null ? "本机静态流哈希不可用，继续标题搜索与候选核验" : "已完成本机静态流哈希");
+                }
+                finally { hashToken = null; }
             }
             var reuseContext = new OnlineMatchReuseContext();
             async Task<JsonElement?> LoadEvidenceAsync(TargetMediaDto target, CancellationToken evidenceToken)
@@ -179,6 +196,8 @@ public sealed partial class DanmakuApiService
             if (failure is not null) throw failure;
             return BusinessReply(new { ItemId = item, Match = new OnlineMatchResult("unmatched", null, null, null, [], true, "traditional"),
                 Mapping = original, HashMode = hash.Mode, HashReason = hash.Reason, Attempts = attempts });
+            }
+            finally { hashToken = null; }
         }, authorizeResult: async token => { await BusinessAuthorizeAsync(user.Id, item, revision, plugin, token); });
         return ApiHttpResult.Success(task);
     });

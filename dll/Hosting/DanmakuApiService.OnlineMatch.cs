@@ -603,10 +603,10 @@ public sealed partial class DanmakuApiService
         && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
 
     private static async Task<byte[]> OnlineFetchAsync(string source, PluginConfiguration config,
-        Guid userId, string suffix, byte[]? body, CancellationToken token)
+        Guid userId, string suffix, byte[]? body, CancellationToken token, Action<string>? diagnostic = null)
     {
         DanmakuProxyTransport.Reply reply;
-        if (source == "custom") reply = await SendCustomProxy(config, suffix, token, body);
+        if (source == "custom") reply = await SendCustomProxy(config, suffix, token, body, diagnostic);
         else
         {
             var settings = OfficialSettings.Value;
@@ -616,7 +616,7 @@ public sealed partial class DanmakuApiService
             { ["X-User-Agent"] = settings.UserAgent };
             reply = await DanmakuProxyTransport.SendAsync(new Uri(settings.RelayPrefix
                 + "https://api.dandanplay.net/api/v2" + suffix), body is null ? HttpMethod.Get : HttpMethod.Post,
-                headers, body, token);
+                headers, body, token, diagnostic: diagnostic);
         }
         if (reply.StatusCode is 404 or 405 or 501 && suffix == "/match")
             throw new ApiAccessException(502, "UPSTREAM_MATCH_UNAVAILABLE", "上游未提供可选匹配接口");

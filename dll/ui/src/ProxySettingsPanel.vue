@@ -51,16 +51,16 @@ onMounted(load)
 </script>
 <template>
   <section class="panel"><el-card shadow="never">
-    <template #header><strong>本地中转 API 设置</strong></template>
+    <template #header><strong>实例共享来源（Emby 中转）</strong></template>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <el-alert v-if="notice" :title="notice" type="success" :closable="false" />
-    <p>此设置对当前 Emby 实例生效。播放器通过 Emby 中转访问下方配置的弹幕 API。请使用可信地址；中转请求不会携带 Emby 登录令牌。</p>
+    <p>管理员在此配置当前 Emby 实例共享的一个自定义弹幕 API。用户需在自己的来源列表中引用并启用 Emby 中转才会使用它；此开关不影响个人独立源，个人填写的地址和凭据仍由后端代请求。请使用可信地址；中转请求不会携带 Emby 登录令牌。</p>
     <div v-if="drafts.count.value" role="status">已保留未保存草稿 <el-button link :disabled="busy" @click="discardDraft">丢弃草稿</el-button></div>
     <el-form :model="form" :disabled="busy" label-position="top" @submit.prevent="save">
-      <el-form-item label="启用代理"><el-switch v-model="form.enabled" /></el-form-item>
+      <el-form-item label="启用实例共享来源"><el-switch v-model="form.enabled" /></el-form-item>
       <el-form-item label="上游 API 前缀"><el-input v-model="form.baseUrl" maxlength="2048" placeholder="填写服务提供的完整 API 前缀" /><p class="field-hint">按服务提供的地址填写，例如 /api/v2 或 /api/v1/访问令牌；保留原有路径，不需要改成 /api/v2，也不要附加 /search/anime 等具体接口。</p></el-form-item>
       <!-- 来源标识不随服务器类型变化，避免同一来源生成不同文件。 -->
-      <el-form-item label="稳定来源标识（留空不自动保存）"><el-input v-model="form.sourceId" maxlength="64" placeholder="例如 misaka，不可使用 dandanplay" /></el-form-item>
+      <el-form-item label="稳定来源标识（可选）"><el-input v-model="form.sourceId" maxlength="64" placeholder="例如 misaka，不可使用 dandanplay" /><p class="field-hint">用于区分共享来源的弹幕文件，不代表自动保存已启用或弹幕一定会保存。</p></el-form-item>
       <el-form-item label="服务器类型"><el-select v-model="form.serverType"><el-option value="generic" label="通用兼容 API（搜索 test 验证）" /><el-option value="Misaka_Danmu_Server" label="御坂弹幕（版本接口验证）" /></el-select></el-form-item>
       <el-form-item label="AppId（可选）"><el-input v-model="form.appId" maxlength="256" /></el-form-item>
       <el-form-item :label="hasSecret ? 'AppSecret（已保存，留空保留）' : 'AppSecret（可选）'"><el-input v-model="form.appSecret" type="password" show-password autocomplete="new-password" maxlength="2048" /></el-form-item>

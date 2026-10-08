@@ -110,7 +110,7 @@ public sealed partial class DanmakuApiService
         return keyword.Trim();
     }
     private static Task<DanmakuProxyTransport.Reply> SendCustomProxy(PluginConfiguration c, string path,
-        CancellationToken token, byte[]? body = null)
+        CancellationToken token, byte[]? body = null, Action<string>? diagnostic = null)
     {
         if (!c.DanmakuProxyEnabled) throw new ApiAccessException(409, "PROXY_DISABLED", "管理员尚未启用自定义弹幕代理");
         if (!Uri.TryCreate(c.DanmakuProxyBaseUrl.TrimEnd('/') + path, UriKind.Absolute, out var target))
@@ -128,6 +128,6 @@ public sealed partial class DanmakuApiService
         return DanmakuProxyTransport.SendAsync(target, body is null ? HttpMethod.Get : HttpMethod.Post, headers, body, token,
             BackendSourceAuthorization.AllowPrivate(c)
                 || ReferenceEquals(c, Plugin.Instance?.Configuration)
-                    && BackendSourcePolicy.IsApprovedPrivateBase(new Uri(c.DanmakuProxyBaseUrl), c));
+                    && BackendSourcePolicy.IsApprovedPrivateBase(new Uri(c.DanmakuProxyBaseUrl), c), diagnostic);
     }
 }

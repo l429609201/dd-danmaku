@@ -15,7 +15,7 @@ export const parameterSections = [
   ['高级设置', '播放界面设置', 'osdTitleEnable osdHeaderClockEnable osdLineChartEnable osdLineChartSkipFilter osdLineChartTime'],
   ['高级设置', '播放设置', 'timeoutCallbackUnit timeoutCallbackValue'],
   ['高级设置', 'Bangumi 设置', 'bgmSearchFallbackEnable bangumiEnable bangumiToken bangumiPostPercent bangumiApiPrefix bangumiImageDomain'],
-  ['高级设置', 'TMDB 集数映射设置', 'tmdbEpisodeMappingEnable tmdbApiKey tmdbApiBaseUrl'],
+  ['高级设置', 'TMDB 集数映射后备', 'tmdbEpisodeMappingEnable tmdbApiKey tmdbApiBaseUrl'],
   ['高级设置', '配置持久化', 'configPersistenceEnable configPersistenceAutoSync configPersistenceNamespace'],
   ['高级设置', '媒体库排除设置', 'excludedLibraries'],
   ['高级设置', '搜索内容黑名单', 'animeTitleBlacklist episodeTitleBlacklist blacklistApplyToCustomApi'],

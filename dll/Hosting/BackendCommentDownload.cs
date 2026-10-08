@@ -9,12 +9,31 @@ internal static class BackendCommentDownload
     /// <summary>恢复已受理任务或生成新正文；最终正文保存和选择意图核验由调用者负责。</summary>
     internal static async Task<byte[]> RunAsync(BackendTaskCoordinator.Context context, bool supportsAsync,
         int chConvert, string episodeId, Func<string, CancellationToken, Task<byte[]>> fetch,
-        Func<CancellationToken, Task> authorize)
+        Func<CancellationToken, Task> authorize, Action<string>? diagnostic = null)
     {
         if (!Identifier(episodeId) || chConvert is < 0 or > 2) throw new ArgumentException("弹幕下载参数无效");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(context.Token);
         deadline.CancelAfter(TimeSpan.FromMinutes(10));
         var token = deadline.Token;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        void Observe(string phase, long elapsed, int? bytes = null)
+        {
+            // 固定阶段和数值字段，不携带上游路径、任务ID、媒体标题或异常正文。
+            try { diagnostic?.Invoke($"[下载处理] {phase} | 阶段 {elapsed} ms · 累计 {clock.ElapsedMilliseconds} ms" + (bytes.HasValue ? $" · 正文 {bytes.Value:N0} B" : "")); } catch { }
+        }
+        async Task AuthorizeAsync(string phase)
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            await authorize(token);
+            Observe(phase, watch.ElapsedMilliseconds);
+        }
+        JsonDocument Read(byte[] raw)
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var document = Parse(raw);
+            Observe("正文格式校验", watch.ElapsedMilliseconds, raw.Length);
+            return document;
+        }
         var commentPath = "/comment/" + episodeId + "?withRelated=true&chConvert=" + chConvert;
         try
         {
@@ -29,12 +48,12 @@ internal static class BackendCommentDownload
             {
                 // saving 恢复只重取同步正文，绝不再次建立生成任务。
                 var create = record?.State != "saving";
-                await authorize(token);
+                await AuthorizeAsync("请求前授权");
                 token.ThrowIfCancellationRequested();
                 if (create) context.Checkpoint("fetching");
                 context.Progress("fetch");
                 var raw = await fetch(commentPath + (create && supportsAsync ? "&async=1" : ""), token);
-                using var json = Parse(raw);
+                using var json = Read(raw);
                 var payload = TaskPayload(json.RootElement);
                 var status = Status(payload);
                 if (status is "failed" or "error" or "cancelled" or "canceled")
@@ -59,11 +78,11 @@ internal static class BackendCommentDownload
                 // 已受理任务首次立即核验状态，后续仍保持一秒节流，避免人为增加首轮等待。
                 if (!firstPoll) await Task.Delay(TimeSpan.FromSeconds(1), token);
                 firstPoll = false;
-                await authorize(token);
+                await AuthorizeAsync("请求前授权");
                 token.ThrowIfCancellationRequested();
                 context.Progress("poll");
                 var raw = await fetch("/taskcomment/" + taskId, token);
-                using var json = Parse(raw);
+                using var json = Read(raw);
                 var payload = TaskPayload(json.RootElement);
                 var status = Status(payload);
                 var progress = Progress(payload);
@@ -73,12 +92,12 @@ internal static class BackendCommentDownload
                 if (status is "completed" or "complete" or "success" or "succeeded" or "done" or "finished")
                 {
                     context.Progress("authorize");
-                    await authorize(token);
+                    await AuthorizeAsync("请求前授权");
                     token.ThrowIfCancellationRequested();
                     // 生成100%不等于正文已到位，切换阶段避免一直显示轮询完成而实际仍等待下载。
                     context.Progress("fetch");
                     var finalRaw = await fetch(commentPath, token);
-                    using var final = Parse(finalRaw);
+                    using var final = Read(finalRaw);
                     if (Status(TaskPayload(final.RootElement)) is not null || !Comments(final.RootElement)) throw Protocol();
                     context.Checkpoint("saving");
                     return finalRaw;

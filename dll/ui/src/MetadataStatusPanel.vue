@@ -12,7 +12,7 @@ const health = ref(null), busy = ref(false), error = ref(''), exhausted = ref(fa
 const alive = ref(false), visible = ref(!document.hidden)
 const available = computed(() => alive.value && props.active && visible.value)
 const providers = [['tmdb', 'TMDB'], ['bangumi', 'Bangumi']]
-const statuses = { disabled: '未启用', checking: '验证中', valid: '有效', invalid: '无效' }
+const statuses = { disabled: '未启用', checking: '自检中', valid: '配置自检通过', invalid: '配置自检未通过' }
 // 仅翻译固定原因码，未知响应不原样显示，避免上游地址或凭据进入界面。
 const reasons = {
   not_configured: '未配置所需凭据', configuration_invalid: '配置格式无效',
@@ -63,12 +63,13 @@ onBeforeUnmount(() => { alive.value = false; stop(); document.removeEventListene
   <section class="metadata-status" aria-label="元数据服务验证状态">
     <div class="status-head"><strong>元数据服务状态</strong><div><el-button size="small" :disabled="!available || busy" @click="restart()">读取状态</el-button><el-button size="small" :loading="busy" :disabled="!available || busy" @click="restart(true)">重新验证</el-button></div></div>
     <p>{{ globalScope ? '全局默认没有独立健康状态：以下为当前登录用户的实际生效配置（包含本人覆盖），不是全局配置验证结果。' : '以下为所选用户实际生效的已保存配置，包含主动参数与默认值继承，不验证未保存草稿。' }}</p>
-    <p>配置保存后由服务器异步自检；失败会保留配置，但不会向 AI 提供该服务的元数据证据。</p>
+    <p>配置保存后由服务器异步自检；通过仅表示配置与服务验证成功，不代表具体媒体映射成功。失败会保留配置，但不会向 AI 提供该服务的元数据证据。</p>
+    <p>TMDB 映射是原始季集尝试后的后备。“兼容 JS 搜索 / Bangumi AI 证据”开关用于兼容 JS 搜索与 AI 元数据证据，不控制 DLL 官方流控后备；后者固定使用 Bgm 公共搜索。</p>
     <div v-if="health" class="provider-list" role="status" aria-live="polite">
       <div v-for="[key, name] in providers" :key="key" class="provider">
         <strong>{{ name }}</strong>
         <el-tag :type="health[key]?.status === 'valid' ? 'success' : health[key]?.status === 'invalid' ? 'danger' : 'info'">{{ statuses[health[key]?.status] || '状态未知' }}</el-tag>
-        <span>更新时间：{{ checkedAt(health[key]?.checkedAt) }}</span>
+        <span>最近自检时间：{{ checkedAt(health[key]?.checkedAt) }}</span>
         <span v-if="health[key]?.reason">{{ reasons[health[key].reason] || '验证未通过，请检查配置或稍后重试' }}</span>
       </div>
     </div>

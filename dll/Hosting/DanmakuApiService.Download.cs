@@ -72,12 +72,20 @@ public sealed partial class DanmakuApiService
         }
         return host.BackendTasks.Start(record.Owner, record.ItemId, "download", fingerprint, async context =>
         {
+            var downloadClock = System.Diagnostics.Stopwatch.StartNew();
+            void Timing(string phase, long elapsed) => context.Detail("fetch", $"[下载处理] {phase} | 阶段 {elapsed} ms · 累计 {downloadClock.ElapsedMilliseconds} ms");
+            var localClock = System.Diagnostics.Stopwatch.StartNew();
             var current = await DownloadAuthorizeAsync(record, plugin, context.Token);
+            Timing("初始授权", localClock.ElapsedMilliseconds);
             var bytes = await BackendCommentDownload.RunAsync(context,
                 source.Kind == "custom" && source.Configuration.DanmakuProxyServerType == "Misaka_Danmu_Server",
                 record.ChConvert, record.EpisodeId,
-                (path, token) => OnlineFetchAsync(source.Kind, source.Configuration, record.Owner, path, null, token), Authorize);
+                (path, token) => OnlineFetchAsync(source.Kind, source.Configuration, record.Owner, path, null, token,
+                    detail => context.Detail("fetch", detail)), Authorize,
+                detail => context.Detail("fetch", detail));
+            localClock.Restart();
             await Authorize(context.Token);
+            Timing("正文到位后授权", localClock.ElapsedMilliseconds);
             context.Progress("save");
             var canSaveSelection = true;
             if (recovered && record.SavePurpose == "selection")
@@ -90,9 +98,12 @@ public sealed partial class DanmakuApiService
                 // 文件服务提交回调是同步的，必须在真正切换索引前读取最新本人配置。
                 DownloadAuthorizeAsync(record, plugin, context.Token).GetAwaiter().GetResult();
             }
+            localClock.Restart();
             var saved = await SaveProxyCommentsAsync(bytes, record.ItemId, source.XmlSource, record.EpisodeId,
                 current, plugin, host, SelectionUpstreamRevision(source.XmlSource, source.Configuration), record.ChConvert,
                 new(record.SavePurpose, context.Token, VerifySource, record.SelectionIntent));
+            Timing("保存策略及响应包装", localClock.ElapsedMilliseconds);
+            context.Detail("fetch", $"[下载完成] 结果就绪 | 总耗时 {downloadClock.ElapsedMilliseconds} ms · 返回 {saved.Length:N0} B");
             return new BackendTaskReply(200, saved);
         }, record, Authorize);
     }

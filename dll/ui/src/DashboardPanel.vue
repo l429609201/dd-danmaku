@@ -58,7 +58,7 @@ watch(() => props.refreshToken, () => { if (!busy.value) { actionError.value = '
     <DashboardOverview :overview="data?.overview" />
     <el-card shadow="never">
       <div class="scan-toolbar">
-        <div><strong>XML 弹幕扫描</strong><p>本地视频 / STRM → 同目录、同名 .xml；只读检查</p></div>
+        <div><strong>XML 弹幕扫描</strong><p>本地视频 / STRM → 同目录、同名 .xml；只读媒体 / XML，更新扫描索引</p></div>
         <span>深度扫描</span><el-switch :model-value="data?.deep ?? false" inline-prompt active-text="开" inactive-text="关" :width="52" :loading="busy" :disabled="busy || !data || !!error" aria-label="深度扫描" @change="deep => act(() => api.saveScanMode(deep), true)" />
         <el-button type="primary" :disabled="busy || !data || !!error || !scopeReady || data.scan.running" @click="act(api.startScan)">立即扫描</el-button>
         <el-button :disabled="busy || !data?.scan?.running" @click="act(api.cancelScan)">取消扫描</el-button>

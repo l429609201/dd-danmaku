@@ -46,7 +46,8 @@ onMounted(load)
         <!-- 策略不依赖 AI 开关；AI 故障始终降级普通匹配。 -->
         <el-form-item label="首选匹配方式"><el-radio-group v-model="config.matchStrategy"><el-radio-button value="traditional-first">传统优先</el-radio-button><el-radio-button value="ai-first">AI 优先</el-radio-button></el-radio-group></el-form-item>
         <el-form-item label="允许匹配回退"><el-switch v-model="config.allowMatchFallback" inline-prompt active-text="开" inactive-text="关" :width="52" /></el-form-item>
-        <p>回退开关控制首选方式无法确认时是否尝试另一方式；AI 未启用、未授权、不可用或调用失败时始终降级普通匹配。</p>
+        <p>AI 优先仅在需要 AI 判断时生效；精确命中或可靠结果可直接使用，不必调用 AI。</p>
+        <p>匹配回退：首选方式无法确认时尝试另一方式，由此开关控制。故障降级：AI 未启用、未授权、不可用或调用失败时始终使用普通匹配，不受此开关控制。</p>
 
         <el-form-item label="启用 AI 匹配"><el-switch v-model="config.aiEnabled" inline-prompt active-text="开" inactive-text="关" :width="52" /></el-form-item>
         <el-form-item label="允许普通用户使用"><el-switch v-model="config.aiUserAccessEnabled" inline-prompt active-text="开" inactive-text="关" :width="52" :disabled="!config.aiEnabled" /></el-form-item>
@@ -59,7 +60,7 @@ onMounted(load)
           </div>
         </el-form-item>
         <p>总开关关闭时所有用户不可调用 AI；普通用户需命中名单。此授权不授予后台管理或 XML 写入权限。</p>
-        <el-button type="primary" @click="save">保存 AI 授权</el-button>
+        <el-button type="primary" @click="save">保存匹配策略与 AI 授权</el-button>
       </el-form>
     </el-card>
     <AiSettingsPanel />
