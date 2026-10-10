@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.3.8
+// @version      1.3.9
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -70,7 +70,7 @@
 
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.3.8', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.3.9', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -11675,11 +11675,12 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         }
         if (options.value !== undefined && options.value !== null) {
             slider.setValue(options.value);
-            waitForElement({ element: slider, needParent: true }, (ele) => {
-                // 初始化只刷新显示标签，不能合成 change 触发配置保存（包括合法的零值）。
-                const nextEle = ele.parentNode.nextElementSibling;
+            waitForElement({ element: slider, needParent: true }, () => {
+                // needParent 返回父容器；始终用原滑块定位标签和读取值，且不触发保存。
+                const nextEle = slider.parentNode?.nextElementSibling;
+                if (!nextEle) return;
                 opts.labelEle = nextEle.children.length > 0 ? nextEle.children[0] : nextEle;
-                if (typeof onSliding === 'function') onSliding(ele.value, opts);
+                if (typeof onSliding === 'function') onSliding(slider.value, opts);
             }).catch(error => {
                 logger.warn('waitForElement error:', error);
             });
