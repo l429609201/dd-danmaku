@@ -38,7 +38,8 @@ public sealed partial class DanmakuApiService
             var headers = new Dictionary<string, string>(signer.CreateHeaders(userId, path))
             { ["X-User-Agent"] = settings.UserAgent };
             reply = await DanmakuProxyTransport.SendAsync(new Uri(settings.RelayPrefix
-                + "https://api.dandanplay.net/api/v2" + suffix), HttpMethod.Get, headers, null, token);
+                + "https://api.dandanplay.net/api/v2" + suffix), HttpMethod.Get, headers, null, token,
+                allowCommentArray: true);
         }
         else
         {

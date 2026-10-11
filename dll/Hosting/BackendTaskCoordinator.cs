@@ -7,7 +7,7 @@ internal sealed record BackendDownloadRecord(string Id, Guid Owner, string ItemI
     string EpisodeId, int ChConvert, string SavePurpose, string Revision, DateTimeOffset CreatedAt,
     string State = "accepted", string? UpstreamTaskId = null, string? SelectionIntent = null);
 internal sealed record BackendTaskView(string Id, string ItemId, string Kind, string Status,
-    string? ErrorCode, DateTimeOffset CreatedAt, bool ResultAvailable);
+    string? ErrorCode, DateTimeOffset CreatedAt, bool ResultAvailable, int? HttpStatus = null, string? ErrorMessage = null);
 
 /// <summary>有界本人任务，下载与页面生命周期分离；恢复日志只保存身份和阶段。</summary>
 internal sealed class BackendTaskCoordinator : IDisposable
@@ -82,12 +82,14 @@ internal sealed class BackendTaskCoordinator : IDisposable
         internal string Status = "pending";
         internal string Stage = "accepted";
         internal string? ErrorCode;
+        internal int? HttpStatus;
+        internal string? ErrorMessage;
         internal DateTimeOffset? CompletedAt;
         internal BackendTaskReply? Reply;
         internal BackendDownloadRecord? Download;
         internal bool UserCancelled;
         internal Func<CancellationToken, Task>? AuthorizeResult;
-        internal BackendTaskView View() => new(Id, ItemId, Kind, Status, ErrorCode, CreatedAt, Reply is not null);
+        internal BackendTaskView View() => new(Id, ItemId, Kind, Status, ErrorCode, CreatedAt, Reply is not null, HttpStatus, ErrorMessage);
     }
 
     internal BackendTaskView Start(Guid owner, string itemId, string kind, string fingerprint,
@@ -177,6 +179,8 @@ internal sealed class BackendTaskCoordinator : IDisposable
         BackendTaskReply reply;
         var status = "succeeded";
         string? code = null;
+        string? errorMessage = null;
+        int? httpStatus = null;
         try
         {
             lock (_gate) entry.Status = "running";
@@ -195,11 +199,13 @@ internal sealed class BackendTaskCoordinator : IDisposable
         {
             status = "failed"; code = error.Code;
             Diagnose(entry, code, error);
-            var detail = UpstreamErrorDiagnostic.Describe(error);
+            // 用户事件只含后端中文原因；上游英文正文仅用于服务器诊断，不作为展示文案。
+            httpStatus = error.Status;
+            errorMessage = FrontendLogStore.Sanitize(error.Message);
+            var detail = $"HTTP {httpStatus} · {code} · {errorMessage}";
             Log(entry, detail);
             OperationEventHub.Publish(entry.Owner, entry.Id, "upstream", status: "failed", errorCode: code, detail: detail);
-            reply = error.UpstreamReply is { } upstream ? new(upstream.StatusCode, upstream.Body)
-                : Failure(error.Status, error.Code, error.Message);
+            reply = Failure(error.Status, error.Code, errorMessage);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         { status = "failed"; code = "STORAGE_ERROR"; Diagnose(entry, code, error); reply = Failure(500, code, "任务存储不可用"); }
@@ -215,7 +221,18 @@ internal sealed class BackendTaskCoordinator : IDisposable
                 catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException) { }
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-            { status = "failed"; code = "STORAGE_ERROR"; reply = Failure(500, code, "下载任务状态无法保存"); }
+            { status = "failed"; code = "STORAGE_ERROR"; httpStatus = 500; errorMessage = "下载任务状态无法保存"; reply = Failure(500, code, errorMessage); }
+        }
+        if (code is not null && errorMessage is null)
+        {
+            httpStatus = reply.StatusCode;
+            errorMessage = code switch
+            {
+                "OPERATION_CANCELLED" => "后端任务已取消",
+                "UPSTREAM_TIMEOUT" => "后端任务等待超时，请稍后重试",
+                "STORAGE_ERROR" => "任务存储不可用",
+                _ => "后端任务执行失败"
+            };
         }
         lock (_gate)
         {
@@ -229,13 +246,15 @@ internal sealed class BackendTaskCoordinator : IDisposable
             }
             entry.Status = status;
             entry.ErrorCode = code;
+            entry.HttpStatus = httpStatus;
+            entry.ErrorMessage = errorMessage;
             entry.CompletedAt = DateTimeOffset.UtcNow;
             if (reply.Body.Length <= MaxResultBytes - _resultBytes) { entry.Reply = reply; _resultBytes += reply.Body.Length; }
             _flights.Remove(entry.Key);
         }
         heartbeatStop.Cancel();
         await heartbeat;
-        OperationEventHub.Complete(entry.Owner, entry.Id, status, code);
+        OperationEventHub.Complete(entry.Owner, entry.Id, status, code, errorMessage, httpStatus);
         Log(entry, "结束，状态=" + status + "，错误码=" + (code ?? "无"));
         entry.Stop.Dispose();
     }

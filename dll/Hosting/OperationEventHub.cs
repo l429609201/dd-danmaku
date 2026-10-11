@@ -100,15 +100,20 @@ internal static class OperationEventHub
         }
     }
 
-    internal static bool Complete(Guid userId, string operationId, string status = "succeeded", string? errorCode = null)
+    internal static bool Complete(Guid userId, string operationId, string status = "succeeded", string? errorCode = null,
+        string? errorMessage = null, int? httpStatus = null)
     {
         lock (Gate)
         {
             Prune(DateTimeOffset.UtcNow);
             if (!FindOwnedActive(userId, operationId, out var operation)) return false;
             var terminal = status is "succeeded" or "failed" or "cancelled" ? status : "failed";
+            // 终态保留安全中文原因，晚订阅也无需读取上游错误正文。
+            var statusPrefix = httpStatus is >= 100 and <= 599 ? $"HTTP {httpStatus} · " : "";
+            var detail = errorMessage is null ? null
+                : statusPrefix + errorCode + " · " + FrontendLogStore.Sanitize(errorMessage);
             AddEvent(operation, new Event(terminal == "failed" ? "failed" : "completed", null, terminal,
-                errorCode is null ? null : ErrorCodes.Contains(errorCode) ? errorCode : "OTHER_ERROR"));
+                errorCode is null ? null : ErrorCodes.Contains(errorCode) ? errorCode : "OTHER_ERROR", detail));
             operation.CompletedAt = DateTimeOffset.UtcNow;
             foreach (var subscriber in operation.Subscribers) subscriber.Writer.TryComplete();
             return true;

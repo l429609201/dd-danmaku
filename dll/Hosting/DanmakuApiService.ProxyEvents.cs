@@ -11,6 +11,8 @@ public sealed partial class DanmakuApiService
         OperationEventHub.Publish(userId, operationId, "upstream");
         var status = "failed";
         var failureCode = "UPSTREAM_ERROR";
+        var failureMessage = "上游请求失败";
+        int? failureStatus = null;
         try
         {
             var result = await action();
@@ -26,12 +28,15 @@ public sealed partial class DanmakuApiService
         {
             // 代理请求和订阅事件使用同一错误码。
             failureCode = error.Code;
+            failureMessage = FrontendLogStore.Sanitize(error.Message);
+            failureStatus = error.Status;
             throw;
         }
         finally
         {
             OperationEventHub.Complete(userId, operationId, status,
-                status == "failed" ? failureCode : null);
+                status == "failed" ? failureCode : null,
+                status == "failed" ? failureMessage : null, failureStatus);
         }
     }
 
