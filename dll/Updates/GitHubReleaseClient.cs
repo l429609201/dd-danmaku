@@ -30,7 +30,7 @@ internal sealed class GitHubReleaseClient : IDisposable
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", credential);
         using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
-        response.EnsureSuccessStatusCode();
+        EnsureSuccess(response, "检查更新", !string.IsNullOrWhiteSpace(credential));
         using var buffer = new MemoryStream();
         await CopyBoundedAsync(response, buffer, 1024 * 1024, token).ConfigureAwait(false);
         using var json = JsonDocument.Parse(buffer.ToArray());
@@ -51,6 +51,48 @@ internal sealed class GitHubReleaseClient : IDisposable
             throw new InvalidDataException("发布附件地址或大小无效。");
         var digest = asset.TryGetProperty("digest", out var field) ? field.GetString() : null;
         return new Release(version, url, size, digest, isTest);
+    }
+
+    // 仅使用状态码和受限响应头判断，不把上游正文、地址或凭据写入任务错误。
+    private static void EnsureSuccess(HttpResponseMessage response, string operation, bool authenticated)
+    {
+        if (response.IsSuccessStatusCode) return;
+        var status = (int)response.StatusCode;
+        var remaining = response.Headers.TryGetValues("X-RateLimit-Remaining", out var values)
+            && values.Contains("0", StringComparer.Ordinal);
+        var limited = status == 429 || status == 403 && (remaining
+            || response.Headers.RetryAfter is not null
+            || string.Equals(response.ReasonPhrase, "rate limit exceeded", StringComparison.OrdinalIgnoreCase));
+        if (limited)
+        {
+            var retry = response.Headers.RetryAfter;
+            DateTimeOffset? retryAt = retry?.Date;
+            if (retry?.Delta is { } delay && delay >= TimeSpan.Zero && delay <= TimeSpan.FromDays(7))
+                retryAt = DateTimeOffset.UtcNow.Add(delay);
+            if (retryAt is null && response.Headers.TryGetValues("X-RateLimit-Reset", out var resets)
+                && long.TryParse(resets.FirstOrDefault(), out var seconds) && seconds is >= 0 and <= 253402300799)
+                retryAt = DateTimeOffset.FromUnixTimeSeconds(seconds);
+            var when = retryAt is { } at && at > DateTimeOffset.UtcNow
+                ? $"建议在 {at:yyyy-MM-dd HH:mm:ss} UTC 后重试。" : "请稍后重试，避免连续执行更新任务。";
+            var advice = authenticated
+                ? "已使用 GitHub Token，请检查该 Token 的额度或共享出口限流情况。"
+                : "可在插件更新设置中配置 GitHub Token，提高 API 请求额度；共享公网出口也可能被其他设备耗尽额度。";
+            throw new UpdateRequestException($"{operation}失败：GitHub 请求被限流（HTTP {status}）。{when}{advice}");
+        }
+        var reason = status switch
+        {
+            401 => "GitHub 凭据无效或已过期，请检查更新设置中的 GitHub Token。",
+            403 => "GitHub 拒绝访问，请检查 Token 权限或网络访问限制；此状态不一定是限流。",
+            404 => "发布附件不存在或已被移除，请稍后重新检查版本。",
+            >= 500 => "GitHub 服务暂时不可用，请稍后重试。",
+            _ => "GitHub 请求未成功，请检查网络及更新配置。"
+        };
+        throw new UpdateRequestException($"{operation}失败（HTTP {status}）：{reason}");
+    }
+
+    internal sealed class UpdateRequestException : Exception
+    {
+        internal UpdateRequestException(string message) : base(message) { }
     }
 
     private static Version ParseReleaseVersion(string tag)
@@ -77,7 +119,7 @@ internal sealed class GitHubReleaseClient : IDisposable
                 url = new Uri(url, response.Headers.Location ?? throw new InvalidDataException("缺少重定向地址。"));
                 continue;
             }
-            response.EnsureSuccessStatusCode();
+            EnsureSuccess(response, "下载更新", false);
             await using var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                 81920, FileOptions.Asynchronous);
             await CopyBoundedAsync(response, file, release.Size, token).ConfigureAwait(false);

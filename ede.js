@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.3.9
+// @version      1.4.0
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -70,7 +70,7 @@
 
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.3.9', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.4.0', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -464,6 +464,58 @@
     };
 
     // DLL 联动适配层：能力探测成功才启用，失败时保持纯 JS 插件行为。
+    // 只展示 DLL 受控中文原因；第三方正文和旧版英文错误一律按错误码翻译。
+    const backendErrorReasons = {
+        UPSTREAM_MATCH_FAILED: '上游匹配请求失败', UPSTREAM_MATCH_UNAVAILABLE: '上游未提供匹配接口',
+        UPSTREAM_RATE_LIMITED: '上游请求被限流，请稍后重试', UPSTREAM_AUTH_REJECTED: '上游拒绝认证，请检查来源配置',
+        UPSTREAM_TIMEOUT: '上游请求超时，请稍后重试', UPSTREAM_UNAVAILABLE: '无法连接上游服务',
+        UPSTREAM_REJECTED: '上游拒绝请求', UPSTREAM_ERROR: '上游请求失败',
+        UPSTREAM_BUSINESS_ERROR: '上游未返回成功结果', UPSTREAM_PROTOCOL_MISMATCH: '上游响应不符合协议',
+        UPSTREAM_INVALID_RESPONSE: '上游响应格式无效', UPSTREAM_TASK_FAILED: '上游弹幕生成任务失败',
+        UPSTREAM_ACCEPTANCE_UNKNOWN: '无法确认上游是否已受理，已停止重复创建任务',
+        UPSTREAM_VALIDATION_FAILED: '上游验证失败', UPSTREAM_CHANGED: '来源或映射配置已变更，请重新选择',
+        AUTH_REQUIRED: '需要有效的 Emby 登录身份', ADMIN_REQUIRED: '需要管理员权限',
+        INVALID_REQUEST: '请求参数无效', INVALID_DATA: '请求数据无效', NOT_FOUND: '请求内容不存在',
+        ITEM_NOT_FOUND: '媒体不存在', ITEM_ACCESS_DENIED: '无权访问当前媒体',
+        SOURCE_NOT_FOUND: '弹幕来源不存在', SOURCE_NOT_CONFIGURED: '弹幕来源尚未配置',
+        SOURCE_TARGET_DENIED: '来源地址不允许访问', SOURCE_TARGET_INVALID: '来源地址无效', SOURCE_DNS_FAILED: '来源域名解析失败',
+        TASK_NOT_FOUND: '后端任务不存在或不属于当前用户', TASK_NOT_READY: '后端任务结果尚未就绪',
+        TASK_RESULT_EXPIRED: '后端任务结果已过期', OPERATION_CANCELLED: '后端任务已取消',
+        INTERNAL_ERROR: '后端内部处理失败', MATCH_FAILED: '匹配失败', BACKEND_CAPABILITY_MISSING: 'DLL 后端缺少所需能力',
+        OFFICIAL_PROXY_UNAVAILABLE: '官方代理不可用', OFFICIAL_SIGNING_UNAVAILABLE: '官方签名未配置',
+        OFFICIAL_USER_MARK_INCOMPLETE: '官方用户认证信息不完整', PROXY_DISABLED: '插件代理已禁用', PROXY_NOT_CONFIGURED: '插件代理尚未配置',
+        STORAGE_ERROR: '弹幕文件存储失败', STORAGE_DENIED: '无权写入弹幕文件',
+        XML_WRITE_DISABLED: '弹幕文件写入已禁用', XML_READ_DISABLED: '弹幕文件读取已禁用',
+        MANUAL_SELECTION_REQUIRED: '需要手动搜索并明确选择分集', USER_CHANGED: '登录用户已变更',
+        BANGUMI_UPSTREAM_FAILED: 'Bangumi 请求失败', BANGUMI_AUTH_REJECTED: 'Bangumi 认证被拒绝',
+        BANGUMI_NOT_FOUND: 'Bangumi 条目不存在', BANGUMI_RATE_LIMITED: 'Bangumi 请求被限流',
+        BANGUMI_PROTOCOL_INVALID: 'Bangumi 响应格式无效', BANGUMI_EPISODE_AMBIGUOUS: 'Bangumi 分集无法唯一确定',
+        BANGUMI_TOKEN_NOT_CONFIGURED: 'Bangumi 令牌未配置', BANGUMI_SUBJECT_INVALID: 'Bangumi 条目无效',
+        BANGUMI_SOURCE_NOT_ALLOWED: 'Bangumi 来源不允许访问'
+    };
+    function createBackendError(data = {}, httpStatus, taskId, trusted = true, fallbackCode = 'UNKNOWN_ERROR') {
+        const rawCode = String(data?.errorCode ?? data?.ErrorCode ?? data?.code ?? fallbackCode);
+        const code = /^[A-Z0-9_]{1,60}$/.test(rawCode) ? rawCode : fallbackCode;
+        const status = Number(trusted ? data?.httpStatus ?? data?.HttpStatus ?? httpStatus : httpStatus);
+        const controlled = trusted ? data?.errorMessage ?? data?.ErrorMessage ?? data?.message ?? data?.Message : '';
+        const reason = typeof controlled === 'string' && /[\u4e00-\u9fff]/.test(controlled)
+            && !/[\r\n<>]/.test(controlled) ? controlled.slice(0, 500) : backendErrorReasons[code] || '请求失败，请检查后端或来源配置';
+        const error = new Error(`HTTP ${Number.isInteger(status) && status >= 100 && status <= 599 ? status : '未知'} · CODE ${code} · ${reason}`);
+        error.code = code;
+        error.httpStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+        error.status = error.httpStatus;
+        error.errorMessage = reason;
+        if (taskId) error.taskId = taskId;
+        return error;
+    }
+    function formatBackendError(error) {
+        return createBackendError({ code: error?.code, errorMessage: error?.errorMessage }, error?.httpStatus, error?.taskId).message;
+    }
+    function isDllApiUrl(url) {
+        const base = String(getHostApiClient()?.serverAddress?.() || '').replace(/\/$/, '');
+        return Boolean(base && String(url).startsWith(`${base}/dd-danmaku/api/`));
+    }
+
     const ddBackend = (() => {
         // API 默认仅限播放器直连字段，全局源凭据按管理员配置共享给继承者。
         const defaultKeys = new Set(['switch', 'autoLoadSwitch', 'antiOverlap', 'filterLevel',
@@ -526,11 +578,12 @@
                 });
                 const body = await response.json().catch(() => null);
                 if (!response.ok || body?.success === false || body?.Success === false) {
-                    const error = new Error(body?.message || body?.Message || `DLL 请求失败（${response.status}）`);
-                    error.status = response.status;
-                    throw error;
+                    throw createBackendError(body, response.status);
                 }
                 return body?.data ?? body?.Data ?? body;
+            } catch (error) {
+                if (error.code || error.name === 'AbortError') throw error;
+                throw createBackendError({ errorCode: 'UPSTREAM_UNAVAILABLE' });
             } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); controller.abort(); }
         }
         async function probe() {
@@ -603,18 +656,24 @@
                         const code = String(event.errorCode ?? event.ErrorCode ?? '');
                         if (!Object.prototype.hasOwnProperty.call(operationStages, stage)) continue;
 
-                        const detail = typeof (event.detail ?? event.Detail) === 'string'
+                        let detail = typeof (event.detail ?? event.Detail) === 'string'
                             ? String(event.detail ?? event.Detail).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ').slice(0, 24000) : '';
                         // 详细下载日志自带关联号，避免再重复“获取正文、running”前缀。
                         const statusLabel = ({ pending: '等待', running: '进行中', succeeded: '成功', failed: '失败', cancelled: '取消', skipped: '跳过' })[status] || '';
                         const safeCode = /^[A-Z0-9_]{1,60}$/.test(code) ? code : '';
-                        const downloadDetail = /^\[下载(?: |处理\]|完成\])/.test(detail);
+                        // 错误 detail 仅接受后端固定 HTTP/CODE/中文格式，旧版 detail 不作为原因展示。
+                        const failed = status === 'failed' || status === 'cancelled' || stage === 'failed';
+                        const fixedError = /^HTTP (\d{3}|未知) · (?:CODE )?([A-Z0-9_]{1,60}) · (.+)$/.exec(detail);
+                        const failure = failed ? createBackendError({ errorCode: safeCode || fixedError?.[2] || (status === 'cancelled' ? 'OPERATION_CANCELLED' : 'UNKNOWN_ERROR'),
+                            errorMessage: fixedError?.[3] }, fixedError?.[1]) : null;
+                        if (failed) detail = failure.message;
+                        const downloadDetail = !failed && /^\[下载(?: |处理\]|完成\])/.test(detail);
                         const summary = [operationStages[stage],
                             Number.isInteger(count) && count >= 0 ? (stage === 'poll' ? `${Math.min(count, 100)}%` : `${count} 项`) : '',
-                            statusLabel && status !== 'running' ? statusLabel : '', safeCode ? `错误 ${safeCode}` : ''].filter(Boolean).join(' · ');
+                            statusLabel && status !== 'running' ? statusLabel : '', !failed && safeCode ? `错误 ${safeCode}` : ''].filter(Boolean).join(' · ');
                         if (downloadDetail) logger.info(detail);
                         else logger.info(`[DLL 操作] ${summary}${detail ? `\n${detail}` : ''}`);
-                        onProgress({ stage, status, code, count });
+                        onProgress({ stage, status, code: failure?.code || code, count, httpStatus: failure?.httpStatus, errorMessage: failure?.errorMessage });
                     }
                     // 对未完成的单帧限长，不把一个网络块中的多条合法事件合计误判为超限。
                     if (buffer.length > 262144) throw new Error('后端日志单事件超过限制');
@@ -678,11 +737,11 @@
                 finally { clearTimeout(startTimer); }
             },
             // 加载环只接受当前播放任务；poll 的数值才是百分比，候选数量不能当进度。
-            showTaskProgress({ stage, status, count, code }, isCurrent) {
+            showTaskProgress({ stage, status, count, code, httpStatus, errorMessage }, isCurrent) {
                 if (!isCurrent()) return;
                 if (['failed', 'cancelled'].includes(status)) {
                     ddClearLoadingRing();
-                    setOsdDanmakuText(`弹幕：后端${status === 'failed' ? '失败' : '已取消'}${code ? `（${code}）` : ''}`);
+                    setOsdDanmakuText(`弹幕：${formatBackendError({ code: code || (status === 'cancelled' ? 'OPERATION_CANCELLED' : 'UNKNOWN_ERROR'), httpStatus, errorMessage })}`);
                     return;
                 }
                 if (!['pending', 'running'].includes(status)) return;
@@ -768,10 +827,7 @@
                     let body = await response.json().catch(() => null);
                     if (!isCurrent() || session !== resetIfSessionChanged()) return null;
                     if (!response.ok || body?.success !== true || !/^[a-f0-9]{32}$/i.test(String(body?.data?.id ?? ''))) {
-                        const upstreamCode = body?.errorCode;
-                        const code = response.status === 429 ? 'UPSTREAM_RATE_LIMITED' : String(upstreamCode ?? 'UNKNOWN_ERROR');
-                        const failure = new Error('后端在线匹配失败'); failure.code = /^[A-Z0-9_]{1,60}$/.test(code) ? code : 'UNKNOWN_ERROR';
-                        failure.upstreamResponse = body; failure.httpStatus = response.status; throw failure;
+                        throw createBackendError(body, response.status, null, true, response.status === 429 ? 'UPSTREAM_RATE_LIMITED' : 'UNKNOWN_ERROR');
                     }
                     const taskId = String(body.data.id);
                     let taskCancelled = false;
@@ -795,15 +851,11 @@
                         const statusBody = await statusResponse.json().catch(() => null);
                         // fetch 和正文读取均可能跨集，任何终态处理前必须复验身份。
                         if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
-                        if (!statusResponse.ok || statusBody?.success !== true) throw new Error('后端在线匹配状态读取失败');
+                        if (!statusResponse.ok || statusBody?.success !== true) throw createBackendError(statusBody, statusResponse.status, taskId);
                         const task = statusBody.data || {};
                         if (task.status === 'failed' || task.status === 'cancelled') {
                             // 保留后端终态错误码与任务关联号，不能将内部错误误报为上游网络失败。
-                            const failure = new Error('后端在线匹配任务失败');
-                            const code = String(task.errorCode || 'UNKNOWN_ERROR');
-                            failure.code = /^[A-Z0-9_]{1,60}$/.test(code) ? code : 'UNKNOWN_ERROR';
-                            failure.taskId = taskId;
-                            throw failure;
+                            throw createBackendError(task, null, taskId, true, task.status === 'cancelled' ? 'OPERATION_CANCELLED' : 'UNKNOWN_ERROR');
                         }
                         if (task.status === 'succeeded') {
                             const resultResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/result`, {
@@ -811,13 +863,13 @@
                             if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
                             body = await resultResponse.json().catch(() => null);
                             if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
-                            if (!resultResponse.ok || body?.success !== true) throw new Error('后端在线匹配结果读取失败');
+                            if (!resultResponse.ok || body?.success !== true) throw createBackendError(body, resultResponse.status, taskId);
                             break;
                         }
                     }
                     // 匹配证明只归当前任务所有，旧集结果不得写进复用的 window.ede。
                     if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
-                    if (!body?.data?.Match && !body?.data?.match) throw new Error('后端在线匹配任务超时');
+                    if (!body?.data?.Match && !body?.data?.match) throw createBackendError({ errorCode: 'UPSTREAM_TIMEOUT' }, null, taskId);
                     const data = body.data;
                     window.ede.backendMatchTaskId = taskId;
                     window.ede.backendSourceId = data.SourceId || data.sourceId || '';
@@ -834,8 +886,9 @@
                 } catch (error) {
                     if (!currentOperation()) return null;
                     if (!error.code) error.code = error?.name === 'AbortError' ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_UNAVAILABLE';
-                    logger.warn(`[后端在线匹配] ${error?.name === 'AbortError' ? '请求超时' : '请求失败'}，错误码=${error.code}${error.taskId ? `，任务=${error.taskId}` : ''}`);
-                    throw error;
+                    const failure = createBackendError({ code: error.code, errorMessage: error.errorMessage }, error.httpStatus, error.taskId);
+                    logger.warn(`[后端在线匹配] ${failure.message}${failure.taskId ? `，任务=${failure.taskId}` : ''}`);
+                    throw failure;
                 } finally {
                     clearTimeout(timer); controller.abort();
                     if (subscription) void subscription.close();
@@ -943,7 +996,7 @@
                     if (!response.ok || body?.success === false || body?.Success === false) {
                         // 代理 HTML、空响应和插件 JSON 分开报告，禁止输出原始正文或凭据。
                         const code = String(body?.error?.code ?? body?.errorCode ?? body?.ErrorCode ?? 'NON_PLUGIN_ERROR');
-                        logger.warn(`[后端匹配] HTTP ${response.status}，错误码=${/^[A-Z0-9_]{1,80}$/.test(code) ? code : 'UNKNOWN_ERROR'}，关联号=${safeTrace}，JSON响应=${body !== null}`);
+                        logger.warn(`[后端匹配] ${createBackendError({ ...body, errorCode: code }, response.status).message}，关联号=${safeTrace}，JSON响应=${body !== null}`);
                         return null;
                     }
                     if (requestSessionKey !== resetIfSessionChanged()) return null;
@@ -2190,6 +2243,10 @@
             stoppedDanmakuSnapshot = snapshot;
             stoppedDanmakuTimer = setTimeout(clearStoppedDanmaku, 10000);
         }
+        // 停止立即淘汰样式队列和尺寸回调，短暂恢复只使用既有已就绪快照。
+        readyDanmakuRender = null;
+        if (window.ede) window.ede._renderReload = null;
+        window.ede?._cancelResizeReload?.();
         danmakuClock?.dispose();
         // 播放停止后旧弹幕快照不可再用于音轨恢复，避免下一集尚未开始加载时串台。
         danmakuPlaybackSnapshot = null;
@@ -2351,18 +2408,21 @@
         return await client.getItem(client.getCurrentUserId(), id);
     }
 
-    async function fetchSearchEpisodes(anime, episode, prefix, appId, appSecret) {
+    async function fetchSearchEpisodes(anime, episode, prefix, appId, appSecret, request) {
         if (!anime) { throw new Error('anime is required'); }
 
         // 步骤1: 使用 /api/v2/search/anime 搜索动画
         const searchUrl = `${prefix}/search/anime?keyword=${encodeURIComponent(anime)}`;
         const signHeaders = await buildCustomApiSignHeaders(appId, appSecret, searchUrl);
-        const searchResult = await fetchJson(searchUrl, Object.keys(signHeaders).length > 0 ? { headers: signHeaders } : {})
+        // 仅手动搜索传入取消上下文；自动匹配保留原有调用与结果顺序。
+        request?.check();
+        const searchResult = await fetchJson(searchUrl, { headers: signHeaders, signal: request?.signal })
             .catch((error) => {
                 logger.error(`[API请求] /search/anime 查询失败: ${error.message}`);
                 throw error;
             });
 
+        request?.check();
         if (!searchResult || searchResult.success === false || !Array.isArray(searchResult.animes)) {
             const failure = new Error('搜索响应无效');
             failure.code = 'UPSTREAM_PROTOCOL_MISMATCH';
@@ -2384,7 +2444,7 @@
             const animeItem = searchResult.animes[i];
             if (animeItem.bangumiId) {
                 bangumiPromises.push(
-                    (async () => { const bgUrl = `${prefix}/bangumi/${animeItem.bangumiId}`; const bgSignHeaders = await buildCustomApiSignHeaders(appId, appSecret, bgUrl); return fetchJson(bgUrl, Object.keys(bgSignHeaders).length > 0 ? { headers: bgSignHeaders } : {}); })()
+                    (async () => { const bgUrl = `${prefix}/bangumi/${animeItem.bangumiId}`; const bgSignHeaders = await buildCustomApiSignHeaders(appId, appSecret, bgUrl); request?.check(); return fetchJson(bgUrl, { headers: bgSignHeaders, signal: request?.signal }); })()
                         .then(result => ({ index: i, result }))
                         .catch((error) => {
                             logger.debug(`[API请求] /bangumi/${animeItem.bangumiId} 查询失败: ${error.message}`);
@@ -2396,6 +2456,7 @@
 
         // 并发等待所有 bangumi 请求
         const bangumiResults = await Promise.all(bangumiPromises);
+        request?.check();
         let enrichedCount = 0;
 
         // 给每个候选填充 episodes 信息
@@ -2471,13 +2532,14 @@
      * @param {String} ddpPrefix   弹弹play 前缀（用于调 /bangumi/bgmtv，需签名走代理）
      * @returns {Array} anime 列表（含 episodes），失败返回 []
      */
-    async function fetchBgmSearchFallback(searchTitle, ddpPrefix) {
+    async function fetchBgmSearchFallback(searchTitle, ddpPrefix, request) {
         if (!searchTitle) return [];
         try {
             // 1. 调 Bangumi 新版搜索接口（POST /v0/search/subjects），type=2 表示动画
             const searchUrl = bangumiApi.searchSubjects();
             const searchBody = { keyword: searchTitle, filter: { type: [2] } };
-            const searchRes = await fetchJson(searchUrl, { method: 'POST', body: searchBody });
+            const searchRes = await fetchJson(searchUrl, { method: 'POST', body: searchBody, signal: request?.signal });
+            request?.check();
             const subjects = (searchRes && Array.isArray(searchRes.data)) ? searchRes.data : [];
             if (subjects.length === 0) {
                 logger.info(`[BGM兜底] Bangumi 搜索无结果: ${searchTitle}`);
@@ -2493,7 +2555,7 @@
                 if (!subj || !subj.id) continue;
                 const detailUrl = dandanplayApi.getBangumiByBgmId(subj.id);
                 detailPromises.push(
-                    fetchJson(detailUrl)
+                    fetchJson(detailUrl, { signal: request?.signal })
                         .then(result => ({ subj, result }))
                         .catch((error) => {
                             logger.debug(`[BGM兜底] /bangumi/bgmtv/${subj.id} 查询失败: ${error.message}`);
@@ -2502,6 +2564,7 @@
                 );
             }
             const detailResults = await Promise.all(detailPromises);
+            request?.check();
 
             // 3. 组装成与 fetchSearchEpisodes 一致的 anime 结构
             const animes = [];
@@ -3437,7 +3500,7 @@
                         const code = /^[A-Z0-9_]{1,60}$/.test(rawCode) ? rawCode : 'UNKNOWN';
                         if (data.ddSave.status === 'saved' && code === 'SELECTION_SAVED') logger.info('[选择记录] 本人弹幕选择已保存，不写共享 XML');
                         else if (data.ddSave.status === 'saved') logger.info(`[后端保存] 弹幕已保存到服务器，状态=${code}`);
-                        else if (data.ddSave.status === 'failed') logger.warn(`[后端保存] 保存失败，状态=${code}，不影响播放`);
+                        else if (data.ddSave.status === 'failed') logger.warn(`[后端保存] ${createBackendError(data.ddSave, null, null, ddBackend.isDll()).message}，不影响播放`);
                         else logger.info(`[后端保存] 保存已跳过，状态=${code}`);
                     }
                     logger.info(`[API请求] comment 获取弹幕成功, 耗时: ${duration}ms, 数量: ${comments.length}`);
@@ -3448,7 +3511,9 @@
                 }
             })
             .catch((error) => {
-                logger.error(`[API请求] comment 获取弹幕失败: ${error.message}`);
+                logger.error(`[API请求] comment 获取弹幕失败: ${error.code ? formatBackendError(error) : '请求失败'}`);
+                // DLL 失败交给加载入口展示，不能吞为 null 后覆盖成“未获取到弹幕”。
+                if (ddBackend.isDll() && error.code) throw error;
                 return null;
             });
     }
@@ -3870,7 +3935,7 @@
                     method: 'POST', body: JSON.stringify({ itemId, sourceId, episodeId, selectionTaskId, savePurpose }) });
                 checkDownloadView();
                 const taskId = String(startBody?.data?.id || '');
-                if (!start.ok || !/^[a-f0-9]{32}$/i.test(taskId)) throw new Error('后端下载任务未创建');
+                if (!start.ok || startBody?.success !== true || !/^[a-f0-9]{32}$/i.test(taskId)) throw createBackendError(startBody, start.status);
                 logger.info(`[后端下载] 已受理，任务=${taskId}，来源=${sourceId}`);
                 ddBackend.showTaskProgress({ stage: 'fetch', status: 'pending' }, currentDownloadView);
                 checkDownloadView();
@@ -3884,26 +3949,28 @@
                     checkDownloadView();
                     const { response: stateResponse, data: state } = await readDownloadTask(`/dd-danmaku/api/business/tasks/${taskId}`);
                     checkDownloadView();
-                    if (!stateResponse.ok || state?.success !== true) throw new Error('后端下载状态读取失败');
+                    if (!stateResponse.ok || state?.success !== true) throw createBackendError(state, stateResponse.status, taskId);
                     const taskStatus = String(state.data?.status || 'unknown');
                     if (taskStatus !== lastTaskStatus) {
                         logger.info(`[后端下载] 任务=${taskId}，状态=${taskStatus}`);
                         lastTaskStatus = taskStatus;
                     }
                     if (['failed', 'cancelled'].includes(taskStatus)) {
-                        const rawCode = String(state.data?.errorCode || 'UNKNOWN_ERROR');
-                        const code = /^[A-Z0-9_]{1,60}$/.test(rawCode) ? rawCode : 'UNKNOWN_ERROR';
-                        ddBackend.showTaskProgress({ status: taskStatus, code }, currentDownloadView);
-                        throw new Error(`后端下载任务失败，错误码=${code}，任务=${taskId}`);
+                        const failure = createBackendError(state.data, null, taskId, true, taskStatus === 'cancelled' ? 'OPERATION_CANCELLED' : 'UNKNOWN_ERROR');
+                        ddBackend.showTaskProgress({ status: taskStatus, code: failure.code, httpStatus: failure.httpStatus, errorMessage: failure.errorMessage }, currentDownloadView);
+                        throw failure;
                     }
                     if (taskStatus === 'succeeded') {
                         const { response: resultResponse, data: taskBody } = await readDownloadTask(`/dd-danmaku/api/business/tasks/${taskId}/result`);
                         checkDownloadView();
-                        if (!resultResponse.ok) throw new Error('后端下载结果读取失败');
+                        if (!resultResponse.ok || taskBody?.success === false) throw createBackendError(taskBody, resultResponse.status, taskId);
                         return taskBody?.data || taskBody;
                     }
                 }
-                throw new Error('后端下载任务超时');
+                throw createBackendError({ errorCode: 'UPSTREAM_TIMEOUT' }, null, taskId);
+            } catch (error) {
+                if (error.code || error.name === 'AbortError') throw error;
+                throw createBackendError({ errorCode: 'UPSTREAM_UNAVAILABLE' });
             } finally {
                 clearInterval(viewTimer); controller.abort();
                 view?.abortControllers?.delete(controller);
@@ -4028,19 +4095,16 @@
         let parsed;
         if (responseText?.length > 0) {
             try { parsed = JSON.parse(responseText); }
-            catch (parseError) { logger.warn('responseText is not JSON:', parseError); }
+            catch (_) { logger.warn('响应不是有效 JSON，未展示原始正文'); }
         }
-        const upstreamCode = parsed?.errorCode;
-        if (!response.ok || parsed?.success === false || (upstreamCode != null && Number.isFinite(Number(upstreamCode)) && Number(upstreamCode) !== 0)) {
+        const upstreamCode = parsed?.errorCode ?? parsed?.ErrorCode;
+        if (!response.ok || parsed?.success === false || parsed?.Success === false || (upstreamCode != null && Number.isFinite(Number(upstreamCode)) && Number(upstreamCode) !== 0)) {
             const code = response.status === 429 || Number(upstreamCode) === 429 ? 'UPSTREAM_RATE_LIMITED'
                 : [401, 403].includes(response.status) || [401, 403].includes(Number(upstreamCode))
                     ? 'UPSTREAM_AUTH_REJECTED' : /^[A-Z0-9_]{1,60}$/.test(String(upstreamCode ?? ''))
                         ? String(upstreamCode) : 'UPSTREAM_BUSINESS_ERROR';
-            logger.warn(`[Network] ${apiPath} 错误响应 | status=${response.status} | code=${code} | total=${totalMs}ms`);
-            const failure = new Error(`上游请求失败 (${code})`);
-            failure.code = code;
-            failure.httpStatus = response.status;
-            failure.upstreamResponse = parsed;
+            const failure = createBackendError(parsed, response.status, null, isDllApiUrl(url), code);
+            logger.warn(`[Network] ${apiPath} ${failure.message} | total=${totalMs}ms`);
             throw failure;
         }
         return parsed ?? { success: true };
@@ -4062,8 +4126,9 @@
             throw error;
         }
 
-        logger.error(`[Network] ${errPath} 异常 | duration=${duration}ms | error: ${error.message || error}`);
-        throw error;
+        const failure = error.code ? error : createBackendError({ errorCode: 'UPSTREAM_UNAVAILABLE' }, null, null, false);
+        logger.error(`[Network] ${errPath} 异常 | duration=${duration}ms | ${formatBackendError(failure)}`);
+        throw failure;
     } finally {
         await proxyOperation?.close();
         // 统一在 finally 清理定时器，确保响应体读取全程受超时保护
@@ -5410,7 +5475,8 @@
     }
 
     async function createDanmaku(comments, sessionId, renderOnly = false) {
-        readyDanmakuRender = null;
+        // 旧任务入口不得清掉新任务已经就绪的正文；纯渲染始终绑定其单飞队列。
+        const renderQueue = renderOnly ? window.ede?._renderReload : null;
         // 跨异步等待保持 view 与媒体身份，防止旧任务挂载到新播放器。
         const generation = playbackViewGeneration;
         const sourceMedia = getPlaybackMedia();
@@ -5420,6 +5486,11 @@
             && renderPlaybackCurrent()
             && (!sessionId || sessionId === window.ede.lastLoadId)
             && sourceMedia === getPlaybackMedia()
+            && (!renderOnly || (renderQueue && window.ede?._renderReload === renderQueue
+                && isDanmakuRenderIdentityCurrent(renderQueue.render.identity)
+                && renderQueue.render.snapshot.player === renderQueue.render.snapshot.manager.getCurrentPlayer()
+                && renderQueue.render.snapshot.key === getDanmakuPlaybackKey(
+                    renderQueue.render.snapshot.manager, renderQueue.render.snapshot.player)))
             && (!renderIdentity || isDanmakuRenderIdentityCurrent(renderIdentity));
         // [核心修复] 1. 入口身份核验
         // 如果调用者传了身份证(sessionId)，必须和全局最新的(lastLoadId)一致
@@ -5428,6 +5499,8 @@
             return;
         }
 
+        if (!isCurrent()) return;
+        readyDanmakuRender = null;
         // 成功标记只来自当前加载，不能信任缓存或上次请求留下的状态。
         const episodeInfo = window.ede.episode_info;
         if (episodeInfo?.episodeId) clearLocalDanmakuInfo();
@@ -5445,7 +5518,7 @@
             && key === (player && getDanmakuPlaybackKey(manager, player));
         if (!isCurrent()) return;
         const offset = player && sourceMedia ? getDanmakuPlaybackOffset(manager, player, sourceMedia) : 0;
-        danmakuPlaybackSnapshot = key && sourceMedia ? {
+        const renderSnapshot = danmakuPlaybackSnapshot = key && sourceMedia ? {
             manager, player, key, generation, sessionId: sessionId || window.ede.lastLoadId,
             userId: getHostApiClient()?.getCurrentUserId?.(),
             comments, media: sourceMedia, src: sourceMedia.src, offset, ready: false,
@@ -5462,6 +5535,9 @@
             });
         }
 
+        // 重建先停止旧尺寸回调和时钟，等待或失败期间不保留上一实例的定时资源。
+        window.ede._cancelResizeReload?.();
+        danmakuClock?.dispose();
         if (window.ede.danmaku) {
             try { window.ede.danmaku.hide(); window.ede.danmaku.destroy(); } catch (e) {
                 logger.warn('旧弹幕实例销毁异常', e);
@@ -5639,7 +5715,8 @@
         let lastHeight = _container.offsetHeight;
         let resizeTimer;
 
-        window.ede.ob = new ResizeObserver((entries) => {
+        const resizeOwner = window.ede;
+        const observer = new ResizeObserver((entries) => {
             for (let entry of entries) {
                 const { width, height } = entry.contentRect;
                 if (Math.abs(width - lastWidth) < 20 && Math.abs(height - lastHeight) < 20) {
@@ -5651,7 +5728,7 @@
 
                 resizeTimer = setTimeout(() => {
                     // 尺寸回调只属于创建它的 view 和加载任务。
-                    if (isCurrent() && window.ede && window.ede.ob && window.ede.danmaku) {
+                    if (isCurrent() && window.ede === resizeOwner && resizeOwner.ob === observer && resizeOwner.danmaku) {
                         logger.debug(`[Resize] 尺寸变化 (${width|0}x${height|0})，重载弹幕轨道...`);
                         loadDanmaku(LOAD_TYPE.RELOAD);
                     }
@@ -5660,7 +5737,16 @@
             }
         });
 
-        window.ede.ob.observe(_container);
+        // 串行重建共用加载编号，尺寸计时器仍必须绑定具体实例并随销毁取消。
+        resizeOwner.ob = observer;
+        resizeOwner._cancelResizeReload = () => {
+            clearTimeout(resizeTimer);
+            resizeTimer = null;
+            observer.disconnect();
+            if (resizeOwner.ob === observer) resizeOwner.ob = null;
+            resizeOwner._cancelResizeReload = null;
+        };
+        observer.observe(_container);
         // 自定义的 initH5VideoAdapter 下,解决暂停时暂停的弹幕再次加载会自动恢复问题
         if (_media.id) {
             require(['playbackManager'], (playbackManager) => {
@@ -5678,10 +5764,11 @@
         if (lsGetItem(lsKeys.osdLineChartEnable.id)) {
             buildProgressBarChart(20);
         }
-        if (isCurrent() && danmakuPlaybackSnapshot?.sessionId === (sessionId || window.ede.lastLoadId)) {
-            danmakuPlaybackSnapshot.ready = true;
+        if (isCurrent() && renderSnapshot && danmakuPlaybackSnapshot === renderSnapshot
+            && renderSnapshot.sessionId === (sessionId || window.ede.lastLoadId)) {
+            renderSnapshot.ready = true;
             readyDanmakuRender = { identity: renderIdentity, comments,
-                snapshot: danmakuPlaybackSnapshot, loadId: window.ede.lastLoadId };
+                snapshot: renderSnapshot, loadId: window.ede.lastLoadId };
         }
     }
 
@@ -5779,6 +5866,9 @@
     // [新增] 强制清理 UI 函数
     function clearDanmakuUI() {
     readyDanmakuRender = null;
+    // 显式清空同时淘汰待重建设置和旧尺寸计时器，不能再恢复旧正文。
+    if (window.ede) window.ede._renderReload = null;
+    window.ede?._cancelResizeReload?.();
     // 清空同时释放时钟及媒体监听，禁止旧状态恢复已取消的弹幕。
     clearStoppedDanmaku();
     danmakuClock?.dispose();
@@ -5860,11 +5950,14 @@
     }
 
     async function loadDanmaku(loadType = LOAD_TYPE.CHECK) {
+        // 完整加载立即淘汰样式队列，不能在搜索、刷新或切集后恢复旧正文。
+        if (loadType !== LOAD_TYPE.RELOAD && window.ede) window.ede._renderReload = null;
         // 显式重新匹配立即废弃旧任务，普通自动触发仍可复用进行中的任务。
         if (loadType === LOAD_TYPE.SEARCH || loadType === LOAD_TYPE.REFRESH) activeEpisodeTask = null;
         const generation = playbackViewGeneration;
         const _media = getPlaybackMedia();
         if (!_media) {
+            if (window.ede) window.ede._renderReload = null;
             return logger.warn('用户已退出视频播放，停止加载弹幕');
         }
 
@@ -5876,6 +5969,18 @@
             }
         }
 
+        // 重建期间只合并同一完整身份的 RELOAD，不提升尚未就绪的加载为可复用正文。
+        const rebuilding = window.ede._renderReload;
+        if (loadType === LOAD_TYPE.RELOAD && rebuilding
+            && rebuilding.loadId === window.ede.lastLoadId
+            && isDanmakuRenderIdentityCurrent(rebuilding.render.identity)
+            && rebuilding.render.snapshot.player === rebuilding.render.snapshot.manager.getCurrentPlayer()
+            && rebuilding.render.snapshot.key === getDanmakuPlaybackKey(
+                rebuilding.render.snapshot.manager, rebuilding.render.snapshot.player)) {
+            rebuilding.queued = true;
+            return;
+        }
+        window.ede._renderReload = null;
         // 仅正常就绪且完整身份未变时走纯渲染；SEARCH/REFRESH/换源仍走原本的全匹配链。
         const render = readyDanmakuRender;
         const snapshot = render?.snapshot;
@@ -5895,10 +6000,40 @@
             && _media === getPlaybackMedia() && currentSessionId === window.ede.lastLoadId;
         // 所有提前返回和异常统一收尾，只有本任务仍是当前加载时才关闭提示。
         window.ede.loading = true;
+        const renderReload = renderOnly ? { render, loadId: currentSessionId, queued: false } : null;
+        if (renderReload) playback._renderReload = renderReload;
         try {
             if (renderOnly) {
-                await createDanmaku(render.comments, currentSessionId, true);
-                if (isCurrentLoad()) logger.info('[样式重建] 当前正文已重新渲染，未重新匹配或请求网络');
+                try {
+                    do {
+                        // 消费后清除标记；只有等待期间的新设置才会再触发一次重建。
+                        renderReload.queued = false;
+                        await createDanmaku(render.comments, currentSessionId, true);
+                    } while (isCurrentLoad() && playback._renderReload === renderReload
+                        && renderReload.queued && readyDanmakuRender?.loadId === currentSessionId
+                        && readyDanmakuRender.snapshot === danmakuPlaybackSnapshot
+                        && danmakuPlaybackSnapshot?.ready && window.ede.danmaku
+                        && isDanmakuRenderIdentityCurrent(render.identity)
+                        && render.snapshot.player === render.snapshot.manager.getCurrentPlayer()
+                        && render.snapshot.key === getDanmakuPlaybackKey(render.snapshot.manager, render.snapshot.player));
+                    if (isCurrentLoad() && readyDanmakuRender?.loadId === currentSessionId)
+                        logger.info('[样式重建] 当前正文已重新渲染，未重新匹配或请求网络');
+                } catch (error) {
+                    // 重建失败仅报告，不将待执行设置静默降级为网络匹配或自动重试。
+                    if (isCurrentLoad()) {
+                        readyDanmakuRender = null;
+                        danmakuPlaybackSnapshot = null;
+                        playback._cancelResizeReload?.();
+                        danmakuClock?.dispose();
+                        try { playback.danmaku?.destroy(); } catch (cleanupError) {
+                            logger.warn('[样式重建] 失败实例清理异常', cleanupError);
+                        }
+                        playback.danmaku = null;
+                        getById(eleIds.danmakuWrapper)?.remove();
+                        logger.warn('[样式重建] 重建失败，未重新请求弹幕', error);
+                        setOsdDanmakuText('弹幕：样式重建失败');
+                    }
+                }
                 return;
             }
             logger.info('[dd-danmaku] 开始检查媒体库排除...');
@@ -6020,6 +6155,8 @@
             // 本地 XML 未命中时沿用当前任务，不再次清空已经清理过的界面。
             await loadOnlineDanmaku(loadType, currentSessionId, isCurrentLoad);
         } finally {
+            // 旧任务收尾不能清除新任务的队列；完成或失败都释放保存的正文引用。
+            if (renderReload && playback._renderReload === renderReload) playback._renderReload = null;
             if (isCurrentLoad()) {
                 window.ede.loading = false;
                 ddClearLoadingRing();
@@ -6120,13 +6257,13 @@
                     if (msg) logger.debug(msg);
                     ddClearLoadingRing();
                     const code = /^[A-Z0-9_]{1,60}$/.test(msg?.code || '') ? msg.code : '';
-                    setOsdDanmakuText(code ? `弹幕：请求失败（${code}）` : '弹幕：未匹配到弹幕');
+                    setOsdDanmakuText(code ? `弹幕：${formatBackendError(msg)}` : '弹幕：未匹配到弹幕');
                 },
             )
             .catch((err) => {
                 if (!isCurrent()) return;
                 logger.debug(err);
-                setOsdDanmakuText('弹幕：加载失败');
+                setOsdDanmakuText(err?.code ? `弹幕：${formatBackendError(err)}` : '弹幕：加载失败');
             });
     }
 
@@ -6724,9 +6861,13 @@
     }
 
     async function afterEmbyDialogCreated(dialogContainer) {
+        // 弹窗初始化也绑定播放身份，异步取媒体信息后不能复活已关闭的弹窗。
+        const context = captureManualDialogContext(dialogContainer);
         const itemInfoMap = await getMapByEmbyItemInfo();
+        if (!context.isCurrent()) return;
         if (itemInfoMap) {
             window.ede.searchDanmakuOpts = {
+                manualDialogContext: context,
                 _id_key: itemInfoMap._id_key,
                 _season_key: itemInfoMap._season_key,
                 _episode_key: itemInfoMap._episode_key,
@@ -7863,6 +8004,8 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         getById(eleIds.danmakuEpisodeLoad).append(
             embyButton({ id: eleIds.danmakuSwitchEpisode, label: '加载弹幕', iconKey: iconKeys.done }, doDanmakuSwitchEpisode)
         );
+        // 未完成分集加载前不允许确认，避免空选择或沿用上一候选。
+        getById(eleIds.danmakuSwitchEpisode).disabled = true;
         const currentMatchedDiv = getById(eleIds.currentMatchedDiv);
         currentMatchedDiv.append(
             embyButton({ label: '取消匹配/清空弹幕', iconKey: iconKeys.close }, (e) => {
@@ -10514,11 +10657,71 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         embyToast({ text: `防重叠: ${flag ? '开启 - 超出轨道的弹幕将被过滤' : '关闭 - 允许弹幕重叠显示'}` });
     }
 
+    // 弹窗身份与请求代次独立固定，避免切集、关闭或重复搜索后写入迟到结果。
+    let manualSearchRequest = null;
+    let manualSelectRequest = null;
+    function captureManualDialogContext(dialog = getById(eleIds.dialogContainer)) {
+        const owner = window.ede, client = getHostApiClient(), media = getPlaybackMedia();
+        const generation = playbackViewGeneration, itemId = owner?.itemId, src = media?.src;
+        const server = client?.serverAddress?.(), user = client?.getCurrentUserId?.(), token = client?.accessToken?.();
+        return { owner, itemId, isCurrent: () => !!dialog?.isConnected
+            && getById(eleIds.dialogContainer) === dialog && window.ede === owner
+            && playbackViewGeneration === generation && owner?.itemId === itemId
+            && getPlaybackMedia() === media && media?.src === src
+            && getHostApiClient()?.serverAddress?.() === server
+            && getHostApiClient()?.getCurrentUserId?.() === user
+            && getHostApiClient()?.accessToken?.() === token };
+    }
+    function beginManualDialogRequest(kind) {
+        const opts = window.ede?.searchDanmakuOpts;
+        const context = opts?.manualDialogContext;
+        if (!context?.isCurrent()) return null;
+        if (kind === 'search') {
+            manualSearchRequest?.finish();
+            manualSelectRequest?.finish();
+            manualSelectRequest = null;
+        } else manualSelectRequest?.finish();
+        const controller = new AbortController();
+        const request = { context, opts, signal: controller.signal,
+            isCurrent: () => context.isCurrent() && context.owner.searchDanmakuOpts === opts
+                && (kind === 'search' ? manualSearchRequest : manualSelectRequest) === request,
+            check: () => {
+                if (request.isCurrent() && !controller.signal.aborted) return;
+                controller.abort();
+                const error = new Error('手动匹配请求已过期'); error.name = 'AbortError'; throw error;
+            } };
+        const timer = setInterval(() => { if (!request.isCurrent()) request.finish(); }, 250);
+        request.finish = () => {
+            clearInterval(timer); controller.abort(); context.owner?.abortControllers?.delete(controller);
+            request.closeSubscription?.();
+        };
+        context.owner?.abortControllers?.add(controller);
+        if (kind === 'search') manualSearchRequest = request;
+        else manualSelectRequest = request;
+        return request;
+    }
+    async function readManualBackendTask(request, base, path, headers, options = {}) {
+        request.check();
+        const response = await fetch(`${base}${path}`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error',
+            headers, ...options, signal: request.signal });
+        request.check();
+        const data = await response.json().catch(() => null);
+        request.check();
+        return { response, data };
+    }
+
     // --- 手动搜索：并行模式 (速度优先，聚合结果) ---
     async function doDanmakuSearchEpisode() {
         let embySearch = getById(eleIds.danmakuSearchName);
         if (!embySearch) { return; }
+        const request = beginManualDialogRequest('search');
+        if (!request) return;
+        const { opts, context } = request;
+        getById(eleIds.danmakuSwitchEpisode).disabled = true;
+        getById(eleIds.danmakuEpisodeNumDiv).innerHTML = '';
+        opts.animes = [];
         let searchName = embySearch.value;
+        try {
         const danmakuRemarkEle = getById(eleIds.danmakuRemark);
         danmakuRemarkEle.parentNode.hidden = false;
         danmakuRemarkEle.innerText = searchName ? '' : '请填写标题';
@@ -10528,30 +10731,34 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
 
         if (ddBackend.isDll()) {
             let searchSubscription;
-            const searchItemId = window.ede?.itemId;
             try {
                 const client = getHostApiClient();
                 const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
                 const headers = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Emby-Token': client?.accessToken?.() || '' };
                 if (!base || !headers['X-Emby-Token']) throw new Error('后端搜索会话不可用');
-                const start = await fetch(`${base}/dd-danmaku/api/business/search`, {
-                    method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers,
-                    body: JSON.stringify({ itemId: String(window.ede?.itemId || ''), keyword: searchName }) });
-                let started = await start.json().catch(() => null);
+                const { response: start, data: startBody } = await readManualBackendTask(request, base, '/dd-danmaku/api/business/search', headers, {
+                    method: 'POST', body: JSON.stringify({ itemId: String(context.itemId || ''), keyword: searchName }) });
+                request.check();
+                let started = startBody;
                 const taskId = String(started?.data?.id || '');
-                if (!start.ok || !/^[a-f0-9]{32}$/i.test(taskId)) throw new Error('后端搜索任务未创建');
-                searchSubscription = await ddBackend.watchTask(taskId, () => window.ede?.itemId === searchItemId, false);
+                if (!start.ok || started?.success !== true || !/^[a-f0-9]{32}$/i.test(taskId)) throw createBackendError(started, start.status);
+                searchSubscription = await ddBackend.watchTask(taskId, request.isCurrent, false);
+                request.closeSubscription = () => { void searchSubscription.close(); };
+                request.check();
                 const deadline = Date.now() + 180000;
                 while (Date.now() < deadline) {
                     await new Promise(resolve => setTimeout(resolve, 500));
-                    const status = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
-                    const statusBody = await status.json().catch(() => null);
-                    if (!status.ok || statusBody?.success !== true) throw new Error('后端搜索状态读取失败');
-                    if (['failed', 'cancelled'].includes(statusBody.data?.status)) throw new Error('后端搜索任务失败');
+                    request.check();
+                    const { response: status, data: statusBody } = await readManualBackendTask(request, base, `/dd-danmaku/api/business/tasks/${taskId}`, headers);
+                    request.check();
+                    if (!status.ok || statusBody?.success !== true) throw createBackendError(statusBody, status.status, taskId);
+                    if (['failed', 'cancelled'].includes(statusBody.data?.status)) throw createBackendError(statusBody.data, null, taskId, true,
+                        statusBody.data.status === 'cancelled' ? 'OPERATION_CANCELLED' : 'UNKNOWN_ERROR');
                     if (statusBody.data?.status === 'succeeded') {
-                        const result = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/result`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
-                        started = await result.json().catch(() => null);
-                        if (!result.ok || started?.success !== true) throw new Error('后端搜索结果读取失败');
+                        const { response: result, data: resultBody } = await readManualBackendTask(request, base, `/dd-danmaku/api/business/tasks/${taskId}/result`, headers);
+                        request.check();
+                        started = resultBody;
+                        if (!result.ok || started?.success !== true) throw createBackendError(started, result.status, taskId);
                         break;
                     }
                 }
@@ -10566,13 +10773,16 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 failedSources = (started?.data?.Results || started?.data?.results || []).filter(row => (row.Status || row.status) === 'failed').length;
                 logger.info(`[后端手动搜索] 完成，共找到 ${allAnimes.length} 个结果`);
             } catch (error) {
-                logger.warn('[后端手动搜索] 请求失败，拒绝回退浏览器直连', error);
-                danmakuRemarkEle.innerText = '后端搜索不可用，请检查插件能力';
+                if (!request.isCurrent() || request.signal.aborted) return;
+                const failure = error.code ? error : createBackendError({ errorCode: 'UPSTREAM_UNAVAILABLE' });
+                logger.warn(`[后端手动搜索] ${formatBackendError(failure)}，拒绝回退浏览器直连`);
+                danmakuRemarkEle.innerText = formatBackendError(failure);
+                return;
             } finally {
                 await searchSubscription?.close();
-                spinnerEle && spinnerEle.classList.add('hide');
+                if (request.isCurrent()) spinnerEle && spinnerEle.classList.add('hide');
             }
-            spinnerEle && spinnerEle.classList.add('hide');
+            request.check();
             if (allAnimes.length < 1) {
                 danmakuRemarkEle.innerText = failedSources ? '后端搜索请求失败，请检查来源或稍后重试' : '搜索结果为空';
                 getById(eleIds.danmakuSwitchEpisode).disabled = true;
@@ -10591,7 +10801,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 selectAnimeIdx, allAnimes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription || ''} 来源：${opt.apiName}`, doDanmakuAnimeSelect);
             danmakuAnimeDiv.append(animeSelect);
             getById(eleIds.danmakuEpisodeFlag).hidden = false;
-            getById(eleIds.danmakuSwitchEpisode).disabled = false;
+            getById(eleIds.danmakuSwitchEpisode).disabled = true;
             doDanmakuAnimeSelect(null, selectAnimeIdx, allAnimes[selectAnimeIdx]);
             return;
         }
@@ -10636,7 +10846,8 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             }
 
             try {
-                const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix, config.appId, config.appSecret);
+                const animaInfo = await fetchSearchEpisodes(manualSearchTitle, manualSearchEpisode, config.prefix, config.appId, config.appSecret, request);
+                request.check();
                 if (animaInfo && animaInfo.animes.length > 0) {
                     // [黑名单] 对搜索结果应用黑名单过滤
                     animaInfo.animes = applySearchBlacklist(animaInfo.animes, true, apiKey);
@@ -10660,6 +10871,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         // --- 3. 并行执行所有任务 ---
         const promises = actualPriority.map(key => searchTask(key));
         const results = await Promise.allSettled(promises);
+        request.check();
 
         // --- 4. 按优先级顺序合并结果 ---
         // 虽然是并行请求，但展示顺序依然遵循你的优先级设置
@@ -10680,7 +10892,8 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             danmakuRemarkEle.innerText = '主源无结果，正在尝试 BGM 搜索兜底...';
             logger.info(`[手动匹配] 主源无结果，启用 BGM 搜索兜底: ${searchName}`);
             const officialPrefix = corsProxy + 'https://api.dandanplay.net/api/v2';
-            const fallbackAnimes = await fetchBgmSearchFallback(searchName, officialPrefix);
+            const fallbackAnimes = await fetchBgmSearchFallback(searchName, officialPrefix, request);
+            request.check();
             if (fallbackAnimes.length > 0) {
                 fallbackAnimes.forEach(anime => {
                     anime.apiPrefix = officialPrefix;
@@ -10715,11 +10928,18 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         danmakuAnimeDiv.append(animeSelect);
 
         getById(eleIds.danmakuEpisodeFlag).hidden = false;
-        getById(eleIds.danmakuSwitchEpisode).disabled = false;
+        getById(eleIds.danmakuSwitchEpisode).disabled = true;
 
         // [修复] 初始渲染后直接调用 doDanmakuAnimeSelect 走统一的分集加载逻辑，
         // 避免静态检查 episodes 导致分集列表为空（初始选中项不触发 onChange）
         doDanmakuAnimeSelect(null, selectAnimeIdx, allAnimes[selectAnimeIdx]);
+        } catch (error) {
+            if (request.isCurrent() && !request.signal.aborted) {
+                logger.warn('[手动匹配] 搜索失败', error);
+                const remark = getById(eleIds.danmakuRemark);
+                if (remark) remark.innerText = '搜索请求失败，请稍后重试';
+            }
+        } finally { request.finish(); }
     }
 
     function doSearchTitleSwtich(e) {
@@ -10760,9 +10980,16 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
     async function doDanmakuAnimeSelect(value, index, option) {
         void value;
         void option;
+        const request = beginManualDialogRequest('select');
+        if (!request) return;
         const numDiv = getById(eleIds.danmakuEpisodeNumDiv);
+        const confirmButton = getById(eleIds.danmakuSwitchEpisode);
+        if (!numDiv || !confirmButton) { request.finish(); return; }
+        confirmButton.disabled = true;
         numDiv.innerHTML = '';
-        const anime = window.ede.searchDanmakuOpts.animes[index];
+        const anime = request.opts.animes?.[index];
+        request.anime = anime;
+        try {
         if (!anime) return;
 
         // [修复] 条件修正：episodes 不存在或为空数组时都需要拉取分集
@@ -10777,22 +11004,26 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                     const client = getHostApiClient();
                     const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
                     const headers = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Emby-Token': client?.accessToken?.() || '' };
-                    const start = await fetch(`${base}/dd-danmaku/api/business/episodes`, { method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers,
-                        body: JSON.stringify({ itemId: String(window.ede?.itemId || ''), sourceId: anime.sourceId || 'official', animeId: anime.animeId || anime.bangumiId }) });
-                    let result = await start.json().catch(() => null);
+                    const { response: start, data: startBody } = await readManualBackendTask(request, base, '/dd-danmaku/api/business/episodes', headers, {
+                        method: 'POST', body: JSON.stringify({ itemId: String(request.context.itemId || ''), sourceId: anime.sourceId || 'official', animeId: anime.animeId || anime.bangumiId }) });
+                    request.check();
+                    let result = startBody;
                     const taskId = String(result?.data?.id || '');
-                    if (!start.ok || !/^[a-f0-9]{32}$/i.test(taskId)) throw new Error('后端分集任务未创建');
+                    if (!start.ok || result?.success !== true || !/^[a-f0-9]{32}$/i.test(taskId)) throw createBackendError(result, start.status);
                     const deadline = Date.now() + 180000;
                     while (Date.now() < deadline) {
                         await new Promise(resolve => setTimeout(resolve, 500));
-                        const stateResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
-                        const state = await stateResponse.json().catch(() => null);
-                        if (!stateResponse.ok || state?.success !== true) throw new Error('后端分集状态读取失败');
-                        if (['failed', 'cancelled'].includes(state.data?.status)) throw new Error('后端分集任务失败');
+                        request.check();
+                        const { response: stateResponse, data: state } = await readManualBackendTask(request, base, `/dd-danmaku/api/business/tasks/${taskId}`, headers);
+                        request.check();
+                        if (!stateResponse.ok || state?.success !== true) throw createBackendError(state, stateResponse.status, taskId);
+                        if (['failed', 'cancelled'].includes(state.data?.status)) throw createBackendError(state.data, null, taskId, true,
+                            state.data.status === 'cancelled' ? 'OPERATION_CANCELLED' : 'UNKNOWN_ERROR');
                         if (state.data?.status === 'succeeded') {
-                            const finalResponse = await fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/result`, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers });
-                            result = await finalResponse.json().catch(() => null);
-                            if (!finalResponse.ok || result?.success !== true) throw new Error('后端分集结果读取失败');
+                            const { response: finalResponse, data: finalBody } = await readManualBackendTask(request, base, `/dd-danmaku/api/business/tasks/${taskId}/result`, headers);
+                            request.check();
+                            result = finalBody;
+                            if (!finalResponse.ok || result?.success !== true) throw createBackendError(result, finalResponse.status, taskId);
                             break;
                         }
                     }
@@ -10800,14 +11031,16 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                     if (!Array.isArray(episodes)) throw new Error('后端分集响应格式无效');
                     anime.backendEpisodeTaskId = taskId;
                     anime.backendSourceId = anime.sourceId || 'official';
-                    window.ede.backendEpisodeTaskId = taskId;
-                    window.ede.backendSourceId = anime.backendSourceId;
+                    // 任务随候选缓存；只有确认当前媒体时才恢复到下载上下文。
+                    anime.backendDialogContext = request.context;
                     anime.episodes = episodes; anime.seasons = [];
                 } else {
                     const apiPrefix = anime.apiPrefix || window.ede.searchDanmakuOpts.apiPrefix;
                     const bangumiUrl = `${apiPrefix}/bangumi/${anime.bangumiId}`;
                     const bangumiSignHeaders = anime.apiAppId && anime.apiAppSecret ? await buildCustomApiSignHeaders(anime.apiAppId, anime.apiAppSecret, bangumiUrl) : {};
-                    const bangumiResult = await fetchJson(bangumiUrl, Object.keys(bangumiSignHeaders).length > 0 ? { headers: bangumiSignHeaders } : {});
+                    request.check();
+                    const bangumiResult = await fetchJson(bangumiUrl, { headers: bangumiSignHeaders, signal: request.signal });
+                    request.check();
                     const eps = bangumiResult?.bangumi?.episodes || bangumiResult?.episodes;
                     const seas = bangumiResult?.bangumi?.seasons || bangumiResult?.seasons;
                     if (!eps || eps.length === 0) throw new Error('返回数据为空或格式错误');
@@ -10815,8 +11048,10 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 }
                 logger.info(`[手动匹配] 获取分集信息成功: ${anime.animeTitle}, 共 ${anime.episodes.length} 集`);
             } catch (error) {
-                logger.error(`[手动匹配] 获取分集信息失败: ${error.message}`);
-                numDiv.innerHTML = '<span style="color: #e23636;">获取分集信息失败</span>';
+                if (!request.isCurrent() || request.signal.aborted) return;
+                const message = ddBackend.isDll() || error.code ? formatBackendError(error) : '获取分集信息失败';
+                logger.error(`[手动匹配] ${message}`);
+                numDiv.textContent = message;
                 return;
             }
             numDiv.innerHTML = '';
@@ -10857,6 +11092,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             numDiv.append(episodeNumSelect);
             // [黑名单] 存储过滤后的分集列表，供 doDanmakuSwitchEpisode 使用
             anime.filteredEpisodes = displayEpisodes;
+            confirmButton.disabled = false;
         }
 
         // [修正] 始终使用匹配到的海报
@@ -10865,15 +11101,31 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         // [新增] 更新API来源显示
         const apiSourceDiv = getById(eleIds.searchApiSource);
         if (apiSourceDiv) apiSourceDiv.innerText = `来源: ${anime.apiName}`;
+        } finally { request.finish(); }
     }
 
     async function doDanmakuSwitchEpisode() {
         // 先保存弹窗选择，再读取当前播放条目，避免使用路由留下的空 ID。
         const generation = playbackViewGeneration;
         const media = getPlaybackMedia();
+        const owner = window.ede, opts = owner?.searchDanmakuOpts;
+        const context = opts?.manualDialogContext;
+        const selectionRequest = manualSelectRequest;
+        const confirmButton = getById(eleIds.danmakuSwitchEpisode);
         const animeSelect = getById(eleIds.danmakuAnimeSelect);
         const episodeNumSelect = getById(eleIds.danmakuEpisodeNumSelect);
-        const anime = window.ede.searchDanmakuOpts.animes[animeSelect.selectedIndex];
+        const anime = opts?.animes?.[animeSelect?.selectedIndex];
+        // 加载中、空列表或弹窗已换媒体时，不能读取空控件或确认旧候选。
+        const selectionCurrent = () => context?.isCurrent() && owner.searchDanmakuOpts === opts
+            && manualSelectRequest === selectionRequest && selectionRequest?.anime === anime
+            && animeSelect === getById(eleIds.danmakuAnimeSelect)
+            && opts.animes?.[animeSelect.selectedIndex] === anime
+            && episodeNumSelect === getById(eleIds.danmakuEpisodeNumSelect)
+            && !confirmButton?.disabled;
+        if (!animeSelect || !confirmButton || !anime || !episodeNumSelect?.value || !episodeNumSelect.options?.[episodeNumSelect.selectedIndex]
+            || !selectionCurrent()) return;
+        const selectedIndex = episodeNumSelect.selectedIndex, selectedValue = episodeNumSelect.value;
+        if (ddBackend.isDll() && (!anime.backendEpisodeTaskId || anime.backendDialogContext !== context)) return;
 
         // [修正] 构造一个更完整的 episodeInfo 对象，并使用正确的 unique_episode_key
         const { _episode_key, seriesOrMovieId } = window.ede.searchDanmakuOpts;
@@ -10896,9 +11148,8 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
 
         const seasonInfo = {
             name: anime.animeTitle,
-            episodeOffset: episodeNumSelect.selectedIndex - window.ede.searchDanmakuOpts.episode,
-        }
-        writeLsSeasonInfo(window.ede.searchDanmakuOpts._season_key, seasonInfo);
+            episodeOffset: selectedIndex - opts.episode,
+        };
 
         // [修正] 使用与 getEpisodeInfo 中相同的逻辑来构造缓存键
         const useOfficialApi = lsGetItem(lsKeys.useOfficialApi.id);
@@ -10918,11 +11169,18 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             embyToast({ text: '无法获取当前媒体，请重新确认来源' });
             return;
         }
-        if (generation !== playbackViewGeneration || media !== getPlaybackMedia()) return;
-        if (!item?.Id) {
+        if (generation !== playbackViewGeneration || media !== getPlaybackMedia() || !selectionCurrent()
+            || episodeNumSelect.selectedIndex !== selectedIndex || episodeNumSelect.value !== selectedValue) return;
+        if (!item?.Id || String(item.Id) !== String(context.itemId || '')) {
             embyToast({ text: '当前媒体尚未就绪，请重新确认来源' });
             return;
         }
+        // 缓存候选切回后恢复其任务与来源，且只属于打开弹窗时绑定的媒体。
+        if (ddBackend.isDll()) {
+            owner.backendEpisodeTaskId = anime.backendEpisodeTaskId;
+            owner.backendSourceId = anime.backendSourceId;
+        }
+        writeLsSeasonInfo(opts._season_key, seasonInfo);
         window.ede.itemId = item.Id;
         const client = getHostApiClient();
         const confirmedInfo = { ...episodeInfo, userConfirmed: true,
@@ -11129,7 +11387,8 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
     function onSliderChange(val, opts) {
         // range 的 value 是字符串；按配置默认值的数值类型归一化，避免无变化也重复保存。
         const key = opts.key && lsGetKeyById(opts.key);
-        if (typeof key?.defaultValue === 'number') {
+        // 查找结果是配置名称，默认值类型应从配置表读取，避免字符串滑块值反复重载。
+        if (typeof lsKeys[key]?.defaultValue === 'number') {
             const numericValue = Number(val);
             if (!Number.isFinite(numericValue)) return;
             val = numericValue;
@@ -13316,6 +13575,10 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         if (view && activePlaybackView && view !== activePlaybackView) return;
         // 先失效旧页任务，再释放资源，防止迟到回调恢复已销毁的弹幕。
         playbackViewGeneration++;
+        // 退出立即释放样式队列正文引用及尺寸防抖计时器。
+        readyDanmakuRender = null;
+        if (window.ede) window.ede._renderReload = null;
+        window.ede?._cancelResizeReload?.();
         // 退出时立即释放弹幕时钟，避免旧页计时器继续推进。
         clearStoppedDanmaku();
         danmakuClock?.dispose();

@@ -72,10 +72,8 @@ public sealed partial class DanmakuApiService : IService, IRequiresRequest
         catch (OperationCanceledException) when (Request.CancellationToken.IsCancellationRequested) { throw; }
         catch (ApiAccessException e)
         {
-            // 上游错误保留原状态与正文；本地权限、协议和配置错误仍走脱敏封装。
-            return e.UpstreamReply is { } reply
-                ? new ApiHttpResult(reply.StatusCode, reply.Body, "application/json; charset=utf-8")
-                : Error(e.Status, e.Code, e.Message);
+            // 前端只接收后端中文错误信封，不透传上游英文正文或认证细节。
+            return Error(e.Status, e.Code, FrontendLogStore.Sanitize(e.Message));
         }
         // AI 领域错误已有脱敏消息，保留状态码，不能全部降为内部错误。
         catch (Matching.MatchRequestException e) { return Error(e.StatusCode, e.ErrorCode, e.Message); }

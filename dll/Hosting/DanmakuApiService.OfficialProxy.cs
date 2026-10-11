@@ -62,7 +62,8 @@ public sealed partial class DanmakuApiService
         try
         {
             reply = await DanmakuProxyTransport.SendAsync(target, post ? HttpMethod.Post : HttpMethod.Get,
-                headers, body, Request.CancellationToken);
+                headers, body, Request.CancellationToken,
+                allowCommentArray: !post && tail.StartsWith("comment/", StringComparison.Ordinal));
         }
         catch (ApiAccessException error) when (!post && (tail is "search/anime" or "search/episodes")
             && error.Code == "UPSTREAM_RATE_LIMITED")

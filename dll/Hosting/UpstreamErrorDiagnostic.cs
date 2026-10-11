@@ -7,27 +7,13 @@ internal static class UpstreamErrorDiagnostic
 {
     internal static string Describe(ApiAccessException error)
     {
-        var fields = new Dictionary<string, object?> { ["errorCode"] = error.Code };
-        if (error.UpstreamReply is { } reply)
+        // 用户可见详情不读取上游英文 message/reason，业务判定仍使用异常保存的原响应。
+        var fields = new Dictionary<string, object?>
         {
-            fields["httpStatus"] = reply.StatusCode;
-            try
-            {
-                using var json = JsonDocument.Parse(reply.Body);
-                if (json.RootElement.ValueKind == JsonValueKind.Object)
-                    foreach (var name in new[] { "status", "errorCode", "type", "message", "errorMessage", "reason" })
-                        if (json.RootElement.TryGetProperty(name, out var value))
-                        {
-                            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number))
-                                fields["upstream" + char.ToUpperInvariant(name[0]) + name[1..]] = number;
-                            else if (value.ValueKind == JsonValueKind.String)
-                                fields["upstream" + char.ToUpperInvariant(name[0]) + name[1..]] = FrontendLogStore.Sanitize(
-                                    new string((value.GetString() ?? "").Where(character => !char.IsControl(character)).Take(512).ToArray()));
-                        }
-            }
-            catch (JsonException) { fields["responseFormat"] = "non-json"; }
-        }
-        else fields["message"] = FrontendLogStore.Sanitize(error.Message);
+            ["httpStatus"] = error.Status,
+            ["errorCode"] = error.Code,
+            ["message"] = FrontendLogStore.Sanitize(error.Message)
+        };
         return "上游请求失败：\n" + JsonSerializer.Serialize(fields, new JsonSerializerOptions
         { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
     }

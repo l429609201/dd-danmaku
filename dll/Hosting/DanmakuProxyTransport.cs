@@ -19,7 +19,7 @@ internal static class DanmakuProxyTransport
 
     internal static async Task<Reply> SendAsync(Uri target, HttpMethod method,
         IReadOnlyDictionary<string, string> headers, byte[]? body, CancellationToken token, bool allowPrivate = false,
-        Action<string>? diagnostic = null)
+        Action<string>? diagnostic = null, bool allowCommentArray = false, bool optionalMatch = false)
     {
         var elapsed = Stopwatch.StartNew();
         var requestId = Guid.NewGuid().ToString("N")[..8];
@@ -96,6 +96,9 @@ internal static class DanmakuProxyTransport
             contentType = string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase)
                 || mediaType?.EndsWith("+json", StringComparison.OrdinalIgnoreCase) == true ? "JSON" : "其他";
             Report("收到响应头");
+            // 可选匹配接口按 HTTP 状态识别缺失；HTML/空错误页不应阻止标题搜索后备。
+            if (optionalMatch && (statusCode is 404 or 405 or 501))
+                throw new ApiAccessException(502, "UPSTREAM_MATCH_UNAVAILABLE", "上游未提供可选匹配接口");
             const int limit = 64 * 1024 * 1024;
             if (response.Content.Headers.ContentLength > limit) throw new InvalidDataException("代理响应过大");
             SetPhase("等待首段正文");
@@ -138,7 +141,7 @@ internal static class DanmakuProxyTransport
             // HTML 登录页与空响应不能作为可用 API；保留 JSON 字段大小写供原协议消费。
             SetPhase("本地响应校验");
             Report("开始本地响应校验");
-            ValidateResponse(bytes, (int)response.StatusCode);
+            ValidateResponse(bytes, (int)response.StatusCode, allowCommentArray);
             Report("完成本地响应校验");
             return new Reply(bytes, (int)response.StatusCode);
         }
@@ -157,7 +160,7 @@ internal static class DanmakuProxyTransport
         finally { if (entered) Slots.Release(); }
     }
 
-    internal static void ValidateResponse(byte[] bytes, int statusCode = 200)
+    internal static void ValidateResponse(byte[] bytes, int statusCode = 200, bool allowCommentArray = false)
     {
         JsonDocument parsed;
         try { parsed = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 64 }); }
@@ -167,6 +170,8 @@ internal static class DanmakuProxyTransport
         }
         using var json = parsed;
         var root = json.RootElement;
+        // 仅弹幕正文的成功响应允许裸数组；搜索、匹配、任务状态及错误响应仍要求对象。
+        if (allowCommentArray && statusCode is >= 200 and < 300 && root.ValueKind == JsonValueKind.Array) return;
         if (root.ValueKind != JsonValueKind.Object)
             throw statusCode == 429
                 ? new ApiAccessException(429, "UPSTREAM_RATE_LIMITED", "弹幕上游请求被流控（HTTP 429）")

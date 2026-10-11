@@ -49,6 +49,8 @@ internal sealed class OnlineMatchReuseContext
     }
     internal int ResponseBytes { get; set; }
     internal Dictionary<(Guid UserId, string Source, string SourceId, PluginConfiguration Config, string Path), byte[]> Responses { get; } = new();
+    // POST 匹配原文与 GET 共用容量限制，季集映射仍分别校验、过滤和评分。
+    internal Dictionary<(Guid UserId, string Source, string SourceId, PluginConfiguration Config, string BodyHash), byte[]> MatchResponses { get; } = new();
     internal Dictionary<(Guid UserId, string Source, string SourceId, PluginConfiguration Config, bool AiAuthorized, string Data), MatchHttpResult> Resolutions { get; } = new();
 }
 
@@ -64,6 +66,8 @@ public sealed partial class DanmakuApiService
             throw new ApiAccessException(404, "OPERATION_NOT_FOUND", "操作不存在或不可访问");
         var completion = "failed";
         var failureCode = "UPSTREAM_ERROR";
+        var failureMessage = "上游匹配请求失败";
+        int? failureStatus = null;
         try
         {
         ValidateOnlineInput(input);
@@ -117,12 +121,15 @@ public sealed partial class DanmakuApiService
         {
             // 事件流保留 HTTP 回包的具体错误，不输出上游正文。
             failureCode = error.Code;
+            failureMessage = FrontendLogStore.Sanitize(error.Message);
+            failureStatus = error.Status;
             throw;
         }
         finally
         {
             if (operationId is not null) OperationEventHub.Complete(user.Id, operationId, completion,
-                completion == "failed" ? failureCode : null);
+                completion == "failed" ? failureCode : null,
+                completion == "failed" ? failureMessage : null, failureStatus);
         }
     });
 
@@ -212,7 +219,7 @@ public sealed partial class DanmakuApiService
                 var valid = !path.StartsWith("/bangumi/", StringComparison.Ordinal)
                     || root.TryGetProperty("episodes", out var episodes) && episodes.ValueKind == JsonValueKind.Array;
                 // 多编号任务也保持有界；超过上限照常读取，不改变匹配和错误语义。
-                if (valid && reuseContext.Responses.Count < 128 && bytes.Length <= 8 * 1024 * 1024 - reuseContext.ResponseBytes)
+                if (valid && reuseContext.Responses.Count + reuseContext.MatchResponses.Count < 128 && bytes.Length <= 8 * 1024 * 1024 - reuseContext.ResponseBytes)
                 {
                     reuseContext.Responses[key] = bytes;
                     reuseContext.ResponseBytes += bytes.Length;
@@ -288,9 +295,31 @@ public sealed partial class DanmakuApiService
             });
             try
             {
-                Detail("upstream", $"发送匹配请求，模式={input.MatchMode}，使用真实哈希={realHash && input.MatchMode == "hashAndFileName"}");
-                var match = await OnlineFetchAsync(source, config, userId, "/match", matchBody, token);
-                works.AddRange(OnlineParseList(match, "matches", "animes"));
+                token.ThrowIfCancellationRequested();
+                var requestKey = (userId, source, sourceId, config,
+                    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(matchBody)));
+                byte[] match;
+                List<OnlineEpisode> matchWorks;
+                if (reuseContext.MatchResponses.TryGetValue(requestKey, out var cachedMatch))
+                {
+                    Detail("upstream", "复用本任务内相同匹配响应，按当前季集重新筛选");
+                    match = cachedMatch;
+                    matchWorks = OnlineParseList(match, "matches", "animes");
+                }
+                else
+                {
+                    Detail("upstream", $"发送匹配请求，模式={input.MatchMode}，使用真实哈希={realHash && input.MatchMode == "hashAndFileName"}");
+                    match = await OnlineFetchAsync(source, config, userId, "/match", matchBody, token);
+                    // 先完成原协议解析才缓存；失败、缺失接口、鉴权和流控都不缓存。
+                    matchWorks = OnlineParseList(match, "matches", "animes");
+                    if (reuseContext.Responses.Count + reuseContext.MatchResponses.Count < 128
+                        && match.Length <= 8 * 1024 * 1024 - reuseContext.ResponseBytes)
+                    {
+                        reuseContext.MatchResponses[requestKey] = match;
+                        reuseContext.ResponseBytes += match.Length;
+                    }
+                }
+                works.AddRange(matchWorks);
                 using var matchDoc = JsonDocument.Parse(match);
                 exactFound = matchDoc.RootElement.TryGetProperty("isMatched", out var isMatched)
                     && isMatched.ValueKind == JsonValueKind.True
@@ -606,7 +635,8 @@ public sealed partial class DanmakuApiService
         Guid userId, string suffix, byte[]? body, CancellationToken token, Action<string>? diagnostic = null)
     {
         DanmakuProxyTransport.Reply reply;
-        if (source == "custom") reply = await SendCustomProxy(config, suffix, token, body, diagnostic);
+        if (source == "custom") reply = await SendCustomProxy(config, suffix, token, body, diagnostic,
+            optionalMatch: body is not null && suffix == "/match");
         else
         {
             var settings = OfficialSettings.Value;
@@ -616,10 +646,10 @@ public sealed partial class DanmakuApiService
             { ["X-User-Agent"] = settings.UserAgent };
             reply = await DanmakuProxyTransport.SendAsync(new Uri(settings.RelayPrefix
                 + "https://api.dandanplay.net/api/v2" + suffix), body is null ? HttpMethod.Get : HttpMethod.Post,
-                headers, body, token, diagnostic: diagnostic);
+                headers, body, token, diagnostic: diagnostic,
+                allowCommentArray: body is null && suffix.StartsWith("/comment/", StringComparison.Ordinal),
+                optionalMatch: body is not null && suffix == "/match");
         }
-        if (reply.StatusCode is 404 or 405 or 501 && suffix == "/match")
-            throw new ApiAccessException(502, "UPSTREAM_MATCH_UNAVAILABLE", "上游未提供可选匹配接口");
         if (reply.StatusCode is < 200 or >= 300)
             throw new ApiAccessException(502, "UPSTREAM_MATCH_FAILED", "上游匹配请求失败");
         return reply.Body;

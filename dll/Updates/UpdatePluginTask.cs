@@ -124,6 +124,24 @@ public sealed class UpdatePluginTask : IScheduledTask
             _logger.Info("插件更新已取消。");
             throw;
         }
+        catch (GitHubReleaseClient.UpdateRequestException error)
+        {
+            _logger.Error("{0}", error.Message);
+            throw;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            const string message = "插件更新超时：检查、下载或校验未能在 5 分钟内完成，请检查网络后重试。";
+            _logger.Error("{0}", message);
+            throw new GitHubReleaseClient.UpdateRequestException(message);
+        }
+        catch (HttpRequestException)
+        {
+            // 不保留底层网络异常正文，防止宿主任务详情显示下载地址或其他敏感信息。
+            const string message = "插件更新网络请求失败：无法正常连接 GitHub，请检查 DNS、网络连接及 HTTPS 证书后重试。";
+            _logger.Error("{0}", message);
+            throw new GitHubReleaseClient.UpdateRequestException(message);
+        }
         catch (Exception error)
         {
             // 不把下载地址或网络响应正文写入日志；抛出使计划任务正确显示失败。
