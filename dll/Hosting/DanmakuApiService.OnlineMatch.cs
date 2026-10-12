@@ -561,7 +561,7 @@ public sealed partial class DanmakuApiService
         if (root.TryGetProperty("bangumi", out var bangumi) && bangumi.ValueKind == JsonValueKind.Object) root = bangumi;
         var result = new List<OnlineEpisode>();
         if (!root.TryGetProperty("episodes", out var array) || array.ValueKind != JsonValueKind.Array) return result;
-        foreach (var ep in array.EnumerateArray().Take(101))
+        foreach (var ep in array)
         {
             if (ep.ValueKind != JsonValueKind.Object) continue;
             var id = OnlineString(ep, "episodeId");
