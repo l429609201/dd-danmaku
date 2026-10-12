@@ -197,9 +197,15 @@ public sealed partial class DanmakuApiService
             _matchLogger.Info("后端匹配：任务={0}，阶段={1}，{2}", operationId, stage, text);
             if (operationId is not null) OperationEventHub.Publish(userId, operationId, stage, count, detail: text);
         }
-        string Candidates(IEnumerable<OnlineEpisode> candidates) => "\n" + JsonSerializer.Serialize(candidates,
+        string Candidates(IEnumerable<OnlineEpisode> candidates) => "\n" + JsonSerializer.Serialize(candidates.Take(20),
             new JsonSerializerOptions(MatchJson.Options) { WriteIndented = true,
                 Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+        T[] ParallelFilter<T>(IReadOnlyList<T> candidates, Func<T, bool> predicate)
+        {
+            var keep = new bool[candidates.Count];
+            Parallel.For(0, candidates.Count, index => keep[index] = predicate(candidates[index]));
+            return candidates.Where((_, index) => keep[index]).ToArray();
+        }
         // 成功响应只在本任务、本人和当前来源配置内复用；失败不缓存，保留鉴权/流控/取消语义。
         reuseContext ??= new OnlineMatchReuseContext();
         async Task<byte[]> Fetch(string path)
@@ -252,34 +258,30 @@ public sealed partial class DanmakuApiService
         var episodePattern = input.EpisodeBlacklist == legacyEpisodeBlacklist ? safeEpisodeBlacklist : input.EpisodeBlacklist;
         var episodeFilter = applyBlacklist ? OnlineBlacklist(episodePattern) : null;
         if (applyBlacklist && !string.IsNullOrEmpty(input.AnimeBlacklist) && animeFilter is null)
-            Detail("candidates", "作品标题黑名单正则无效，未执行该规则：" + input.AnimeBlacklist);
+            Detail("candidates", "作品标题标题过滤正则无效，未执行该规则：" + input.AnimeBlacklist);
         if (applyBlacklist && !string.IsNullOrEmpty(input.EpisodeBlacklist) && episodeFilter is null)
-            Detail("candidates", "分集标题黑名单正则无效，未执行该规则：" + input.EpisodeBlacklist);
+            Detail("candidates", "分集标题标题过滤正则无效，未执行该规则：" + input.EpisodeBlacklist);
         bool Allowed(OnlineEpisode candidate) =>
             (animeFilter is null || !animeFilter.IsMatch(candidate.AnimeTitle ?? ""))
             && (episodeFilter is null || !episodeFilter.IsMatch(candidate.EpisodeTitle ?? ""));
         void LogBlacklist(IEnumerable<OnlineEpisode> candidates, string label)
         {
-            // 单独记录实际正则命中，不把季集冲突或候选去重误报成黑名单过滤。
-            var rows = candidates.Select(candidate =>
+            var sourceCandidates = candidates.ToArray();
+            var filtered = ParallelFilter(sourceCandidates, candidate =>
+                animeFilter?.IsMatch(candidate.AnimeTitle ?? "") == true
+                || episodeFilter?.IsMatch(candidate.EpisodeTitle ?? "") == true);
+            var keptCount = sourceCandidates.Length - filtered.Length;
+            var heading = $"{label}标题过滤过滤结果（来源={sourceId}，保留 {keptCount}/{sourceCandidates.Length}，已过滤 {filtered.Length}）";
+            if (sourceCandidates.Length == 0) { Detail("candidates", heading); return; }
+            // 后端只发送汇总和少量样例，完整逐条明细留在本地日志，避免前端渲染成千条记录卡死。
+            var samples = filtered.Take(20).Select(candidate =>
             {
-                var animeHit = animeFilter?.IsMatch(candidate.AnimeTitle ?? "") == true;
-                var episodeHit = episodeFilter?.IsMatch(candidate.EpisodeTitle ?? "") == true;
-                var title = $"作品={candidate.AnimeTitle ?? "未命名"}（ID={candidate.AnimeId}）"
-                    + (candidate.EpisodeId is null ? "" : $"，集号={candidate.EpisodeNumber?.ToString() ?? "未知"}，分集={candidate.EpisodeTitle ?? "未命名"}（ID={candidate.EpisodeId}）");
                 var rules = new List<string>();
-                if (animeHit) rules.Add("作品标题正则：" + input.AnimeBlacklist);
-                if (episodeHit) rules.Add("分集标题正则：" + episodePattern);
-                return (Filtered: animeHit || episodeHit, Text: "  - "
-                    + (animeHit || episodeHit ? "已过滤: " : "保留: ") + title
-                    + (rules.Count == 0 ? "" : "，命中：" + string.Join("；", rules)));
-            }).ToArray();
-            var heading = $"{label}黑名单过滤结果（来源={sourceId}，保留 {rows.Count(row => !row.Filtered)}/{rows.Length}）"
-                + (applyBlacklist ? "" : "：自定义来源未启用黑名单，跳过正则过滤");
-            if (rows.Length == 0) { Detail("candidates", heading); return; }
-            // 分块避免本人 SSE 单条详情上限截掉后半部分，所有候选均可核查。
-            foreach (var batch in rows.Chunk(10))
-                Detail("candidates", heading + ":\n" + string.Join("\n", batch.Select(row => row.Text)));
+                if (animeFilter?.IsMatch(candidate.AnimeTitle ?? "") == true) rules.Add("作品标题正则：" + input.AnimeBlacklist);
+                if (episodeFilter?.IsMatch(candidate.EpisodeTitle ?? "") == true) rules.Add("分集标题正则：" + episodePattern);
+                return $"已过滤: 作品={candidate.AnimeTitle ?? "未命名"}（ID={candidate.AnimeId}），分集={candidate.EpisodeTitle ?? "未命名"}（ID={candidate.EpisodeId}），命中：{string.Join("；", rules)}";
+            });
+            Detail("candidates", heading + (samples.Any() ? "\n" + string.Join("\n", samples) : ""));
         }
         if (rateLimited is null && input.PreferredAnimeId is not null && input.PreferredEpisodeNumber is not null)
         {
@@ -384,25 +386,20 @@ public sealed partial class DanmakuApiService
         }
         void LogCompatibility(IEnumerable<OnlineEpisode> candidates, bool checkEpisode, string label)
         {
-            var rows = candidates.Select(candidate =>
-            {
-                var seasonOk = CompatibleSeason(candidate);
-                var episodeOk = !checkEpisode || CompatibleEpisode(candidate);
-                return (Kept: seasonOk && episodeOk, Text: "  - " + (seasonOk && episodeOk ? "保留: " : "已过滤: ")
-                    + $"{candidate.AnimeTitle} / {candidate.EpisodeTitle}（作品ID={candidate.AnimeId}，分集ID={candidate.EpisodeId}）"
-                    + (!seasonOk ? $"，原因：季号不符，目标={target.SeasonNumber}，候选={OnlineCandidateSeason(candidate)}（非正则）" : "")
-                    + (!episodeOk ? $"，原因：集号不符，目标={target.EpisodeNumber}，候选={candidate.EpisodeNumber ?? MatchMetadata.Parse(candidate.EpisodeTitle, true).Episode}（非正则）" : ""));
-            }).ToArray();
-            var heading = $"{label}季集条件过滤结果（保留 {rows.Count(row => row.Kept)}/{rows.Length}）";
-            if (rows.Length == 0) { Detail("candidates", heading); return; }
-            foreach (var batch in rows.Chunk(10))
-                Detail("candidates", heading + ":\n" + string.Join("\n", batch.Select(row => row.Text)));
+            var sourceCandidates = candidates.ToArray();
+            var kept = ParallelFilter(sourceCandidates, candidate => CompatibleSeason(candidate)
+                && (!checkEpisode || CompatibleEpisode(candidate)));
+            var heading = $"{label}季集条件过滤结果（保留 {kept.Length}/{sourceCandidates.Length}）";
+            if (sourceCandidates.Length == 0) { Detail("candidates", heading); return; }
+            var excluded = sourceCandidates.Where(candidate => !kept.Contains(candidate)).Take(20).Select(candidate =>
+                $"已过滤: {candidate.AnimeTitle} / {candidate.EpisodeTitle}（作品ID={candidate.AnimeId}，分集ID={candidate.EpisodeId}，原因：季集条件不符，非正则）");
+            Detail("candidates", heading + (excluded.Any() ? "\n" + string.Join("\n", excluded) : ""));
         }
         LogBlacklist(works, "/match 或后备搜索条目");
         LogCompatibility(works, true, "/match 章节候选");
-        var matchEpisodes = works.Where(candidate => candidate.AnimeId is not null
-            && candidate.EpisodeId is not null && Allowed(candidate) && CompatibleSeason(candidate)
-            && CompatibleEpisode(candidate)).ToArray();
+        var matchEpisodes = ParallelFilter(works, candidate => candidate.AnimeId is not null
+                && candidate.EpisodeId is not null && Allowed(candidate) && CompatibleSeason(candidate)
+                && CompatibleEpisode(candidate));
         // 上游精确命中唯一章节且映射未改变目标时直接采用，不再调用智能判断或作品搜索。
         if (rateLimited is null && exactFound && allowDirectEpisode
             && matchEpisodes.Length > 0 && matchEpisodes.Select(candidate => candidate.EpisodeId).Distinct().Count() == 1)
@@ -531,7 +528,7 @@ public sealed partial class DanmakuApiService
             Detail("detail", $"分集读取结果：作品={work.AnimeTitle}，作品ID={work.AnimeId}，分集数={upstreamEpisodes.Count}，详情（最多100项）：{Candidates(upstreamEpisodes)}", upstreamEpisodes.Count);
             LogBlacklist(upstreamEpisodes, "作品详情分集标题");
             LogCompatibility(upstreamEpisodes, false, "作品详情分集");
-            var episodes = upstreamEpisodes.Where(episode => Allowed(episode) && CompatibleSeason(episode)).ToList();
+            var episodes = ParallelFilter(upstreamEpisodes.ToArray(), episode => Allowed(episode) && CompatibleSeason(episode)).ToList();
             if (!strictReuse && upstreamEpisodes.Count == 0 && !string.IsNullOrEmpty(work.EpisodeId) && Allowed(work)) episodes.Add(work);
             if (episodes.Count == 0)
                 return new("ambiguous", sourceId, source, null, [work], true, workResolution.ModeUsed);
