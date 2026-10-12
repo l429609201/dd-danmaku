@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.4.0
+// @version      1.4.1
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -70,7 +70,7 @@
 
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.4.0', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.4.1', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -86,8 +86,10 @@
             // [修复] customList[0] 是对象 {name, url, enabled}，需要取 .url；旧配置是字符串
             const customItem = customList.length > 0 ? customList[0] : null;
             const customUrl = customItem ? (typeof customItem === 'string' ? customItem : customItem.url) : lsGetItem(lsKeys.customApiPrefix.id);
-            // [修复] 校验 URL 必须以 http:// 或 https:// 开头，防止不完整 URL 导致 Worker 报错
-            if (customUrl && customUrl.length > 0 && (customUrl.startsWith('http://') || customUrl.startsWith('https://')) && !lsGetItem(lsKeys.useOfficialApi.id)) {
+            // 仅接受 HTTP 来源或精确的 Emby 中转标识，避免自定义源误回退官方接口
+            const isSupportedCustomPrefix = customUrl && customUrl.length > 0
+                && (customUrl.startsWith('http://') || customUrl.startsWith('https://') || customUrl === 'emby-proxy://custom');
+            if (isSupportedCustomPrefix && !lsGetItem(lsKeys.useOfficialApi.id)) {
                 return customUrl;
             }
             // 官方API强制走代理
@@ -106,7 +108,7 @@
             const customList = typeof getCustomApiList === 'function' ? getCustomApiList() : [];
             const customItem = customList.length > 0 ? customList[0] : null;
             const customUrl = customItem ? (typeof customItem === 'string' ? customItem : customItem.url) : lsGetItem(lsKeys.customApiPrefix.id);
-            return customUrl && customUrl.length > 0 && (customUrl.startsWith('http://') || customUrl.startsWith('https://')) ? customUrl : dandanplayApi.prefix;
+            return customUrl && customUrl.length > 0 && (customUrl.startsWith('http://') || customUrl.startsWith('https://') || customUrl === 'emby-proxy://custom') ? customUrl : dandanplayApi.prefix;
         },
         getMatchUrl: () => `${dandanplayApiCustom.prefix}/match`,
     }
@@ -379,6 +381,9 @@
     const labels = {
         enable: '启用',
     };
+    // 仅在读取时兼容旧默认值，不改写用户保存的自定义规则。
+    const legacyEpisodeTitleBlacklist = '^(.*?)(特番|特典|特辑|花絮|预告|PV|CM|NCED|NCOP|Opening|Ending|OP|ED|Menu|刊行.*記念|作曲家|音楽|BGM|OST|主题曲|片尾曲|插曲|C\\d+|S\\d+|OVA|OAD|SP|Special|番外|外传|衍生|制作花絮|幕后|访谈|采访|发布会|宣传|推广)(.*?)$';
+    const safeEpisodeTitleBlacklist = '特番|特典|特辑|花絮|预告|刊行.*記念|作曲家|音楽|主题曲|片尾曲|插曲|番外|外传|衍生|制作花絮|幕后|访谈|采访|发布会|宣传|推广|(^|[^A-Za-z0-9])((PV|CM|NCED|NCOP|OP|ED|BGM|OST|OVA|OAD|SP)(\\d+[A-Za-z]?)?|Opening|Ending|Menu|Special|C\\d+|S\\d+)(?=$|[^A-Za-z0-9])';
     const lsKeys = { // id 统一使用 danmaku 前缀
         chConvert: { id: 'danmakuChConvert', defaultValue: 1, name: '简繁转换' },
         switch: { id: 'danmakuSwitch', defaultValue: true, name: '弹幕开关' },
@@ -454,7 +459,7 @@
         apiPriority: { id: 'danmakuApiPriority', defaultValue: ['official', 'custom'], name: 'API 优先级' },
         excludedLibraries: { id: 'danmakuExcludedLibraries', defaultValue: [], name: '排除的媒体库' },
         animeTitleBlacklist: { id: 'danmakuAnimeTitleBlacklist', defaultValue: '', name: '标题黑名单正则' },
-        episodeTitleBlacklist: { id: 'danmakuEpisodeTitleBlacklist', defaultValue: '^(.*?)(特番|特典|特辑|花絮|预告|PV|CM|NCED|NCOP|Opening|Ending|OP|ED|Menu|刊行.*記念|作曲家|音楽|BGM|OST|主题曲|片尾曲|插曲|C\\d+|S\\d+|OVA|OAD|SP|Special|番外|外传|衍生|制作花絮|幕后|访谈|采访|发布会|宣传|推广)(.*?)$', name: '分集名称黑名单正则' },
+        episodeTitleBlacklist: { id: 'danmakuEpisodeTitleBlacklist', defaultValue: safeEpisodeTitleBlacklist, name: '分集名称黑名单正则' },
         blacklistApplyToCustomApi: { id: 'danmakuBlacklistApplyToCustomApi', defaultValue: false, name: '黑名单应用于自定义接口' },
         convertTopTo: { id: 'danmakuConvertTopTo', defaultValue: 'default', name: '顶部弹幕转换为' },
         convertBottomTo: { id: 'danmakuConvertBottomTo', defaultValue: 'default', name: '底部弹幕转换为' },
@@ -2592,6 +2597,20 @@
         }
     }
 
+    // 分块列出保留结果，避免日志长度上限截断分集诊断信息。
+    function logBlacklistRetained(context, entries) {
+        for (let i = 0; i < entries.length; i += 10) {
+            // 使用逐行中文列表，作品与分集 ID 保留用于核对来源。
+            const lines = entries.slice(i, i + 10).map(entry => {
+                const anime = entry.animeTitle != null ? `作品${entry.animeTitle}（${entry.animeId ?? ''}）` : '';
+                const number = getSourceEpisodeNumber(entry);
+                const episode = entry.episodeTitle != null ? `${number != null ? `第${number}集` : ''}分集${entry.episodeTitle}（${entry.episodeId ?? ''}）` : '';
+                return `- 保留: ${[anime, episode].filter(Boolean).join('，')}`;
+            });
+            logger.info(`[黑名单] ${context} 保留 ${i + 1}-${Math.min(i + 10, entries.length)}:\n${lines.join('\n')}`);
+        }
+    }
+
     /**
      * 应用搜索内容黑名单过滤
      * @param {Array} animes - 番剧列表
@@ -2607,7 +2626,7 @@
 
         // 如果是自定义接口且未开启自定义接口黑名单，直接返回
         if (apiKey !== 'official' && !blacklistApplyToCustomApi) {
-            logger.debug('[黑名单] 自定义接口未启用黑名单过滤');
+            logger.info(`[黑名单] 搜索过滤跳过: API=${apiKey}, 原始番剧=${animes.length}, 原因=自定义接口未启用黑名单过滤`);
             return animes;
         }
 
@@ -2634,8 +2653,9 @@
             logger.warn(`[黑名单] 分集名称正则表达式无效: ${e.message}`);
         }
 
-        // 如果两个正则都无效，直接返回原数组
+        // 无有效规则也记录汇总，便于区分未过滤与接口原始分集缺失。
         if (!animeTitleRegex && !episodeTitleRegex) {
+            logger.info(`[黑名单] 搜索过滤跳过: API=${apiKey}, 原始番剧=${animes.length}, 原因=未配置有效正则`);
             return animes;
         }
 
@@ -2647,7 +2667,7 @@
         const filteredAnimes = animes.filter(anime => {
             // 检查番剧标题是否匹配黑名单
             if (animeTitleRegex && anime.animeTitle && animeTitleRegex.test(anime.animeTitle)) {
-                logger.debug(`[黑名单] 过滤番剧: "${anime.animeTitle}"`);
+                logger.info(`[黑名单] 已过滤: 番剧, API=${apiKey}, animeId=${anime.animeId ?? ''}, 标题="${anime.animeTitle}"，命中：/${animeTitleRegex.source}/i`);
                 filteredAnimeCount++;
                 return false;
             }
@@ -2658,7 +2678,7 @@
                 const originalEpisodeCount = anime.episodes.length;
                 const filteredEpisodes = anime.episodes.filter(ep => {
                     if (ep.episodeTitle && episodeTitleRegex.test(ep.episodeTitle)) {
-                        logger.debug(`[黑名单] 过滤分集: "${anime.animeTitle}" - "${ep.episodeTitle}"`);
+                        logger.info(`[黑名单] 已过滤: 分集, API=${apiKey}, animeId=${anime.animeId ?? ''}, 番剧="${anime.animeTitle}", episodeId=${ep.episodeId ?? ''}, 分集="${ep.episodeTitle}"，命中：/${episodeTitleRegex.source}/i`);
                         filteredEpisodeCount++;
                         return false;
                     }
@@ -2675,10 +2695,10 @@
             return anime;
         }).filter(anime => anime !== null);
 
-        if (filteredAnimeCount > 0 || filteredEpisodeCount > 0) {
-            logger.info(`[黑名单] 过滤完成: 番剧 ${originalCount} -> ${filteredAnimes.length} (过滤 ${filteredAnimeCount} 个), 分集过滤 ${filteredEpisodeCount} 个`);
-        }
+        // 即使没有命中也输出汇总，确认当前候选是否经过前端过滤。
+        logger.info(`[黑名单] 过滤完成: API=${apiKey}, 番剧 ${originalCount} -> ${filteredAnimes.length} (标题过滤 ${filteredAnimeCount} 个), 分集过滤 ${filteredEpisodeCount} 个, 过滤分集=${filterEpisodes}`);
 
+        logBlacklistRetained(`搜索 API=${apiKey}`, filteredAnimes.flatMap(anime => [{ animeId: anime.animeId, animeTitle: anime.animeTitle }, ...(anime.episodes || []).map(ep => ({ animeId: anime.animeId, animeTitle: anime.animeTitle, episodeId: ep.episodeId, episodeTitle: ep.episodeTitle, episodeNumber: ep.episodeNumber }))]));
         return filteredAnimes;
     }
 
@@ -2692,7 +2712,10 @@
 
         const episodeTitleBlacklist = lsGetItem(lsKeys.episodeTitleBlacklist.id) || '';
 
-        if (!episodeTitleBlacklist) return matches;
+        if (!episodeTitleBlacklist) {
+            logger.info(`[黑名单] 匹配结果过滤跳过: 原始=${matches.length}, 原因=未配置分集正则`);
+            return matches;
+        }
 
         let episodeTitleRegex = null;
         try {
@@ -2705,16 +2728,14 @@
         const originalCount = matches.length;
         const filteredMatches = matches.filter(match => {
             if (match.episodeTitle && episodeTitleRegex.test(match.episodeTitle)) {
-                logger.debug(`[黑名单] 过滤匹配结果: "${match.animeTitle}" - "${match.episodeTitle}"`);
+                logger.info(`[黑名单] 已过滤: 匹配结果, 番剧="${match.animeTitle}", episodeId=${match.episodeId ?? ''}, 分集="${match.episodeTitle}"，命中：/${episodeTitleRegex.source}/i`);
                 return false;
             }
             return true;
         });
 
-        if (filteredMatches.length < originalCount) {
-            logger.info(`[黑名单] 匹配结果过滤: ${originalCount} -> ${filteredMatches.length}`);
-        }
-
+        logger.info(`[黑名单] 匹配结果过滤完成: 原始=${originalCount} -> ${filteredMatches.length}, 过滤=${originalCount - filteredMatches.length}`);
+        logBlacklistRetained('匹配结果', filteredMatches.map(match => ({ animeId: match.animeId, animeTitle: match.animeTitle, episodeId: match.episodeId, episodeTitle: match.episodeTitle, episodeNumber: match.episodeNumber })));
         return filteredMatches;
     }
 
@@ -3176,21 +3197,38 @@
         return null;
     }
 
+    // 显式来源集号优先，其次标题集号；不从全局 episodeId 猜测集号。
+    function getSourceEpisodeNumber(episode) {
+        const explicit = episode?.episodeNumber != null && episode.episodeNumber !== '' ? Number(episode.episodeNumber) : null;
+        if (Number.isInteger(explicit) && explicit > 0) return explicit;
+        const parsed = extractEpisodeNumber(episode?.episodeTitle);
+        return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+    }
+
     // 多策略集数定位
     function findBestEpisode(episodes, targetNum) {
         if (!episodes?.length || !targetNum) return null;
         // 过滤黑名单 + 去重
         const bl = lsGetItem(lsKeys.episodeTitleBlacklist.id) || '';
         let re = null;
-        try { if (bl) re = new RegExp(bl, 'i'); } catch(e) {}
+        try { if (bl) re = new RegExp(bl, 'i'); } catch(e) { logger.warn(`[黑名单] 分集定位正则无效: ${e.message}`); }
         const seen = new Set();
         const filtered = episodes.filter(ep => {
-            if (re && ep.episodeTitle && re.test(ep.episodeTitle)) return false;
-            if (seen.has(ep.episodeTitle)) return false;
+            if (re && ep.episodeTitle && re.test(ep.episodeTitle)) {
+                logger.info(`[黑名单] 已过滤: 分集定位, episodeId=${ep.episodeId ?? ''}, 分集="${ep.episodeTitle}"，命中：/${re.source}/i`);
+                return false;
+            }
+            if (seen.has(ep.episodeTitle)) {
+                logger.info(`[分集定位] 去重: episodeId=${ep.episodeId ?? ''}, 分集="${ep.episodeTitle}", 原因=标题重复`);
+                return false;
+            }
             seen.add(ep.episodeTitle);
             return true;
         });
         const list = filtered.length ? filtered : episodes;
+        // 记录既有全过滤兜底行为，避免把用于定位的回退误认为黑名单未命中。
+        logger.info(`[分集定位] 过滤汇总: 原始=${episodes.length}, 保留=${filtered.length}, 实际定位=${list.length}, 全过滤回退=${filtered.length === 0}`);
+        logBlacklistRetained('分集定位', list.map(ep => ({ episodeId: ep.episodeId, episodeTitle: ep.episodeTitle, episodeNumber: ep.episodeNumber })));
         // 策略1: 标题提取集数
         for (const ep of list) { if (extractEpisodeNumber(ep.episodeTitle) === targetNum) return ep; }
         // 策略2: episodeNumber 字段
@@ -4962,7 +5000,7 @@
                         normalizeTitle(match.animeTitle || '')
                     );
                     if (similarity >= 0.4) {
-                        result = { directMatch: true, apiPrefix: config.prefix, apiName: config.name, apiAppId: config.appId || '', apiAppSecret: config.appSecret || '', episodeInfo: { ...match, episodes: [{ episodeId: match.episodeId, episodeTitle: match.episodeTitle }], imageUrl: match.imageUrl } };
+                        result = { directMatch: true, apiPrefix: config.prefix, apiName: config.name, apiAppId: config.appId || '', apiAppSecret: config.appSecret || '', episodeInfo: { ...match, episodes: [{ episodeId: match.episodeId, episodeTitle: match.episodeTitle, episodeNumber: match.episodeNumber }], imageUrl: match.imageUrl } };
                         logger.info(`[自动匹配] /match 精确命中，二次验证通过 (相似度: ${similarity.toFixed(2)})`);
                     } else {
                         // 相似度太低，降级为模糊匹配处理
@@ -11067,14 +11105,14 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                     const originalCount = displayEpisodes.length;
                     displayEpisodes = displayEpisodes.filter(ep => {
                         if (ep.episodeTitle && regex.test(ep.episodeTitle)) {
-                            logger.debug(`[黑名单] 过滤分集显示: "${ep.episodeTitle}"`);
+                            logger.info(`[黑名单] 已过滤: 分集显示, animeId=${anime.animeId ?? ''}, 番剧="${anime.animeTitle}", episodeId=${ep.episodeId ?? ''}, 分集="${ep.episodeTitle}"，命中：/${regex.source}/i`);
                             return false;
                         }
                         return true;
                     });
-                    if (displayEpisodes.length < originalCount) {
-                        logger.info(`[黑名单] 分集显示过滤: ${originalCount} -> ${displayEpisodes.length}`);
-                    }
+                    // 保留零过滤汇总，便于核对接口与弹窗分集数量。
+                    logger.info(`[黑名单] 分集显示过滤完成: animeId=${anime.animeId ?? ''}, 番剧="${anime.animeTitle}", 原始=${originalCount} -> ${displayEpisodes.length}, 过滤=${originalCount - displayEpisodes.length}`);
+                    logBlacklistRetained('分集显示', displayEpisodes.map(ep => ({ animeId: anime.animeId, animeTitle: anime.animeTitle, episodeId: ep.episodeId, episodeTitle: ep.episodeTitle, episodeNumber: ep.episodeNumber })));
                 } catch (e) {
                     logger.warn(`[黑名单] 分集名称正则表达式无效: ${e.message}`);
                 }
@@ -11087,7 +11125,11 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             anime.filteredEpisodes = [];
         } else {
             // 切换剧集时，默认选中第一个分集
-            const episodeNumSelect = embySelect({ id: eleIds.danmakuEpisodeNumSelect, label: '集数: ' }, 0, displayEpisodes, 'episodeId', (opt, i) => `${i + 1} - ${opt.episodeTitle}`);
+            // 保留来源集号，过滤特殊分集后不把第 12 集显示为第 11 集。
+            const episodeNumSelect = embySelect({ id: eleIds.danmakuEpisodeNumSelect, label: '集数: ' }, 0, displayEpisodes, 'episodeId', opt => {
+                const originalIndex = anime.episodes.findIndex(ep => String(ep.episodeId) === String(opt.episodeId));
+                return `${getSourceEpisodeNumber(opt) ?? originalIndex + 1} - ${opt.episodeTitle}`;
+            });
             episodeNumSelect.style.maxWidth = '100%';
             numDiv.append(episodeNumSelect);
             // [黑名单] 存储过滤后的分集列表，供 doDanmakuSwitchEpisode 使用
@@ -11125,6 +11167,12 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         if (!animeSelect || !confirmButton || !anime || !episodeNumSelect?.value || !episodeNumSelect.options?.[episodeNumSelect.selectedIndex]
             || !selectionCurrent()) return;
         const selectedIndex = episodeNumSelect.selectedIndex, selectedValue = episodeNumSelect.value;
+        // 按实际来源集号保存零基索引；无集号时使用原列表位置，避免过滤后的下标改变偏移。
+        const originalIndex = (anime.episodes || []).findIndex(ep => String(ep.episodeId) === String(selectedValue));
+        const selectedEpisode = anime.filteredEpisodes?.[selectedIndex] || anime.episodes?.[originalIndex];
+        const sourceEpisode = getSourceEpisodeNumber(selectedEpisode);
+        const sourceIndex = sourceEpisode != null ? sourceEpisode - 1 : originalIndex;
+        if (sourceIndex < 0) return;
         if (ddBackend.isDll() && (!anime.backendEpisodeTaskId || anime.backendDialogContext !== context)) return;
 
         // [修正] 构造一个更完整的 episodeInfo 对象，并使用正确的 unique_episode_key
@@ -11132,8 +11180,8 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         const episodeInfo = {
             episodeId: episodeNumSelect.value,
             episodeTitle: episodeNumSelect.options[episodeNumSelect.selectedIndex].text,
-            episodeIndex: episodeNumSelect.selectedIndex,
-            bgmEpisodeIndex: episodeNumSelect.selectedIndex,
+            episodeIndex: sourceIndex,
+            bgmEpisodeIndex: sourceIndex,
             animeId: anime.animeId,
             bangumiId: anime.bangumiId || anime.animeId,
             animeTitle: anime.animeTitle,
@@ -11148,7 +11196,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
 
         const seasonInfo = {
             name: anime.animeTitle,
-            episodeOffset: selectedIndex - opts.episode,
+            episodeOffset: sourceIndex - opts.episode,
         };
 
         // [修正] 使用与 getEpisodeInfo 中相同的逻辑来构造缓存键
@@ -11192,10 +11240,6 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         localStorage.setItem(unique_episode_key, JSON.stringify(confirmedInfo));
         const season = Number(item.ParentIndexNumber);
         const embyEpisode = Number(item.IndexNumber);
-        const selectedEpisode = anime.filteredEpisodes?.[episodeNumSelect.selectedIndex]
-            || anime.episodes?.[episodeNumSelect.selectedIndex];
-        const sourceEpisode = selectedEpisode?.episodeNumber != null
-            ? Number(selectedEpisode.episodeNumber) : extractEpisodeNumber(selectedEpisode?.episodeTitle);
         if (item.Type === 'Episode' && item.SeriesId && item.ParentIndexNumber != null
             && item.IndexNumber != null && sourceEpisode != null
             && Number.isInteger(season) && season >= 0
@@ -12667,7 +12711,11 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
     function lsGetItem(id) {
         const storageKey = localParameterKey(id);
         // 内存缓存也使用会话键，切换账号不会复用上一用户的值。
-        if (lsCache.has(storageKey)) return lsCache.get(storageKey);
+        if (lsCache.has(storageKey)) {
+            const cached = lsCache.get(storageKey);
+            // 刚保存旧默认时缓存也使用安全规则，仍不改写用户配置。
+            return id === lsKeys.episodeTitleBlacklist.id && cached === legacyEpisodeTitleBlacklist ? safeEpisodeTitleBlacklist : cached;
+        }
         const key = lsGetKeyById(id);
         if (!key) { return null; }
         const defaultValue = lsKeys[key].defaultValue;
@@ -12680,7 +12728,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             value = backendDefault;
         }
         // [修复] 如果 localStorage 中没有值，或者值为空字符串且默认值不为空，则返回默认值
-        else if (item === null || (item === '' && defaultValue !== '')) {
+        else if (item === null || (item === '' && defaultValue !== '' && key !== 'episodeTitleBlacklist')) {
             value = defaultValue;
         }
         // JSON.parse 加 try/catch，防止单个损坏的 localStorage 值中断初始化
@@ -12702,6 +12750,10 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             value = item;
         }
 
+        // 分集黑名单空值允许停用；旧默认仅映射有效值，不回写本地或服务器配置。
+        if (key === 'episodeTitleBlacklist' && value === legacyEpisodeTitleBlacklist) {
+            value = safeEpisodeTitleBlacklist;
+        }
         // 存入缓存
         lsCache.set(storageKey, value);
         return value;
