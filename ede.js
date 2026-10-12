@@ -87,7 +87,7 @@
             const customItem = customList.length > 0 ? customList[0] : null;
             const customUrl = customItem ? (typeof customItem === 'string' ? customItem : customItem.url) : lsGetItem(lsKeys.customApiPrefix.id);
             // [修复] 校验 URL 必须以 http:// 或 https:// 开头，防止不完整 URL 导致 Worker 报错
-            if (customUrl && customUrl.length > 0 && (customUrl.startsWith('http://') || customUrl.startsWith('https://')) && !lsGetItem(lsKeys.useOfficialApi.id)) {
+            if (customUrl && customUrl.length > 0 && (customUrl.startsWith('http://') || customUrl.startsWith('https://') || customUrl.startsWith('emby-proxy://custom')) && !lsGetItem(lsKeys.useOfficialApi.id)) {
                 return customUrl;
             }
             // 官方API强制走代理
