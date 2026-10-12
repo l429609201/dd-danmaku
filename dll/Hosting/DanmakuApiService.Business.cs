@@ -248,6 +248,7 @@ public sealed partial class DanmakuApiService
                         var fallback = await OnlineBgmSearchAsync(keyword, user.Id, source.Configuration, context.Token, context.Progress);
                         works = fallback.Works;
                     }
+                    var filteredWorks = FilterSource(source, works);
                     foreach (var chunk in filteredWorks.Chunk(50))
                         context.Detail("candidates", JsonSerializer.Serialize(new { Type = "search-source", SourceId = source.Id,
                             SourceName = source.Name, Works = chunk }, MatchJson.Options), filteredWorks.Count);
