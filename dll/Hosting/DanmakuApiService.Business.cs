@@ -249,9 +249,17 @@ public sealed partial class DanmakuApiService
                         works = fallback.Works;
                     }
                     var filteredWorks = FilterSource(source, works);
-                    foreach (var chunk in filteredWorks.Chunk(50))
+                    var compactJson = new JsonSerializerOptions(MatchJson.Options)
+                    {
+                        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                    };
+                    foreach (var work in filteredWorks)
+                    {
+                        var compact = new { animeId = work.AnimeId, bangumiId = work.AnimeId, animeTitle = work.AnimeTitle,
+                            episodeId = work.EpisodeId, episodeTitle = work.EpisodeTitle, episodeNumber = work.EpisodeNumber };
                         context.Detail("candidates", JsonSerializer.Serialize(new { Type = "search-source", SourceId = source.Id,
-                            SourceName = source.Name, Works = chunk }, MatchJson.Options), filteredWorks.Count);
+                            SourceName = source.Name, Works = new[] { compact } }, compactJson), 1);
+                    }
                     return new(source.Id, source.Name, "succeeded", filteredWorks);
                 }
                 catch (ApiAccessException error)

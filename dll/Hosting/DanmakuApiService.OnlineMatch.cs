@@ -197,9 +197,8 @@ public sealed partial class DanmakuApiService
             _matchLogger.Info("后端匹配：任务={0}，阶段={1}，{2}", operationId, stage, text);
             if (operationId is not null) OperationEventHub.Publish(userId, operationId, stage, count, detail: text);
         }
-        string Candidates(IEnumerable<OnlineEpisode> candidates) => "\n" + JsonSerializer.Serialize(candidates.Take(20),
-            new JsonSerializerOptions(MatchJson.Options) { WriteIndented = true,
-                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+        string Candidates(IEnumerable<OnlineEpisode> candidates) => string.Join("\n", candidates.Take(20).Select(candidate =>
+            $"animeId={candidate.AnimeId ?? ""}，bgmId={candidate.AnimeId ?? ""}，标题={candidate.AnimeTitle ?? ""}，episodeId={candidate.EpisodeId ?? ""}，分集={candidate.EpisodeTitle ?? ""}，集数={candidate.EpisodeNumber?.ToString() ?? ""}"));
         T[] ParallelFilter<T>(IReadOnlyList<T> candidates, Func<T, bool> predicate)
         {
             var keep = new bool[candidates.Count];
@@ -271,7 +270,7 @@ public sealed partial class DanmakuApiService
                 animeFilter?.IsMatch(candidate.AnimeTitle ?? "") == true
                 || episodeFilter?.IsMatch(candidate.EpisodeTitle ?? "") == true);
             var keptCount = sourceCandidates.Length - filtered.Length;
-            var heading = $"{label}标题过滤过滤结果（来源={sourceId}，保留 {keptCount}/{sourceCandidates.Length}，已过滤 {filtered.Length}）";
+            var heading = $"[标题过滤] {label}检查结果（来源={sourceId}，保留 {keptCount}/{sourceCandidates.Length}，命中规则 {filtered.Length}）";
             if (sourceCandidates.Length == 0) { Detail("candidates", heading); return; }
             // 后端只发送汇总和少量样例，完整逐条明细留在本地日志，避免前端渲染成千条记录卡死。
             var samples = filtered.Take(20).Select(candidate =>
@@ -389,7 +388,7 @@ public sealed partial class DanmakuApiService
             var sourceCandidates = candidates.ToArray();
             var kept = ParallelFilter(sourceCandidates, candidate => CompatibleSeason(candidate)
                 && (!checkEpisode || CompatibleEpisode(candidate)));
-            var heading = $"{label}季集条件过滤结果（保留 {kept.Length}/{sourceCandidates.Length}）";
+            var heading = $"[匹配条件] {label}检查结果（保留 {kept.Length}/{sourceCandidates.Length}）";
             if (sourceCandidates.Length == 0) { Detail("candidates", heading); return; }
             var excluded = sourceCandidates.Where(candidate => !kept.Contains(candidate)).Take(20).Select(candidate =>
                 $"已过滤: {candidate.AnimeTitle} / {candidate.EpisodeTitle}（作品ID={candidate.AnimeId}，分集ID={candidate.EpisodeId}，原因：季集条件不符，非正则）");
