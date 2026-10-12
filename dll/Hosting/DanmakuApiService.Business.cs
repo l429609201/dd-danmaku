@@ -214,12 +214,22 @@ public sealed partial class DanmakuApiService
         var sources = BusinessSources(defaults, configuration, user.Id);
         if (input.SourceId is not null) sources = [BusinessSource(sources, input.SourceId)];
         var revision = BusinessRevision(defaults, configuration);
+        var animeFilter = OnlineBlacklist(defaults.AnimeTitleBlacklist);
+        var episodeFilter = OnlineBlacklist(defaults.EpisodeTitleBlacklist);
+        IReadOnlyList<OnlineEpisode> FilterSource(BackendBusinessSource source, IReadOnlyList<OnlineEpisode> works)
+        {
+            if (source.Kind != "official" && defaults.BlacklistApplyToCustomApi != true) return works;
+            var filtered = works.AsParallel().AsOrdered().Where(work =>
+                !(animeFilter?.IsMatch(work.AnimeTitle ?? "") == true)
+                && !(episodeFilter?.IsMatch(work.EpisodeTitle ?? "") == true)).ToArray();
+            return filtered;
+        }
         var key = revision + "/" + Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(input)));
         var task = host.BackendTasks.Start(user.Id, item, "search", key, async context =>
         {
             var results = new List<BackendSearchResult>();
-            ApiAccessException? lastFailure = null;
-            foreach (var source in sources)
+            var gate = new object();
+            async Task<BackendSearchResult> SearchSourceAsync(BackendBusinessSource source)
             {
                 await BusinessAuthorizeAsync(user.Id, item, revision, plugin, context.Token);
                 context.Detail("search", $"来源={source.Name}，搜索关键词={keyword}");
@@ -230,25 +240,40 @@ public sealed partial class DanmakuApiService
                     {
                         var bytes = await OnlineFetchAsync(source.Kind, source.Configuration, user.Id,
                             "/search/anime?keyword=" + Uri.EscapeDataString(keyword), null, context.Token);
-                        works = OnlineParseList(bytes, "animes").Take(100).ToArray();
+                        works = OnlineParseList(bytes, "animes");
                     }
                     catch (ApiAccessException error) when (source.Kind == "official" && error.Code == "UPSTREAM_RATE_LIMITED")
                     {
                         context.Progress("bgm_fallback");
                         var fallback = await OnlineBgmSearchAsync(keyword, user.Id, source.Configuration, context.Token, context.Progress);
-                        works = fallback.Works.Take(100).ToArray();
+                        works = fallback.Works;
                     }
-                    context.Detail("candidates", $"来源={source.Name}，搜索结果数={works.Count}，作品（最多10项）："
-                        + string.Join("；", works.Take(10).Select(work => $"{work.AnimeTitle}，作品ID={work.AnimeId}")), works.Count);
-                    results.Add(new(source.Id, source.Name, "succeeded", works));
+                    foreach (var chunk in filteredWorks.Chunk(50))
+                        context.Detail("candidates", JsonSerializer.Serialize(new { Type = "search-source", SourceId = source.Id,
+                            SourceName = source.Name, Works = chunk }, MatchJson.Options), filteredWorks.Count);
+                    return new(source.Id, source.Name, "succeeded", filteredWorks);
                 }
                 catch (ApiAccessException error)
                 {
-                    lastFailure = error;
-                    context.Detail("upstream", UpstreamErrorDiagnostic.Describe(error));
-                    results.Add(new(source.Id, source.Name, "failed", [], error.Code));
+                    context.Detail("upstream", $"来源={source.Name}，{UpstreamErrorDiagnostic.Describe(error)}");
+                    return new(source.Id, source.Name, "failed", [], error.Code);
                 }
             }
+            // 各来源独立请求，哪个先完成就先推送哪个；最终结果只负责按配置顺序稳定汇总。
+            var sourceTasks = sources.Select(SearchSourceAsync).ToArray();
+            var pending = sourceTasks.ToList();
+            while (pending.Count > 0)
+            {
+                var completed = await Task.WhenAny(pending);
+                pending.Remove(completed);
+                var result = await completed;
+                lock (gate) results.Add(result);
+            }
+            ApiAccessException? lastFailure = results.LastOrDefault(result => result.Status == "failed") is { ErrorCode: not null } failed
+                ? new ApiAccessException(502, failed.ErrorCode!, "来源搜索失败") : null;
+            var orderedResults = sources.Select(source => results.FirstOrDefault(result => result.SourceId == source.Id))
+                .Where(result => result is not null).Select(result => result!).ToArray();
+            results = orderedResults.ToList();
             if (results.Count > 0 && results.All(result => result.Status == "failed")
                 && lastFailure is not null) throw lastFailure;
             await BusinessAuthorizeAsync(user.Id, item, revision, plugin, context.Token);

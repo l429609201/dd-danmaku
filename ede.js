@@ -755,7 +755,7 @@
                 ddSetLoadingRing(percent, tip);
                 setOsdDanmakuText(tip);
             },
-            async watchTask(taskId, isCurrent = () => true, updateRing = true) {
+            async watchTask(taskId, isCurrent = () => true, updateRing = true, onEvent = () => {}) {
                 const client = getHostApiClient();
                 const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
                 const controller = new AbortController();
@@ -768,6 +768,7 @@
                         terminalSeen = true; terminalPending = true; wakeWaiter?.();
                     }
                     if (updateRing) this.showTaskProgress(event, isCurrent);
+                    onEvent(event);
                 };
                 // 监听不承担授权；断开 SSE 仍按 500ms 兜底，关闭页面不取消后台下载。
                 const pending = this.has('OperationEvents') && base && client?.accessToken?.()
@@ -10763,6 +10764,27 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         const spinnerEle = getByClass(classes.mdlSpinner);
         let allAnimes = [];
         let failedSources = 0;
+        let backendAnimeSelect = null;
+        const renderBackendSourceResults = items => {
+            if (!items?.length || !request.isCurrent() || request.signal.aborted) return;
+            allAnimes.push(...items);
+            window.ede.searchDanmakuOpts.animes = allAnimes;
+            const animeDiv = getById(eleIds.danmakuAnimeDiv);
+            if (!backendAnimeSelect) {
+                getById(eleIds.danmakuEpisodeNumDiv).innerHTML = '';
+                backendAnimeSelect = embySelect({ id: eleIds.danmakuAnimeSelect, label: '剧集: ', style: 'width: auto;max-width: 100%;' },
+                    0, allAnimes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription || ''} 来源：${opt.apiName}`, doDanmakuAnimeSelect);
+                animeDiv.innerHTML = ''; animeDiv.append(backendAnimeSelect);
+                getById(eleIds.danmakuEpisodeFlag).hidden = false;
+                getById(eleIds.danmakuSwitchEpisode).disabled = true;
+                doDanmakuAnimeSelect(null, 0, allAnimes[0]);
+            } else {
+                const select = backendAnimeSelect.querySelector('select');
+                items.forEach(opt => { const option = document.createElement('option'); option.value = opt.animeId;
+                    option.textContent = `${opt.animeTitle} 类型：${opt.typeDescription || ''} 来源：${opt.apiName}`; select.append(option); });
+            }
+            logger.info(`[后端手动搜索] 来源结果已追加: 新增=${items.length}，总数=${allAnimes.length}`);
+        };
 
         if (ddBackend.isDll()) {
             let searchSubscription;
@@ -10777,7 +10799,15 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 let started = startBody;
                 const taskId = String(started?.data?.id || '');
                 if (!start.ok || started?.success !== true || !/^[a-f0-9]{32}$/i.test(taskId)) throw createBackendError(started, start.status);
-                searchSubscription = await ddBackend.watchTask(taskId, request.isCurrent, false);
+                searchSubscription = await ddBackend.watchTask(taskId, request.isCurrent, false, event => {
+                    if (event.stage !== 'candidates' || typeof event.detail !== 'string') return;
+                    let payload; try { payload = JSON.parse(event.detail); } catch (_) { return; }
+                    const rows = payload?.SourceId && Array.isArray(payload?.Works) ? payload.Works.map(work => ({
+                        animeId: work.AnimeId || work.animeId || '', animeTitle: work.AnimeTitle || work.animeTitle || '',
+                        episodeId: work.EpisodeId || work.episodeId || null, episodeTitle: work.EpisodeTitle || work.episodeTitle || '',
+                        apiName: payload.SourceName || payload.SourceId, sourceId: payload.SourceId, backendSearchTaskId: taskId })) : [];
+                    renderBackendSourceResults(rows);
+                });
                 request.closeSubscription = () => { void searchSubscription.close(); };
                 request.check();
                 const deadline = Date.now() + 180000;
@@ -10825,19 +10855,6 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 return;
             }
             danmakuRemarkEle.innerText = '';
-            const danmakuAnimeDiv = getById(eleIds.danmakuAnimeDiv);
-            const danmakuEpisodeNumDiv = getById(eleIds.danmakuEpisodeNumDiv);
-            danmakuAnimeDiv.innerHTML = '';
-            danmakuEpisodeNumDiv.innerHTML = '';
-            window.ede.searchDanmakuOpts.animes = allAnimes;
-            let selectAnimeIdx = allAnimes.findIndex(anime => anime.animeId == window.ede.searchDanmakuOpts.animeId);
-            selectAnimeIdx = selectAnimeIdx !== -1 ? selectAnimeIdx : 0;
-            const animeSelect = embySelect({ id: eleIds.danmakuAnimeSelect, label: '剧集: ', style: 'width: auto;max-width: 100%;' },
-                selectAnimeIdx, allAnimes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription || ''} 来源：${opt.apiName}`, doDanmakuAnimeSelect);
-            danmakuAnimeDiv.append(animeSelect);
-            getById(eleIds.danmakuEpisodeFlag).hidden = false;
-            getById(eleIds.danmakuSwitchEpisode).disabled = true;
-            doDanmakuAnimeSelect(null, selectAnimeIdx, allAnimes[selectAnimeIdx]);
             return;
         }
 
@@ -10903,19 +10920,44 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             return [];
         };
 
-        // --- 3. 并行执行所有任务 ---
-        const promises = actualPriority.map(key => searchTask(key));
-        const results = await Promise.allSettled(promises);
-        request.check();
-
-        // --- 4. 按优先级顺序合并结果 ---
-        // 虽然是并行请求，但展示顺序依然遵循你的优先级设置
-        for (let i = 0; i < actualPriority.length; i++) {
-            const result = results[i];
-            if (result.status === 'fulfilled' && result.value.length > 0) {
-                allAnimes.push(...result.value);
+        // --- 3. 并行执行并按来源完成顺序增量展示 ---
+        let animeSelect = null;
+        let firstRendered = false;
+        const renderSourceResults = (items) => {
+            if (!items?.length || !request.isCurrent() || request.signal.aborted) return;
+            request.check();
+            const oldLength = allAnimes.length;
+            allAnimes.push(...items);
+            window.ede.searchDanmakuOpts.animes = allAnimes;
+            const animeDiv = getById(eleIds.danmakuAnimeDiv);
+            const episodeDiv = getById(eleIds.danmakuEpisodeNumDiv);
+            if (!animeSelect) {
+                animeDiv.innerHTML = '';
+                episodeDiv.innerHTML = '';
+                animeSelect = embySelect({ id: eleIds.danmakuAnimeSelect, label: '剧集: ', style: 'width: auto;max-width: 100%;' },
+                    0, allAnimes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription || ''} 来源：${opt.apiName}`, doDanmakuAnimeSelect);
+                animeDiv.append(animeSelect);
+                getById(eleIds.danmakuEpisodeFlag).hidden = false;
+                getById(eleIds.danmakuSwitchEpisode).disabled = true;
+                firstRendered = true;
+                doDanmakuAnimeSelect(null, 0, allAnimes[0]);
+            } else {
+                const select = animeSelect.querySelector('select');
+                items.forEach(opt => {
+                    const option = document.createElement('option');
+                    option.value = opt.animeId;
+                    option.textContent = `${opt.animeTitle} 类型：${opt.typeDescription || ''} 来源：${opt.apiName}`;
+                    select.append(option);
+                });
             }
-        }
+            logger.info(`[手动匹配] 来源结果已追加: 新增=${items.length}, 总数=${allAnimes.length}, 起始=${oldLength + 1}`);
+        };
+        const sourcePromises = actualPriority.map(key => searchTask(key).then(items => {
+            renderSourceResults(items);
+            return items;
+        }));
+        const results = await Promise.allSettled(sourcePromises);
+        request.check();
 
         if (failedSources) logger.warn(`[手动匹配] 搜索存在请求失败，失败来源=${failedSources}，可用结果=${allAnimes.length}`);
         else logger.info(`[手动匹配] 搜索完成，共找到 ${allAnimes.length} 个结果`);
@@ -10949,25 +10991,6 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             danmakuRemarkEle.innerText = '';
         }
 
-
-        const danmakuAnimeDiv = getById(eleIds.danmakuAnimeDiv);
-        const danmakuEpisodeNumDiv = getById(eleIds.danmakuEpisodeNumDiv);
-        danmakuAnimeDiv.innerHTML = '';
-        danmakuEpisodeNumDiv.innerHTML = '';
-        window.ede.searchDanmakuOpts.animes = allAnimes;
-
-        let selectAnimeIdx = allAnimes.findIndex(anime => anime.animeId == window.ede.searchDanmakuOpts.animeId);
-        selectAnimeIdx = selectAnimeIdx !== -1 ? selectAnimeIdx : 0;
-        const animeSelect = embySelect({ id: eleIds.danmakuAnimeSelect, label: '剧集: ', style: 'width: auto;max-width: 100%;' }
-            , selectAnimeIdx, allAnimes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription} 来源：${opt.apiName}`, doDanmakuAnimeSelect);
-        danmakuAnimeDiv.append(animeSelect);
-
-        getById(eleIds.danmakuEpisodeFlag).hidden = false;
-        getById(eleIds.danmakuSwitchEpisode).disabled = true;
-
-        // [修复] 初始渲染后直接调用 doDanmakuAnimeSelect 走统一的分集加载逻辑，
-        // 避免静态检查 episodes 导致分集列表为空（初始选中项不触发 onChange）
-        doDanmakuAnimeSelect(null, selectAnimeIdx, allAnimes[selectAnimeIdx]);
         } catch (error) {
             if (request.isCurrent() && !request.signal.aborted) {
                 logger.warn('[手动匹配] 搜索失败', error);
