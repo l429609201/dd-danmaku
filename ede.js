@@ -1062,7 +1062,7 @@
         danmakuSearchButton: 'danmakuSearchButton',
         danmakuEpisodeFlag: 'danmakuEpisodeFlag',
         danmakuAnimeDiv: 'danmakuAnimeDiv',
-        danmakuAnimeProgress: 'danmakuAnimeProgress',
+        danmakuAnimeResults: 'danmakuAnimeResults',
         danmakuAnimeSearch: 'danmakuAnimeSearch',
         danmakuEpisodeSearch: 'danmakuEpisodeSearch',
         danmakuEpisodeSort: 'danmakuEpisodeSort',
@@ -7343,7 +7343,7 @@
                         <div style="width: 80%;">
                             <label class="${classes.embyLabel}">媒体名: </label>
                             <div id="${eleIds.danmakuAnimeDiv}" class="${classes.embySelectWrapper}"></div>
-                            <div id="${eleIds.danmakuAnimeProgress}" style="height: 4px; margin: 0.5em 0; background: rgba(255,255,255,.2); border-radius: 4px; overflow: hidden; display: none;"><div style="height: 100%; width: 0%; background: #4a90e2; transition: width .2s;"></div></div>
+                            <div id="${eleIds.danmakuAnimeResults}" style="display:flex;flex-direction:column;gap:.5em;max-height:20em;overflow:auto;"></div>
                             <label class="${classes.embyLabel}">分集名: </label>
                             <div id="${eleIds.danmakuEpisodeBack}" style="display:none; margin: 0.3em 0; color: #4a90e2; cursor: pointer;">搜索结果 / 分集选择</div>
                             <div id="${eleIds.danmakuEpisodeSearch}" style="display:none; margin: 0.3em 0;"></div>
@@ -7938,7 +7938,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             , doDanmakuSearchEpisode));
         const searchProgress = document.createElement('div');
         searchProgress.id = eleIds.danmakuAnimeProgress;
-        searchProgress.style.cssText = 'height:4px;margin:.5em 0;background:rgba(255,255,255,.2);border-radius:4px;overflow:hidden;display:none;';
+        searchProgress.style.cssText = 'height:5px;margin:.5em 0;background:rgba(255,255,255,.18);border-radius:5px;overflow:hidden;display:none;';
         searchProgress.innerHTML = '<div style="height:100%;width:0%;background:#4a90e2;transition:width .2s;"></div>';
         searchNameDiv.parentNode.insertBefore(searchProgress, searchNameDiv.nextSibling);
         searchNameDiv.append(embyButton({ id: eleIds.danmakuSearchButton, label: '搜索', iconKey: iconKeys.search}, doDanmakuSearchEpisode));
@@ -10781,26 +10781,25 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         let allAnimes = [];
         let failedSources = 0;
         let backendAnimeSelect = null;
-        const renderBackendSourceResults = items => {
-            if (!items?.length || !request.isCurrent() || request.signal.aborted) return;
-            allAnimes.push(...items);
-            window.ede.searchDanmakuOpts.animes = allAnimes;
-            const animeDiv = getById(eleIds.danmakuAnimeDiv);
-            if (!backendAnimeSelect) {
-                getById(eleIds.danmakuEpisodeNumDiv).innerHTML = '';
-                backendAnimeSelect = embySelect({ id: eleIds.danmakuAnimeSelect, label: '剧集: ', style: 'width: auto;max-width: 100%;' },
-                    0, allAnimes, 'animeId', opt => `${opt.animeTitle} 类型：${opt.typeDescription || ''} 来源：${opt.apiName}`, doDanmakuAnimeSelect);
-                animeDiv.innerHTML = ''; animeDiv.append(backendAnimeSelect);
-                getById(eleIds.danmakuEpisodeFlag).hidden = false;
-                getById(eleIds.danmakuSwitchEpisode).disabled = true;
-                doDanmakuAnimeSelect(null, 0, allAnimes[0]);
-            } else {
-                const select = backendAnimeSelect.querySelector('select');
-                items.forEach(opt => { const option = document.createElement('option'); option.value = opt.animeId;
-                    option.textContent = `${opt.animeTitle} 类型：${opt.typeDescription || ''} 来源：${opt.apiName}`; select.append(option); });
-            }
-            logger.info(`[后端手动搜索] 来源结果已追加: 新增=${items.length}，总数=${allAnimes.length}`);
-        };
+         const renderBackendSourceResults = items => {
+             if (!items?.length || !request.isCurrent() || request.signal.aborted) return;
+             allAnimes.push(...items);
+             window.ede.searchDanmakuOpts.animes = allAnimes;
+             const resultList = getById(eleIds.danmakuAnimeResults);
+             if (resultList) items.forEach(anime => {
+                 const card = document.createElement('button'); card.type = 'button';
+                 card.style.cssText = 'display:flex;align-items:center;gap:.75em;width:100%;padding:.55em;border:1px solid rgba(120,160,220,.35);border-radius:8px;background:rgba(0,0,0,.18);color:inherit;text-align:left;';
+                 const poster = document.createElement('img'); poster.src = anime.imageUrl || dandanplayApi.posterImg(anime.animeId); poster.alt = ''; poster.loading = 'lazy'; poster.style.cssText = 'width:42px;height:60px;object-fit:cover;border-radius:4px;flex:none;';
+                 const text = document.createElement('span'); text.style.cssText = 'min-width:0;display:flex;flex-direction:column;gap:.2em;';
+                 text.innerHTML = `<b>${escapeHtml(anime.animeTitle || '')}</b><small style="opacity:.7;">${escapeHtml(anime.typeDescription || '未知类型')}　${escapeHtml(anime.apiName || '')}</small>`;
+                 card.append(poster, text); card.onclick = () => doDanmakuAnimeSelect(null, window.ede.searchDanmakuOpts.animes.indexOf(anime), anime); resultList.append(card);
+             });
+             getById(eleIds.danmakuAnimeDiv).style.display = 'none';
+             getById(eleIds.danmakuEpisodeNumDiv).style.display = 'none';
+             getById(eleIds.danmakuEpisodeFlag).hidden = false;
+             getById(eleIds.danmakuSwitchEpisode).disabled = true;
+             logger.info(`[后端手动搜索] 来源结果已追加: 新增=${items.length}，总数=${allAnimes.length}`);
+         };
 
         if (ddBackend.isDll()) {
             let searchSubscription;
@@ -10894,6 +10893,17 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             else if (key === 'custom') customApiList.forEach((item, i) => item.enabled && actualPriority.push(`custom_${i}`));
         }
 
+        const resultList = getById(eleIds.danmakuAnimeResults);
+        if (resultList) resultList.innerHTML = '';
+        const renderResultCard = anime => {
+            if (!resultList) return;
+            const card = document.createElement('button'); card.type = 'button'; card.className = 'dd-search-result-card';
+            card.style.cssText = 'display:flex;align-items:center;gap:.75em;width:100%;padding:.55em;border:1px solid rgba(120,160,220,.35);border-radius:8px;background:rgba(0,0,0,.18);color:inherit;text-align:left;';
+            const poster = document.createElement('img'); poster.src = anime.imageUrl || dandanplayApi.posterImg(anime.animeId); poster.alt = ''; poster.loading = 'lazy'; poster.style.cssText = 'width:42px;height:60px;object-fit:cover;border-radius:4px;flex:none;';
+            const text = document.createElement('span'); text.style.cssText = 'min-width:0;display:flex;flex-direction:column;gap:.2em;';
+            text.innerHTML = `<b style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(anime.animeTitle || '')}</b><small style="opacity:.7;">${escapeHtml(anime.typeDescription || '未知类型')}　${escapeHtml(anime.apiName || '')}</small>`;
+            card.append(poster, text); card.onclick = () => { const index = window.ede.searchDanmakuOpts.animes.indexOf(anime); doDanmakuAnimeSelect(null, index, anime); }; resultList.append(card);
+        };
         const progressBar = getById(eleIds.danmakuAnimeProgress);
         const setSearchProgress = (completed) => {
             if (!progressBar) return;
@@ -10948,11 +10958,13 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         const renderSourceResults = (items) => {
             if (!items?.length || !request.isCurrent() || request.signal.aborted) return;
             request.check();
-            const oldLength = allAnimes.length;
             allAnimes.push(...items);
             window.ede.searchDanmakuOpts.animes = allAnimes;
+            items.forEach(renderResultCard);
             const animeDiv = getById(eleIds.danmakuAnimeDiv);
             const episodeDiv = getById(eleIds.danmakuEpisodeNumDiv);
+            animeDiv.style.display = 'none';
+            episodeDiv.style.display = 'none';
             if (!animeSelect) {
                 animeDiv.innerHTML = '';
                 episodeDiv.innerHTML = '';
