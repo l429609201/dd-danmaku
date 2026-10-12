@@ -1063,6 +1063,8 @@
         danmakuEpisodeFlag: 'danmakuEpisodeFlag',
         danmakuAnimeDiv: 'danmakuAnimeDiv',
         danmakuAnimeResults: 'danmakuAnimeResults',
+        danmakuSearchProgress: 'danmakuSearchProgress',
+        danmakuSearchHint: 'danmakuSearchHint',
         danmakuAnimeSearch: 'danmakuAnimeSearch',
         danmakuEpisodeSearch: 'danmakuEpisodeSearch',
         danmakuEpisodeSort: 'danmakuEpisodeSort',
@@ -7338,12 +7340,17 @@
                     <div id="${eleIds.danmakuSearchNameDiv}" style="display: flex;"></div>
                     <div id="${eleIds.appendSeasonEpisodeDiv}" style="margin-top: 0.3em;"></div>
                 </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:.7em;">
+                    <strong>搜索弹幕</strong><button type="button" id="danmakuResearchButton" style="border:0;background:none;color:#4a90e2;cursor:pointer;">重新搜索</button>
+                </div>
+                <div id="${eleIds.danmakuSearchHint}" class="${classes.embyFieldDesc}" style="margin:.35em 0;">点击条目进行选择</div>
+                <style>@keyframes dd-search-spin{to{transform:rotate(360deg)}}</style>
+                <div id="${eleIds.danmakuSearchProgress}" style="height:5px;margin:.5em 0;background:rgba(255,255,255,.18);border-radius:5px;overflow:hidden;display:none;"><div style="height:100%;width:0%;background:#4a90e2;transition:width .2s;"></div></div>
+                <div id="${eleIds.danmakuAnimeResults}" style="display:flex;flex-direction:column;gap:.5em;max-height:20em;overflow:auto;"></div>
                 <div id="${eleIds.danmakuEpisodeFlag}" hidden>
-                    <div style="display: flex;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:.7em;"><strong>选择分集</strong><button type="button" id="danmakuEpisodeBack" style="border:0;background:none;color:#4a90e2;cursor:pointer;">返回搜索</button></div>
+                    <div class="${classes.embyFieldDesc}" style="margin:.35em 0;">选择分集弹幕，点击条目进行选择/取消</div>>
                         <div style="width: 80%;">
-                            <label class="${classes.embyLabel}">媒体名: </label>
-                            <div id="${eleIds.danmakuAnimeDiv}" class="${classes.embySelectWrapper}"></div>
-                            <div id="${eleIds.danmakuAnimeResults}" style="display:flex;flex-direction:column;gap:.5em;max-height:20em;overflow:auto;"></div>
                             <label class="${classes.embyLabel}">分集名: </label>
                             <div id="${eleIds.danmakuEpisodeBack}" style="display:none; margin: 0.3em 0; color: #4a90e2; cursor: pointer;">搜索结果 / 分集选择</div>
                             <div id="${eleIds.danmakuEpisodeSearch}" style="display:none; margin: 0.3em 0;"></div>
@@ -7353,14 +7360,11 @@
                             </div>
                         </div>
                         <div style="width: 20%; margin: 0 2%; text-align: center;">
-                            <img id="${eleIds.searchImg}" style="width: 100%; height: auto;"
-                                loading="lazy" decoding="async" draggable="false" class="coveredImage-noScale"></img>
-                            <div id="${eleIds.searchApiSource}" class="${classes.embyFieldDesc}" style="margin-top: 0.5em;">
-                                <!-- API来源将在这里显示 -->
-                            </div>
+                            <img id="${eleIds.searchImg}" style="width: 100%; height: auto;" loading="lazy" decoding="async" draggable="false" class="coveredImage-noScale"></img>
+                            <div id="${eleIds.searchApiSource}" class="${classes.embyFieldDesc}" style="margin-top: 0.5em;"></div>
                         </div>
                     </div>
-                    </div>
+                </div>
                 <div hidden>
                     <label class="${classes.embyLabel}" id="${eleIds.danmakuRemark}"></label>
                 </div>
@@ -7390,7 +7394,10 @@
             </div>
         `;
         container.innerHTML = template.trim();
-        buildSearchEpisodeEle();
+        const research = getById('danmakuResearchButton');
+        if (research) research.onclick = doDanmakuSearchEpisode;
+        const back = getById('danmakuEpisodeBack');
+        if (back) back.onclick = () => { getById(eleIds.danmakuEpisodeFlag).hidden = true; getById(eleIds.danmakuAnimeResults).hidden = false; };
         // 本地读取由 DLL 策略控制，不再构建重复的 XML 开关。
 
         // 绑定手动匹配页面的额外按钮事件
@@ -10772,15 +10779,24 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         opts.animes = [];
         let searchName = embySearch.value;
         const searchButton = getById(eleIds.danmakuSearchButton);
-        if (searchButton) { searchButton.disabled = true; searchButton.setAttribute('aria-busy', 'true'); }
+        let searchButtonSpinner = null;
+        if (searchButton) {
+            searchButton.disabled = true; searchButton.setAttribute('aria-busy', 'true');
+            searchButtonSpinner = document.createElement('span');
+            searchButtonSpinner.textContent = '⟳';
+            searchButtonSpinner.style.cssText = 'display:inline-block;margin-left:.35em;animation:dd-search-spin .8s linear infinite;';
+            searchButton.appendChild(searchButtonSpinner);
+        }
         try {
         const danmakuRemarkEle = getById(eleIds.danmakuRemark);
         danmakuRemarkEle.parentNode.hidden = false;
         danmakuRemarkEle.innerText = searchName ? '' : '请填写标题';
-        const spinnerEle = getByClass(classes.mdlSpinner);
+         const progress = getById(eleIds.danmakuSearchProgress);
+         if (progress) { progress.style.display = 'block'; progress.firstElementChild.style.width = '0%'; }
+         const spinnerEle = getByClass(classes.mdlSpinner);
         let allAnimes = [];
         let failedSources = 0;
-        let backendAnimeSelect = null;
+        const completedBackendSources = new Set();
          const renderBackendSourceResults = items => {
              if (!items?.length || !request.isCurrent() || request.signal.aborted) return;
              allAnimes.push(...items);
@@ -10817,10 +10833,15 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 searchSubscription = await ddBackend.watchTask(taskId, request.isCurrent, false, event => {
                     if (event.stage !== 'candidates' || typeof event.detail !== 'string') return;
                     let payload; try { payload = JSON.parse(event.detail); } catch (_) { return; }
-                    const rows = payload?.SourceId && Array.isArray(payload?.Works) ? payload.Works.map(work => ({
+                    const eventType = payload?.Type || payload?.type;
+                    const sourceId = payload?.SourceId || payload?.sourceId;
+                    const sourceName = payload?.SourceName || payload?.sourceName || sourceId;
+                    const works = payload?.Works || payload?.works;
+                    const rows = eventType === 'search-source' && sourceId && Array.isArray(works) ? works.map(work => ({
                         animeId: work.AnimeId || work.animeId || '', animeTitle: work.AnimeTitle || work.animeTitle || '',
                         episodeId: work.EpisodeId || work.episodeId || null, episodeTitle: work.EpisodeTitle || work.episodeTitle || '',
-                        apiName: payload.SourceName || payload.SourceId, sourceId: payload.SourceId, backendSearchTaskId: taskId })) : [];
+                        imageUrl: work.ImageUrl || work.imageUrl || '', typeDescription: work.TypeDescription || work.typeDescription || '',
+                        apiName: sourceName, sourceId, backendSearchTaskId: taskId })) : [];
                     renderBackendSourceResults(rows);
                 });
                 request.closeSubscription = () => { void searchSubscription.close(); };
@@ -10850,6 +10871,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                         backendSearchTaskId: taskId })));
                 window.ede.backendSearchTaskId = taskId;
                 allAnimes = rows;
+                window.ede.searchDanmakuOpts.animes = allAnimes;
                 failedSources = (started?.data?.Results || started?.data?.results || []).filter(row => (row.Status || row.status) === 'failed').length;
                 logger.info(`[后端手动搜索] 完成，共找到 ${allAnimes.length} 个结果`);
             } catch (error) {
@@ -10860,7 +10882,8 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 return;
             } finally {
                 await searchSubscription?.close();
-                if (request.isCurrent()) spinnerEle && spinnerEle.classList.add('hide');
+                if (progress) { progress.style.display = 'none'; progress.firstElementChild.style.width = '100%'; }
+             if (request.isCurrent()) spinnerEle && spinnerEle.classList.add('hide');
             }
             request.check();
             if (allAnimes.length < 1) {
@@ -11033,7 +11056,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 const remark = getById(eleIds.danmakuRemark);
                 if (remark) remark.innerText = '搜索请求失败，请稍后重试';
             }
-        } finally { request.finish(); if (searchButton) { searchButton.disabled = false; searchButton.removeAttribute('aria-busy'); } }
+        } finally { request.finish(); if (searchButtonSpinner) searchButtonSpinner.remove(); if (searchButton) { searchButton.disabled = false; searchButton.removeAttribute('aria-busy'); } }
     }
 
     function doSearchTitleSwtich(e) {
