@@ -7339,7 +7339,7 @@
                 <div>
                     <!-- 标题搜索控件属于作品页，进入分集时整页隐藏。 -->
                     <div style="display:flex;align-items:center;justify-content:space-between;gap:1em;flex-wrap:wrap;">
-                        <label class="${classes.embyLabel}" style="margin:0;">标题: </label>
+                        <label class="${classes.embyLabel}" style="margin:0;font-size:14px;line-height:20px;">标题: </label>
                         <div id="${eleIds.appendSeasonEpisodeDiv}"></div>
                     </div>
                     <div id="${eleIds.danmakuSearchNameDiv}" style="display:flex;"></div>
@@ -7970,17 +7970,22 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
 
         searchNameDiv.append(embyButton({ id: eleIds.danmakuSearchButton, label: '搜索', iconKey: iconKeys.search}, doDanmakuSearchEpisode));
 
-        // 文件名拼接季集号开关
-        getById(eleIds.appendSeasonEpisodeDiv).append(
-            embyCheckbox({ label: lsKeys.appendSeasonEpisode.name }, appendSE, (checked) => {
-                lsSetItem(lsKeys.appendSeasonEpisode.id, checked);
-                // 实时更新搜索框内容
-                const searchInput = getById(eleIds.danmakuSearchName);
-                if (searchInput) {
-                    searchInput.value = checked ? opts.animeName : (opts.seriesName || opts.animeName);
-                }
-            })
-        );
+        // 只为标题行使用紧凑原生复选框，避免宿主大号复选框撑高这一行。
+        const appendLabel = document.createElement('label');
+        appendLabel.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin:0;font-size:14px;line-height:20px;cursor:pointer;';
+        const appendInput = document.createElement('input');
+        appendInput.type = 'checkbox';
+        appendInput.checked = !!appendSE;
+        appendInput.style.cssText = 'appearance:auto;width:16px;height:16px;margin:0;flex:none;accent-color:#4a90e2;';
+        appendInput.addEventListener('change', () => {
+            lsSetItem(lsKeys.appendSeasonEpisode.id, appendInput.checked);
+            const searchInput = getById(eleIds.danmakuSearchName);
+            if (searchInput) searchInput.value = appendInput.checked ? opts.animeName : (opts.seriesName || opts.animeName);
+        });
+        const appendText = document.createElement('span');
+        appendText.textContent = lsKeys.appendSeasonEpisode.name;
+        appendLabel.append(appendInput, appendText);
+        getById(eleIds.appendSeasonEpisodeDiv).append(appendLabel);
 
         // --- API选择和优先级设置 (PR #167 优化布局) ---
         const apiSelectDiv = getById(eleIds.apiSelectDiv);
