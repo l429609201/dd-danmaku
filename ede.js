@@ -7335,17 +7335,17 @@
         const comments = window.ede.danmuCache[episodeId] || [];
         let template = `
             <div>
+                <section id="dd-manual-search-view">
                 <div>
-                    <!-- 标题与季集号开关同排，保留搜索与转换按钮。 -->
+                    <!-- 标题搜索控件属于作品页，进入分集时整页隐藏。 -->
                     <div style="display:flex;align-items:center;justify-content:space-between;gap:1em;flex-wrap:wrap;">
                         <label class="${classes.embyLabel}" style="margin:0;">标题: </label>
                         <div id="${eleIds.appendSeasonEpisodeDiv}"></div>
                     </div>
                     <div id="${eleIds.danmakuSearchNameDiv}" style="display:flex;"></div>
                 </div>
-                <section id="dd-manual-search-view">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:.7em;">
-                    <strong>搜索弹幕</strong><button type="button" id="danmakuResearchButton" class="dd-manual-action">重新搜索</button>
+                <div style="margin-top:.7em;">
+                    <strong>搜索弹幕</strong>
                 </div>
                 <div id="${eleIds.danmakuSearchHint}" class="${classes.embyFieldDesc}" style="margin:.35em 0;">点击条目进行选择</div>
                 <style>
@@ -7365,29 +7365,25 @@
                 <div id="${eleIds.danmakuAnimeResults}" style="display:flex;flex-direction:column;gap:.5em;max-height:20em;overflow:auto;"></div>
                 </section>
                 <div id="${eleIds.danmakuEpisodeFlag}" hidden>
-                    <!-- 排序与返回放在顶部，列表右侧留给当前作品海报。 -->
-                    <div style="display:flex;align-items:center;justify-content:space-between;gap:.5em;flex-wrap:wrap;margin-top:.7em;">
-                        <strong>选择合集</strong>
-                        <div style="display:flex;align-items:center;gap:.5em;">
-                            <button type="button" id="danmakuEpisodeSort" class="dd-manual-action">↑ 升序</button>
-                            <button type="button" id="danmakuEpisodeBack" class="dd-manual-action">返回搜索</button>
-                        </div>
-                    </div>
+                    <!-- 分集页接管整个主内容区，导航与操作集中在同一行。 -->
+                    <div style="margin-top:.7em;"><strong>选择合集</strong></div>
                     <div class="${classes.embyFieldDesc}" style="margin:.35em 0;">选择分集弹幕，点击条目进行选择/取消</div>
                     <div style="display:flex;align-items:center;gap:.75em;margin:.45em 0;padding:.35em .5em;border:1px solid rgba(160,160,160,.28);border-radius:5px;">
                         <span class="${classes.embyLabel}" style="margin:0;white-space:nowrap;">分类</span>
                         <!-- 面包屑在选择作品时填充，搜索入口可返回已有结果。 -->
-                        <nav id="danmakuEpisodeBreadcrumb" aria-label="分集导航" class="${classes.embyFieldDesc}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></nav>
+                        <nav id="danmakuEpisodeBreadcrumb" aria-label="分集导航" class="${classes.embyFieldDesc}" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></nav>
+                        <button type="button" id="danmakuEpisodeSort" class="dd-manual-action">↑ 升序</button>
+                        <button type="button" id="danmakuEpisodeBack" class="dd-manual-action">返回搜索</button>
                     </div>
                     <div style="display:flex;gap:.8em;align-items:flex-start;margin:.45em 0;">
                         <div id="${eleIds.danmakuEpisodeSearch}" style="flex:1;min-width:0;margin:0;"></div>
-                        <aside style="flex:0 0 22%;max-width:150px;min-width:65px;">
+                        <aside style="flex:0 0 22%;max-width:150px;min-width:65px;align-self:center;text-align:center;">
                             <img id="${eleIds.searchImg}" alt="所选作品海报" loading="lazy" decoding="async" draggable="false" style="display:block;width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;" />
                             <div id="${eleIds.searchApiSource}" class="${classes.embyFieldDesc}" style="margin-top:.4em;overflow-wrap:anywhere;"></div>
                         </aside>
                     </div>
                     <div id="${eleIds.danmakuEpisodeNumDiv}" style="max-width:100%;" class="${classes.embySelectWrapper}"></div>
-                    <div id="${eleIds.danmakuEpisodeLoad}" style="display:flex;justify-content:flex-end;margin-top:.7em;"></div>
+                    <div id="${eleIds.danmakuEpisodeLoad}" style="display:flex;justify-content:center;gap:.6em;margin-top:.7em;"></div>
                 </div>
                 <div hidden>
                     <label class="${classes.embyLabel}" id="${eleIds.danmakuRemark}"></label>
@@ -7420,8 +7416,6 @@
         container.innerHTML = template.trim();
         // 初始化原有搜索输入框、搜索图标与标题转换按钮，加载提示不替换这些控件。
         buildSearchEpisodeEle();
-        const research = getById('danmakuResearchButton');
-        if (research) research.onclick = doDanmakuSearchEpisode;
         const back = getById('danmakuEpisodeBack');
         if (back) back.onclick = () => setManualSearchView(false);
         // 本地读取由 DLL 策略控制，不再构建重复的 XML 开关。
@@ -11104,11 +11098,11 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         const breadcrumbBack = breadcrumb?.querySelector('button');
         if (breadcrumbBack) breadcrumbBack.onclick = () => setManualSearchView(false);
         back.style.display = 'block'; searchDiv.style.display = 'block'; searchDiv.innerHTML = '';
-        const input = document.createElement('input'); input.type = 'search'; input.placeholder = '搜索剧集'; input.className = 'emby-input'; input.style.cssText = 'width:100%;box-sizing:border-box;';
+        // 分集页直接展示列表，不再占用空间放置搜索输入框。
         const list = document.createElement('div'); list.style.cssText = 'display:flex;flex-direction:column;gap:.35em;max-height:18em;overflow:auto;margin-top:.4em;';
         let ascending = true;
-        const filter = () => { const keyword = input.value.toLowerCase(); list.innerHTML = ''; const sorted = [...episodes].sort((a,b) => ascending ? (getSourceEpisodeNumber(a) || 0) - (getSourceEpisodeNumber(b) || 0) : (getSourceEpisodeNumber(b) || 0) - (getSourceEpisodeNumber(a) || 0)); sorted.filter(ep => !keyword || `${ep.episodeTitle || ''} ${getSourceEpisodeNumber(ep) || ''}`.toLowerCase().includes(keyword)).forEach(ep => { const row = document.createElement('button'); row.type = 'button'; row.dataset.selected = 'false'; row.style.cssText = 'display:flex;gap:.7em;text-align:left;padding:.65em .75em;border:2px solid rgba(120,160,220,.35);border-radius:6px;background:transparent;color:inherit;align-items:center;'; row.innerHTML = `<b>${escapeHtml(String(getSourceEpisodeNumber(ep) ?? ''))}</b><span>${escapeHtml(ep.episodeTitle || '')}</span>`; row.onclick = () => { const select = getById(eleIds.danmakuEpisodeNumSelect); if (select) { select.value = ep.episodeId; select.dispatchEvent(new Event('change')); } row.dataset.selected = row.dataset.selected === 'true' ? 'false' : 'true'; row.style.borderColor = row.dataset.selected === 'true' ? '#4a90e2' : 'rgba(120,160,220,.35)'; }; list.append(row); }); };
-        input.addEventListener('input', filter); searchDiv.append(input, list); filter();
+        const filter = () => { const keyword = ''; list.innerHTML = ''; const sorted = [...episodes].sort((a,b) => ascending ? (getSourceEpisodeNumber(a) || 0) - (getSourceEpisodeNumber(b) || 0) : (getSourceEpisodeNumber(b) || 0) - (getSourceEpisodeNumber(a) || 0)); sorted.filter(ep => !keyword || `${ep.episodeTitle || ''} ${getSourceEpisodeNumber(ep) || ''}`.toLowerCase().includes(keyword)).forEach(ep => { const row = document.createElement('button'); row.type = 'button'; row.dataset.selected = 'false'; row.style.cssText = 'display:flex;gap:.7em;text-align:left;padding:.65em .75em;border:2px solid rgba(120,160,220,.35);border-radius:6px;background:transparent;color:inherit;align-items:center;'; row.innerHTML = `<b>${escapeHtml(String(getSourceEpisodeNumber(ep) ?? ''))}</b><span>${escapeHtml(ep.episodeTitle || '')}</span>`; row.onclick = () => { const select = getById(eleIds.danmakuEpisodeNumSelect); if (select) { select.value = ep.episodeId; select.dispatchEvent(new Event('change')); } row.dataset.selected = row.dataset.selected === 'true' ? 'false' : 'true'; row.style.borderColor = row.dataset.selected === 'true' ? '#4a90e2' : 'rgba(120,160,220,.35)'; }; list.append(row); }); };
+        searchDiv.append(list); filter();
         const sort = getById('danmakuEpisodeSort'); if (sort) sort.onclick = () => { ascending = !ascending; sort.textContent = ascending ? '↑ 升序' : '↓ 降序'; filter(); };
         back.style.display = 'block'; numDiv.style.display = 'none';
     }
