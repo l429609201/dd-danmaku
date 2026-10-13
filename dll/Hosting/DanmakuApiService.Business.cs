@@ -256,7 +256,12 @@ public sealed partial class DanmakuApiService
                     foreach (var work in filteredWorks)
                     {
                         var compact = new { animeId = work.AnimeId, bangumiId = work.AnimeId, animeTitle = work.AnimeTitle,
-                            episodeId = work.EpisodeId, episodeTitle = work.EpisodeTitle, episodeNumber = work.EpisodeNumber };
+                            episodeId = work.EpisodeId, episodeTitle = work.EpisodeTitle, episodeNumber = work.EpisodeNumber,
+                            // 实时结果保留展示字段，避免卡片丢失海报与上游类型。
+                            imageUrl = work.ImageUrl,
+                            typeDescription = work.UpstreamFields is JsonElement fields && fields.ValueKind == JsonValueKind.Object
+                                && fields.TryGetProperty("typeDescription", out var description) && description.ValueKind == JsonValueKind.String
+                                ? description.GetString() : null };
                         context.Detail("candidates", JsonSerializer.Serialize(new { Type = "search-source", SourceId = source.Id,
                             SourceName = source.Name, Works = new[] { compact } }, compactJson), 1);
                     }
