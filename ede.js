@@ -11142,7 +11142,30 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         if (breadcrumbBack) breadcrumbBack.onclick = () => setManualSearchView(false);
         back.style.display = 'block'; searchDiv.style.display = 'block'; searchDiv.innerHTML = '';
         // 分集页直接展示列表，不再占用空间放置搜索输入框。
-        const list = document.createElement('div'); list.style.cssText = 'display:flex;flex-direction:column;gap:.35em;max-height:18em;overflow:auto;margin-top:.4em;';
+        // 固定外框与内部滚动分离，少量分集不收缩，两种模式保持同一高度。
+        const toolbar = document.createElement('div');
+        toolbar.style.cssText = 'display:flex;justify-content:flex-end;gap:.35em;margin-bottom:.4em;';
+        toolbar.setAttribute('role', 'group');
+        toolbar.setAttribute('aria-label', '分集显示方式');
+        const frame = document.createElement('div');
+        frame.style.cssText = 'height:18em;box-sizing:border-box;border:1px solid rgba(120,160,220,.35);border-radius:10px;overflow:hidden;background:rgba(0,0,0,.12);';
+        const scroller = document.createElement('div');
+        scroller.style.cssText = 'height:100%;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-gutter:stable;box-sizing:border-box;padding:.5em;';
+        const list = document.createElement('div');
+        scroller.append(list); frame.append(scroller);
+        let gridMode = false;
+        const modeButtons = [false, true].map(grid => {
+            const button = document.createElement('button');
+            button.type = 'button'; button.className = 'dd-manual-action';
+            button.title = grid ? '方格模式' : '列表模式';
+            button.setAttribute('aria-label', button.title);
+            button.innerHTML = grid
+                ? '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="2" width="6" height="6" rx="1.5"/><rect x="2" y="12" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/></svg>'
+                : '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 4h2m3 0h11M2 10h2m3 0h11M2 16h2m3 0h11"/></svg>';
+            button.onclick = () => { gridMode = grid; render(); };
+            toolbar.append(button);
+            return button;
+        });
         let ascending = true;
         // 当前匹配只接受一个分集：显式点击才可确认，排序不丢失选择。
         let selectedId = null;
@@ -11151,7 +11174,16 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         if (select) select.selectedIndex = -1;
         if (confirm) confirm.disabled = true;
         const render = () => {
+            const scrollTop = scroller.scrollTop;
             list.replaceChildren();
+            list.style.cssText = gridMode
+                ? 'display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:.5em;align-content:start;'
+                : 'display:flex;flex-direction:column;gap:.35em;';
+            modeButtons.forEach((button, index) => {
+                const active = Boolean(index) === gridMode;
+                button.setAttribute('aria-pressed', String(active));
+                button.style.borderColor = active ? '#4a90e2' : '';
+            });
             const sorted = [...episodes].sort((a, b) => (ascending ? 1 : -1)
                 * ((getSourceEpisodeNumber(a) || 0) - (getSourceEpisodeNumber(b) || 0)));
             sorted.forEach(ep => {
@@ -11161,7 +11193,19 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 row.type = 'button';
                 row.setAttribute('aria-pressed', String(selected));
                 row.style.cssText = `display:flex;gap:.7em;text-align:left;padding:.65em .75em;border:2px solid ${selected ? '#4a90e2' : 'rgba(120,160,220,.35)'};border-radius:6px;background:transparent;color:inherit;align-items:center;`;
-                row.innerHTML = `<b>${escapeHtml(String(getSourceEpisodeNumber(ep) ?? ''))}</b><span>${escapeHtml(ep.episodeTitle || '')}</span>`;
+                const number = getSourceEpisodeNumber(ep) ?? episodes.indexOf(ep) + 1;
+                row.title = ep.episodeTitle || `第${number}集`;
+                if (gridMode) {
+                    row.style.cssText += 'aspect-ratio:1;min-width:0;justify-content:center;text-align:center;padding:.25em;overflow-wrap:anywhere;';
+                    // 方格只显示数字，悬停提示完整名称，同时提供无障碍名称。
+                    const episodeInfo = `第 ${number} 集\n${ep.episodeTitle?.trim() || '暂无分集名称'}`;
+                    row.title = episodeInfo;
+                    row.setAttribute('aria-label', episodeInfo.replace('\n', '：'));
+                    row.textContent = String(number);
+                } else {
+                    row.style.minWidth = '0';
+                    row.innerHTML = `<b>${escapeHtml(String(number))}</b><span style="min-width:0;overflow-wrap:anywhere;">${escapeHtml(ep.episodeTitle || '')}</span>`;
+                }
                 row.onclick = () => {
                     selectedId = selectedId === id ? null : id;
                     if (select) {
@@ -11173,8 +11217,9 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 };
                 list.append(row);
             });
+            scroller.scrollTop = scrollTop;
         };
-        searchDiv.append(list); render();
+        searchDiv.append(toolbar, frame); render();
         const sort = getById('danmakuEpisodeSort');
         if (sort) {
             sort.textContent = '↑ 升序';
