@@ -7384,9 +7384,12 @@
                             <div id="${eleIds.danmakuEpisodeSearch}" style="margin:0;"></div>
                             <div id="${eleIds.danmakuEpisodeLoad}" style="display:flex;justify-content:flex-end;gap:.6em;margin-top:.7em;"></div>
                         </div>
-                        <aside style="flex:0 0 22%;max-width:150px;min-width:65px;align-self:center;text-align:center;">
-                            <img id="${eleIds.searchImg}" alt="所选作品海报" loading="lazy" decoding="async" draggable="false" style="display:block;width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;" />
-                            <div id="${eleIds.searchApiSource}" class="${classes.embyFieldDesc}" style="margin-top:.4em;overflow-wrap:anywhere;"></div>
+                        <!-- 海报分集卡片同高，来源与下方操作栏对应。 -->
+                        <aside style="flex:0 0 22%;max-width:150px;min-width:65px;text-align:center;">
+                            <div style="height:18em;box-sizing:border-box;border:1px solid rgba(120,160,220,.35);border-radius:10px;overflow:hidden;background:rgba(0,0,0,.12);">
+                                <img id="${eleIds.searchImg}" alt="所选作品海报" loading="lazy" decoding="async" draggable="false" style="display:block;width:100%;height:100%;object-fit:contain;" />
+                            </div>
+                            <div id="${eleIds.searchApiSource}" class="${classes.embyFieldDesc}" style="margin:.6em 0 0;min-height:38px;display:flex;align-items:center;justify-content:center;overflow-wrap:anywhere;"></div>
                         </aside>
                     </div>
                     <div id="${eleIds.danmakuEpisodeNumDiv}" style="max-width:100%;" class="${classes.embySelectWrapper}"></div>
@@ -11138,18 +11141,25 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         if (breadcrumb) breadcrumb.innerHTML = `<button type="button" style="border:0;padding:0;background:none;color:#4a90e2;cursor:pointer;font:inherit;">搜索弹幕</button><span aria-hidden="true" style="opacity:.6;"> / </span><span aria-current="page">${escapeHtml(anime.animeTitle || '选择合集')}</span>`;
         const breadcrumbBack = breadcrumb?.querySelector('button');
         if (breadcrumbBack) breadcrumbBack.onclick = () => setManualSearchView(false);
+        // 重新渲染前暂存确认按钮，避免清空旧工具栏时丢失按钮及事件。
+        const confirm = getById(eleIds.danmakuSwitchEpisode);
+        const loadHost = getById(eleIds.danmakuEpisodeLoad);
+        if (confirm && loadHost) loadHost.append(confirm);
         back.style.display = 'block'; searchDiv.style.display = 'block'; searchDiv.innerHTML = '';
         // 分集搜索与视图切换放在卡片下方，作品标题搜索仍留在作品页。
         // 固定外框与内部滚动分离，少量分集不收缩，两种模式保持同一高度。
         const toolbar = document.createElement('div');
-        toolbar.style.cssText = 'display:flex;align-items:center;gap:.5em;margin-top:.6em;';
+        toolbar.style.cssText = 'display:flex;align-items:center;flex-wrap:nowrap;gap:.4em;margin-top:.6em;';
         const episodeSearch = document.createElement('input');
         episodeSearch.type = 'search';
         episodeSearch.placeholder = '搜索集号或分集名称';
         episodeSearch.setAttribute('aria-label', '搜索分集');
         episodeSearch.className = 'emby-input';
         episodeSearch.style.cssText = 'flex:1;min-width:0;width:0;margin:0;box-sizing:border-box;';
-        toolbar.append(episodeSearch);
+        const searchBox = document.createElement('div');
+        searchBox.style.cssText = 'display:flex;align-items:center;flex:1;min-width:0;border:1px solid rgba(150,170,200,.4);border-radius:6px;overflow:hidden;';
+        episodeSearch.style.cssText += 'border:0;border-radius:0;height:36px;background:transparent;';
+        searchBox.append(episodeSearch);
         toolbar.setAttribute('role', 'group');
         toolbar.setAttribute('aria-label', '分集显示方式');
         const frame = document.createElement('div');
@@ -11175,7 +11185,10 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         // 当前匹配只接受一个分集：显式点击才可确认，排序不丢失选择。
         let selectedId = null;
         const select = getById(eleIds.danmakuEpisodeNumSelect);
-        const confirm = getById(eleIds.danmakuSwitchEpisode);
+        // 同一行依次为模式切换、搜索输入框和确认按钮。
+        toolbar.append(searchBox);
+        if (confirm) { confirm.style.flex = 'none'; toolbar.append(confirm); }
+        if (loadHost) loadHost.style.display = 'none';
         if (select) select.selectedIndex = -1;
         if (confirm) confirm.disabled = true;
         const render = () => {
