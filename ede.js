@@ -1064,7 +1064,6 @@
         danmakuEpisodeFlag: 'danmakuEpisodeFlag',
         danmakuAnimeDiv: 'danmakuAnimeDiv',
         danmakuAnimeResults: 'danmakuAnimeResults',
-        danmakuSearchProgress: 'danmakuSearchProgress',
         danmakuSearchHint: 'danmakuSearchHint',
         danmakuAnimeSearch: 'danmakuAnimeSearch',
         danmakuEpisodeSearch: 'danmakuEpisodeSearch',
@@ -7337,20 +7336,28 @@
         let template = `
             <div>
                 <div>
-                    <!-- 标题与季集号开关同排，搜索控件及进度条依次置于下方。 -->
+                    <!-- 标题与季集号开关同排，保留搜索与转换按钮。 -->
                     <div style="display:flex;align-items:center;justify-content:space-between;gap:1em;flex-wrap:wrap;">
                         <label class="${classes.embyLabel}" style="margin:0;">标题: </label>
                         <div id="${eleIds.appendSeasonEpisodeDiv}"></div>
                     </div>
                     <div id="${eleIds.danmakuSearchNameDiv}" style="display:flex;"></div>
-                    <div id="${eleIds.danmakuSearchProgress}" style="height:5px;margin:.5em 0;background:rgba(255,255,255,.18);border-radius:5px;overflow:hidden;display:none;"><div style="height:100%;width:0%;background:#4a90e2;transition:width .2s;"></div></div>
                 </div>
+                <section id="dd-manual-search-view">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-top:.7em;">
                     <strong>搜索弹幕</strong><button type="button" id="danmakuResearchButton" style="border:0;background:none;color:#4a90e2;cursor:pointer;">重新搜索</button>
                 </div>
                 <div id="${eleIds.danmakuSearchHint}" class="${classes.embyFieldDesc}" style="margin:.35em 0;">点击条目进行选择</div>
-                <style>@keyframes dd-search-spin{to{transform:rotate(360deg)}}</style>
+                <style>
+                    /* 覆盖宿主布局样式，使两个结果视图严格互斥。 */
+                    #dd-manual-search-view[hidden], #${eleIds.danmakuEpisodeFlag}[hidden] { display:none !important; }
+                    #${eleIds.danmakuSearchButton} { position:relative; overflow:visible; }
+                    #${eleIds.danmakuSearchButton}[aria-busy="true"] { opacity:1; }
+                    .dd-search-ring { position:absolute; width:2.4em; height:2.4em; left:50%; top:50%; margin:-1.2em 0 0 -1.2em; pointer-events:none; animation:dd-search-spin .85s linear infinite; }
+                    @keyframes dd-search-spin{to{transform:rotate(360deg)}}
+                </style>
                 <div id="${eleIds.danmakuAnimeResults}" style="display:flex;flex-direction:column;gap:.5em;max-height:20em;overflow:auto;"></div>
+                </section>
                 <div id="${eleIds.danmakuEpisodeFlag}" hidden>
                     <div style="display:flex;align-items:center;justify-content:space-between;margin-top:.7em;"><strong>选择合集</strong><button type="button" id="danmakuEpisodeBack" style="border:0;background:none;color:#4a90e2;cursor:pointer;">返回搜索</button></div>
                     <div class="${classes.embyFieldDesc}" style="margin:.35em 0;">选择分集弹幕，点击条目进行选择/取消</div>
@@ -7404,7 +7411,7 @@
         const research = getById('danmakuResearchButton');
         if (research) research.onclick = doDanmakuSearchEpisode;
         const back = getById('danmakuEpisodeBack');
-        if (back) back.onclick = () => { getById(eleIds.danmakuEpisodeFlag).hidden = true; getById(eleIds.danmakuAnimeResults).hidden = false; };
+        if (back) back.onclick = () => setManualSearchView(false);
         // 本地读取由 DLL 策略控制，不再构建重复的 XML 开关。
 
         // 绑定手动匹配页面的额外按钮事件
@@ -10772,9 +10779,17 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
     }
 
     // --- 手动搜索：并行模式 (速度优先，聚合结果) ---
+    // 作品与分集使用同一位置，追加来源结果不改变当前视图。
+    function setManualSearchView(episodes) {
+        getById('dd-manual-search-view').hidden = episodes;
+        getById(eleIds.danmakuEpisodeFlag).hidden = !episodes;
+    }
+
     async function doDanmakuSearchEpisode() {
         let embySearch = getById(eleIds.danmakuSearchName);
         if (!embySearch) { return; }
+        // 点击、回车和重新搜索共用防重入。
+        if (manualSearchRequest?.isCurrent() && !manualSearchRequest.signal.aborted) return;
         const request = beginManualDialogRequest('search');
         if (!request) return;
         const { opts, context } = request;
@@ -10786,17 +10801,18 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         let searchButtonSpinner = null;
         if (searchButton) {
             searchButton.disabled = true; searchButton.setAttribute('aria-busy', 'true');
-            searchButtonSpinner = document.createElement('span');
-            searchButtonSpinner.textContent = '⟳';
-            searchButtonSpinner.style.cssText = 'display:inline-block;margin-left:.35em;animation:dd-search-spin .8s linear infinite;';
+            // 圆环围绕原放大镜，不改变图标或按钮排列。
+            searchButtonSpinner = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            searchButtonSpinner.setAttribute('viewBox', '0 0 32 32');
+            searchButtonSpinner.setAttribute('class', 'dd-search-ring');
+            searchButtonSpinner.setAttribute('aria-hidden', 'true');
+            searchButtonSpinner.innerHTML = '<circle cx="16" cy="16" r="14" fill="none" stroke="#2589db" stroke-opacity=".3" stroke-width="2"/><circle cx="16" cy="16" r="14" fill="none" stroke="#58b5ff" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="24 64"/>';
             searchButton.appendChild(searchButtonSpinner);
         }
         try {
         const danmakuRemarkEle = getById(eleIds.danmakuRemark);
         danmakuRemarkEle.parentNode.hidden = false;
         danmakuRemarkEle.innerText = searchName ? '' : '请填写标题';
-         const progress = getById(eleIds.danmakuSearchProgress);
-         if (progress) { progress.style.display = 'block'; progress.firstElementChild.style.width = '0%'; }
          const spinnerEle = getByClass(classes.mdlSpinner);
         let allAnimes = [];
         let failedSources = 0;
@@ -10806,7 +10822,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         searchResults.replaceChildren();
         searchResults.hidden = false;
         searchResults.style.display = 'flex';
-        getById(eleIds.danmakuEpisodeFlag).hidden = true;
+        setManualSearchView(false);
          const renderBackendSourceResults = items => {
              if (!items?.length || !request.isCurrent() || request.signal.aborted) return;
              items = items.filter(item => {
@@ -10826,9 +10842,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                  text.innerHTML = `<b>${escapeHtml(anime.animeTitle || '')}</b><small style="opacity:.7;">${escapeHtml(anime.typeDescription || '未知类型')}　${escapeHtml(anime.apiName || '')}</small>`;
                  card.append(poster, text); card.onclick = () => {
                  const index = window.ede.searchDanmakuOpts.animes.indexOf(anime);
-                 const results = getById(eleIds.danmakuAnimeResults), flag = getById(eleIds.danmakuEpisodeFlag);
-                 if (results) results.hidden = true;
-                 if (flag) flag.hidden = false;
+                 setManualSearchView(true);
                  doDanmakuAnimeSelect(null, index, anime);
              }; resultList.append(card);
              });
@@ -10901,7 +10915,6 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 return;
             } finally {
                 await searchSubscription?.close();
-                if (progress) { progress.style.display = 'none'; progress.firstElementChild.style.width = '100%'; }
              if (request.isCurrent()) spinnerEle && spinnerEle.classList.add('hide');
             }
             request.check();
@@ -10935,15 +10948,6 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             else if (key === 'custom') customApiList.forEach((item, i) => item.enabled && actualPriority.push(`custom_${i}`));
         }
 
-        const progressBar = getById(eleIds.danmakuSearchProgress);
-        const setSearchProgress = (completed) => {
-            if (!progressBar) return;
-            progressBar.style.display = completed >= actualPriority.length ? 'none' : 'block';
-            progressBar.firstElementChild.style.width = `${actualPriority.length ? Math.round(completed / actualPriority.length * 100) : 0}%`;
-        };
-
-        logger.info(`[手动匹配] 开始并行搜索: ${searchName}`);
-        setSearchProgress(0);
         const searchTask = async (apiKey) => {
             const config = apiConfigs[apiKey];
             if (!config?.enabled || !config?.prefix) return [];
@@ -10984,18 +10988,14 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         };
 
         // --- 3. 并行执行并按来源完成顺序增量展示 ---
-        // JS 和 DLL 复用同一追加入口，按完成数量更新进度，不使用配置下标。
+        // JS 和 DLL 复用同一追加入口，所有来源结束后统一移除加载环。
         const renderSourceResults = renderBackendSourceResults;
-        let completedSources = 0;
         const sourcePromises = actualPriority.map(key => searchTask(key).then(items => {
             renderSourceResults(items);
             return items;
-        }).finally(() => {
-            if (request.isCurrent()) setSearchProgress(++completedSources);
         }));
         const results = await Promise.allSettled(sourcePromises);
         request.check();
-        setSearchProgress(actualPriority.length);
 
         if (failedSources) logger.warn(`[手动匹配] 搜索存在请求失败，失败来源=${failedSources}，可用结果=${allAnimes.length}`);
         else logger.info(`[手动匹配] 搜索完成，共找到 ${allAnimes.length} 个结果`);
@@ -11035,7 +11035,12 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 const remark = getById(eleIds.danmakuRemark);
                 if (remark) remark.innerText = '搜索请求失败，请稍后重试';
             }
-        } finally { request.finish(); if (searchButtonSpinner) searchButtonSpinner.remove(); if (searchButton) { searchButton.disabled = false; searchButton.removeAttribute('aria-busy'); } }
+        } finally {
+            const current = request.isCurrent();
+            request.finish();
+            searchButtonSpinner?.remove();
+            if (current && searchButton) { searchButton.disabled = false; searchButton.removeAttribute('aria-busy'); }
+        }
     }
 
     function doSearchTitleSwtich(e) {
@@ -11076,9 +11081,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
     function renderEpisodePicker(anime, episodes) {
         const numDiv = getById(eleIds.danmakuEpisodeNumDiv), searchDiv = getById(eleIds.danmakuEpisodeSearch), back = getById(eleIds.danmakuEpisodeBack);
         if (!numDiv || !searchDiv || !back) return;
-        const flag = getById(eleIds.danmakuEpisodeFlag), results = getById(eleIds.danmakuAnimeResults);
-        if (results) results.hidden = true;
-        if (flag) flag.hidden = false;
+        // 迟到响应不改变用户返回搜索后的视图。
         back.style.display = 'block'; searchDiv.style.display = 'block'; searchDiv.innerHTML = '';
         const input = document.createElement('input'); input.type = 'search'; input.placeholder = '搜索剧集'; input.className = 'emby-input'; input.style.cssText = 'width:100%;box-sizing:border-box;';
         const list = document.createElement('div'); list.style.cssText = 'display:flex;flex-direction:column;gap:.35em;max-height:18em;overflow:auto;margin-top:.4em;';
