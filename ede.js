@@ -7376,14 +7376,17 @@
                         <button type="button" id="danmakuEpisodeBack" class="dd-manual-action">返回搜索</button>
                     </div>
                     <div style="display:flex;gap:.8em;align-items:flex-start;margin:.45em 0;">
-                        <div id="${eleIds.danmakuEpisodeSearch}" style="flex:1;min-width:0;margin:0;"></div>
+                        <!-- 列表与确认按钮共用列宽，按钮右边缘始终对齐列表框。 -->
+                        <div style="flex:1;min-width:0;">
+                            <div id="${eleIds.danmakuEpisodeSearch}" style="margin:0;"></div>
+                            <div id="${eleIds.danmakuEpisodeLoad}" style="display:flex;justify-content:flex-end;gap:.6em;margin-top:.7em;"></div>
+                        </div>
                         <aside style="flex:0 0 22%;max-width:150px;min-width:65px;align-self:center;text-align:center;">
                             <img id="${eleIds.searchImg}" alt="所选作品海报" loading="lazy" decoding="async" draggable="false" style="display:block;width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;" />
                             <div id="${eleIds.searchApiSource}" class="${classes.embyFieldDesc}" style="margin-top:.4em;overflow-wrap:anywhere;"></div>
                         </aside>
                     </div>
                     <div id="${eleIds.danmakuEpisodeNumDiv}" style="max-width:100%;" class="${classes.embySelectWrapper}"></div>
-                    <div id="${eleIds.danmakuEpisodeLoad}" style="display:flex;justify-content:center;gap:.6em;margin-top:.7em;"></div>
                 </div>
                 <div hidden>
                     <label class="${classes.embyLabel}" id="${eleIds.danmakuRemark}"></label>
