@@ -6,7 +6,8 @@
 
 [下载发行版](https://github.com/l429609201/dd-danmaku/releases) · [安装 DLL](#dll-版emby-服务端插件) · [手动注入](#食用方法-手动注入) · [常见问题](#常见问题) · [API 说明](#api-说明)
 
-<img width="1847" height="996" alt="Emby 播放器弹幕效果" src="https://github.com/user-attachments/assets/376b7ef5-3776-4aae-8232-4bc20885a606" />
+<img width="1847" height="996" alt="image" src="https://github.com/user-attachments/assets/6b526897-1ecc-4b8f-af0c-2406dac91d37" />
+
 
 ## 选择安装方式
 
