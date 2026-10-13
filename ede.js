@@ -672,12 +672,7 @@
                         const failure = failed ? createBackendError({ errorCode: safeCode || fixedError?.[2] || (status === 'cancelled' ? 'OPERATION_CANCELLED' : 'UNKNOWN_ERROR'),
                             errorMessage: fixedError?.[3] }, fixedError?.[1]) : null;
                         if (failed) detail = failure.message;
-                        const downloadDetail = !failed && /^\[下载(?: |处理\]|完成\])/.test(detail);
-                        const summary = [operationStages[stage],
-                            Number.isInteger(count) && count >= 0 ? (stage === 'poll' ? `${Math.min(count, 100)}%` : `${count} 项`) : '',
-                            statusLabel && status !== 'running' ? statusLabel : '', !failed && safeCode ? `错误 ${safeCode}` : ''].filter(Boolean).join(' · ');
-                        if (downloadDetail) logger.info(detail);
-                        else logger.info(`[DLL 操作] ${summary}${detail ? `\n${detail}` : ''}`);
+                        // 后端事件已在服务器记录，只驱动界面，避免控制台打印后再上传回服务器。
                         // 搜索订阅需要候选正文；只打印日志而不透传会导致界面永远收不到结果。
                         onProgress({ stage, status, detail, code: failure?.code || code, count, httpStatus: failure?.httpStatus, errorMessage: failure?.errorMessage });
                     }
@@ -1456,11 +1451,17 @@
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden') void frontendLogs.flush(true);
     });
+    // DLL 在线时前端日志只上传归档，不重复写入浏览器控制台；纯 JS 模式保留控制台诊断。
+    function emitFrontendLog(level, method, args) {
+        if (logLevel < LOG_LEVEL[level]) return;
+        if (!ddBackend.isDll()) console[method](DD_LOG_PREFIX, `[${level}]`, ...args);
+        frontendLogs.enqueue(level, args);
+    }
     const logger = {
-        debug: (...args) => { if (logLevel >= LOG_LEVEL.DEBUG) { console.log(DD_LOG_PREFIX, '[DEBUG]', ...args); frontendLogs.enqueue('DEBUG', args); } },
-        info: (...args) => { if (logLevel >= LOG_LEVEL.INFO) { console.log(DD_LOG_PREFIX, '[INFO]', ...args); frontendLogs.enqueue('INFO', args); } },
-        warn: (...args) => { if (logLevel >= LOG_LEVEL.WARN) { console.warn(DD_LOG_PREFIX, '[WARN]', ...args); frontendLogs.enqueue('WARN', args); } },
-        error: (...args) => { if (logLevel >= LOG_LEVEL.ERROR) { console.error(DD_LOG_PREFIX, '[ERROR]', ...args); frontendLogs.enqueue('ERROR', args); } },
+        debug: (...args) => emitFrontendLog('DEBUG', 'log', args),
+        info: (...args) => emitFrontendLog('INFO', 'log', args),
+        warn: (...args) => emitFrontendLog('WARN', 'warn', args),
+        error: (...args) => emitFrontendLog('ERROR', 'error', args),
     };
 
     // ------ 程序内部使用,请勿更改 end ------
@@ -13898,7 +13899,6 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
     }
 
     function onViewShow(e) {
-        console.log('[dd-danmaku] onViewShow 触发, type:', e && e.detail && e.detail.type);
         logger.debug(`监听到视图切换事件 (viewshow), 类型: ${e.detail.type}`);
         customeUrl.init();
         lsGetItem(lsKeys.quickDebugOn.id) && !getById(eleIds.danmakuSettingBtnDebug) && quickDebug();
