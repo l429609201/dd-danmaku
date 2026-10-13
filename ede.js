@@ -10799,6 +10799,24 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
 
     // --- 手动搜索：并行模式 (速度优先，聚合结果) ---
     // 作品与分集使用同一位置，追加来源结果不改变当前视图。
+    // 日志脱敏占位不能用作图片地址，也不能把第三方作品 ID 拼到官方图片站。
+    function manualPosterUrl(anime) {
+        try {
+            const url = new URL(anime.imageUrl);
+            return ['https:', 'http:'].includes(url.protocol) ? url.href : '';
+        } catch (_) { return ''; }
+    }
+    function setManualPoster(image, anime) {
+        if (!image) return;
+        const url = manualPosterUrl(anime);
+        image.onerror = () => { image.style.visibility = 'hidden'; };
+        if (!url) { image.removeAttribute('src'); image.style.visibility = 'hidden'; return; }
+        if (image.getAttribute('src') !== url) {
+            image.style.visibility = 'visible';
+            image.src = url;
+        }
+    }
+
     function setManualSearchView(episodes) {
         getById('dd-manual-search-view').hidden = episodes;
         getById(eleIds.danmakuEpisodeFlag).hidden = !episodes;
@@ -10836,7 +10854,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         let allAnimes = [];
         let failedSources = 0;
         // 来源与作品共同标识结果，SSE 重放和最终补齐不会重复，也不吞掉同源其他作品。
-        const renderedBackendResults = new Set();
+        const renderedBackendResults = new Map();
         const searchResults = getById(eleIds.danmakuAnimeResults);
         searchResults.replaceChildren();
         searchResults.hidden = false;
@@ -10846,8 +10864,16 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
              if (!items?.length || !request.isCurrent() || request.signal.aborted) return;
              items = items.filter(item => {
                  const key = JSON.stringify([item.sourceId || item.apiPrefix || item.apiName, item.animeId]);
-                 if (renderedBackendResults.has(key)) return false;
-                 renderedBackendResults.add(key);
+                 const existing = renderedBackendResults.get(key);
+                 if (existing) {
+                     // 最终业务结果补全日志事件中被脱敏的海报地址。
+                     if (manualPosterUrl(item)) existing.anime.imageUrl = manualPosterUrl(item);
+                     if (item.typeDescription) existing.anime.typeDescription = item.typeDescription;
+                     existing.refresh?.();
+                     if (request.opts.selectedAnime === existing.anime) setManualPoster(getById(eleIds.searchImg), existing.anime);
+                     return false;
+                 }
+                 renderedBackendResults.set(key, { anime: item });
                  return true;
              });
              allAnimes.push(...items);
@@ -10856,9 +10882,15 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
              if (resultList) items.forEach(anime => {
                  const card = document.createElement('button'); card.type = 'button';
                  card.style.cssText = 'display:flex;align-items:center;gap:.75em;width:100%;padding:.55em;border:1px solid rgba(120,160,220,.35);border-radius:8px;background:rgba(0,0,0,.18);color:inherit;text-align:left;';
-                 const poster = document.createElement('img'); poster.src = anime.imageUrl || dandanplayApi.posterImg(anime.animeId); poster.alt = ''; poster.loading = 'lazy'; poster.style.cssText = 'width:42px;height:60px;object-fit:cover;border-radius:4px;flex:none;';
+                 const poster = document.createElement('img'); setManualPoster(poster, anime); poster.alt = ''; poster.loading = 'lazy'; poster.style.cssText = 'width:42px;height:60px;object-fit:cover;border-radius:4px;flex:none;';
                  const text = document.createElement('span'); text.style.cssText = 'min-width:0;display:flex;flex-direction:column;gap:.2em;';
                  text.innerHTML = `<b>${escapeHtml(anime.animeTitle || '')}</b><small style="opacity:.7;">${escapeHtml(anime.apiName || '来源未提供')}　${escapeHtml(anime.typeDescription || '类型未提供')}</small>`;
+                 const entry = renderedBackendResults.get(JSON.stringify([anime.sourceId || anime.apiPrefix || anime.apiName, anime.animeId]));
+                 entry.refresh = () => {
+                     setManualPoster(poster, anime);
+                     text.innerHTML = `<b>${escapeHtml(anime.animeTitle || '')}</b><small style="opacity:.7;">${escapeHtml(anime.apiName || '来源未提供')}　${escapeHtml(anime.typeDescription || '类型未提供')}</small>`;
+                 };
+                 entry.refresh();
                  card.append(poster, text); card.onclick = () => {
                  const index = window.ede.searchDanmakuOpts.animes.indexOf(anime);
                  setManualSearchView(true);
@@ -11169,7 +11201,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         // 选中作品后立即更新右侧海报，避免等待分集期间仍显示上一部作品。
         const selectedPoster = getById(eleIds.searchImg);
         if (selectedPoster) {
-            selectedPoster.src = anime.imageUrl || dandanplayApi.posterImg(anime.animeId);
+            setManualPoster(selectedPoster, anime);
             selectedPoster.alt = `${anime.animeTitle || '所选作品'}海报`;
         }
         const selectedSource = getById(eleIds.searchApiSource);
@@ -11284,7 +11316,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         }
 
         // [修正] 始终使用匹配到的海报
-        getById(eleIds.searchImg).src = anime.imageUrl || dandanplayApi.posterImg(anime.animeId);
+        setManualPoster(getById(eleIds.searchImg), anime);
 
         // [新增] 更新API来源显示
         const apiSourceDiv = getById(eleIds.searchApiSource);
