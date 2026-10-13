@@ -2609,13 +2609,23 @@
 
     // 只记录数量和少量样例，避免海量分集日志拖死前端日志页。
     function logBlacklistRetained(context, entries) {
-        const sample = entries.slice(0, 20).map(entry => {
+        // 完整记录保留项，不按样例数量截断，便于逐集核对过滤结果。
+        const retained = entries.map(entry => {
             const anime = entry.animeTitle != null ? `作品${entry.animeTitle}（${entry.animeId ?? ''}）` : '';
             const number = getSourceEpisodeNumber(entry);
             const episode = entry.episodeTitle != null ? `${number != null ? `第${number}集` : ''}分集${entry.episodeTitle}（${entry.episodeId ?? ''}）` : '';
             return `- 保留: ${[anime, episode].filter(Boolean).join('，')}`;
         });
-        logger.info(`[标题过滤] ${context} 保留 ${entries.length} 条${sample.length ? `，样例：\n${sample.join('\n')}` : ''}${entries.length > sample.length ? `\n其余 ${entries.length - sample.length} 条省略` : ''}`);
+        // 长明细按段记录，绕开上传链路的单条长度限制，不省略任何保留项。
+        const heading = `[标题过滤] ${context} 保留 ${entries.length} 条，明细：`;
+        const details = retained.join('\n');
+        if (!details) { logger.info(heading); return; }
+        for (let offset = 0, part = 1; offset < details.length; part++) {
+            let end = Math.min(offset + 6000, details.length);
+            if (end < details.length && /[\uD800-\uDBFF]/.test(details[end - 1])) end--;
+            logger.info(`${heading}${details.length > 6000 ? `（第${part}段）` : ''}\n${details.slice(offset, end)}`);
+            offset = end;
+        }
     }
 
     /**
@@ -11354,16 +11364,16 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                 try {
                     const regex = new RegExp(episodeTitleBlacklist, 'i');
                     const originalCount = displayEpisodes.length;
+                    const excludedTitles = [];
                     displayEpisodes = displayEpisodes.filter(ep => {
                         if (ep.episodeTitle && regex.test(ep.episodeTitle)) {
-                            logger.debug(`[标题过滤] 已过滤: 分集显示, animeId=${anime.animeId ?? ''}, 番剧="${anime.animeTitle}", episodeId=${ep.episodeId ?? ''}, 分集="${ep.episodeTitle}"，命中：/${regex.source}/i`);
+                            excludedTitles.push(ep.episodeTitle);
                             return false;
                         }
                         return true;
                     });
-                    // 保留零过滤汇总，便于核对接口与弹窗分集数量。
-                    logger.info(`[标题过滤] 分集显示过滤完成: animeId=${anime.animeId ?? ''}, 番剧="${anime.animeTitle}", 原始=${originalCount} -> ${displayEpisodes.length}, 过滤=${originalCount - displayEpisodes.length}`);
-                    logBlacklistRetained('分集显示', displayEpisodes.map(ep => ({ animeId: anime.animeId, animeTitle: anime.animeTitle, episodeId: ep.episodeId, episodeTitle: ep.episodeTitle, episodeNumber: ep.episodeNumber })));
+                    // 排除项与统计合并为一条记录，避免大量分集逐条刷屏；正则不用斜杠包裹以免被当作路径脱敏。
+                    logger.info(`[标题过滤] 分集显示: 番剧="${anime.animeTitle}", 原始=${originalCount} -> ${displayEpisodes.length}, 过滤=${excludedTitles.length}, 正则=${regex.source}, 标志=${regex.flags}\n排除分集：${excludedTitles.length ? excludedTitles.join('；') : '无'}`);
                 } catch (e) {
                     logger.warn(`[标题过滤] 分集名称正则表达式无效: ${e.message}`);
                 }

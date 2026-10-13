@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using MediaBrowser.Common;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Model.Logging;
+using MediaBrowser.Model.Activity;
 using MediaBrowser.Model.Tasks;
 
 /// <summary>由 Emby 发现的每周自动更新任务；只提示重启，不主动重启服务器。</summary>
@@ -14,13 +15,15 @@ public sealed class UpdatePluginTask : IScheduledTask
     private readonly IApplicationHost _host;
     private readonly IApplicationPaths _paths;
     private readonly ILogger _logger;
+    private readonly IActivityManager _activities;
 
     /// <summary>注入宿主服务，用于检查发行版并替换插件文件。</summary>
-    public UpdatePluginTask(IApplicationHost host, IApplicationPaths paths, ILogManager logs)
+    public UpdatePluginTask(IApplicationHost host, IApplicationPaths paths, ILogManager logs, IActivityManager activities)
     {
         _host = host;
         _paths = paths;
         _logger = logs.GetLogger("DD.Danmaku.Update");
+        _activities = activities;
     }
 
     /// <summary>计划任务的稳定标识。</summary>
@@ -58,6 +61,7 @@ public sealed class UpdatePluginTask : IScheduledTask
     {
         await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         string? temporary = null;
+        var stage = "检查发行版";
         try
         {
             progress.Report(0);
@@ -109,6 +113,7 @@ public sealed class UpdatePluginTask : IScheduledTask
             var lastLog = TimeSpan.Zero;
             long lastLogBytes = 0;
             _logger.Info("开始下载插件更新，总大小 {0:F2} MiB。", release.Size / 1048576d);
+            stage = "下载更新文件";
             await client.DownloadAsync(release, temporary, token, downloaded =>
             {
                 var elapsed = downloadClock.Elapsed;
@@ -130,6 +135,7 @@ public sealed class UpdatePluginTask : IScheduledTask
                 }
             }).ConfigureAwait(false);
             progress.Report(80);
+            stage = "校验更新文件";
             PluginPackageValidator.Validate(temporary, release);
             var candidate = AssemblyName.GetAssemblyName(temporary);
             if (candidate.Name != "DD.Danmaku")
@@ -137,12 +143,26 @@ public sealed class UpdatePluginTask : IScheduledTask
             token.ThrowIfCancellationRequested();
             // 同目录替换并保留旧文件；不截断加载中的 DLL，也不在失败后退回直接覆盖。
             // 若宿主/文件系统不支持替换，任务失败并保留原文件，管理员可手动更新。
+            stage = "替换插件文件";
             File.Replace(temporary, target, target + ".bak");
             temporary = null;
             _host.NotifyPendingRestart();
             var installedVersion = candidate.Version?.ToString() ?? "未知";
             _logger.Info("插件已更新至 {0}（程序集 {1}），旧版保留为 DD.Danmaku.dll.bak，请手动重启 Emby。",
                 release.IsTest ? "test-release" : release.Version.ToString(), installedVersion);
+            // 成功写入宿主通知记录；通知失败不能把已经安装的更新标记为失败。
+            try
+            {
+                _activities.Create(new ActivityLogEntry
+                {
+                    Name = $"DD-Danmaku 已更新至 {installedVersion}",
+                    Overview = "插件更新已安装，需手动重启 Emby 后生效。",
+                    Type = "PluginUpdated",
+                    Date = DateTime.UtcNow,
+                    Severity = LogSeverity.Info
+                });
+            }
+            catch (Exception) { _logger.Warn("插件已更新，但未能写入更新成功通知。"); }
             progress.Report(100);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -161,18 +181,49 @@ public sealed class UpdatePluginTask : IScheduledTask
             _logger.Error("{0}", message);
             throw new GitHubReleaseClient.UpdateRequestException(message);
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException error)
         {
-            // 不保留底层网络异常正文，防止宿主任务详情显示下载地址或其他敏感信息。
-            const string message = "插件更新网络请求失败：无法正常连接 GitHub，请检查 DNS、网络连接及 HTTPS 证书后重试。";
+            // 根据底层异常说明具体网络问题，不向通知泄露请求地址。
+            Exception cause = error;
+            while (cause.InnerException is not null) cause = cause.InnerException;
+            var reason = cause switch
+            {
+                System.Security.Authentication.AuthenticationException => "HTTPS 证书或 TLS 握手验证失败，请检查系统时间、证书和代理设置。",
+                System.Net.Sockets.SocketException socket when socket.SocketErrorCode is System.Net.Sockets.SocketError.HostNotFound or System.Net.Sockets.SocketError.NoData
+                    => "无法解析 GitHub 域名，请检查 DNS 设置。",
+                System.Net.Sockets.SocketException socket when socket.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionRefused
+                    => "连接被拒绝，请检查网络或代理服务。",
+                _ when cause.Message.Contains("unexpected EOF", StringComparison.OrdinalIgnoreCase)
+                    || cause.Message.Contains("0 bytes", StringComparison.OrdinalIgnoreCase)
+                    => "下载连接被提前关闭（TLS 数据流意外结束），更新文件未下载完整，请检查网络或代理后重试。",
+                _ => "与 GitHub 的网络连接失败，请检查网络或代理后重试。"
+            };
+            var message = $"插件更新失败：{stage}时，{reason}";
             _logger.Error("{0}", message);
             throw new GitHubReleaseClient.UpdateRequestException(message);
         }
         catch (Exception error)
         {
-            // 不把下载地址或网络响应正文写入日志；抛出使计划任务正确显示失败。
-            _logger.Error("插件更新失败（{0}），请检查网络、发布附件和目录权限。", error.GetType().Name);
-            throw;
+            // 将失败阶段和可识别原因交给宿主，避免通知展示底层堆栈。
+            var causes = new List<Exception>();
+            for (Exception? cause = error; cause is not null; cause = cause.InnerException) causes.Add(cause);
+            var reason = error switch
+            {
+                UnauthorizedAccessException => "插件目录没有写入权限，请检查 Emby 运行账户的目录权限。",
+                InvalidDataException => error.Message,
+                BadImageFormatException => "更新文件不是有效的 .NET 插件程序集，请检查发行版 DLL 附件。",
+                _ when causes.Any(cause => cause.Message.Contains("unexpected EOF", StringComparison.OrdinalIgnoreCase)
+                    || cause.Message.Contains("0 bytes", StringComparison.OrdinalIgnoreCase))
+                    => "下载连接被提前关闭（TLS 数据流意外结束），更新文件未下载完整，请检查网络或代理后重试。",
+                _ when stage == "替换插件文件" && error is IOException
+                    => "无法替换插件文件，文件可能被占用或文件系统不支持安全替换，请检查目录权限与磁盘空间。",
+                _ when error is IOException
+                    => "读取或写入更新文件失败，请检查网络连接、磁盘空间和插件目录权限。",
+                _ => $"发生未识别的错误（{error.GetType().Name}），请查看服务器日志。"
+            };
+            var message = $"插件更新失败：{stage}时，{reason}";
+            _logger.Error("{0}", message);
+            throw new GitHubReleaseClient.UpdateRequestException(message);
         }
         finally
         {
