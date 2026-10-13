@@ -103,7 +103,8 @@ internal sealed class GitHubReleaseClient : IDisposable
         return Normalize(parsed);
     }
 
-    internal async Task DownloadAsync(Release release, string path, CancellationToken token)
+    internal async Task DownloadAsync(Release release, string path, CancellationToken token,
+        Action<long>? onDownloaded = null)
     {
         var url = release.Url;
         for (var redirects = 0; redirects <= 5; redirects++)
@@ -122,7 +123,7 @@ internal sealed class GitHubReleaseClient : IDisposable
             EnsureSuccess(response, "下载更新", false);
             await using var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                 81920, FileOptions.Asynchronous);
-            await CopyBoundedAsync(response, file, release.Size, token).ConfigureAwait(false);
+            await CopyBoundedAsync(response, file, release.Size, token, onDownloaded).ConfigureAwait(false);
             if (file.Length != release.Size) throw new InvalidDataException("更新下载不完整。");
             await file.FlushAsync(token).ConfigureAwait(false);
             file.Flush(flushToDisk: true);
@@ -132,7 +133,7 @@ internal sealed class GitHubReleaseClient : IDisposable
     }
 
     private static async Task CopyBoundedAsync(HttpResponseMessage response, Stream target, long limit,
-        CancellationToken token)
+        CancellationToken token, Action<long>? onDownloaded = null)
     {
         if (response.Content.Headers.ContentLength > limit) throw new InvalidDataException("更新响应超出大小限制。");
         await using var source = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
@@ -144,6 +145,8 @@ internal sealed class GitHubReleaseClient : IDisposable
             total += read;
             if (total > limit) throw new InvalidDataException("更新响应超出大小限制。");
             await target.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
+            // 在实际写入后同步报告字节数，避免异步回调迟到覆盖任务完成状态。
+            onDownloaded?.Invoke(total);
         }
     }
 

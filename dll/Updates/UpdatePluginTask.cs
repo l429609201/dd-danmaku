@@ -102,7 +102,33 @@ public sealed class UpdatePluginTask : IScheduledTask
             }
             progress.Report(10);
             temporary = target + "." + Guid.NewGuid().ToString("N") + ".download";
-            await client.DownloadAsync(release, temporary, token).ConfigureAwait(false);
+            // 任务进度保留检查和安装阶段；10%～80% 按已写入字节更新。
+            // Emby 的计划任务接口只有百分比，下载量及区间速度通过日志报告。
+            var downloadClock = System.Diagnostics.Stopwatch.StartNew();
+            var lastReport = TimeSpan.Zero;
+            var lastLog = TimeSpan.Zero;
+            long lastLogBytes = 0;
+            _logger.Info("开始下载插件更新，总大小 {0:F2} MiB。", release.Size / 1048576d);
+            await client.DownloadAsync(release, temporary, token, downloaded =>
+            {
+                var elapsed = downloadClock.Elapsed;
+                var complete = downloaded == release.Size;
+                if (complete || elapsed - lastReport >= TimeSpan.FromMilliseconds(250))
+                {
+                    progress.Report(10 + 70 * Math.Clamp(downloaded / (double)Math.Max(1, release.Size), 0, 1));
+                    lastReport = elapsed;
+                }
+                // 限制日志频率，避免每个网络分块都刷屏。
+                if (complete || elapsed - lastLog >= TimeSpan.FromSeconds(2))
+                {
+                    var seconds = Math.Max((elapsed - lastLog).TotalSeconds, 0.001);
+                    var speed = (downloaded - lastLogBytes) / seconds / 1024d;
+                    _logger.Info("更新下载：{0:F2} / {1:F2} MiB，速度 {2:F1} KiB/s。",
+                        downloaded / 1048576d, release.Size / 1048576d, speed);
+                    lastLog = elapsed;
+                    lastLogBytes = downloaded;
+                }
+            }).ConfigureAwait(false);
             progress.Report(80);
             PluginPackageValidator.Validate(temporary, release);
             var candidate = AssemblyName.GetAssemblyName(temporary);

@@ -57,6 +57,13 @@ internal sealed class BackendTaskCoordinator : IDisposable
             _owner.Log(_entry, "阶段=" + stage + "，" + detail);
             OperationEventHub.Publish(_entry.Owner, _entry.Id, stage, count, "running", detail: detail);
         }
+        // 业务数据不写入日志，保留海报地址供当前用户实时渲染。
+        internal void SearchResult(object result)
+        {
+            Token.ThrowIfCancellationRequested();
+            _entry.Stage = "candidates";
+            OperationEventHub.Publish(_entry.Owner, _entry.Id, "candidates", 1, "running", searchResult: result);
+        }
         internal void Checkpoint(string state, string? upstreamTaskId = null)
         {
             Token.ThrowIfCancellationRequested();

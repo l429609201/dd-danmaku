@@ -80,7 +80,7 @@ internal static class OperationEventHub
     }
 
     internal static bool Publish(Guid userId, string operationId, string stage, int? count = null,
-        string? status = null, string? errorCode = null, string? detail = null)
+        string? status = null, string? errorCode = null, string? detail = null, object? searchResult = null)
     {
         // 详情只由后端构造；限制长度并移除控制字符，禁止将网络位置带入本人事件流。
         if (detail is not null)
@@ -95,7 +95,7 @@ internal static class OperationEventHub
             AddEvent(operation, new Event(Stages.Contains(stage) ? stage : "progress",
                 count is >= 0 and <= 1000000 ? count : null,
                 status is not null && Statuses.Contains(status) ? status : "running",
-                errorCode is null ? null : ErrorCodes.Contains(errorCode) ? errorCode : "OTHER_ERROR", detail));
+                errorCode is null ? null : ErrorCodes.Contains(errorCode) ? errorCode : "OTHER_ERROR", detail, searchResult));
             return true;
         }
     }
@@ -184,7 +184,8 @@ internal static class OperationEventHub
         }
     }
 
-    private sealed record Event(string Stage, int? Count, string Status, string? ErrorCode, string? Detail = null);
+    // 搜索业务载荷与脱敏日志分离，仅随经过用户归属验证的事件流返回。
+    private sealed record Event(string Stage, int? Count, string Status, string? ErrorCode, string? Detail = null, object? SearchResult = null);
 
     internal sealed class Operation(Guid owner, DateTimeOffset createdAt)
     {
