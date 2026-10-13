@@ -249,10 +249,6 @@ public sealed partial class DanmakuApiService
                         works = fallback.Works;
                     }
                     var filteredWorks = FilterSource(source, works);
-                    var compactJson = new JsonSerializerOptions(MatchJson.Options)
-                    {
-                        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-                    };
                     foreach (var work in filteredWorks)
                     {
                         var compact = new { animeId = work.AnimeId, bangumiId = work.AnimeId, animeTitle = work.AnimeTitle,
@@ -262,8 +258,8 @@ public sealed partial class DanmakuApiService
                             typeDescription = work.UpstreamFields is JsonElement fields && fields.ValueKind == JsonValueKind.Object
                                 && fields.TryGetProperty("typeDescription", out var description) && description.ValueKind == JsonValueKind.String
                                 ? description.GetString() : null };
-                        context.Detail("candidates", JsonSerializer.Serialize(new { Type = "search-source", SourceId = source.Id,
-                            SourceName = source.Name, Works = new[] { compact } }, compactJson), 1);
+                        context.SearchResult(new { Type = "search-source", SourceId = source.Id,
+                            SourceName = source.Name, Works = new[] { compact } });
                     }
                     return new(source.Id, source.Name, "succeeded", filteredWorks);
                 }
