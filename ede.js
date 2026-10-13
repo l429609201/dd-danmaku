@@ -7345,7 +7345,7 @@
                 </div>
                 <section id="dd-manual-search-view">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-top:.7em;">
-                    <strong>搜索弹幕</strong><button type="button" id="danmakuResearchButton" style="border:0;background:none;color:#4a90e2;cursor:pointer;">重新搜索</button>
+                    <strong>搜索弹幕</strong><button type="button" id="danmakuResearchButton" class="dd-manual-action">重新搜索</button>
                 </div>
                 <div id="${eleIds.danmakuSearchHint}" class="${classes.embyFieldDesc}" style="margin:.35em 0;">点击条目进行选择</div>
                 <style>
@@ -7354,6 +7354,12 @@
                     #${eleIds.danmakuSearchButton} { position:relative; overflow:visible; }
                     #${eleIds.danmakuSearchButton}[aria-busy="true"] { opacity:1; }
                     .dd-search-ring { position:absolute; width:2.4em; height:2.4em; left:50%; top:50%; margin:-1.2em 0 0 -1.2em; pointer-events:none; animation:dd-search-spin .85s linear infinite; }
+                    /* 手动匹配操作按钮统一尺寸，避免纯图标与宿主大按钮混排。 */
+                    .dd-manual-action { display:inline-flex;align-items:center;justify-content:center;gap:.4em;min-height:34px;padding:.4em .85em;border:1px solid rgba(150,170,200,.4);border-radius:6px;background:rgba(100,130,170,.14);color:inherit;font:inherit;cursor:pointer;white-space:nowrap; }
+                    .dd-manual-action:hover { background:rgba(100,150,210,.25); }
+                    .dd-manual-action:disabled { opacity:.45;cursor:default; }
+                    .dd-manual-action:focus-visible { outline:2px solid #58b5ff;outline-offset:2px; }
+                    #${eleIds.danmakuSwitchEpisode} { background:#246ca5;color:#fff;border-color:#438dca;min-width:90px; }
                     @keyframes dd-search-spin{to{transform:rotate(360deg)}}
                 </style>
                 <div id="${eleIds.danmakuAnimeResults}" style="display:flex;flex-direction:column;gap:.5em;max-height:20em;overflow:auto;"></div>
@@ -7363,8 +7369,8 @@
                     <div style="display:flex;align-items:center;justify-content:space-between;gap:.5em;flex-wrap:wrap;margin-top:.7em;">
                         <strong>选择合集</strong>
                         <div style="display:flex;align-items:center;gap:.5em;">
-                            <button type="button" id="danmakuEpisodeSort" class="raised emby-button">↑ 升序</button>
-                            <button type="button" id="danmakuEpisodeBack" class="raised emby-button">返回搜索</button>
+                            <button type="button" id="danmakuEpisodeSort" class="dd-manual-action">↑ 升序</button>
+                            <button type="button" id="danmakuEpisodeBack" class="dd-manual-action">返回搜索</button>
                         </div>
                     </div>
                     <div class="${classes.embyFieldDesc}" style="margin:.35em 0;">选择分集弹幕，点击条目进行选择/取消</div>
@@ -7381,7 +7387,7 @@
                         </aside>
                     </div>
                     <div id="${eleIds.danmakuEpisodeNumDiv}" style="max-width:100%;" class="${classes.embySelectWrapper}"></div>
-                    <div id="${eleIds.danmakuEpisodeLoad}"></div>
+                    <div id="${eleIds.danmakuEpisodeLoad}" style="display:flex;justify-content:flex-end;margin-top:.7em;"></div>
                 </div>
                 <div hidden>
                     <label class="${classes.embyLabel}" id="${eleIds.danmakuRemark}"></label>
@@ -8075,9 +8081,14 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         }
 
         searchNameDiv.append(embyButton({ label: '切换[原]标题', iconKey: iconKeys.text_format }, doSearchTitleSwtich));
-        getById(eleIds.danmakuEpisodeLoad).append(
-            embyButton({ id: eleIds.danmakuSwitchEpisode, label: '加载弹幕', iconKey: iconKeys.done }, doDanmakuSwitchEpisode)
-        );
+        // 确认使用明确的文字按钮，替代容易被误认为复选框的独立勾选图标。
+        const selectEpisodeButton = document.createElement('button');
+        selectEpisodeButton.type = 'button';
+        selectEpisodeButton.id = eleIds.danmakuSwitchEpisode;
+        selectEpisodeButton.className = 'dd-manual-action';
+        selectEpisodeButton.textContent = '✓ 选择';
+        selectEpisodeButton.onclick = doDanmakuSwitchEpisode;
+        getById(eleIds.danmakuEpisodeLoad).append(selectEpisodeButton);
         // 未完成分集加载前不允许确认，避免空选择或沿用上一候选。
         getById(eleIds.danmakuSwitchEpisode).disabled = true;
         const currentMatchedDiv = getById(eleIds.currentMatchedDiv);
