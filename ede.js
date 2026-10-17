@@ -7379,10 +7379,9 @@
                 </section>
                 <div id="${eleIds.danmakuEpisodeFlag}" hidden>
                     <!-- 分集页接管整个主内容区，导航与操作集中在同一行。 -->
-                    <div style="margin-top:.7em;"><strong>选择合集</strong></div>
+                    <div style="margin-top:.7em;"><strong>选择分集</strong></div>
                     <div class="${classes.embyFieldDesc}" style="margin:.35em 0;">选择分集弹幕，点击条目进行选择/取消</div>
                     <div style="display:flex;align-items:center;gap:.75em;margin:.45em 0;padding:.35em .5em;border:1px solid rgba(160,160,160,.28);border-radius:5px;">
-                        <span class="${classes.embyLabel}" style="margin:0;white-space:nowrap;">分类</span>
                         <!-- 面包屑在选择作品时填充，搜索入口可返回已有结果。 -->
                         <nav id="danmakuEpisodeBreadcrumb" aria-label="分集导航" class="${classes.embyFieldDesc}" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></nav>
                         <button type="button" id="danmakuEpisodeSort" class="dd-manual-action">↑ 升序</button>
@@ -9979,10 +9978,69 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             <div id="${eleIds.consoleLogCtrl}"><div id="${eleIds.consoleLogCtrlLeft}"></div><div id="${eleIds.logLevelDiv}"></div></div>
             <div id="${eleIds.consoleLogSearchInput}"></div>
             <div id="${eleIds.consoleLogInfo}">
-                <textarea id="${eleIds.consoleLogText}" readonly rows="1" class="txtOverview emby-textarea"></textarea>
+                <div id="${eleIds.consoleLogText}" class="dd-log-view" role="region" aria-label="日志内容" tabindex="0"></div>
                 <textarea id="${eleIds.consoleLogTextInput}" hidden rows="1" is="emby-textarea" class="txtOverview emby-textarea"></textarea>
             </div>`;
+        setupConsoleLogRows(getById(eleIds.consoleLogText, container));
         buildConsoleLog(container);
+    }
+
+    // 两栏视图保留 value 接口，兼容现有采集、搜索、清空和整页复制逻辑。
+    function setupConsoleLogRows(view) {
+        const style = document.createElement('style');
+        style.textContent = `
+            .dd-log-view { background:#111c2b;color:#dce6f2;border:1px solid #334258;border-radius:8px; }
+            .dd-log-row { display:grid;grid-template-columns:145px minmax(0,1fr) 30px;gap:12px;padding:12px;border-bottom:1px solid #2b394c;outline:none; }
+            .dd-log-row:focus,.dd-log-row.dd-log-selected { background:#20344b;box-shadow:inset 3px 0 #65b5ff; }
+            .dd-log-meta { font-size:12px;line-height:1.7;color:#a9b9cb;font-variant-numeric:tabular-nums;white-space:pre-wrap; }
+ .dd-log-level { display:block;font-weight:600;color:#88c9ff; }
+            .dd-log-message { margin:0;white-space:pre-wrap;overflow-wrap:anywhere;min-width:0;font:13px/1.65 monospace;tab-size:4; }
+            .dd-log-row[data-level="WARN"] .dd-log-message { background:#443b22;color:#ffdf94;border-radius:6px;padding:8px; }
+            .dd-log-row[data-level="WARN"] .dd-log-level { color:#ffcc70; }
+            .dd-log-row[data-level="ERROR"] .dd-log-message { background:#492a32;color:#ffb6b6;border-radius:6px;padding:8px; }
+            .dd-log-row[data-level="ERROR"] .dd-log-level { color:#ff9494; }
+            .dd-log-row[data-level="DEBUG"] .dd-log-level { color:#b4a0d9; }
+            .dd-log-copy { align-self:start;border:0;background:transparent;color:#a9c5e0;cursor:pointer;padding:4px; }
+            @media(max-width:540px) { .dd-log-row { grid-template-columns:88px minmax(0,1fr) 26px;gap:6px;padding:8px; } }
+        `;
+        view.before(style);
+        let value = '';
+        Object.defineProperty(view, 'value', {
+            get: () => value,
+            set: next => {
+                next = String(next ?? '');
+                if (next === value) return;
+                value = next;
+                const entries = [];
+                // 只有完整的时间/级别前缀开启新条目，多行明细与树形缩进保持原样。
+                for (const line of value.split('\n')) {
+                    const match = /^\[([^\]]+)\]\s*\[(INFO|DEBUG|WARN|WARNING|ERROR)\]\s*[^:\n]*:\s?(.*)$/.exec(line);
+                    if (match) entries.push({ time: match[1], level: match[2] === 'WARNING' ? 'WARN' : match[2], message: match[3] });
+                    else if (entries.length) entries[entries.length - 1].message += '\n' + line;
+                    else if (line) entries.push({ time: '', level: 'INFO', message: line });
+                }
+                const fragment = document.createDocumentFragment();
+                for (const entry of entries) {
+                    const row = document.createElement('div');
+                    row.className = 'dd-log-row'; row.tabIndex = 0; row.dataset.level = entry.level;
+                    const meta = document.createElement('div'); meta.className = 'dd-log-meta'; meta.textContent = entry.time;
+                    const level = document.createElement('span'); level.className = 'dd-log-level'; level.textContent = entry.level;
+                    meta.append(level);
+                    const body = document.createElement('pre'); body.className = 'dd-log-message'; body.textContent = entry.message;
+                    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'dd-log-copy';
+                    copy.title = '复制此条日志'; copy.setAttribute('aria-label', copy.title); copy.textContent = '⧉';
+                    copy.onclick = async event => {
+                        event.stopPropagation();
+                        try { await copyConsoleLogText(`[${entry.time}] [${entry.level}] : ${entry.message}`); embyToast({ text: '已复制此条日志' }); }
+                        catch (error) { embyToast({ text: error.message || '日志复制失败' }); }
+                    };
+                    row.onclick = () => { view.querySelector('.dd-log-selected')?.classList.remove('dd-log-selected'); row.classList.add('dd-log-selected'); };
+                    row.append(meta, body, copy); fragment.append(row);
+                }
+                const position = view.scrollTop;
+                view.replaceChildren(fragment); view.scrollTop = position;
+            }
+        });
     }
 
     // 剪贴板 API 被拒绝或不可用时回退传统复制，始终复制当前页完整正文。
@@ -10117,7 +10175,11 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             scrollConsoleLogToBottom(logText);
         });
         autoScrollLabel.append(autoScroll, document.createTextNode('自动滚动'));
-        viewControls.append(autoScrollLabel);
+        // 跟随关放在日志底部，正文独立滚动，保留原有跟随行为。
+        const logFooter = document.createElement('div');
+        logFooter.style.cssText = 'flex:none;padding:6px 0;display:flex;align-items:center;';
+        logFooter.append(autoScrollLabel);
+        getById(eleIds.consoleLogInfo, container).append(logFooter);
         attachServerConsoleLog(container, logControls, logText, searchInput);
         const consoleLogTextInput = getById(eleIds.consoleLogTextInput, container);
         consoleLogTextInput.style.display = consoleLogEnable && lsGetItem(lsKeys.quickDebugOn.id) ? '' : 'none';
@@ -11148,7 +11210,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
         if (!numDiv || !searchDiv || !back) return;
         // 迟到响应不改变用户返回搜索后的视图。
         const breadcrumb = getById('danmakuEpisodeBreadcrumb');
-        if (breadcrumb) breadcrumb.innerHTML = `<button type="button" style="border:0;padding:0;background:none;color:#4a90e2;cursor:pointer;font:inherit;">搜索弹幕</button><span aria-hidden="true" style="opacity:.6;"> / </span><span aria-current="page">${escapeHtml(anime.animeTitle || '选择合集')}</span>`;
+        if (breadcrumb) breadcrumb.innerHTML = `<button type="button" style="border:0;padding:0;background:none;color:#4a90e2;cursor:pointer;font:inherit;">搜索弹幕</button><span aria-hidden="true" style="opacity:.6;"> / </span><span aria-current="page">${escapeHtml(anime.animeTitle || '选择分集')}</span>`;
         const breadcrumbBack = breadcrumb?.querySelector('button');
         if (breadcrumbBack) breadcrumbBack.onclick = () => setManualSearchView(false);
         // 重新渲染前暂存确认按钮，避免清空旧工具栏时丢失按钮及事件。
@@ -11328,8 +11390,11 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
                     }
                     const episodes = result?.data?.Episodes || result?.data?.episodes;
                     if (!Array.isArray(episodes)) throw new Error('后端分集响应格式无效');
+                    // 从后端响应中提取实际的 sourceId，确保与展开任务一致（避免大小写、空值等差异导致下载时 409）
+                    const actualSourceId = result?.data?.SourceId || result?.data?.sourceId || anime.sourceId || 'official';
                     anime.backendEpisodeTaskId = taskId;
-                    anime.backendSourceId = anime.sourceId || 'official';
+                    anime.backendSourceId = actualSourceId;
+                    anime.sourceId = actualSourceId; // 同步更新 anime.sourceId，保持一致
                     // 任务随候选缓存；只有确认当前媒体时才恢复到下载上下文。
                     anime.backendDialogContext = request.context;
                     anime.episodes = episodes; anime.seasons = [];
