@@ -57,7 +57,7 @@ import {
   Menu, Sunny, Moon, User, ArrowDown, Lock, SwitchButton
 } from '@element-plus/icons-vue'
 import { get } from '@/utils/request'
-import { apiLogout } from '@/utils/api'
+import { logout } from '@/utils/api'
 
 const router = useRouter()
 const route = useRoute()
@@ -122,7 +122,7 @@ const handleCommand = (cmd) => {
       cancelButtonText: '取消',
       type: 'warning',
     })
-      .then(() => apiLogout())
+      .then(() => logout())
       .catch(() => {})
   }
 }
