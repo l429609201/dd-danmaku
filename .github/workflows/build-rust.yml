@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - develop
+      - test
     paths:
       - 'data-center/rust/**'
       - 'data-center/web/src/**'
