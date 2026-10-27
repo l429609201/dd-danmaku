@@ -11,9 +11,19 @@
 **触发条件：**
 - ✅ 推送到 `main` 分支 → 构建 `latest-python`
 - ✅ 推送到 `develop` 分支 → 构建 `test-python`
-- ✅ 修改 `python/`、`web/`、`docker/Dockerfile` 路径
+- ✅ 修改以下路径时自动构建：
+  - `python/**` - Python 源码
+  - `web/src/**` - 前端源码
+  - `web/public/**` - 静态资源
+  - `web/package.json` - 依赖配置
+  - `docker/Dockerfile` - 镜像配置
 - ✅ PR 到 `main` 或 `develop`（仅构建不推送）
 - ✅ 手动触发（可指定自定义标签）
+
+**不会触发：**
+- ❌ 文档更新（`*.md`）
+- ❌ 配置文件（`.gitignore`）
+- ❌ 依赖锁（`package-lock.json`）
 
 **构建镜像：**
 ```
@@ -27,9 +37,19 @@ l429609201/dd-danmaku:v1.0.0-python   # 手动指定
 **触发条件：**
 - ✅ 推送到 `main` 分支 → 构建 `latest-rust`
 - ✅ 推送到 `develop` 分支 → 构建 `test-rust`
-- ✅ 修改 `rust/`、`web/`、`docker/Dockerfile.rust` 路径
+- ✅ 修改以下路径时自动构建：
+  - `rust/**` - Rust 源码
+  - `web/src/**` - 前端源码
+  - `web/public/**` - 静态资源
+  - `web/package.json` - 依赖配置
+  - `docker/Dockerfile.rust` - 镜像配置
 - ✅ PR 到 `main` 或 `develop`（仅构建不推送）
 - ✅ 手动触发（可指定自定义标签）
+
+**不会触发：**
+- ❌ 文档更新（`*.md`）
+- ❌ 配置文件（`.gitignore`）
+- ❌ 编译产物（`rust/target/`）
 
 **构建镜像：**
 ```
@@ -37,6 +57,8 @@ l429609201/dd-danmaku:latest-rust     # main 分支
 l429609201/dd-danmaku:test-rust       # develop 分支
 l429609201/dd-danmaku:v2.0.0-rust     # 手动指定
 ```
+
+> 💡 **详细触发策略**：查看 [TRIGGER_STRATEGY.md](./TRIGGER_STRATEGY.md) 了解完整的路径过滤规则。
 
 ---
 

@@ -7,7 +7,11 @@ on:
       - develop
     paths:
       - 'python/**'
-      - 'web/**'
+      - 'web/src/**'
+      - 'web/public/**'
+      - 'web/package.json'
+      - 'web/vite.config.js'
+      - 'web/index.html'
       - 'docker/Dockerfile'
       - 'docker/entrypoint.sh'
       - '.github/workflows/build-python.yml'
@@ -17,7 +21,9 @@ on:
       - develop
     paths:
       - 'python/**'
-      - 'web/**'
+      - 'web/src/**'
+      - 'web/public/**'
+      - 'web/package.json'
       - 'docker/Dockerfile'
   workflow_dispatch:
     inputs:

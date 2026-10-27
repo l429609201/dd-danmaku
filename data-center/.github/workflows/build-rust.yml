@@ -7,7 +7,11 @@ on:
       - develop
     paths:
       - 'rust/**'
-      - 'web/**'
+      - 'web/src/**'
+      - 'web/public/**'
+      - 'web/package.json'
+      - 'web/vite.config.js'
+      - 'web/index.html'
       - 'docker/Dockerfile.rust'
       - 'docker/rust-entrypoint.sh'
       - '.github/workflows/build-rust.yml'
@@ -17,7 +21,9 @@ on:
       - develop
     paths:
       - 'rust/**'
-      - 'web/**'
+      - 'web/src/**'
+      - 'web/public/**'
+      - 'web/package.json'
       - 'docker/Dockerfile.rust'
   workflow_dispatch:
     inputs:
