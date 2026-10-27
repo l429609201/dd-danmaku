@@ -2,6 +2,10 @@ use anyhow::Result;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+// 导入 crate 依赖
+use db;
+use server;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 初始化日志
