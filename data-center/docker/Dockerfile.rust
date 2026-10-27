@@ -1,0 +1,116 @@
+# Rust 后端多阶段构建 Dockerfile
+
+# ============================================================
+# 阶段 1: 前端构建
+# ============================================================
+FROM node:18-alpine AS frontend-builder
+
+WORKDIR /app/web
+
+# 复制前端依赖文件
+COPY web/package*.json ./
+
+# 安装依赖
+RUN npm install --no-audit --no-fund
+
+# 复制前端源码
+COPY web/ .
+
+# 构建前端
+RUN npm run build
+
+# ============================================================
+# 阶段 2: Rust 构建
+# ============================================================
+FROM rust:1.83-alpine AS rust-builder
+
+WORKDIR /app
+
+# 安装构建依赖
+RUN apk add --no-cache \
+    musl-dev \
+    openssl-dev \
+    openssl-libs-static \
+    pkgconfig \
+    && rm -rf /var/cache/apk/*
+
+# 复制 Cargo 配置文件
+COPY rust/Cargo.toml rust/Cargo.lock ./
+
+# 创建工作空间成员占位符（优化缓存）
+RUN mkdir -p crates/api/src crates/db/src crates/server/src crates/worker-bridge/src crates/dandanplay/src && \
+    echo "fn main() {}" > crates/api/src/lib.rs && \
+    echo "fn main() {}" > crates/db/src/lib.rs && \
+    echo "fn main() {}" > crates/server/src/lib.rs && \
+    echo "fn main() {}" > crates/server/src/main.rs && \
+    echo "fn main() {}" > crates/worker-bridge/src/lib.rs && \
+    echo "fn main() {}" > crates/dandanplay/src/lib.rs
+
+# 复制各 crate 的 Cargo.toml
+COPY rust/crates/api/Cargo.toml ./crates/api/
+COPY rust/crates/db/Cargo.toml ./crates/db/
+COPY rust/crates/server/Cargo.toml ./crates/server/
+COPY rust/crates/worker-bridge/Cargo.toml ./crates/worker-bridge/
+COPY rust/crates/dandanplay/Cargo.toml ./crates/dandanplay/
+
+# 预构建依赖（缓存层）
+RUN cargo build --release --locked && \
+    rm -rf crates/*/src target/release/deps/api* target/release/deps/db* target/release/deps/server* target/release/deps/worker_bridge* target/release/deps/dandanplay*
+
+# 复制真实源码
+COPY rust/crates ./crates
+
+# 构建应用（使用缓存的依赖）
+RUN cargo build --release --locked --bin server && \
+    strip target/release/server
+
+# ============================================================
+# 阶段 3: 运行时镜像
+# ============================================================
+FROM alpine:3.19 AS runtime
+
+WORKDIR /app
+
+# 安装运行时依赖
+RUN apk add --no-cache \
+    ca-certificates \
+    libgcc \
+    su-exec \
+    tzdata \
+    && rm -rf /var/cache/apk/*
+
+# 创建用户和组
+RUN addgroup -g 1000 appgroup && \
+    adduser -u 1000 -G appgroup -s /bin/sh -D appuser
+
+# 从构建阶段复制二进制文件
+COPY --from=rust-builder /app/target/release/server /app/server
+
+# 从前端构建阶段复制静态文件
+COPY --from=frontend-builder /app/web/dist /app/web/dist
+
+# 创建必要的目录
+RUN mkdir -p /app/config /app/config/logs /app/config/danmaku && \
+    chown -R appuser:appgroup /app
+
+# 设置环境变量
+ENV RUST_LOG=info
+ENV TZ=Asia/Shanghai
+ENV DANMAKU_STORE_DIR=/app/config/danmaku
+
+# 暴露端口
+EXPOSE 7759
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:7759/health || exit 1
+
+# 启动脚本
+COPY docker/rust-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# 使用 entrypoint 处理权限
+ENTRYPOINT ["/entrypoint.sh"]
+
+# 默认命令
+CMD ["/app/server"]

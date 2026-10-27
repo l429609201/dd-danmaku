@@ -2,8 +2,8 @@ version: '3.8'
 
 services:
   data-center:
-    image: l429609201/dd-danmaku:latest
-    container_name: danmu-data-center
+    image: l429609201/dd-danmaku:latest-python
+    container_name: danmu-data-center-python
     ports:
       - "7759:7759"      # Web界面和API端口
     environment:

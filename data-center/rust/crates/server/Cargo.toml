@@ -1,0 +1,67 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# 内部依赖
+db = { path = "../db" }
+
+# ORM（需要直接引用类型）
+sea-orm = { workspace = true }
+
+# Web 框架
+axum = { workspace = true, features = ["ws"] }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# HTTP 客户端（使用 axum 的 hyper 依赖，零新增）
+hyper = "1.12"
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+http-body-util = "0.1"
+bytes = "1.12"
+
+# 异步工具
+tokio = { workspace = true }
+futures-util = "0.3"
+
+# 序列化
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# 时间
+chrono = { workspace = true }
+
+# UUID
+uuid = { version = "1.11", features = ["v4", "serde"] }
+
+# JWT 认证
+jsonwebtoken = { workspace = true }
+bcrypt = { workspace = true }
+
+# 配置
+dotenvy = { workspace = true }
+
+# 日志
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# 错误处理
+anyhow = { workspace = true }
+md5 = "0.8.1"
+
+# Redis
+redis = { workspace = true }
+
+# GeoIP
+maxminddb = { workspace = true }
+
+# HTTP 客户端（AI API）
+reqwest = { version = "0.12", features = ["json"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+db = { path = "../db", features = ["test-helpers"] }
+tokio-tungstenite = "0.24"

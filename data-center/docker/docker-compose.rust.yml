@@ -1,0 +1,166 @@
+version: '3.8'
+
+services:
+  # ============================================================
+  # Rust 后端服务
+  # ============================================================
+  data-center-rust:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.rust
+    image: l429609201/dd-danmaku:latest-rust
+    container_name: danmu-data-center-rust
+    restart: unless-stopped
+    
+    ports:
+      - "7759:7759"      # API 和 Web 界面
+      - "7760:7760"      # Worker Bridge WebSocket（可选）
+    
+    environment:
+      # 基础配置
+      - RUST_LOG=info
+      - TZ=Asia/Shanghai
+      
+      # 服务配置
+      - HOST=0.0.0.0
+      - PORT=7759
+      
+      # 数据库配置（默认 SQLite）
+      - DATABASE_URL=sqlite:///app/config/database.db
+      # 如果使用 MySQL，取消注释并配置：
+      # - DATABASE_URL=mysql://danmu_user:your_password@mysql:3306/danmu_data_center
+      # 如果使用 PostgreSQL，取消注释并配置：
+      # - DATABASE_URL=postgres://postgres:your_password@postgres:5432/danmu_data_center
+      
+      # 弹幕存储目录
+      - DANMAKU_STORE_DIR=/app/config/danmaku
+      
+      # Redis 配置（可选）
+      - REDIS_URL=redis://redis:6379
+      
+      # 文件权限（挂载卷的属主，按宿主机用户调整）
+      - PUID=1000
+      - PGID=1000
+      - UMASK=0022
+    
+    volumes:
+      # 持久化配置和数据
+      - ./data/config:/app/config
+      - ./data/danmaku:/app/config/danmaku
+      - ./data/logs:/app/config/logs
+    
+    networks:
+      - danmu-network
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:7759/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    
+    # 依赖服务（如果使用 Redis/MySQL/PostgreSQL）
+    # depends_on:
+    #   - redis
+    #   - mysql
+    #   - postgres
+
+  # ============================================================
+  # Redis 服务（可选，用于缓存）
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: danmu-redis
+    restart: unless-stopped
+    
+    ports:
+      - "6379:6379"
+    
+    volumes:
+      - redis_data:/data
+    
+    command: redis-server --appendonly yes
+    
+    networks:
+      - danmu-network
+    
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ============================================================
+  # MySQL 服务（可选）
+  # ============================================================
+  # mysql:
+  #   image: mysql:8.0
+  #   container_name: danmu-mysql
+  #   restart: unless-stopped
+  #   
+  #   environment:
+  #     - MYSQL_ROOT_PASSWORD=your_root_password
+  #     - MYSQL_DATABASE=danmu_data_center
+  #     - MYSQL_USER=danmu_user
+  #     - MYSQL_PASSWORD=your_mysql_password
+  #     - TZ=Asia/Shanghai
+  #   
+  #   volumes:
+  #     - mysql_data:/var/lib/mysql
+  #   
+  #   ports:
+  #     - "3306:3306"
+  #   
+  #   networks:
+  #     - danmu-network
+  #   
+  #   healthcheck:
+  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+  #     interval: 10s
+  #     timeout: 3s
+  #     retries: 3
+
+  # ============================================================
+  # PostgreSQL 服务（可选）
+  # ============================================================
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: danmu-postgres
+  #   restart: unless-stopped
+  #   
+  #   environment:
+  #     - POSTGRES_DB=danmu_data_center
+  #     - POSTGRES_USER=postgres
+  #     - POSTGRES_PASSWORD=your_postgres_password
+  #     - TZ=Asia/Shanghai
+  #   
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   
+  #   ports:
+  #     - "5432:5432"
+  #   
+  #   networks:
+  #     - danmu-network
+  #   
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U postgres"]
+  #     interval: 10s
+  #     timeout: 3s
+  #     retries: 3
+
+# ============================================================
+# 卷配置
+# ============================================================
+volumes:
+  redis_data:
+  # mysql_data:
+  # postgres_data:
+
+# ============================================================
+# 网络配置
+# ============================================================
+networks:
+  danmu-network:
+    driver: bridge
