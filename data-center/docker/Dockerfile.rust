@@ -22,7 +22,7 @@ RUN npm run build
 # ============================================================
 # 阶段 2: Rust 构建
 # ============================================================
-FROM rust:1.83-alpine AS rust-builder
+FROM rust:alpine AS rust-builder
 
 WORKDIR /app
 
