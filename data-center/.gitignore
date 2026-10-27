@@ -385,3 +385,6 @@ docs/archive/
 # ============================================================
 # Git merge files
 *.orig
+
+# 禁用的工作流（本地保留）
+.github/workflows/*.disabled
