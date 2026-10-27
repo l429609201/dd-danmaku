@@ -34,9 +34,6 @@ pub use repo_stage_5_7::{
 };
 pub use comment_store::{CommentStoreService, DanmakuResponse, DanmakuComment};
 
-// 导出数据库配置和初始化函数
-pub use self::{DbConfig, init_db};
-
 /// 数据库配置
 #[derive(Debug, Clone)]
 pub struct DbConfig {
