@@ -33,6 +33,9 @@ pub use redis_service::RedisCacheService;
 pub use geoip_service::{GeoIpService, GeoDistributionResponse};
 pub use alias_ai_service::{AliasAiService, ScoringResult, ScoringStatus};
 
+// 导出主要的公共函数和类型
+pub use self::run_server;
+
 /// 应用状态
 #[derive(Clone)]
 pub struct AppState {
