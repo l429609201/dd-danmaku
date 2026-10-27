@@ -11,7 +11,7 @@ const routes = [
 
   {
     path: '/',
-    component: () => import('../components/Layout.vue'),
+    component: () => import('../components/layout/Layout.vue'),
     children: [
       {
         path: '',

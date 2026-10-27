@@ -1,0 +1,42 @@
+[package]
+name = "db"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+test-helpers = []
+
+[dependencies]
+# ORM
+sea-orm = { workspace = true }
+sea-query = { workspace = true }
+
+# 异步
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# 序列化
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# 时间
+chrono = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+url = { workspace = true }
+
+# 错误处理
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# 哈希
+sha2 = "0.10"
+
+# 日志
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

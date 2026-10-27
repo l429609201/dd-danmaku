@@ -35,7 +35,7 @@ RUN addgroup -g 1000 appgroup && \
     adduser -u 1000 -G appgroup -s /bin/sh -D appuser
 
 # 复制Python依赖文件
-COPY requirements/ requirements/
+COPY python/requirements/ requirements/
 
 # 安装Python依赖（使用构建依赖，完成后清理）
 RUN apk add --no-cache --virtual .build-deps \
@@ -53,7 +53,7 @@ RUN apk add --no-cache --virtual .build-deps \
     && find /usr/local -name '*.pyo' -delete
 
 # 复制后端源码
-COPY --chown=appuser:appuser src/ ./src/
+COPY --chown=appuser:appuser python/src/ ./src/
 
 # 复制前端构建产物
 COPY --from=frontend-builder --chown=appuser:appuser /app/web/dist ./web/dist

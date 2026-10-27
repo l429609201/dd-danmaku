@@ -93,6 +93,8 @@ internal sealed class GitHubReleaseClient : IDisposable
     internal sealed class UpdateRequestException : Exception
     {
         internal UpdateRequestException(string message) : base(message) { }
+        // 宿主任务详情使用异常文本，只显示可读原因，完整底层堆栈不进入通知。
+        public override string ToString() => Message;
     }
 
     private static Version ParseReleaseVersion(string tag)
