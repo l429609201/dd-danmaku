@@ -60,18 +60,21 @@ jobs:
         id: meta
         run: |
           # 确定标签
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # PR 构建 -> 只构建不推送
+            TAGS="${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}-rust"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
             # 手动触发且指定了标签
             TAGS="${{ env.IMAGE_NAME }}:${{ github.event.inputs.tag }}"
           elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
             # main 分支 -> latest-rust
             TAGS="${{ env.IMAGE_NAME }}:latest-rust"
-          elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
-            # develop 分支 -> test-rust
+          elif [ "${{ github.ref }}" = "refs/heads/develop" ] || [ "${{ github.ref }}" = "refs/heads/test" ]; then
+            # develop 或 test 分支 -> test-rust
             TAGS="${{ env.IMAGE_NAME }}:test-rust"
           else
-            # 其他分支 -> 分支名-rust
-            BRANCH_NAME=$(echo "${{ github.ref }}" | sed 's|refs/heads/||')
+            # 其他分支 -> 分支名-rust（清理非法字符）
+            BRANCH_NAME=$(echo "${{ github.ref }}" | sed 's|refs/heads/||' | sed 's|[^a-zA-Z0-9._-]|-|g')
             TAGS="${{ env.IMAGE_NAME }}:${BRANCH_NAME}-rust"
           fi
           
