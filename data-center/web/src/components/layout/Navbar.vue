@@ -56,7 +56,7 @@ import { useThemeStore } from '@/stores/theme'
 import {
   Menu, Sunny, Moon, User, ArrowDown, Lock, SwitchButton
 } from '@element-plus/icons-vue'
-import { authFetch } from '@/utils/authFetch'
+import { get } from '@/utils/request'
 import { apiLogout } from '@/utils/api'
 
 const router = useRouter()
@@ -136,13 +136,8 @@ const fetchUserInfo = async () => {
   }
 
   try {
-    const response = await authFetch('/api/v2/auth/me')
-    if (response.ok) {
-      const result = await response.json()
-      username.value = (result.data && result.data.username) || '用户'
-    } else {
-      console.error('获取用户信息失败')
-    }
+    const result = await get('/api/v2/auth/me')
+    username.value = (result.data && result.data.username) || '用户'
   } catch (error) {
     console.error('获取用户信息异常:', error)
   }
