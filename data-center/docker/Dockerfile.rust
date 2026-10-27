@@ -54,14 +54,14 @@ COPY rust/crates/worker-bridge/Cargo.toml ./crates/worker-bridge/
 COPY rust/crates/dandanplay/Cargo.toml ./crates/dandanplay/
 
 # 预构建依赖（缓存层）
-RUN cargo build --release --locked && \
+RUN cargo build --release && \
     rm -rf crates/*/src target/release/deps/api* target/release/deps/db* target/release/deps/server* target/release/deps/worker_bridge* target/release/deps/dandanplay*
 
 # 复制真实源码
 COPY rust/crates ./crates
 
 # 构建应用（使用缓存的依赖）
-RUN cargo build --release --locked --bin server && \
+RUN cargo build --release --bin server && \
     strip target/release/server
 
 # ============================================================
