@@ -4,9 +4,9 @@ use axum::{
     Json,
 };
 use db::{entities::*, ControlNodeRepo, ControlMessageRepo, RuntimeEventRepo, CacheRepo};
-use sea_orm::EntityTrait;
+use sea_orm::{EntityTrait, PaginatorTrait};
 use crate::AppState;
-use super::settings::models::*;
+use crate::api::settings::models::*;
 
 /// 获取 Dashboard 统计
 pub async fn get_dashboard_stats(
@@ -30,7 +30,7 @@ pub async fn get_dashboard_stats(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     
-    let online_nodes = state.bridge_manager.connection_count() as u64;
+    let online_nodes = state.bridge_manager.connection_count().await as u64;
     
     let total_messages = control_message::Entity::find()
         .count(&state.db)

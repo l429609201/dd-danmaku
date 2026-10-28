@@ -51,8 +51,8 @@ pub async fn get_ip_rules(
             description: r.description,
             is_active: r.is_active,
             priority: r.priority,
-            created_at: r.created_at.to_rfc3339(),
-            updated_at: r.updated_at.to_rfc3339(),
+            created_at: r.created_at.and_utc().to_rfc3339(),
+            updated_at: r.updated_at.and_utc().to_rfc3339(),
         })
         .collect();
     
@@ -84,8 +84,8 @@ pub async fn get_ip_rule(
         description: rule.description,
         is_active: rule.is_active,
         priority: rule.priority,
-        created_at: rule.created_at.to_rfc3339(),
-        updated_at: rule.updated_at.to_rfc3339(),
+        created_at: rule.created_at.and_utc().to_rfc3339(),
+        updated_at: rule.updated_at.and_utc().to_rfc3339(),
     }))
 }
 
@@ -123,8 +123,8 @@ pub async fn create_ip_rule(
         description: rule.description,
         is_active: rule.is_active,
         priority: rule.priority,
-        created_at: rule.created_at.to_rfc3339(),
-        updated_at: rule.updated_at.to_rfc3339(),
+        created_at: rule.created_at.and_utc().to_rfc3339(),
+        updated_at: rule.updated_at.and_utc().to_rfc3339(),
     }))
 }
 
@@ -167,8 +167,8 @@ pub async fn update_ip_rule(
         description: rule.description,
         is_active: rule.is_active,
         priority: rule.priority,
-        created_at: rule.created_at.to_rfc3339(),
-        updated_at: rule.updated_at.to_rfc3339(),
+        created_at: rule.created_at.and_utc().to_rfc3339(),
+        updated_at: rule.updated_at.and_utc().to_rfc3339(),
     }))
 }
 
@@ -233,8 +233,8 @@ pub async fn get_ua_rules(
             description: r.description,
             is_active: r.is_active,
             priority: r.priority,
-            created_at: r.created_at.to_rfc3339(),
-            updated_at: r.updated_at.to_rfc3339(),
+            created_at: r.created_at.and_utc().to_rfc3339(),
+            updated_at: r.updated_at.and_utc().to_rfc3339(),
         })
         .collect();
     
@@ -266,8 +266,8 @@ pub async fn get_ua_rule(
         description: rule.description,
         is_active: rule.is_active,
         priority: rule.priority,
-        created_at: rule.created_at.to_rfc3339(),
-        updated_at: rule.updated_at.to_rfc3339(),
+        created_at: rule.created_at.and_utc().to_rfc3339(),
+        updated_at: rule.updated_at.and_utc().to_rfc3339(),
     }))
 }
 
@@ -305,8 +305,8 @@ pub async fn create_ua_rule(
         description: rule.description,
         is_active: rule.is_active,
         priority: rule.priority,
-        created_at: rule.created_at.to_rfc3339(),
-        updated_at: rule.updated_at.to_rfc3339(),
+        created_at: rule.created_at.and_utc().to_rfc3339(),
+        updated_at: rule.updated_at.and_utc().to_rfc3339(),
     }))
 }
 
@@ -349,8 +349,8 @@ pub async fn update_ua_rule(
         description: rule.description,
         is_active: rule.is_active,
         priority: rule.priority,
-        created_at: rule.created_at.to_rfc3339(),
-        updated_at: rule.updated_at.to_rfc3339(),
+        created_at: rule.created_at.and_utc().to_rfc3339(),
+        updated_at: rule.updated_at.and_utc().to_rfc3339(),
     }))
 }
 

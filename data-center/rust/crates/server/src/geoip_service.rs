@@ -17,7 +17,7 @@ pub struct GeoPoint {
 }
 
 /// 地理分布响应
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeoDistributionResponse {
     pub available: bool,
     pub points: Vec<GeoPoint>,
@@ -105,14 +105,12 @@ impl GeoIpService {
         
         let city_name = city.city
             .and_then(|c| c.names)
-            .and_then(|n| n.get("zh-CN").or_else(|| n.get("en")))
-            .map(|s| s.to_string())
+            .and_then(|n| n.get("zh-CN").or_else(|| n.get("en")).map(|s| s.to_string()))
             .unwrap_or_else(|| "Unknown".to_string());
         
         let country_name = city.country
             .and_then(|c| c.names)
-            .and_then(|n| n.get("zh-CN").or_else(|| n.get("en")))
-            .map(|s| s.to_string())
+            .and_then(|n| n.get("zh-CN").or_else(|| n.get("en")).map(|s| s.to_string()))
             .unwrap_or_else(|| "Unknown".to_string());
         
         let location = city.location?;

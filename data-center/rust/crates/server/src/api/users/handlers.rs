@@ -5,7 +5,7 @@ use axum::{
 use serde::Deserialize;
 use db::{UserRepo, ApiTokenRepo};
 use crate::{AppState, auth::PasswordService};
-use super::auth::models::*;
+use crate::api::auth::models::*;
 
 /// 分页查询参数
 #[derive(Debug, Deserialize)]
@@ -46,8 +46,8 @@ pub async fn get_users(
         email: u.email,
         role: u.role,
         is_active: u.is_active,
-        last_login_at: u.last_login_at.map(|t| t.to_rfc3339()),
-        created_at: u.created_at.to_rfc3339(),
+        last_login_at: u.last_login_at.map(|t| t.and_utc().to_rfc3339()),
+        created_at: u.created_at.and_utc().to_rfc3339(),
     }).collect();
     
     Ok(Json(UserListResponse {
@@ -75,8 +75,8 @@ pub async fn get_user(
         email: user.email,
         role: user.role,
         is_active: user.is_active,
-        last_login_at: user.last_login_at.map(|t| t.to_rfc3339()),
-        created_at: user.created_at.to_rfc3339(),
+        last_login_at: user.last_login_at.map(|t| t.and_utc().to_rfc3339()),
+        created_at: user.created_at.and_utc().to_rfc3339(),
     };
     
     Ok(Json(user_info))
@@ -119,8 +119,8 @@ pub async fn create_user(
         email: user.email,
         role: user.role,
         is_active: user.is_active,
-        last_login_at: user.last_login_at.map(|t| t.to_rfc3339()),
-        created_at: user.created_at.to_rfc3339(),
+        last_login_at: user.last_login_at.map(|t| t.and_utc().to_rfc3339()),
+        created_at: user.created_at.and_utc().to_rfc3339(),
     };
     
     Ok(Json(user_info))
@@ -153,8 +153,8 @@ pub async fn update_user(
         email: user.email,
         role: user.role,
         is_active: user.is_active,
-        last_login_at: user.last_login_at.map(|t| t.to_rfc3339()),
-        created_at: user.created_at.to_rfc3339(),
+        last_login_at: user.last_login_at.map(|t| t.and_utc().to_rfc3339()),
+        created_at: user.created_at.and_utc().to_rfc3339(),
     };
     
     Ok(Json(user_info))
@@ -210,10 +210,10 @@ pub async fn get_user_tokens(
             name: t.name,
             token: t.token,
             scopes,
-            last_used_at: t.last_used_at.map(|dt| dt.to_rfc3339()),
-            expires_at: t.expires_at.map(|dt| dt.to_rfc3339()),
+            last_used_at: t.last_used_at.map(|dt| dt.and_utc().to_rfc3339()),
+            expires_at: t.expires_at.map(|dt| dt.and_utc().to_rfc3339()),
             is_active: t.is_active,
-            created_at: t.created_at.to_rfc3339(),
+            created_at: t.created_at.and_utc().to_rfc3339(),
         }
     }).collect();
     
@@ -258,10 +258,10 @@ pub async fn create_user_token(
         name: api_token.name,
         token: api_token.token,
         scopes,
-        last_used_at: api_token.last_used_at.map(|dt| dt.to_rfc3339()),
-        expires_at: api_token.expires_at.map(|dt| dt.to_rfc3339()),
+        last_used_at: api_token.last_used_at.map(|dt| dt.and_utc().to_rfc3339()),
+        expires_at: api_token.expires_at.map(|dt| dt.and_utc().to_rfc3339()),
         is_active: api_token.is_active,
-        created_at: api_token.created_at.to_rfc3339(),
+        created_at: api_token.created_at.and_utc().to_rfc3339(),
     };
     
     Ok(Json(ApiTokenResponse { token: token_info }))

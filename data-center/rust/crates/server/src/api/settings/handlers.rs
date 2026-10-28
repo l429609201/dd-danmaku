@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
 };
 use db::{entities::config, ConfigRepo};
-use sea_orm::EntityTrait;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use crate::AppState;
 use super::models::*;
 
@@ -30,9 +30,10 @@ pub async fn get_config(
     let config_items: Vec<ConfigItem> = configs.into_iter().map(|c| ConfigItem {
         namespace: c.namespace,
         key: c.config_key,
-        value: c.config_value,
+        // 敏感配置不回显明文
+        value: if c.is_secret { "****".to_string() } else { c.value_text.unwrap_or_default() },
         description: c.description,
-        updated_at: c.updated_at.to_rfc3339(),
+        updated_at: c.updated_at.and_utc().to_rfc3339(),
     }).collect();
     
     let total = config_items.len();

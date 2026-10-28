@@ -29,10 +29,10 @@ pub async fn get_api_keys(
         source: k.source,
         is_active: k.is_active,
         priority: k.priority,
-        last_used_at: k.last_used_at.map(|t| t.to_rfc3339()),
+        last_used_at: k.last_used_at.map(|t| t.and_utc().to_rfc3339()),
         use_count: k.use_count,
-        created_at: k.created_at.to_rfc3339(),
-        updated_at: k.updated_at.to_rfc3339(),
+        created_at: k.created_at.and_utc().to_rfc3339(),
+        updated_at: k.updated_at.and_utc().to_rfc3339(),
     }).collect();
     
     Ok(Json(ApiKeyListResponse { keys: key_infos, total, page, page_size }))
@@ -54,10 +54,10 @@ pub async fn create_api_key(
         source: key.source,
         is_active: key.is_active,
         priority: key.priority,
-        last_used_at: key.last_used_at.map(|t| t.to_rfc3339()),
+        last_used_at: key.last_used_at.map(|t| t.and_utc().to_rfc3339()),
         use_count: key.use_count,
-        created_at: key.created_at.to_rfc3339(),
-        updated_at: key.updated_at.to_rfc3339(),
+        created_at: key.created_at.and_utc().to_rfc3339(),
+        updated_at: key.updated_at.and_utc().to_rfc3339(),
     }))
 }
 
@@ -77,10 +77,10 @@ pub async fn update_api_key(
         source: key.source,
         is_active: key.is_active,
         priority: key.priority,
-        last_used_at: key.last_used_at.map(|t| t.to_rfc3339()),
+        last_used_at: key.last_used_at.map(|t| t.and_utc().to_rfc3339()),
         use_count: key.use_count,
-        created_at: key.created_at.to_rfc3339(),
-        updated_at: key.updated_at.to_rfc3339(),
+        created_at: key.created_at.and_utc().to_rfc3339(),
+        updated_at: key.updated_at.and_utc().to_rfc3339(),
     }))
 }
 
@@ -118,9 +118,9 @@ pub async fn get_sign_keys(
         sign_key: mask_secret(&k.sign_key),
         purpose: k.purpose,
         is_active: k.is_active,
-        last_used_at: k.last_used_at.map(|t| t.to_rfc3339()),
-        created_at: k.created_at.to_rfc3339(),
-        updated_at: k.updated_at.to_rfc3339(),
+        last_used_at: k.last_used_at.map(|t| t.and_utc().to_rfc3339()),
+        created_at: k.created_at.and_utc().to_rfc3339(),
+        updated_at: k.updated_at.and_utc().to_rfc3339(),
     }).collect();
     
     Ok(Json(SignKeyListResponse { keys: key_infos, total, page, page_size }))
@@ -140,9 +140,9 @@ pub async fn create_sign_key(
         sign_key: mask_secret(&key.sign_key),
         purpose: key.purpose,
         is_active: key.is_active,
-        last_used_at: key.last_used_at.map(|t| t.to_rfc3339()),
-        created_at: key.created_at.to_rfc3339(),
-        updated_at: key.updated_at.to_rfc3339(),
+        last_used_at: key.last_used_at.map(|t| t.and_utc().to_rfc3339()),
+        created_at: key.created_at.and_utc().to_rfc3339(),
+        updated_at: key.updated_at.and_utc().to_rfc3339(),
     }))
 }
 
@@ -176,8 +176,8 @@ pub async fn get_user_allows(
         user_type: u.user_type,
         description: u.description,
         is_active: u.is_active,
-        created_at: u.created_at.to_rfc3339(),
-        updated_at: u.updated_at.to_rfc3339(),
+        created_at: u.created_at.and_utc().to_rfc3339(),
+        updated_at: u.updated_at.and_utc().to_rfc3339(),
     }).collect();
     
     Ok(Json(UserAllowListResponse { users: user_infos, total, page, page_size }))
@@ -197,8 +197,8 @@ pub async fn create_user_allow(
         user_type: user.user_type,
         description: user.description,
         is_active: user.is_active,
-        created_at: user.created_at.to_rfc3339(),
-        updated_at: user.updated_at.to_rfc3339(),
+        created_at: user.created_at.and_utc().to_rfc3339(),
+        updated_at: user.updated_at.and_utc().to_rfc3339(),
     }))
 }
 
@@ -229,8 +229,8 @@ pub async fn get_oauth_configs(
         redirect_uri: c.redirect_uri,
         scope: c.scope,
         is_active: c.is_active,
-        created_at: c.created_at.to_rfc3339(),
-        updated_at: c.updated_at.to_rfc3339(),
+        created_at: c.created_at.and_utc().to_rfc3339(),
+        updated_at: c.updated_at.and_utc().to_rfc3339(),
     }).collect();
     
     Ok(Json(OAuthConfigListResponse { configs: config_infos }))
@@ -252,8 +252,8 @@ pub async fn create_oauth_config(
         redirect_uri: config.redirect_uri,
         scope: config.scope,
         is_active: config.is_active,
-        created_at: config.created_at.to_rfc3339(),
-        updated_at: config.updated_at.to_rfc3339(),
+        created_at: config.created_at.and_utc().to_rfc3339(),
+        updated_at: config.updated_at.and_utc().to_rfc3339(),
     }))
 }
 
@@ -288,7 +288,7 @@ pub async fn get_worker_logs(
         level: l.level,
         message: l.message,
         extra_data: l.extra_data,
-        created_at: l.created_at.to_rfc3339(),
+        created_at: l.created_at.and_utc().to_rfc3339(),
     }).collect();
     
     Ok(Json(WorkerLogListResponse { logs: log_infos, total, page, page_size }))
@@ -313,7 +313,7 @@ pub async fn get_ip_stats(
         method: s.method,
         status_code: s.status_code,
         user_agent: s.user_agent,
-        request_time: s.request_time.to_rfc3339(),
+        request_time: s.request_time.and_utc().to_rfc3339(),
         response_time_ms: s.response_time_ms,
     }).collect();
     
@@ -352,10 +352,10 @@ pub async fn get_cleanup_policies(
         retention_days: p.retention_days,
         is_active: p.is_active,
         schedule: p.schedule,
-        last_run_at: p.last_run_at.map(|t| t.to_rfc3339()),
+        last_run_at: p.last_run_at.map(|t| t.and_utc().to_rfc3339()),
         last_cleanup_count: p.last_cleanup_count,
-        created_at: p.created_at.to_rfc3339(),
-        updated_at: p.updated_at.to_rfc3339(),
+        created_at: p.created_at.and_utc().to_rfc3339(),
+        updated_at: p.updated_at.and_utc().to_rfc3339(),
     }).collect();
     
     Ok(Json(CleanupPolicyListResponse { policies: policy_infos }))
@@ -377,10 +377,10 @@ pub async fn create_cleanup_policy(
         retention_days: policy.retention_days,
         is_active: policy.is_active,
         schedule: policy.schedule,
-        last_run_at: policy.last_run_at.map(|t| t.to_rfc3339()),
+        last_run_at: policy.last_run_at.map(|t| t.and_utc().to_rfc3339()),
         last_cleanup_count: policy.last_cleanup_count,
-        created_at: policy.created_at.to_rfc3339(),
-        updated_at: policy.updated_at.to_rfc3339(),
+        created_at: policy.created_at.and_utc().to_rfc3339(),
+        updated_at: policy.updated_at.and_utc().to_rfc3339(),
     }))
 }
 
@@ -435,13 +435,13 @@ async fn execute_cleanup_logic(
     // 实际需要根据 target_table 和 condition 执行删除操作
     match policy.target_table.as_str() {
         "worker_logs" => {
-            let days_ago = chrono::Utc::now() - chrono::Duration::days(policy.retention_days as i64);
+            let days_ago = chrono::Utc::now().naive_utc() - chrono::Duration::days(policy.retention_days as i64);
             db::WorkerLogRepo::delete_old(_db, days_ago)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         },
         "ip_stats" => {
-            let days_ago = chrono::Utc::now() - chrono::Duration::days(policy.retention_days as i64);
+            let days_ago = chrono::Utc::now().naive_utc() - chrono::Duration::days(policy.retention_days as i64);
             db::IpStatsRepo::delete_old(_db, days_ago)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)

@@ -17,7 +17,7 @@ mod bridge;
 mod cache_service;
 mod match_service;
 mod http_client;
-mod auth;
+pub mod auth;
 mod run_mode;
 mod router_modes;
 mod redis_service;
@@ -34,7 +34,6 @@ pub use geoip_service::{GeoIpService, GeoDistributionResponse};
 pub use alias_ai_service::{AliasAiService, ScoringResult, ScoringStatus};
 
 // 导出主要的公共函数和类型
-pub use self::run_server;
 
 /// 应用状态
 #[derive(Clone)]
@@ -50,6 +49,14 @@ pub struct AppState {
     pub redis: Arc<RedisCacheService>,
     pub geoip: Arc<GeoIpService>,
     pub alias_ai: Arc<AliasAiService>,
+}
+
+/// 允许旧 handler 继续使用 `State<Arc<AppState>>` 提取器。
+/// AppState 字段均为 Arc/连接池句柄，克隆开销很小。
+impl axum::extract::FromRef<AppState> for Arc<AppState> {
+    fn from_ref(state: &AppState) -> Self {
+        Arc::new(state.clone())
+    }
 }
 
 impl AppState {
@@ -93,13 +100,14 @@ pub fn create_router(state: AppState) -> Router {
     
     // Admin API 路由（Control Node/Message/Event 管理）
     let admin_routes = Router::new()
-        .route("/health", get(api::admin::health_check))
-        .route("/nodes", get(api::admin::list_nodes).post(api::admin::create_node))
-        .route("/nodes/{id}", delete(api::admin::delete_node))
-        .route("/messages", get(api::admin::list_messages).post(api::admin::create_message))
-        .route("/messages/{id}", delete(api::admin::delete_message))
+        .route("/health", get(health::health_check))
+        .route("/nodes", get(api::admin::list_nodes).post(api::admin::upsert_node))
+        .route("/nodes/{id}", get(api::admin::get_node))
+        .route("/messages", get(api::admin::list_messages))
+        .route("/messages/{id}", get(api::admin::get_message))
         .route("/events", get(api::admin::list_events))
-        .layer(middleware::from_fn_with_state(Arc::new(state.clone()), auth::auth_middleware));
+        .route("/events/errors", get(api::admin::recent_errors))
+        .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
     
     // Worker Bridge WebSocket 路由（两种模式都需要）
     let bridge_routes = Router::new()
@@ -135,7 +143,7 @@ pub fn create_router(state: AppState) -> Router {
     
     router
         .layer(CorsLayer::permissive())
-        .with_state(Arc::new(state))
+        .with_state(state)
 }
 
 /// 启动服务器

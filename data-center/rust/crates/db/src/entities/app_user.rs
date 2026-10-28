@@ -75,8 +75,8 @@ mod tests {
             role: "admin".to_string(),
             is_active: true,
             last_login_at: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: chrono::Utc::now().naive_utc(),
+            updated_at: chrono::Utc::now().naive_utc(),
         };
         
         assert_eq!(user.username, "admin");

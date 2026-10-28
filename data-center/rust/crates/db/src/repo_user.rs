@@ -54,7 +54,7 @@ impl UserRepo {
         email: Option<String>,
         role: String,
     ) -> Result<app_user::Model, DbErr> {
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         
         let user = app_user::ActiveModel {
             username: Set(username),
@@ -100,7 +100,7 @@ impl UserRepo {
         if let Some(active) = is_active {
             active_user.is_active = Set(active);
         }
-        active_user.updated_at = Set(chrono::Utc::now());
+        active_user.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active_user.update(db).await
     }
@@ -118,7 +118,7 @@ impl UserRepo {
         
         let mut active_user: app_user::ActiveModel = user.into();
         active_user.password_hash = Set(new_password_hash);
-        active_user.updated_at = Set(chrono::Utc::now());
+        active_user.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active_user.update(db).await
     }
@@ -134,8 +134,8 @@ impl UserRepo {
             .ok_or(DbErr::RecordNotFound(format!("User {} not found", id)))?;
         
         let mut active_user: app_user::ActiveModel = user.into();
-        active_user.last_login_at = Set(Some(chrono::Utc::now()));
-        active_user.updated_at = Set(chrono::Utc::now());
+        active_user.last_login_at = Set(Some(chrono::Utc::now().naive_utc()));
+        active_user.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active_user.update(db).await?;
         Ok(())
@@ -161,7 +161,7 @@ impl SessionRepo {
     ) -> Result<Option<app_user_session::Model>, DbErr> {
         app_user_session::Entity::find()
             .filter(app_user_session::Column::Token.eq(token))
-            .filter(app_user_session::Column::ExpiresAt.gt(chrono::Utc::now()))
+            .filter(app_user_session::Column::ExpiresAt.gt(chrono::Utc::now().naive_utc()))
             .one(db)
             .await
     }
@@ -180,8 +180,8 @@ impl SessionRepo {
             token: Set(token),
             ip_address: Set(ip_address),
             user_agent: Set(user_agent),
-            expires_at: Set(expires_at),
-            created_at: Set(chrono::Utc::now()),
+            expires_at: Set(expires_at.naive_utc()),
+            created_at: Set(chrono::Utc::now().naive_utc()),
             ..Default::default()
         };
         
@@ -215,7 +215,7 @@ impl SessionRepo {
     /// 清理过期会话
     pub async fn cleanup_expired(db: &DatabaseConnection) -> Result<u64, DbErr> {
         let result = app_user_session::Entity::delete_many()
-            .filter(app_user_session::Column::ExpiresAt.lt(chrono::Utc::now()))
+            .filter(app_user_session::Column::ExpiresAt.lt(chrono::Utc::now().naive_utc()))
             .exec(db)
             .await?;
         Ok(result.rows_affected)
@@ -259,7 +259,7 @@ impl ApiTokenRepo {
         scopes: Option<String>,
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<app_user_api_token::Model, DbErr> {
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         
         let api_token = app_user_api_token::ActiveModel {
             user_id: Set(user_id),
@@ -267,7 +267,7 @@ impl ApiTokenRepo {
             token: Set(token),
             scopes: Set(scopes),
             last_used_at: Set(None),
-            expires_at: Set(expires_at),
+            expires_at: Set(expires_at.map(|e| e.naive_utc())),
             is_active: Set(true),
             created_at: Set(now),
             updated_at: Set(now),
@@ -288,8 +288,8 @@ impl ApiTokenRepo {
             .ok_or(DbErr::RecordNotFound(format!("API Token {} not found", id)))?;
         
         let mut active_token: app_user_api_token::ActiveModel = token.into();
-        active_token.last_used_at = Set(Some(chrono::Utc::now()));
-        active_token.updated_at = Set(chrono::Utc::now());
+        active_token.last_used_at = Set(Some(chrono::Utc::now().naive_utc()));
+        active_token.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active_token.update(db).await?;
         Ok(())

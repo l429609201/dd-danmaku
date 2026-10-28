@@ -1,49 +1,43 @@
 use axum::{
-    extract::{State, Json, Path, Query},
+    extract::{Json, Path, Query, State},
     http::StatusCode,
 };
-use db::{entities::*, EpisodeRepo};
-use sea_orm::{EntityTrait, QueryFilter, ColumnTrait, QueryOrder, PaginatorTrait};
-use crate::AppState;
+use db::entities::{anime, episode};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, Set,
+};
+
 use super::super::users::PaginationQuery;
 use super::models::*;
+use crate::AppState;
+
+type ApiError = (StatusCode, String);
+
+/// 数据库错误统一映射为 500
+fn db_err(e: sea_orm::DbErr) -> ApiError {
+    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
 
 /// 获取剧集列表
 pub async fn get_episodes(
     State(state): State<AppState>,
     Query(query): Query<PaginationQuery>,
-) -> Result<Json<EpisodeListResponse>, (StatusCode, String)> {
+) -> Result<Json<EpisodeListResponse>, ApiError> {
     let page = query.page.max(1);
-    let page_size = query.page_size.min(100).max(1);
-    let offset = (page - 1) * page_size;
-    
+    let page_size = query.page_size.clamp(1, 100);
+
     let episodes = episode::Entity::find()
         .order_by_desc(episode::Column::CreatedAt)
-        .offset(offset)
+        .offset((page - 1) * page_size)
         .limit(page_size)
         .all(&state.db)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    
-    let total = episode::Entity::find()
-        .count(&state.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    
-    let episode_infos: Vec<EpisodeInfo> = episodes.into_iter().map(|e| EpisodeInfo {
-        id: e.id,
-        upstream_episode_id: e.upstream_episode_id,
-        anime_id: e.anime_id,
-        episode_number: e.episode_number,
-        title: e.title,
-        title_zh: e.title_zh,
-        airdate: e.airdate.map(|d| d.to_string()),
-        created_at: e.created_at.to_rfc3339(),
-        updated_at: e.updated_at.to_rfc3339(),
-    }).collect();
-    
+        .map_err(db_err)?;
+    let total = episode::Entity::find().count(&state.db).await.map_err(db_err)?;
+
     Ok(Json(EpisodeListResponse {
-        episodes: episode_infos,
+        episodes: episodes.into_iter().map(EpisodeInfo::from).collect(),
         total,
         page,
         page_size,
@@ -54,172 +48,98 @@ pub async fn get_episodes(
 pub async fn get_episode(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-) -> Result<Json<EpisodeInfo>, (StatusCode, String)> {
-    let episode = episode::Entity::find_by_id(id)
+) -> Result<Json<EpisodeInfo>, ApiError> {
+    let ep = episode::Entity::find_by_id(id)
         .one(&state.db)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "Episode not found".to_string()))?;
-    
-    let episode_info = EpisodeInfo {
-        id: episode.id,
-        upstream_episode_id: episode.upstream_episode_id,
-        anime_id: episode.anime_id,
-        episode_number: episode.episode_number,
-        title: episode.title,
-        title_zh: episode.title_zh,
-        airdate: episode.airdate.map(|d| d.to_string()),
-        created_at: episode.created_at.to_rfc3339(),
-        updated_at: episode.updated_at.to_rfc3339(),
-    };
-    
-    Ok(Json(episode_info))
+        .map_err(db_err)?
+        .ok_or((StatusCode::NOT_FOUND, "剧集不存在".to_string()))?;
+    Ok(Json(EpisodeInfo::from(ep)))
 }
 
-/// 获取番剧的所有剧集
-#[derive(serde::Deserialize)]
-pub struct AnimeEpisodesQuery {
-    pub anime_id: i64,
-}
-
+/// 获取指定番剧的全部剧集
 pub async fn get_anime_episodes(
     State(state): State<AppState>,
     Query(query): Query<AnimeEpisodesQuery>,
-) -> Result<Json<EpisodeListResponse>, (StatusCode, String)> {
+) -> Result<Json<Vec<EpisodeInfo>>, ApiError> {
     let episodes = episode::Entity::find()
         .filter(episode::Column::AnimeId.eq(query.anime_id))
-        .order_by_asc(episode::Column::EpisodeNumber)
+        .order_by_asc(episode::Column::Id)
         .all(&state.db)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    
-    let total = episodes.len() as u64;
-    
-    let episode_infos: Vec<EpisodeInfo> = episodes.into_iter().map(|e| EpisodeInfo {
-        id: e.id,
-        upstream_episode_id: e.upstream_episode_id,
-        anime_id: e.anime_id,
-        episode_number: e.episode_number,
-        title: e.title,
-        title_zh: e.title_zh,
-        airdate: e.airdate.map(|d| d.to_string()),
-        created_at: e.created_at.to_rfc3339(),
-        updated_at: e.updated_at.to_rfc3339(),
-    }).collect();
-    
-    Ok(Json(EpisodeListResponse {
-        episodes: episode_infos,
-        total,
-        page: 1,
-        page_size: total,
-    }))
+        .map_err(db_err)?;
+    Ok(Json(episodes.into_iter().map(EpisodeInfo::from).collect()))
 }
 
-/// 创建剧集
+/// 创建剧集（要求所属番剧存在）
 pub async fn create_episode(
     State(state): State<AppState>,
     Json(req): Json<CreateEpisodeRequest>,
-) -> Result<Json<EpisodeInfo>, (StatusCode, String)> {
-    let airdate = req.airdate.as_ref().and_then(|s| {
-        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
-    });
-    
-    let episode = EpisodeRepo::create(
-        &state.db,
-        req.upstream_episode_id,
-        req.anime_id,
-        req.episode_number,
-        req.title,
-        req.title_zh,
-        airdate,
-    )
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    
-    let episode_info = EpisodeInfo {
-        id: episode.id,
-        upstream_episode_id: episode.upstream_episode_id,
-        anime_id: episode.anime_id,
-        episode_number: episode.episode_number,
-        title: episode.title,
-        title_zh: episode.title_zh,
-        airdate: episode.airdate.map(|d| d.to_string()),
-        created_at: episode.created_at.to_rfc3339(),
-        updated_at: episode.updated_at.to_rfc3339(),
+) -> Result<Json<EpisodeInfo>, ApiError> {
+    if req.upstream_episode_id.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "upstream_episode_id 不能为空".to_string()));
+    }
+    anime::Entity::find_by_id(req.anime_id)
+        .one(&state.db)
+        .await
+        .map_err(db_err)?
+        .ok_or((StatusCode::BAD_REQUEST, "所属番剧不存在".to_string()))?;
+
+    let now = chrono::Utc::now().naive_utc();
+    let model = episode::ActiveModel {
+        anime_id: Set(req.anime_id),
+        season_id: Set(req.season_id),
+        upstream_episode_id: Set(req.upstream_episode_id),
+        episode_number: Set(req.episode_number),
+        title: Set(req.title),
+        type_description: Set(req.type_description),
+        duration_seconds: Set(req.duration_seconds),
+        air_date: Set(req.air_date),
+        // 手工创建的剧集没有对应的上游缓存键
+        source_cache_key: Set("manual".to_string()),
+        first_seen_at: Set(now),
+        last_seen_at: Set(now),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
     };
-    
-    Ok(Json(episode_info))
+    let saved = model.insert(&state.db).await.map_err(db_err)?;
+    Ok(Json(EpisodeInfo::from(saved)))
 }
 
-/// 更新剧集
+/// 更新剧集（只修改请求中提供的字段）
 pub async fn update_episode(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(req): Json<UpdateEpisodeRequest>,
-) -> Result<Json<EpisodeInfo>, (StatusCode, String)> {
-    let episode = episode::Entity::find_by_id(id)
+) -> Result<Json<EpisodeInfo>, ApiError> {
+    let existing = episode::Entity::find_by_id(id)
         .one(&state.db)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "Episode not found".to_string()))?;
-    
-    let mut active: episode::ActiveModel = episode.into();
-    
-    if let Some(episode_number) = req.episode_number {
-        active.episode_number = sea_orm::Set(episode_number);
-    }
-    if let Some(title) = req.title {
-        active.title = sea_orm::Set(Some(title));
-    }
-    if let Some(title_zh) = req.title_zh {
-        active.title_zh = sea_orm::Set(Some(title_zh));
-    }
-    if let Some(airdate_str) = req.airdate {
-        let airdate = chrono::NaiveDate::parse_from_str(&airdate_str, "%Y-%m-%d")
-            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid date format".to_string()))?;
-        active.airdate = sea_orm::Set(Some(airdate));
-    }
-    active.updated_at = sea_orm::Set(chrono::Utc::now());
-    
-    let updated = active.update(&state.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    
-    let episode_info = EpisodeInfo {
-        id: updated.id,
-        upstream_episode_id: updated.upstream_episode_id,
-        anime_id: updated.anime_id,
-        episode_number: updated.episode_number,
-        title: updated.title,
-        title_zh: updated.title_zh,
-        airdate: updated.airdate.map(|d| d.to_string()),
-        created_at: updated.created_at.to_rfc3339(),
-        updated_at: updated.updated_at.to_rfc3339(),
-    };
-    
-    Ok(Json(episode_info))
+        .map_err(db_err)?
+        .ok_or((StatusCode::NOT_FOUND, "剧集不存在".to_string()))?;
+
+    let mut active: episode::ActiveModel = existing.into();
+    if req.season_id.is_some() { active.season_id = Set(req.season_id); }
+    if req.episode_number.is_some() { active.episode_number = Set(req.episode_number); }
+    if req.title.is_some() { active.title = Set(req.title); }
+    if req.type_description.is_some() { active.type_description = Set(req.type_description); }
+    if req.duration_seconds.is_some() { active.duration_seconds = Set(req.duration_seconds); }
+    if req.air_date.is_some() { active.air_date = Set(req.air_date); }
+    active.updated_at = Set(chrono::Utc::now().naive_utc());
+
+    let saved = active.update(&state.db).await.map_err(db_err)?;
+    Ok(Json(EpisodeInfo::from(saved)))
 }
 
 /// 删除剧集
 pub async fn delete_episode(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    episode::Entity::delete_by_id(id)
-        .exec(&state.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_anime_episodes_query() {
-        let query = AnimeEpisodesQuery { anime_id: 1 };
-        assert_eq!(query.anime_id, 1);
+) -> Result<StatusCode, ApiError> {
+    let result = episode::Entity::delete_by_id(id).exec(&state.db).await.map_err(db_err)?;
+    if result.rows_affected == 0 {
+        return Err((StatusCode::NOT_FOUND, "剧集不存在".to_string()));
     }
+    Ok(StatusCode::NO_CONTENT)
 }

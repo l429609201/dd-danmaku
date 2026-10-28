@@ -58,8 +58,8 @@ mod tests {
             token: "eyJ...".to_string(),
             ip_address: Some("127.0.0.1".to_string()),
             user_agent: Some("Mozilla/5.0".to_string()),
-            expires_at: chrono::Utc::now() + chrono::Duration::hours(24),
-            created_at: chrono::Utc::now(),
+            expires_at: chrono::Utc::now().naive_utc() + chrono::Duration::hours(24),
+            created_at: chrono::Utc::now().naive_utc(),
         };
         
         assert_eq!(session.user_id, 1);

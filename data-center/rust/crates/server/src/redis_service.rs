@@ -236,7 +236,7 @@ impl RedisCacheService {
             .arg(&full_pattern)
             .arg("COUNT")
             .arg(100)
-            .query_async::<_, (u64, Vec<String>)>(&mut conn)
+            .query_async::<(u64, Vec<String>)>(&mut conn)
             .await
         {
             Ok((_, keys)) => {

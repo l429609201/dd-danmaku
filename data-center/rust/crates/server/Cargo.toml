@@ -59,7 +59,8 @@ redis = { workspace = true }
 maxminddb = { workspace = true }
 
 # HTTP 客户端（AI API）
-reqwest = { version = "0.12", features = ["json"] }
+# 使用 rustls，避免 openssl-sys 需要系统 OpenSSL 开发包
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

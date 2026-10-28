@@ -58,8 +58,8 @@ mod tests {
             description: Some("允许 Mozilla 浏览器".to_string()),
             is_active: true,
             priority: 10,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: chrono::Utc::now().naive_utc(),
+            updated_at: chrono::Utc::now().naive_utc(),
         };
         
         assert_eq!(rule.ua_pattern, "Mozilla/*");

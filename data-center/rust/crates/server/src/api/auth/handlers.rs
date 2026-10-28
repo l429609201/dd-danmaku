@@ -1,10 +1,11 @@
 use axum::{
     extract::{State, Json, Path, Query, Request},
+    Extension,
     http::StatusCode,
 };
 use serde::Deserialize;
 use db::{UserRepo, SessionRepo, ApiTokenRepo};
-use crate::{AppState, auth::{PasswordService, extract_claims}};
+use crate::{AppState, auth::{Claims, PasswordService, extract_claims}};
 use super::models::*;
 
 /// 登录
@@ -63,8 +64,8 @@ pub async fn login(
         email: user.email,
         role: user.role,
         is_active: user.is_active,
-        last_login_at: user.last_login_at.map(|t| t.to_rfc3339()),
-        created_at: user.created_at.to_rfc3339(),
+        last_login_at: user.last_login_at.map(|t| t.and_utc().to_rfc3339()),
+        created_at: user.created_at.and_utc().to_rfc3339(),
     };
     
     Ok(Json(LoginResponse {
@@ -118,8 +119,8 @@ pub async fn get_me(
         email: user.email,
         role: user.role,
         is_active: user.is_active,
-        last_login_at: user.last_login_at.map(|t| t.to_rfc3339()),
-        created_at: user.created_at.to_rfc3339(),
+        last_login_at: user.last_login_at.map(|t| t.and_utc().to_rfc3339()),
+        created_at: user.created_at.and_utc().to_rfc3339(),
     };
     
     Ok(Json(user_info))
@@ -128,11 +129,9 @@ pub async fn get_me(
 /// 修改密码
 pub async fn change_password(
     State(state): State<AppState>,
-    req: Request,
+    Extension(claims): Extension<Claims>,
     Json(change_req): Json<ChangePasswordRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let claims = extract_claims(&req)
-        .map_err(|_| (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()))?;
     
     let user_id: i64 = claims.sub.parse()
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Invalid user ID".to_string()))?;
@@ -225,8 +224,8 @@ pub async fn refresh_token(
         email: user.email,
         role: user.role,
         is_active: user.is_active,
-        last_login_at: user.last_login_at.map(|t| t.to_rfc3339()),
-        created_at: user.created_at.to_rfc3339(),
+        last_login_at: user.last_login_at.map(|t| t.and_utc().to_rfc3339()),
+        created_at: user.created_at.and_utc().to_rfc3339(),
     };
     
     Ok(Json(LoginResponse {
