@@ -55,13 +55,23 @@ COPY rust/crates/dandanplay/Cargo.toml ./crates/dandanplay/
 
 # 预构建依赖（缓存层）
 RUN cargo build --release && \
-    rm -rf crates/*/src target/release/deps/api* target/release/deps/db* target/release/deps/server* target/release/deps/worker_bridge* target/release/deps/dandanplay*
+    rm -rf crates/*/src
 
 # 复制真实源码
 COPY rust/crates ./crates
 
 # 构建应用（使用缓存的依赖）
-RUN cargo build --release --bin server && \
+# 清除工作区 crate 的占位产物：rlib 文件名带 lib 前缀（libdb-*.rlib），
+# 且 COPY 保留的源码 mtime 早于占位构建，不清理会让 cargo 误用空占位库。
+RUN rm -rf target/release/.fingerprint/api-* target/release/.fingerprint/db-* \
+           target/release/.fingerprint/server-* target/release/.fingerprint/worker-bridge-* \
+           target/release/.fingerprint/dandanplay-* \
+           target/release/deps/libapi-* target/release/deps/libdb-* target/release/deps/libserver-* \
+           target/release/deps/libworker_bridge-* target/release/deps/libdandanplay-* \
+           target/release/deps/api-* target/release/deps/db-* target/release/deps/server-* \
+           target/release/deps/worker_bridge-* target/release/deps/dandanplay-* && \
+    find crates -name '*.rs' -exec touch {} + && \
+    cargo build --release --bin server && \
     strip target/release/server
 
 # ============================================================
