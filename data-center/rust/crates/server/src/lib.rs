@@ -23,6 +23,8 @@ mod router_modes;
 mod redis_service;
 mod geoip_service;
 mod alias_ai_service;
+// Worker 模式出站控制客户端（对应 Python control_client.py）
+pub mod control_client;
 
 pub use cache_service::CacheService;
 pub use bridge::ConnectionManager;
@@ -146,6 +148,22 @@ pub fn create_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// 首次启动初始化管理员：用户表为空且设置了 ADMIN_USERNAME/ADMIN_PASSWORD 时创建
+pub async fn init_admin_from_env(db: &sea_orm::DatabaseConnection) -> anyhow::Result<()> {
+    let username = std::env::var("ADMIN_USERNAME").unwrap_or_default().trim().to_string();
+    let password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
+    if username.is_empty() || password.is_empty() {
+        return Ok(());
+    }
+    if db::UserRepo::count(db).await? > 0 {
+        return Ok(());
+    }
+    let hash = auth::PasswordService::hash_password(&password)?;
+    db::UserRepo::create(db, username.clone(), hash, None, None, "admin".to_string()).await?;
+    info!("👤 已创建初始管理员: {}", username);
+    Ok(())
+}
+
 /// 启动服务器
 pub async fn run_server(
     db: sea_orm::DatabaseConnection,
@@ -201,6 +219,18 @@ pub async fn run_server(
         geoip,
         alias_ai,
     };
+
+    // Worker 模式：配置了 CONTROL_WORKER_WS_URL 时主动连接 Worker 控制通道
+    if state.run_mode.is_worker() {
+        match control_client::ControlConfig::from_env() {
+            Some(cfg) => {
+                info!("🔗 启动控制客户端: node_id={}", cfg.node_id);
+                control_client::ControlClient::new(cfg, state.clone()).spawn();
+            }
+            None => info!("ℹ️ 未配置 CONTROL_WORKER_WS_URL，控制客户端未启动"),
+        }
+    }
+
     let app = create_router(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

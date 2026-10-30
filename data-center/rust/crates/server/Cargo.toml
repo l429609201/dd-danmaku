@@ -36,6 +36,7 @@ chrono = { workspace = true }
 
 # UUID
 uuid = { version = "1.11", features = ["v4", "serde"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 
 # JWT 认证
 jsonwebtoken = { workspace = true }
