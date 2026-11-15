@@ -1,6 +1,25 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// 官方凭据只读投影；永不包含原始密钥或加密信封。
+#[derive(Serialize, Deserialize)]
+pub struct DandanplayConfigResponse {
+    pub app_id: String,
+    pub user_agent: String,
+    pub secret_configured: bool,
+    pub source: String,
+    pub encryption_ready: bool,
+}
+
+/// 不提供清空操作；省略或 null 保留已有数据库密钥，禁止 Debug 打印请求。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateDandanplayConfigRequest {
+    pub app_id: String,
+    pub user_agent: String,
+    pub app_secret: Option<String>,
+}
+
 /// 系统配置项
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConfigItem {

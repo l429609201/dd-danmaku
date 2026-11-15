@@ -24,6 +24,19 @@ impl SimpleHttpClient {
 
     /// GET 请求，返回响应体字符串
     pub async fn get(&self, url: &str) -> Result<String, HttpError> {
+        // 官方接口使用 HTTPS；原 Hyper HttpConnector 只支持 HTTP，不能用于官方回源。
+        if url.starts_with("https://") {
+            let client = reqwest::Client::builder()
+                .timeout(self.timeout)
+                .redirect(reqwest::redirect::Policy::none())
+                .build().map_err(|_| HttpError::RequestBuild)?;
+            let response = client.get(url).header("User-Agent", "data-center-rust/0.1.0")
+                .send().await.map_err(|e| if e.is_timeout() { HttpError::Timeout } else { HttpError::Network(e.to_string()) })?;
+            if !response.status().is_success() {
+                return Err(HttpError::StatusCode(response.status().as_u16()));
+            }
+            return response.text().await.map_err(|e| HttpError::Network(e.to_string()));
+        }
         let uri: hyper::Uri = url.parse().map_err(|_| HttpError::InvalidUrl)?;
         
         let req = Request::builder()

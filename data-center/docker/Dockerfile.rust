@@ -86,12 +86,13 @@ RUN apk add --no-cache \
     ca-certificates \
     libgcc \
     su-exec \
+    shadow \
     tzdata \
     && rm -rf /var/cache/apk/*
 
 # 创建用户和组
-RUN addgroup -g 1000 appgroup && \
-    adduser -u 1000 -G appgroup -s /bin/sh -D appuser
+RUN addgroup -g 1000 danmuku-rust && \
+    adduser -u 1000 -G danmuku-rust -s /bin/sh -D danmuku-rust
 
 # 从构建阶段复制二进制文件
 COPY --from=rust-builder /app/target/release/server /app/server
@@ -101,7 +102,7 @@ COPY --from=frontend-builder /app/web/dist /app/web/dist
 
 # 创建必要的目录
 RUN mkdir -p /app/config /app/config/logs /app/config/danmaku && \
-    chown -R appuser:appgroup /app
+    chown -R danmuku-rust:danmuku-rust /app
 
 # 设置环境变量
 ENV RUST_LOG=info

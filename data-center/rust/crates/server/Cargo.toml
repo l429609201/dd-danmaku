@@ -30,6 +30,9 @@ futures-util = "0.3"
 # 序列化
 serde = { workspace = true }
 serde_json = { workspace = true }
+# 实体标题规范化及季集号解析，与旧版检索语义保持一致。
+unicode-normalization = "0.1"
+regex = "1"
 
 # 时间
 chrono = { workspace = true }
@@ -52,6 +55,11 @@ tracing-subscriber = { workspace = true }
 # 错误处理
 anyhow = { workspace = true }
 md5 = "0.8.1"
+sha2 = "0.10"
+# 官方接口签名使用标准 Base64 编码。
+base64 = "0.22"
+# 复用已缓存的 ring，以 AES-256-GCM 加密数据库中的官方密钥。
+ring = "0.17.14"
 
 # Redis
 redis = { workspace = true }

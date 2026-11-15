@@ -15,6 +15,16 @@ mod health;
 mod api;
 mod bridge;
 mod cache_service;
+// 按当前规范化表结构摄取与拼装上游媒体实体。
+mod entity_service;
+// 官方目录扩展字段独立规范化存储。
+pub mod catalog_fields;
+// 匹配与弹幕协议采用独立字段表，避免响应原文作为业务事实来源。
+pub mod structured_response_store;
+// 统一官方上游签名，凭据不与旧版不同结构的密钥表混用。
+pub mod dandanplay_upstream;
+// 专用加密配置服务，供后台更新和请求时签名共享。
+pub mod upstream_config;
 mod match_service;
 mod http_client;
 pub mod auth;
@@ -26,7 +36,7 @@ mod alias_ai_service;
 // Worker 模式出站控制客户端（对应 Python control_client.py）
 pub mod control_client;
 
-pub use cache_service::CacheService;
+pub use cache_service::{CacheService, CacheGetOptions, CachedResponse};
 pub use bridge::ConnectionManager;
 pub use match_service::{VideoMatchService, MatchQuery, MatchedItem};
 pub use http_client::{SimpleHttpClient, HttpError};
@@ -121,25 +131,24 @@ pub fn create_router(state: AppState) -> Router {
         .route("/", get(root))
         .route("/health", get(health::health_check))
         .nest("/api/admin", admin_routes)
-        .nest("/api/ws", bridge_routes);
+        .nest("/api/ws", bridge_routes)
+        // Worker/API 两种模式均提供登录及完整后台管理接口，仍保留 JWT 鉴权。
+        .merge(router_modes::create_management_routes(&state));
     
     match run_mode {
         RunMode::Worker => {
-            // Worker 模式：只启用与 CF 交互的 API
+            // Worker 模式只关闭公共弹幕接口，不关闭后台登录和配置管理。
             info!("🔧 运行模式：Worker - CloudFlare 数据中心");
-            info!("✅ 启用：Admin API、Worker Bridge");
-            info!("❌ 禁用：dandanplay API、OAuth、管理后台");
-            
-            // Worker 模式下不添加其他路由
+            info!("✅ 启用：管理后台、登录认证、Admin API、Worker Bridge");
+            info!("ℹ️ 未启用独立 dandanplay 公共接口");
         },
         RunMode::Api => {
             // API 模式：启用完整的弹幕服务和管理后台
             info!("🌐 运行模式：API - 独立弹幕服务端");
             info!("✅ 启用：dandanplay API、OAuth、完整管理后台");
             
-            // 使用辅助函数创建 API 模式路由
-            let api_routes = router_modes::create_api_mode_routes(&state);
-            router = router.merge(api_routes);
+            // 公共弹幕接口仅在 API 模式下添加，后台管理接口已在共享路由中注册。
+            router = router.merge(router_modes::create_dandanplay_routes());
         }
     }
     
@@ -169,7 +178,9 @@ pub async fn run_server(
     db: sea_orm::DatabaseConnection,
     addr: &str,
 ) -> anyhow::Result<()> {
-    let cache = Arc::new(CacheService::new(db.clone()));
+    // 缓存与控制通道共用同一 Redis 实例，SQL 保留冷备。
+    let redis = Arc::new(RedisCacheService::new().await);
+    let cache = Arc::new(CacheService::new(db.clone()).with_redis(redis.clone()));
     let bridge_manager = Arc::new(ConnectionManager::new(30, 90)); // 30s 心跳间隔，90s 超时
     let match_service = Arc::new(VideoMatchService::new(db.clone()));
     
@@ -194,7 +205,6 @@ pub async fn run_server(
         .unwrap_or(RunMode::Worker);
     
     // 辅助服务初始化
-    let redis = Arc::new(RedisCacheService::new().await);
     let geoip = Arc::new(GeoIpService::new());
     let alias_ai = Arc::new(AliasAiService::new());
     

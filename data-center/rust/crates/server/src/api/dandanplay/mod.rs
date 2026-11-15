@@ -2,6 +2,8 @@ pub mod models;
 pub mod handlers;
 pub mod client;
 pub mod xml_parser;
+pub mod catalog;
+pub use catalog::{search_anime, search_episodes, get_bangumi};
 
 pub use models::*;
 pub use handlers::{match_video, get_comments, get_ext_comments};

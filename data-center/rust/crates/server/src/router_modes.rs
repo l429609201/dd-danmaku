@@ -1,12 +1,10 @@
 use axum::Router;
-use std::sync::Arc;
 
-use crate::{AppState, RunMode, api, auth, bridge, health};
+use crate::{AppState, api, auth};
 use axum::{routing::{get, post, put, delete}, middleware};
-use tracing::info;
 
-/// 创建 API 模式的完整路由（dandanplay + 管理后台）
-pub fn create_api_mode_routes(state: &AppState) -> Router<AppState> {
+/// 两种运行模式共享管理后台；模式只控制对外弹幕业务接口，不绕过后台鉴权。
+pub fn create_management_routes(state: &AppState) -> Router<AppState> {
     // 认证 API 路由（公开，无需认证）
     let auth_protected = Router::new()
         .route("/me", get(api::auth::get_me))
@@ -31,6 +29,7 @@ pub fn create_api_mode_routes(state: &AppState) -> Router<AppState> {
     // 系统设置 API 路由（需要认证）
     let settings_routes = Router::new()
         .route("/", get(api::settings::get_config).put(api::settings::update_config))
+        .route("/dandanplay", get(api::settings::get_dandanplay_config).put(api::settings::put_dandanplay_config))
         .route("/database", get(api::settings::get_database_config))
         .route("/cache", get(api::settings::get_cache_config))
         .route("/health", get(api::settings::health_check))
@@ -99,12 +98,6 @@ pub fn create_api_mode_routes(state: &AppState) -> Router<AppState> {
         .route("/ai-status", get(api::alias_ai_api::get_ai_scoring_status))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
     
-    // dandanplay API 路由（公开，无需认证）
-    let dandanplay_routes = Router::new()
-        .route("/match", post(api::dandanplay::match_video))
-        .route("/comment/{episode_id}", get(api::dandanplay::get_comments))
-        .route("/extcomment", post(api::dandanplay::get_ext_comments));
-    
     Router::new()
         .nest("/api/v2/auth", auth_routes)
         .nest("/api/v2/users", users_routes)
@@ -116,12 +109,18 @@ pub fn create_api_mode_routes(state: &AppState) -> Router<AppState> {
         .nest("/api/v2/logs", logs_routes.merge(geoip_routes))
         .nest("/api/v2/cleanup", cleanup_routes)
         .nest("/api/v2/media/aliases", alias_ai_routes)
-        .nest("/api/v2", dandanplay_routes)
 }
 
-/// 创建 Worker 模式的路由（只有 CF 交互 API）
-pub fn create_worker_mode_routes(_state: &AppState) -> Router<AppState> {
-    // Worker 模式下不需要额外路由
-    // 只保留核心的 Admin API 和 Worker Bridge
-    Router::new()
+/// 仅 API 模式开放的公共弹幕接口，与管理后台路由分离。
+pub fn create_dandanplay_routes() -> Router<AppState> {
+    Router::new().nest(
+        "/api/v2",
+        Router::new()
+            .route("/search/episodes", get(api::dandanplay::search_episodes))
+            .route("/search/anime", get(api::dandanplay::search_anime))
+            .route("/bangumi/{id}", get(api::dandanplay::get_bangumi))
+            .route("/match", post(api::dandanplay::match_video))
+            .route("/comment/{episode_id}", get(api::dandanplay::get_comments))
+            .route("/extcomment", post(api::dandanplay::get_ext_comments)),
+    )
 }

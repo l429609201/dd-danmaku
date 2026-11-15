@@ -27,14 +27,16 @@ pub async fn get_config(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     };
     
-    let config_items: Vec<ConfigItem> = configs.into_iter().map(|c| ConfigItem {
+    let config_items: Vec<ConfigItem> = configs.into_iter().map(|c| {
+        // 即使历史行缺少 is_secret 标志，也不回显专用密钥字段。
+        let sensitive = c.is_secret || (c.namespace == crate::upstream_config::NAMESPACE && c.config_key == "app_secret");
+        ConfigItem {
         namespace: c.namespace,
         key: c.config_key,
-        // 敏感配置不回显明文
-        value: if c.is_secret { "****".to_string() } else { c.value_text.unwrap_or_default() },
+        value: if sensitive { "****".to_string() } else { c.value_text.unwrap_or_default() },
         description: c.description,
         updated_at: c.updated_at.and_utc().to_rfc3339(),
-    }).collect();
+    }}).collect();
     
     let total = config_items.len();
     
@@ -48,7 +50,11 @@ pub async fn get_config(
 pub async fn update_config(
     State(state): State<AppState>,
     Json(req): Json<UpdateConfigRequest>,
-) -> Result<StatusCode, (StatusCode, String)> {
+) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    // 写入任何项之前检查整个批次，防止绕过专用原子校验。
+    if req.configs.iter().any(|item| item.namespace == crate::upstream_config::NAMESPACE) {
+        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"message":"dandanplay 命名空间仅允许通过专用配置接口更新"}))));
+    }
     for item in req.configs {
         ConfigRepo::set(
             &state.db,
@@ -58,10 +64,34 @@ pub async fn update_config(
             None,
         )
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"message":"无法保存系统配置"}))))?;
     }
     
     Ok(StatusCode::NO_CONTENT)
+}
+
+type DandanplayConfigError = (StatusCode, Json<serde_json::Value>);
+fn config_error(status: StatusCode, message: String) -> DandanplayConfigError {
+    (status, Json(serde_json::json!({"message": message})))
+}
+
+/// 只返回脱敏投影；缺少主密钥仍可读取状态，界面据此提示部署配置。
+pub async fn get_dandanplay_config(State(state): State<AppState>) -> Result<Json<DandanplayConfigResponse>, DandanplayConfigError> {
+    crate::upstream_config::get_config(&state.db).await.map(Json)
+        .map_err(|message| config_error(StatusCode::INTERNAL_SERVER_ERROR, message))
+}
+
+/// JSON 拒绝也使用 message 信封，避免客户端丢失可读错误。
+pub async fn put_dandanplay_config(
+    State(state): State<AppState>,
+    payload: Result<Json<UpdateDandanplayConfigRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<DandanplayConfigResponse>, DandanplayConfigError> {
+    let Json(request) = payload.map_err(|_| config_error(StatusCode::BAD_REQUEST, "请求 JSON 无效：需要 app_id、user_agent 和可选 app_secret".into()))?;
+    crate::upstream_config::ConfigCipher::from_env()
+        .map_err(|message| config_error(StatusCode::SERVICE_UNAVAILABLE, message))?;
+    crate::upstream_config::save_config(&state.db, request).await
+        .map_err(|message| config_error(StatusCode::BAD_REQUEST, message))?;
+    get_dandanplay_config(State(state)).await
 }
 
 /// 获取数据库配置

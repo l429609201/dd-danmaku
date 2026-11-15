@@ -23,8 +23,6 @@ const MAX_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const PING_TIMEOUT: Duration = Duration::from_secs(60);
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_TTL_SECONDS: i64 = 24 * 60 * 60;
-const EMPTY_TTL_SECONDS: i64 = 6 * 60 * 60;
 
 /// 控制客户端配置（环境变量）
 #[derive(Debug, Clone)]
@@ -235,18 +233,14 @@ impl ControlClient {
         if key.is_empty() {
             return Ok(json!({"hit": false}));
         }
-        Ok(match self.state.cache.get(key).await? {
-            Some(c) => json!({
-                "hit": true,
-                "status": c.status_code,
-                "headers": {"content-type": "application/json; charset=utf-8"},
-                "body": c.body,
-                "cached_at": now_ms(),
-                "stale": false,
-                "served_stale": false,
-            }),
-            None => json!({"hit": false}),
-        })
+        // 与公共接口共用策略，避免 RPC 丢失过期降级、负缓存及别名改写标记。
+        self.state.cache.get_payload(key, crate::cache_service::CacheGetOptions {
+            worker_request_id: p.get("worker_request_id").and_then(Value::as_str),
+            client_ip: p.get("client_ip").and_then(Value::as_str),
+            log_miss: !p.get("prefetch").and_then(Value::as_bool).unwrap_or(false),
+            allow_stale: p.get("allow_stale").and_then(Value::as_bool).unwrap_or(false),
+            alias_only: p.get("alias_only").and_then(Value::as_bool).unwrap_or(false),
+        }).await
     }
 
     async fn cache_upsert(&self, p: &Value) -> anyhow::Result<Value> {
@@ -254,14 +248,9 @@ impl ControlClient {
         if key.is_empty() {
             return Ok(json!({"success": false}));
         }
-        let body = str_field(p, "body");
-        let status = p.get("status").and_then(Value::as_i64).unwrap_or(200) as i32;
-        let is_empty = p.get("is_empty").and_then(Value::as_bool).unwrap_or(false);
-        let ttl = p.get("ttl").and_then(Value::as_i64).filter(|t| *t > 0).unwrap_or(
-            if is_empty { EMPTY_TTL_SECONDS } else { DEFAULT_TTL_SECONDS },
-        );
-        self.state.cache.set(key, body, status, ttl).await?;
-        Ok(json!({"success": true}))
+        // 完整保留 Worker 请求元数据；服务内部负责校验、TTL、冷备和实体解析。
+        let success = self.state.cache.upsert_record(p).await?;
+        Ok(json!({"success": success}))
     }
 
     async fn alias_query(&self, p: &Value) -> anyhow::Result<Value> {
@@ -269,19 +258,8 @@ impl ControlClient {
         if keyword.is_empty() {
             return Ok(json!({"success": false, "data": []}));
         }
-        let rows = db::AnimeRepo::new(self.state.db.clone()).search_by_title(keyword, 20).await?;
-        let data: Vec<Value> = rows
-            .into_iter()
-            .map(|a| json!({
-                "animeId": a.upstream_anime_id,
-                "animeTitle": a.title,
-                "type": a.type_code,
-                "typeDescription": a.type_description,
-                "imageUrl": a.image_url,
-                "episodeCount": a.episode_count,
-            }))
-            .collect();
-        Ok(json!({"success": true, "data": data}))
+        // 别名兜底返回包含集数的真实实体，而不是仅按标题模糊查询的空壳作品。
+        crate::entity_service::EntityService::new(self.state.db.clone()).alias_query(keyword).await
     }
 
     async fn stats_report(&self, p: &Value) -> anyhow::Result<Value> {
@@ -356,32 +334,34 @@ impl ControlClient {
     async fn comment_archive(&self, p: &Value) -> anyhow::Result<Value> {
         let episode_id = str_field(p, "episode_id");
         let body = str_field(p, "body");
-        let source = p.get("source").and_then(Value::as_str).unwrap_or("r2_archive");
-        let new_count = serde_json::from_str::<db::DanmakuResponse>(body)
-            .map(|r| r.comments.len())
-            .unwrap_or(0);
+        // 控制通道与 HTTP 共用逐字段弹幕存储，不再把归档 JSON 文件作为业务读源。
+        let value: Value = serde_json::from_str(body)?;
+        let new_count = value.get("comments").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
         if episode_id.is_empty() || new_count == 0 {
             return Ok(json!({"saved": false, "reason": "empty"}));
         }
-        let store = &self.state.comment_store;
-        if let Some(old) = store.get(episode_id).await? {
-            if new_count < old.comments.len() {
-                return Ok(json!({
-                    "saved": false, "reason": "fewer_comments",
-                    "old": old.comments.len(), "new": new_count,
-                }));
+        let store = crate::structured_response_store::StructuredResponseStore::new(self.state.db.clone());
+        let path = format!("comment/{episode_id}");
+        let key = crate::structured_response_store::StructuredResponseStore::request_key(&path, None, None);
+        if let Some(old) = store.get(&path, &key).await? {
+            let old_count = old.get("comments").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+            if new_count < old_count {
+                return Ok(json!({"saved": false, "reason": "fewer_comments", "old": old_count, "new": new_count}));
             }
         }
-        store.archive(episode_id, body, source).await?;
-        Ok(json!({"saved": true, "comment_count": new_count, "size": body.len()}))
+        let saved = store.ingest(&path, &key, &value).await?.is_some();
+        Ok(json!({"saved": saved, "comment_count": new_count, "size": body.len()}))
     }
 
     async fn comment_get(&self, p: &Value) -> anyhow::Result<Value> {
         let episode_id = str_field(p, "episode_id");
-        Ok(match self.state.comment_store.get(episode_id).await? {
+        let path = format!("comment/{episode_id}");
+        let key = crate::structured_response_store::StructuredResponseStore::request_key(&path, None, None);
+        let store = crate::structured_response_store::StructuredResponseStore::new(self.state.db.clone());
+        Ok(match store.get(&path, &key).await? {
             Some(r) => json!({
                 "hit": true,
-                "comment_count": r.comments.len(),
+                "comment_count": r.get("comments").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
                 "body": serde_json::to_string(&r)?,
             }),
             None => json!({"hit": false}),

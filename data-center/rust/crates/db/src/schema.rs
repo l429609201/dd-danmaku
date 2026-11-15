@@ -38,12 +38,30 @@ pub fn schema_statements(backend: DbBackend) -> Vec<String> {
         schema.create_table_from_entity(api_response_cache::Entity),
         schema.create_table_from_entity(api_response_entity::Entity),
         schema.create_table_from_entity(episode_link::Entity),
+        // 新协议表仅 CREATE IF NOT EXISTS，不回填或改写已有生产数据。
+        schema.create_table_from_entity(crate::entities::structured_response::Entity),
+        schema.create_table_from_entity(crate::entities::structured_match::Entity),
+        schema.create_table_from_entity(crate::entities::structured_comment::Entity),
         with_unique_index(
             schema.create_table_from_entity(anime::Entity),
             "uq_anime_upstream_id",
             &["upstream_anime_id"],
         ),
         schema.create_table_from_entity(season::Entity),
+        // 详情字段新增独立表，旧库也可安全 CREATE IF NOT EXISTS。
+        schema.create_table_from_entity(crate::entities::bangumi_version::Entity),
+        schema.create_table_from_entity(crate::entities::bangumi_season::Entity),
+        schema.create_table_from_entity(crate::entities::bangumi_episode_member::Entity),
+        schema.create_table_from_entity(crate::entities::bangumi_title::Entity),
+        schema.create_table_from_entity(crate::entities::catalog_search_result::Entity),
+        schema.create_table_from_entity(crate::entities::catalog_search_member::Entity),
+        // 官方目录扩展字段使用新类型表，不 ALTER 已有生产表。
+        schema.create_table_from_entity(crate::entities::catalog_fields::Entity),
+        schema.create_table_from_entity(crate::entities::catalog_metadata::Entity),
+        schema.create_table_from_entity(crate::entities::catalog_rating_detail::Entity),
+        schema.create_table_from_entity(crate::entities::catalog_relation::Entity),
+        schema.create_table_from_entity(crate::entities::catalog_tag::Entity),
+        schema.create_table_from_entity(crate::entities::catalog_trailer::Entity),
         with_unique_index(
             schema.create_table_from_entity(episode::Entity),
             "uq_episode_upstream_id",

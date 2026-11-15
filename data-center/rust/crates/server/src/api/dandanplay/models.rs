@@ -40,7 +40,7 @@ pub struct MatchResult {
     pub episode_title: String,
     /// 剧集类型
     pub type_description: String,
-    /// 匹配度（0-1）
+    /// 弹幕时间偏移（秒），不是匹配置信度；实际匹配接口保留上游原始值。
     pub shift: f64,
 }
 

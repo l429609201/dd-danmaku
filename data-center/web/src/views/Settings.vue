@@ -20,6 +20,24 @@
       </table>
     </div>
 
+    <!-- 官方凭据独立保存；密钥不回显，留空代表保留已有配置。 -->
+    <form class="panel upstream-panel" @submit.prevent="saveUpstream">
+      <div class="panel-head">
+        <h2 class="panel-title">弹弹官方上游</h2>
+        <button class="btn" type="button" :disabled="upstreamLoading || upstreamSaving" @click="loadUpstream">重新读取</button>
+      </div>
+      <p class="hint">应用密钥加密存入数据库，不会回显。修改保存后对新请求生效，无需重启。</p>
+      <p v-if="upstreamLoaded" class="hint">配置来源：{{ upstream.source === 'database' ? '数据库' : upstream.source === 'env' ? '环境变量' : upstream.source === 'environment' ? '环境变量' : '未配置' }}；密钥{{ upstream.secret_configured ? '已配置' : '未配置' }}。</p>
+      <p v-if="upstreamLoaded && !upstream.encryption_ready" class="tip tip--warn">无法读取或创建本地加密参数，请检查 CONFIG_PATH 挂载目录的读写权限及 encryption-key.json 的 0600 权限。主密钥首次自动随机生成并持久化，请连同数据库一起备份；不要删除或替换，否则已有密钥无法解密。</p>
+      <p v-if="upstreamError" class="tip tip--warn" role="alert">{{ upstreamError }}</p>
+      <fieldset :disabled="!upstreamLoaded || upstreamLoading || upstreamSaving" class="upstream-fields">
+        <div class="form-item"><label for="upstream-app-id">App ID</label><input id="upstream-app-id" v-model="upstream.app_id" class="input full" autocomplete="off" required /></div>
+        <div class="form-item"><label for="upstream-app-secret">App Secret（留空保留已有密钥）</label><input id="upstream-app-secret" v-model="upstreamSecret" class="input full" type="password" autocomplete="new-password" :placeholder="upstream.secret_configured ? '已配置，不回显；留空保持不变' : '请输入应用密钥'" /></div>
+        <div class="form-item"><label for="upstream-user-agent">User-Agent（可选）</label><input id="upstream-user-agent" v-model="upstream.user_agent" class="input full" autocomplete="off" /></div>
+        <button class="btn btn-primary" type="submit" :disabled="!upstream.encryption_ready">{{ upstreamSaving ? '保存中...' : '保存官方凭据' }}</button>
+      </fieldset>
+    </form>
+
     <!-- 外部控制密钥（MCP / 外部诊断专用，独立于登录） -->
     <div class="panel" style="margin-top: 20px;">
       <div class="panel-head">
@@ -125,6 +143,44 @@ export default {
   setup() {
     const items = ref([])
     const msg = ref('')
+
+    // 官方密钥仅保存在当前表单内存中，保存成功及离开页面时清空。
+    const upstream = reactive({ app_id: '', user_agent: '', secret_configured: false, source: '', encryption_ready: false })
+    const upstreamSecret = ref('')
+    const upstreamLoaded = ref(false)
+    const upstreamLoading = ref(false)
+    const upstreamSaving = ref(false)
+    const upstreamError = ref('')
+    const loadUpstream = async () => {
+      upstreamLoading.value = true
+      upstreamError.value = ''
+      upstreamLoaded.value = false
+      upstreamSecret.value = ''
+      try {
+        const data = await apiV2('/settings/dandanplay')
+        Object.assign(upstream, data)
+        upstreamLoaded.value = true
+      } catch (e) { upstreamError.value = '读取官方凭据配置失败：' + e.message }
+      finally { upstreamLoading.value = false }
+    }
+    const saveUpstream = async () => {
+      if (!upstreamLoaded.value || upstreamSaving.value || !upstream.encryption_ready) return
+      upstreamError.value = ''
+      if ((upstream.source !== 'database' || !upstream.secret_configured) && !upstreamSecret.value) {
+        upstreamError.value = '首次保存到数据库必须填写 App Secret（不会从环境变量复制）'
+        return
+      }
+      upstreamSaving.value = true
+      try {
+        const body = { app_id: upstream.app_id, user_agent: upstream.user_agent.trim() || 'data-center-rust/0.1.0' }
+        if (upstreamSecret.value) body.app_secret = upstreamSecret.value
+        await apiV2('/settings/dandanplay', { method: 'PUT', body })
+        upstreamSecret.value = ''
+        msg.value = '官方凭据已加密保存，新请求立即生效'
+        await loadUpstream()
+      } catch (e) { upstreamError.value = '保存官方凭据失败：' + e.message }
+      finally { upstreamSaving.value = false }
+    }
 
     // 外部控制密钥
     const extToken = ref('')
@@ -301,14 +357,17 @@ export default {
 
     onMounted(() => {
       load()
+      loadUpstream()
       window.addEventListener('show-password-modal', openPasswordModal)
     })
     onUnmounted(() => {
+      upstreamSecret.value = ''
       window.removeEventListener('show-password-modal', openPasswordModal)
     })
 
     return {
       items, msg, save,
+      upstream, upstreamSecret, upstreamLoaded, upstreamLoading, upstreamSaving, upstreamError, loadUpstream, saveUpstream,
       extToken, extShow, extLoading, loadExtToken, rotateExtToken, copyExtToken,
       mcpMode, mcpBaseUrl, mcpScriptPath, mcpConfigText, copyMcpConfig,
       showPasswordModal, passwordForm, passwordLoading,
@@ -319,6 +378,10 @@ export default {
 </script>
 
 <style scoped>
+/* 凭据区复用设置页布局，窄屏时允许输入框随容器收缩。 */
+.upstream-panel { margin-top: 20px; }
+.upstream-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.upstream-fields .input { box-sizing: border-box; }
 .page { padding: 24px; }
 .page-title { font-size: 22px; margin-bottom: 20px; color: #333; }
 .tip { background: #e6f4ff; border: 1px solid #91caff; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: #0958d9; }
