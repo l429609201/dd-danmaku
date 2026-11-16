@@ -494,6 +494,7 @@
         DOWNLOAD_CONTEXT_MISSING: '下载缺少当前匹配任务、来源、分集或登录会话',
         DOWNLOAD_VIEW_EXPIRED: '播放页面或加载任务已变更，已停止旧弹幕请求',
         BACKEND_DOWNLOAD_INVALID_RESPONSE: '后端下载响应格式无效',
+        DOWNLOAD_CLIENT_ERROR: '前端弹幕下载处理异常',
         INTERNAL_ERROR: '后端内部处理失败', MATCH_FAILED: '匹配失败', BACKEND_CAPABILITY_MISSING: 'DLL 后端缺少所需能力',
         OFFICIAL_PROXY_UNAVAILABLE: '官方代理不可用', OFFICIAL_SIGNING_UNAVAILABLE: '官方签名未配置',
         OFFICIAL_USER_MARK_INCOMPLETE: '官方用户认证信息不完整', PROXY_DISABLED: '插件代理已禁用', PROXY_NOT_CONFIGURED: '插件代理尚未配置',
@@ -3517,8 +3518,13 @@
         const commentAppId = appId || window.ede.episode_info?.apiAppId || '';
         const commentAppSecret = appSecret || window.ede.episode_info?.apiAppSecret || '';
         // [兼容] 规范化 prefix：兜底处理缓存中遗留的旧格式（如缺少 /api/v2 的 dandanplay 地址）
-        const prefix = ddBackend.isDll()
-            ? (String(rawPrefix).includes('dandanplay') ? corsProxy + 'https://api.dandanplay.net/api/v2' : 'emby-proxy://custom')
+        // DLL 下载以匹配证明中的来源为准，不从上游地址猜测来源；签名和异步下载均由后端负责。
+        const dllMode = ddBackend.isDll();
+        const downloadContext = manualDanmakuSelection?.key !== manualDanmakuKey(window.ede?.itemId)
+            ? window.ede?.episode_info?.backendDownloadContext : null;
+        const backendSourceId = downloadContext?.sourceId || window.ede?.backendSourceId;
+        const prefix = dllMode
+            ? (backendSourceId === 'official' ? corsProxy + 'https://api.dandanplay.net/api/v2' : 'emby-proxy://custom')
             : normalizeCustomApiPrefix(rawPrefix, commentAppId, commentAppSecret);
         // 轮询使用本次加载快照；不能引用外层另一个函数的局部 current。
         const playback = window.ede;
@@ -3530,7 +3536,7 @@
 
         // [v2.7.0] 仅当当前源对应的 serverName 在 knownApiServers 中配置了 supportsAsync:true 时，
         // 才追加 async=1 参数，避免向不支持异步接口的服务器发送无效参数
-        const supportsAsyncPoll = (() => {
+        const supportsAsyncPoll = !dllMode && (() => {
             const list = getCustomApiList();
             const normalize = u => (u || '').replace(/\/$/, '');
             const matchedItem = list.find(i => normalize(i.url) === normalize(rawPrefix));
@@ -3543,12 +3549,11 @@
         const startTime = performance.now(); // [Log] 开始计时
 
         // [签名] 自定义API签名头（按原始 /comment URL 签名，不含 async 参数影响 path）
-        const commentSignHeaders = await buildCustomApiSignHeaders(commentAppId, commentAppSecret, url);
+        const commentSignHeaders = dllMode ? {} : await buildCustomApiSignHeaders(commentAppId, commentAppSecret, url);
         const fetchOpts = Object.keys(commentSignHeaders).length > 0
             ? { headers: commentSignHeaders, timeoutMs: 100000 }
             : { timeoutMs: 100000 };
-        if (ddBackend.isDll() && manualDanmakuSelection?.key !== manualDanmakuKey(playback?.itemId))
-            fetchOpts.downloadContext = playback?.episode_info?.backendDownloadContext;
+        if (dllMode && downloadContext) fetchOpts.downloadContext = downloadContext;
 
         // [v2.7.0] 轮询异步任务：/taskcomment/{taskId}
         // 轮询必须有上限：服务端任务异常或状态字段不兼容时，不能让“正在获取”永久占用播放页。
@@ -3640,11 +3645,15 @@
                 }
             })
             .catch((error) => {
-                // 下载启动前的异常也必须可定位；只记录固定分类和异常类型，不透传 URL/令牌。
-                if (ddBackend.isDll() && typeof error.code !== 'string') {
-                    const failure = createBackendError({ code: error.name === 'AbortError'
-                        ? 'DOWNLOAD_VIEW_EXPIRED' : 'BACKEND_DOWNLOAD_INVALID_RESPONSE' });
-                    logger.error(`[API请求] comment 获取弹幕失败: ${formatBackendError(failure)}，异常类型=${/^[A-Za-z]{1,40}$/.test(error.name || '') ? error.name : 'Error'}`);
+                // 普通 JS 异常不是后端坏响应；保留原异常作为 cause，只记录无 URL/参数的脚本行列。
+                if (dllMode && typeof error?.code !== 'string') {
+                    const failure = createBackendError({ code: error?.name === 'AbortError'
+                        ? 'DOWNLOAD_VIEW_EXPIRED' : 'DOWNLOAD_CLIENT_ERROR' });
+                    failure.cause = error;
+                    const locations = String(error?.stack || '').split('\n').slice(1)
+                        .map(line => line.match(/(?:ede[^\s/:?#]*\.js|<anonymous>):(\d+):(\d+)/))
+                        .filter(Boolean).slice(0, 4).map(match => `ede.js:${match[1]}:${match[2]}`).join(' ← ');
+                    logger.error(`[API请求] comment 获取弹幕失败: ${formatBackendError(failure)}，异常类型=${/^[A-Za-z]{1,40}$/.test(error?.name || '') ? error.name : 'Error'}${locations ? `，位置=${locations}` : ''}`);
                     throw failure;
                 }
                 logger.error(`[API请求] comment 获取弹幕失败: ${error.code ? formatBackendError(error) : '请求失败'}`);
@@ -4115,7 +4124,8 @@
                         // 下载结果为原始 comment 协议，不同于 match 的 success/data 信封。
                         if (!resultResponse.ok || taskBody?.success === false || !taskBody || typeof taskBody !== 'object')
                             throw createBackendError(taskBody || {}, resultResponse.status, taskId, true, 'BACKEND_DOWNLOAD_INVALID_RESPONSE');
-                        return taskBody?.data || taskBody;
+                        // 保留根层 ddSave；调用方本就兼容 comments、data.comments 和直接数组。
+                        return taskBody;
                     }
                 }
                 throw createBackendError({ errorCode: 'BACKEND_TASK_WAIT_TIMEOUT' }, null, taskId);
