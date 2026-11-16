@@ -139,7 +139,7 @@ public sealed partial class DanmakuApiService
             var id = "custom-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
                 userId.ToString("N") + "\n" + canonical + "\n" + isAdministratorProxy)))[..24].ToLowerInvariant();
             var allowPrivate = BackendSourcePolicy.IsApprovedPrivateBase(uri, administrator);
-            // 个人明文配置不能自行开启内网权限；重复配置同一身份不会重复请求。
+            // 来源沿用 Emby 会话鉴权，不再要求额外的内网白名单；重复配置同一身份不会重复请求。
             if (result.Any(source => source.BaseUrl == canonical)) throw new ArgumentException("重复的来源地址，请只保留一项配置");
             result.Add(new(id, name, canonical, serverType, appId, secret, enabled, allowPrivate, isAdministratorProxy));
         }

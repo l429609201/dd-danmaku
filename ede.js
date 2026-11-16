@@ -486,6 +486,8 @@
         SOURCE_TARGET_DENIED: '来源地址不允许访问', SOURCE_TARGET_INVALID: '来源地址无效', SOURCE_DNS_FAILED: '来源域名解析失败',
         TASK_NOT_FOUND: '后端任务不存在或不属于当前用户', TASK_NOT_READY: '后端任务结果尚未就绪',
         TASK_RESULT_EXPIRED: '后端任务结果已过期', OPERATION_CANCELLED: '后端任务已取消',
+        BACKEND_TASK_WAIT_TIMEOUT: '等待后端任务状态超时，尚未确认最终结果',
+        BACKEND_UNAVAILABLE: '无法连接 Emby 插件后端，尚未确认任务结果',
         INTERNAL_ERROR: '后端内部处理失败', MATCH_FAILED: '匹配失败', BACKEND_CAPABILITY_MISSING: 'DLL 后端缺少所需能力',
         OFFICIAL_PROXY_UNAVAILABLE: '官方代理不可用', OFFICIAL_SIGNING_UNAVAILABLE: '官方签名未配置',
         OFFICIAL_USER_MARK_INCOMPLETE: '官方用户认证信息不完整', PROXY_DISABLED: '插件代理已禁用', PROXY_NOT_CONFIGURED: '插件代理尚未配置',
@@ -813,9 +815,22 @@
                 const headers = { Accept: 'application/json', 'Content-Type': 'application/json',
                     'X-Emby-Token': client.accessToken() };
                 const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), 130000);
-                let subscription;
+                // 后端匹配预算为 180 秒；前端留出受理、终态传播和结果读取时间。
+                const totalDeadline = Date.now() + 210000;
+                const timer = setTimeout(() => controller.abort(), 210000);
+                let subscription, taskId = '', taskCancelled = false;
                 const currentOperation = () => isCurrent() && session === resetIfSessionChanged();
+                const cancelTaskOnSwitch = () => {
+                    if (!taskId || taskCancelled || currentOperation()) return;
+                    taskCancelled = true;
+                    // 切集取消独立于已中止的业务请求，避免旧集继续占用匹配资源。
+                    const cancelController = new AbortController();
+                    const cancelTimer = setTimeout(() => cancelController.abort(), 3000);
+                    void fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/cancel`, {
+                        method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers,
+                        signal: cancelController.signal, body: JSON.stringify({ playbackEnded: true })
+                    }).catch(() => {}).finally(() => clearTimeout(cancelTimer));
+                };
                 try {
                     // business/match 自己创建唯一任务及事件流，无需额外空 operation 造成重复“开始”和主动中止日志。
                     const response = await fetch(`${base}/dd-danmaku/api/business/match`, {
@@ -827,22 +842,15 @@
                             return Object.fromEntries(allowed.filter(key => payload[key] !== undefined).map(key => [key, payload[key]]));
                         })()) });
                     let body = await response.json().catch(() => null);
-                    if (!isCurrent() || session !== resetIfSessionChanged()) return null;
-                    if (!response.ok || body?.success !== true || !/^[a-f0-9]{32}$/i.test(String(body?.data?.id ?? ''))) {
-                        throw createBackendError(body, response.status, null, true, response.status === 429 ? 'UPSTREAM_RATE_LIMITED' : 'UNKNOWN_ERROR');
+                    // 先保留安全的任务号，再检查切集；受理跨集时也必须取消旧任务。
+                    if (/^[a-f0-9]{32}$/i.test(String(body?.data?.id ?? ''))) taskId = String(body.data.id);
+                    if (!currentOperation()) return null;
+                    if (!response.ok || body?.success !== true || !taskId) {
+                        throw createBackendError(body, response.status, taskId, true, response.status === 429 ? 'UPSTREAM_RATE_LIMITED' : 'UNKNOWN_ERROR');
                     }
-                    const taskId = String(body.data.id);
-                    let taskCancelled = false;
-                    const cancelTaskOnSwitch = () => {
-                        if (taskCancelled || currentOperation()) return;
-                        taskCancelled = true;
-                        void fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/cancel`, {
-                            method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers,
-                            body: JSON.stringify({ playbackEnded: true }) }).catch(() => {});
-                    };
                     // 共用终态唤醒订阅，结果仍须经过原登录会话的 HTTP 状态与 result 校验。
                     subscription = await this.watchTask(taskId, currentOperation);
-                    const taskDeadline = Date.now() + 180000;
+                    const taskDeadline = Math.min(totalDeadline, Date.now() + 200000);
                     while (Date.now() < taskDeadline) {
                         if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
                         await subscription.wait(500, controller.signal);
@@ -871,7 +879,7 @@
                     }
                     // 匹配证明只归当前任务所有，旧集结果不得写进复用的 window.ede。
                     if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
-                    if (!body?.data?.Match && !body?.data?.match) throw createBackendError({ errorCode: 'UPSTREAM_TIMEOUT' }, null, taskId);
+                    if (!body?.data?.Match && !body?.data?.match) throw createBackendError({ errorCode: 'BACKEND_TASK_WAIT_TIMEOUT' }, null, taskId);
                     const data = body.data;
                     window.ede.backendMatchTaskId = taskId;
                     window.ede.backendSourceId = data.SourceId || data.sourceId || '';
@@ -887,11 +895,14 @@
                     return data;
                 } catch (error) {
                     if (!currentOperation()) return null;
-                    if (!error.code) error.code = error?.name === 'AbortError' ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_UNAVAILABLE';
-                    const failure = createBackendError({ code: error.code, errorMessage: error.errorMessage }, error.httpStatus, error.taskId);
+                    // 只有后端明确返回的上游超时才标为 UPSTREAM_TIMEOUT，前端断连不冒充上游失败。
+                    const code = error?.name === 'AbortError' ? 'BACKEND_TASK_WAIT_TIMEOUT'
+                        : typeof error.code === 'string' ? error.code : 'BACKEND_UNAVAILABLE';
+                    const failure = createBackendError({ code, errorMessage: error.errorMessage }, error.httpStatus, error.taskId || taskId);
                     logger.warn(`[后端在线匹配] ${failure.message}${failure.taskId ? `，任务=${failure.taskId}` : ''}`);
                     throw failure;
                 } finally {
+                    cancelTaskOnSwitch();
                     clearTimeout(timer); controller.abort();
                     if (subscription) void subscription.close();
                 }
