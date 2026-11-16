@@ -124,14 +124,14 @@ impl GeoIpService {
     }
     
     /// 获取地理分布（带缓存，TTL 5 分钟）
-    pub async fn get_geo_distribution(&self, db: &sea_orm::DatabaseConnection) -> GeoDistributionResponse {
+    pub async fn get_geo_distribution(&self, db: &sea_orm::DatabaseConnection) -> Result<GeoDistributionResponse, sea_orm::DbErr> {
         if !self.available {
-            return GeoDistributionResponse {
+            return Ok(GeoDistributionResponse {
                 available: false,
                 points: vec![],
                 total_ips: 0,
                 cached_at: None,
-            };
+            });
         }
         
         // 检查缓存
@@ -140,13 +140,14 @@ impl GeoIpService {
             let cache = self.cache.read().await;
             if let Some(cached) = cache.as_ref() {
                 if now - cached.cached_at < 300 {  // 5 分钟 TTL
-                    return cached.data.clone();
+                    return Ok(cached.data.clone());
                 }
             }
         }
         
         // 缓存过期，重新计算
-        let points = self.aggregate_ip_stats(db).await;
+        // 查询失败直接传播，不能把数据库故障缓存成可用的空地图。
+        let points = self.aggregate_ip_stats(db).await?;
         let total_ips = points.iter().map(|p| p.count).sum();
         
         let response = GeoDistributionResponse {
@@ -165,27 +166,20 @@ impl GeoIpService {
             });
         }
         
-        response
+        Ok(response)
     }
     
     /// 聚合 IP 统计到地理点
-    async fn aggregate_ip_stats(&self, db: &sea_orm::DatabaseConnection) -> Vec<GeoPoint> {
+    async fn aggregate_ip_stats(&self, db: &sea_orm::DatabaseConnection) -> Result<Vec<GeoPoint>, sea_orm::DbErr> {
         use sea_orm::*;
         use db::entities::ip_stats;
         
         // 查询最近的 IP 统计（最多 10000 条）
-        let stats = match ip_stats::Entity::find()
+        let stats = ip_stats::Entity::find()
             .order_by_desc(ip_stats::Column::RequestTime)
             .limit(10000)
             .all(db)
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("⚠️  查询 IP 统计失败: {}", e);
-                return vec![];
-            }
-        };
+            .await?;
         
         // IP → 城市 → 计数
         let mut city_counts: std::collections::HashMap<String, (CityInfo, u64)> = std::collections::HashMap::new();
@@ -218,7 +212,7 @@ impl GeoIpService {
         // 最多返回 100 个点
         points.truncate(100);
         
-        points
+        Ok(points)
     }
     
     /// 清除缓存

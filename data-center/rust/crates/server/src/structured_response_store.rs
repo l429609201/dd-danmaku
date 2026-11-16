@@ -33,7 +33,7 @@ impl StructuredResponseStore {
                     emit(&mut item, MATCH, row.present_fields, vec![val(row.anime_id), val(row.episode_id), val(row.anime_title), val(row.episode_title), val(row.anime_type), val(row.type_description), val(row.shift), val(row.image_url)]);
                     Value::Object(item)
                 }).collect()
-        } else if path.starts_with("comment/") {
+        } else if (path.starts_with("comment/") || path == "extcomment") {
             comment::Entity::find().filter(comment::Column::RequestKey.eq(key))
                 .order_by_asc(comment::Column::Ordinal).all(&txn).await?.into_iter().map(|row| {
                     let p = assemble_p(&row)?;
@@ -54,7 +54,7 @@ impl StructuredResponseStore {
         if object.get("success") == Some(&Value::Bool(false)) { return Ok(None); }
         if object.get("errorCode").is_some_and(|v| v.as_i64() != Some(0)) { return Ok(None); }
         let is_match = path == "match";
-        anyhow::ensure!(is_match || path.starts_with("comment/"), "不支持的结构化接口");
+        anyhow::ensure!(is_match || (path.starts_with("comment/") || path == "extcomment"), "不支持的结构化接口");
         let field = if is_match { "matches" } else { "comments" };
         let rows = object.get(field).and_then(Value::as_array).ok_or_else(|| anyhow::anyhow!("上游响应缺少 {field} 数组"))?;
         let meta = response::Model {

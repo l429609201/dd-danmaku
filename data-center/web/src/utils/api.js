@@ -17,7 +17,7 @@ export function getAuthHeaders() {
 
   if (token) {
     const authHeader = `${tokenType.charAt(0).toUpperCase() + tokenType.slice(1)} ${token}`
-    console.log('🔑 生成认证头:', authHeader.substring(0, 20) + '...')
+    // 认证头含敏感令牌，禁止输出全部或任何前缀。
     return {
       'Authorization': authHeader
     }

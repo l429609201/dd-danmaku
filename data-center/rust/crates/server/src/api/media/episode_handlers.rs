@@ -16,7 +16,12 @@ type ApiError = (StatusCode, String);
 
 /// 数据库错误统一映射为 500
 fn db_err(e: sea_orm::DbErr) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    // 唯一键冲突是客户端重复提交，不应暴露数据库约束或返回 500。
+    if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) {
+        return (StatusCode::CONFLICT, "上游媒体标识已存在".to_string());
+    }
+    tracing::error!(error = %e, "媒体数据库操作失败");
+    (StatusCode::INTERNAL_SERVER_ERROR, "媒体数据库操作失败".to_string())
 }
 
 /// 获取剧集列表
@@ -26,10 +31,14 @@ pub async fn get_episodes(
 ) -> Result<Json<EpisodeListResponse>, ApiError> {
     let page = query.page.max(1);
     let page_size = query.page_size.clamp(1, 100);
+    // 数据库 OFFSET 为有符号整数；拒绝极端页码，避免乘法溢出。
+    let offset = (page - 1).checked_mul(page_size)
+        .filter(|offset| *offset <= i64::MAX as u64)
+        .ok_or((StatusCode::BAD_REQUEST, "分页超出范围".to_string()))?;
 
     let episodes = episode::Entity::find()
         .order_by_desc(episode::Column::CreatedAt)
-        .offset((page - 1) * page_size)
+        .offset(offset)
         .limit(page_size)
         .all(&state.db)
         .await
@@ -79,6 +88,10 @@ pub async fn create_episode(
     if req.upstream_episode_id.trim().is_empty() {
         return Err((StatusCode::BAD_REQUEST, "upstream_episode_id 不能为空".to_string()));
     }
+    // 时长不能为负数；缺失时长请省略该字段。
+    if req.duration_seconds.is_some_and(|duration| duration < 0) {
+        return Err((StatusCode::BAD_REQUEST, "duration_seconds 不能为负数".to_string()));
+    }
     anime::Entity::find_by_id(req.anime_id)
         .one(&state.db)
         .await
@@ -113,6 +126,10 @@ pub async fn update_episode(
     Path(id): Path<i64>,
     Json(req): Json<UpdateEpisodeRequest>,
 ) -> Result<Json<EpisodeInfo>, ApiError> {
+    // 时长不能为负数；缺失时长请省略该字段。
+    if req.duration_seconds.is_some_and(|duration| duration < 0) {
+        return Err((StatusCode::BAD_REQUEST, "duration_seconds 不能为负数".to_string()));
+    }
     let existing = episode::Entity::find_by_id(id)
         .one(&state.db)
         .await

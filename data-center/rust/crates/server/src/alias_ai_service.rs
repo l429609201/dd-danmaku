@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn, error};
 
 /// AI 打分结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,13 +61,9 @@ struct MessageContent {
 
 /// 别名 AI 辅助服务
 /// 
-/// 功能：
-/// - 低置信度别名候选 AI 打分（OpenAI 兼容接口）
-/// - 只提供建议不自动上线（写 ai_suggestion 字段）
-/// - 支持 OpenAI / DeepSeek / 通义 / 本地 vLLM
-/// - 异步批量处理
+/// 当前仅提供状态与配置检查；候选查询和建议持久化尚未接通。
+/// 预留的 OpenAI 兼容调用不代表已具备批量打分能力，启动入口明确拒绝执行。
 pub struct AliasAiService {
-    client: reqwest::Client,
     status: Arc<RwLock<ScoringStatus>>,
 }
 
@@ -76,7 +71,6 @@ impl AliasAiService {
     /// 创建 AI 服务
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
             status: Arc::new(RwLock::new(ScoringStatus {
                 running: false,
                 processed: 0,
@@ -101,6 +95,14 @@ impl AliasAiService {
         
         let api_url = std::env::var("AI_API_URL").ok()?;
         let api_key = std::env::var("AI_API_KEY").ok()?;
+        // 空白密钥、地址或非法 URL 都不算有效配置；不在错误信息中包含凭据。
+        if api_key.trim().is_empty() || api_url.trim().is_empty() {
+            return None;
+        }
+        let parsed = reqwest::Url::parse(&api_url).ok()?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            return None;
+        }
         let model = std::env::var("AI_MODEL")
             .unwrap_or_else(|_| "gpt-3.5-turbo".to_string());
         
@@ -114,129 +116,32 @@ impl AliasAiService {
     /// 开始打分任务
     pub async fn start_scoring(
         &self,
-        db: sea_orm::DatabaseConnection,
+        _db: sea_orm::DatabaseConnection,
         max_calls: Option<u32>,
     ) -> ScoringResult {
-        // 检查是否已在运行
-        {
-            let status = self.status.read().await;
-            if status.running {
-                return ScoringResult {
-                    started: false,
-                    status: status.clone(),
-                };
-            }
-        }
-        
-        // 检查配置
-        let config = match Self::get_config() {
-            Some(c) => c,
-            None => {
-                let status = ScoringStatus {
-                    running: false,
-                    processed: 0,
-                    succeeded: 0,
-                    failed: 0,
-                    total: 0,
-                    message: "AI 服务未启用或配置不完整".to_string(),
-                };
-                return ScoringResult {
-                    started: false,
-                    status,
-                };
-            }
+        // 数据库候选查询、AI 调用和建议持久化尚未实现，禁止模拟成功或启动后台任务。
+        let message = if max_calls.is_some_and(|limit| limit == 0 || limit > 1000) {
+            "max_calls 必须在 1..=1000 范围内"
+        } else if Self::get_config().is_none() {
+            "AI 服务未启用或配置不完整；别名 AI 打分流程尚未实现"
+        } else {
+            "别名 AI 打分流程尚未实现，未启动任务或调用 AI"
         };
-        
-        // 启动后台任务
-        let status_clone = Arc::clone(&self.status);
-        let client = self.client.clone();
-        
-        tokio::spawn(async move {
-            Self::run_scoring_task(db, client, config, status_clone, max_calls).await;
-        });
-        
-        // 等待任务启动
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
-        let status = self.status.read().await.clone();
-        ScoringResult {
-            started: true,
-            status,
-        }
+        let status = ScoringStatus {
+            running: false,
+            processed: 0,
+            succeeded: 0,
+            failed: 0,
+            total: 0,
+            message: message.to_string(),
+        };
+        *self.status.write().await = status.clone();
+        ScoringResult { started: false, status }
     }
-    
+
     /// 获取打分状态
     pub async fn get_status(&self) -> ScoringStatus {
         self.status.read().await.clone()
-    }
-    
-    /// 执行打分任务
-    async fn run_scoring_task(
-        db: sea_orm::DatabaseConnection,
-        client: reqwest::Client,
-        config: AiConfig,
-        status: Arc<RwLock<ScoringStatus>>,
-        max_calls: Option<u32>,
-    ) {
-        use sea_orm::*;
-        
-        // 更新状态：开始
-        {
-            let mut s = status.write().await;
-            s.running = true;
-            s.message = "正在查询待打分别名...".to_string();
-        }
-        
-        // 查询低置信度的 pending 别名（假设有 anime_alias 表）
-        // 这里简化处理，实际需要根据数据库结构调整
-        info!("🤖 AI 打分任务开始");
-        
-        // TODO: 实际查询逻辑
-        // let aliases = anime_alias::Entity::find()
-        //     .filter(anime_alias::Column::Status.eq("pending"))
-        //     .filter(anime_alias::Column::Confidence.lt(70))
-        //     .order_by_desc(anime_alias::Column::HitCount)
-        //     .limit(max_calls.unwrap_or(50))
-        //     .all(&db)
-        //     .await?;
-        
-        // 模拟处理（实际需要替换为真实逻辑）
-        let total = max_calls.unwrap_or(10);
-        {
-            let mut s = status.write().await;
-            s.total = total;
-            s.message = format!("找到 {} 个待打分别名", total);
-        }
-        
-        for i in 0..total {
-            // 更新进度
-            {
-                let mut s = status.write().await;
-                s.processed = i + 1;
-                s.message = format!("正在处理 {}/{}", i + 1, total);
-            }
-            
-            // TODO: 调用 AI API 打分
-            // let suggestion = Self::call_ai_api(&client, &config, &alias).await;
-            
-            // 模拟延迟
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            
-            // 更新成功计数
-            {
-                let mut s = status.write().await;
-                s.succeeded += 1;
-            }
-        }
-        
-        // 完成
-        {
-            let mut s = status.write().await;
-            s.running = false;
-            s.message = format!("打分完成: 成功 {}, 失败 {}", s.succeeded, s.failed);
-        }
-        
-        info!("✅ AI 打分任务完成");
     }
     
     /// 调用 AI API

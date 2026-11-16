@@ -31,7 +31,7 @@
     <div class="panel">
       <div class="panel-head">
         <h2 class="panel-title">API Token</h2>
-        <button class="btn btn-primary" @click="createToken">新建 Token</button>
+        <div><select v-model="tokenUserId" @change="loadTokens"><option v-for="u in users" :key="u.id" :value="u.id">{{ u.username }}</option></select> <button class="btn btn-primary" :disabled="!tokenUserId" @click="createToken">新建 Token</button></div>
       </div>
       <div v-if="newToken" class="token-box">明文 Token（仅显示一次）：<code>{{ newToken }}</code></div>
       <table class="data-table">
@@ -39,7 +39,7 @@
         <tbody>
           <tr v-for="t in tokens" :key="t.id">
             <td>{{ t.name }}</td>
-            <td class="key">{{ t.token_digest }}</td>
+            <td class="key">{{ t.token ? `${t.token.slice(0, 7)}…` : '—' }}</td>
             <td>{{ t.is_active ? '启用' : '禁用' }}</td>
             <td>{{ fmt(t.last_used_at) }}</td>
             <td><button class="link danger" @click="delToken(t)">删除</button></td>
@@ -81,6 +81,7 @@ export default {
   setup() {
     const users = ref([])
     const tokens = ref([])
+    const tokenUserId = ref(null)
     const msg = ref('')
     const creating = ref(false)
     const newToken = ref('')
@@ -90,10 +91,20 @@ export default {
       msg.value = ''
       try {
         const u = await apiV2('/users')
-        users.value = u.data || []
-        const t = await apiV2('/users/api-tokens/list')
-        tokens.value = t.data || []
+        // 后端返回 UserListResponse，Token 必须按实际用户归属加载。
+        users.value = u.users || []
+        if (!users.value.some(user => user.id === tokenUserId.value)) {
+          tokenUserId.value = users.value[0]?.id ?? null
+        }
+        await loadTokens()
       } catch (e) { msg.value = e.message }
+    }
+
+    const loadTokens = async () => {
+      try {
+        tokens.value = tokenUserId.value
+          ? await apiV2(`/users/${tokenUserId.value}/tokens`) : []
+      } catch (e) { msg.value = e.message; tokens.value = [] }
     }
 
     const openCreate = () => {
@@ -124,21 +135,21 @@ export default {
       const name = prompt('Token 名称：')
       if (!name) return
       try {
-        const res = await apiV2('/users/api-tokens', { method: 'POST', body: { name, scopes: [] } })
-        newToken.value = res.data.token
+        const res = await apiV2(`/users/${tokenUserId.value}/tokens`, { method: 'POST', body: { name, scopes: [] } })
+        newToken.value = res.token.token
         load()
       } catch (e) { msg.value = e.message }
     }
 
     const delToken = async (t) => {
       if (!confirm(`确认删除 Token ${t.name}？`)) return
-      try { await apiV2(`/users/api-tokens/${t.id}`, { method: 'DELETE' }); load() }
+      try { await apiV2(`/users/${tokenUserId.value}/tokens/${t.id}`, { method: 'DELETE' }); load() }
       catch (e) { msg.value = e.message }
     }
 
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
     onMounted(load)
-    return { users, tokens, msg, creating, newToken, form,
+    return { users, tokens, tokenUserId, loadTokens, msg, creating, newToken, form,
       openCreate, saveCreate, toggleActive, del, createToken, delToken, fmt }
   }
 }

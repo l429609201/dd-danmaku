@@ -16,14 +16,23 @@ type ApiError = (StatusCode, String);
 
 /// 数据库错误统一映射为 500
 fn db_err(e: sea_orm::DbErr) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    // 唯一键冲突是客户端重复提交，不应暴露数据库约束或返回 500。
+    if matches!(e.sql_err(), Some(sea_orm::SqlErr::UniqueConstraintViolation(_))) {
+        return (StatusCode::CONFLICT, "上游媒体标识已存在".to_string());
+    }
+    tracing::error!(error = %e, "媒体数据库操作失败");
+    (StatusCode::INTERNAL_SERVER_ERROR, "媒体数据库操作失败".to_string())
 }
 
 /// 规范分页参数：页码至少为 1，每页 1..=100
-fn normalize_page(page: u64, page_size: u64) -> (u64, u64, u64) {
+fn normalize_page(page: u64, page_size: u64) -> Result<(u64, u64, u64), ApiError> {
     let page = page.max(1);
     let page_size = page_size.clamp(1, 100);
-    (page, page_size, (page - 1) * page_size)
+    // 数据库 OFFSET 使用有符号整数；拒绝溢出参数，不悄悄跳转到另一页。
+    let offset = (page - 1).checked_mul(page_size)
+        .filter(|offset| *offset <= i64::MAX as u64)
+        .ok_or((StatusCode::BAD_REQUEST, "分页超出范围".to_string()))?;
+    Ok((page, page_size, offset))
 }
 
 /// 获取番剧列表
@@ -31,7 +40,7 @@ pub async fn get_animes(
     State(state): State<AppState>,
     Query(query): Query<PaginationQuery>,
 ) -> Result<Json<AnimeListResponse>, ApiError> {
-    let (page, page_size, offset) = normalize_page(query.page, query.page_size);
+    let (page, page_size, offset) = normalize_page(query.page, query.page_size)?;
 
     let animes = anime::Entity::find()
         .order_by_desc(anime::Column::CreatedAt)
@@ -81,7 +90,7 @@ pub async fn search_animes(
     State(state): State<AppState>,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<AnimeListResponse>, ApiError> {
-    let (page, page_size, offset) = normalize_page(query.page, query.page_size);
+    let (page, page_size, offset) = normalize_page(query.page, query.page_size)?;
     let keyword = query.q.trim();
     if keyword.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "搜索关键词不能为空".to_string()));
@@ -118,6 +127,10 @@ pub async fn create_anime(
     if req.upstream_anime_id.trim().is_empty() {
         return Err((StatusCode::BAD_REQUEST, "upstream_anime_id 不能为空".to_string()));
     }
+    // 总集数不能为负，防止写入无法展示的媒体元数据。
+    if req.episode_count < 0 {
+        return Err((StatusCode::BAD_REQUEST, "episode_count 不能为负数".to_string()));
+    }
     let now = chrono::Utc::now().naive_utc();
     let model = anime::ActiveModel {
         upstream_anime_id: Set(req.upstream_anime_id),
@@ -146,6 +159,9 @@ pub async fn update_anime(
     Path(id): Path<i64>,
     Json(req): Json<UpdateAnimeRequest>,
 ) -> Result<Json<AnimeInfo>, ApiError> {
+    if req.episode_count.is_some_and(|count| count < 0) {
+        return Err((StatusCode::BAD_REQUEST, "episode_count 不能为负数".to_string()));
+    }
     let existing = anime::Entity::find_by_id(id)
         .one(&state.db)
         .await
@@ -172,6 +188,11 @@ pub async fn delete_anime(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
+    // 当前 schema 没有分集级联外键；拒绝删除仍被分集引用的父记录，防止孤儿数据。
+    if episode::Entity::find().filter(episode::Column::AnimeId.eq(id))
+        .count(&state.db).await.map_err(db_err)? > 0 {
+        return Err((StatusCode::CONFLICT, "番剧仍有关联分集，请先删除分集".to_string()));
+    }
     let result = anime::Entity::delete_by_id(id).exec(&state.db).await.map_err(db_err)?;
     if result.rows_affected == 0 {
         return Err((StatusCode::NOT_FOUND, "番剧不存在".to_string()));

@@ -4,6 +4,7 @@ use axum::{
         State, WebSocketUpgrade,
     },
     response::Response,
+    http::{HeaderMap, StatusCode},
 };
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -18,8 +19,36 @@ use super::connection::ConnectionManager;
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
-) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    // 在升级前鉴权；控制凭据仅接受 Header，不允许 URL 泄露密钥。
+    let control_authorized = std::env::var("CONTROL_TOKEN").ok()
+        .filter(|expected| !expected.is_empty())
+        .zip(headers.get("X-Control-Token").and_then(|value| value.to_str().ok()))
+        .is_some_and(|(expected, actual)| {
+            // HMAC 校验使用 ring 的稳定常量时间验证接口，明文不进入日志。
+            let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, expected.as_bytes());
+            let tag = ring::hmac::sign(&key, b"dd-bridge-control-auth");
+            let actual_key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, actual.as_bytes());
+            ring::hmac::verify(&actual_key, b"dd-bridge-control-auth", tag.as_ref()).is_ok()
+        });
+    if !control_authorized {
+        let token = headers.get("Authorization").and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        let claims = state.jwt.verify_token(token).map_err(|_| StatusCode::UNAUTHORIZED)?;
+        let user_id = claims.sub.parse::<i64>().map_err(|_| StatusCode::UNAUTHORIZED)?;
+        let session = db::SessionRepo::find_by_token(&state.db, token).await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::UNAUTHORIZED)?;
+        if session.user_id != user_id { return Err(StatusCode::UNAUTHORIZED); }
+        let user = db::UserRepo::find_by_id(&state.db, user_id).await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.ok_or(StatusCode::UNAUTHORIZED)?;
+        if !user.is_active { return Err(StatusCode::UNAUTHORIZED); }
+        if user.role != "admin" { return Err(StatusCode::FORBIDDEN); }
+    }
+    // 和现有出站控制连接保持相同的 8 MiB 帧及消息预算。
+    Ok(ws.max_message_size(8 * 1024 * 1024).max_frame_size(8 * 1024 * 1024)
+        .on_upgrade(move |socket| handle_socket(socket, state)))
 }
 
 /// 处理单个 WebSocket 连接
@@ -32,8 +61,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     // 等待注册消息
     let (worker_id, node_id, worker_url) = match wait_for_register(&mut ws_receiver, &mut ws_sender).await {
         Ok(result) => result,
-        Err(e) => {
-            warn!("Registration failed: {}", e);
+        Err(_) => {
+            warn!("注册失败");
             return;
         }
     };
@@ -49,12 +78,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     ).await {
         Ok(id) => id,
         Err(e) => {
-            error!("Failed to register connection: {}", e);
+            error!("注册连接失败：{}", e);
             return;
         }
     };
     
-    info!("WebSocket connection established: {} (node: {})", connection_id, node_id);
+    info!("WebSocket 连接已建立：{}", connection_id);
     
     // 发送注册确认
     let ack = BridgeMessage::RegisterAck {
@@ -64,7 +93,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     };
     
     if let Err(e) = send_message(&mut ws_sender, &ack).await {
-        error!("Failed to send register ack: {}", e);
+        error!("发送注册确认失败：{}", e);
         state.bridge_manager.disconnect(&connection_id).await;
         return;
     }
@@ -74,27 +103,27 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let state_clone = Arc::clone(&state);
     let conn_id = connection_id.clone();
     
-    let recv_task = tokio::spawn(async move {
+    let mut recv_task = tokio::spawn(async move {
         while let Some(result) = ws_receiver.next().await {
             match result {
                 Ok(msg) => {
-                    if let Err(e) = handle_incoming_message(msg, &conn_id, &manager, &state_clone).await {
-                        error!("Error handling message: {}", e);
+                    if handle_incoming_message(msg, &conn_id, &manager, &state_clone).await.is_err() {
+                        error!("处理桥接消息失败");
                         break;
                     }
                 }
                 Err(e) => {
-                    error!("WebSocket error: {}", e);
+                    error!("WebSocket 连接错误：{}", e);
                     break;
                 }
             }
         }
     });
     
-    let send_task = tokio::spawn(async move {
+    let mut send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if let Err(e) = send_message(&mut ws_sender, &msg).await {
-                error!("Failed to send message: {}", e);
+                error!("发送消息失败：{}", e);
                 break;
             }
         }
@@ -102,17 +131,22 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     
     // 等待任一任务完成
     tokio::select! {
-        _ = recv_task => {
-            debug!("Receive task completed");
+        _ = &mut recv_task => {
+            // 对端关闭后取消发送任务，防止其持有 tx/rx 永久等待。
+            send_task.abort();
+            let _ = send_task.await;
+            debug!("接收任务已完成");
         }
-        _ = send_task => {
-            debug!("Send task completed");
+        _ = &mut send_task => {
+            recv_task.abort();
+            let _ = recv_task.await;
+            debug!("发送任务已完成");
         }
     }
     
     // 清理
     state.bridge_manager.disconnect(&connection_id).await;
-    info!("WebSocket connection closed: {}", connection_id);
+    info!("WebSocket 连接已关闭：{}", connection_id);
 }
 
 /// 等待注册消息
@@ -160,7 +194,7 @@ async fn handle_incoming_message(
             let bridge_msg: BridgeMessage = serde_json::from_str(&text)
                 .map_err(|e| format!("Invalid message: {}", e))?;
             
-            debug!("Received message: {:?}", bridge_msg);
+            debug!("收到桥接消息");
             
             match bridge_msg {
                 BridgeMessage::Pong { timestamp } => {
@@ -172,11 +206,11 @@ async fn handle_incoming_message(
                 }
                 BridgeMessage::CacheGetResult { .. } => {
                     // Worker 响应的缓存结果，暂时记录日志
-                    info!("Received cache result from worker: {:?}", bridge_msg);
+                    info!("收到 Worker 缓存结果");
                 }
                 _ => {
                     // 其他消息类型的处理逻辑
-                    debug!("Unhandled message type: {:?}", bridge_msg);
+                    debug!("未处理的桥接消息类型");
                 }
             }
             
@@ -195,13 +229,13 @@ async fn handle_cache_get(
     manager: &ConnectionManager,
     state: &AppState,
 ) -> Result<(), String> {
-    info!("Handling CacheGet: message_id={}, cache_key={}", message_id, cache_key);
+    info!("处理缓存查询");
     
     // 查询本地缓存
     let cached = match state.cache.get(&cache_key).await {
         Ok(cached) => cached,
         Err(e) => {
-            error!("Cache query failed: {}", e);
+            error!("缓存查询失败");
             let err_msg = BridgeMessage::Error {
                 message_id: Some(message_id),
                 error_code: "CACHE_QUERY_ERROR".to_string(),
@@ -232,23 +266,23 @@ async fn handle_cache_get(
     }
     
     // 缓存未命中，尝试自动获取
-    info!("Cache miss for key: {}, attempting auto-fetch", cache_key);
+    info!("缓存未命中，尝试自动获取");
     
     let fetch_result = try_auto_fetch(&cache_key, state).await;
     
     match fetch_result {
         Ok(Some(body)) => {
             // 自动获取成功，写入缓存并返回
-            info!("Auto-fetch successful for key: {}", cache_key);
+            info!("自动获取成功");
             
             // 写入缓存（24小时 TTL）
-            if let Err(e) = state.cache.set(
+            if let Err(_e) = state.cache.set(
                 &cache_key,
                 &body,
                 200,
                 86400, // 24 hours in seconds
             ).await {
-                warn!("Failed to cache auto-fetched data: {}", e);
+                warn!("保存自动获取缓存失败");
             }
             
             let value = serde_json::json!({
@@ -269,7 +303,7 @@ async fn handle_cache_get(
         }
         Ok(None) => {
             // 不支持的 cache_key 类型或获取失败，返回未找到
-            info!("Auto-fetch returned no data for key: {}", cache_key);
+            info!("自动获取未返回数据");
             
             let result = BridgeMessage::CacheGetResult {
                 message_id,
@@ -283,7 +317,7 @@ async fn handle_cache_get(
         }
         Err(e) => {
             // 自动获取出错
-            error!("Auto-fetch failed for key {}: {}", cache_key, e);
+            error!("自动获取失败");
             
             let err_msg = BridgeMessage::Error {
                 message_id: Some(message_id),
@@ -321,7 +355,7 @@ async fn try_auto_fetch(
             }
             Ok(None) => {
                 // 本地没有，尝试从 dandanplay API 获取
-                info!("Fetching comments from dandanplay API for episode: {}", episode_id);
+                info!("从弹弹接口获取弹幕");
                 
                 match state.dandanplay_client.get_comments(episode_id).await {
                     Ok(response) => {
@@ -329,18 +363,18 @@ async fn try_auto_fetch(
                         let json_body = serde_json::to_string(&response)
                             .map_err(|e| format!("Failed to serialize API response: {}", e))?;
                         
-                        if let Err(e) = state.comment_store.archive(
+                        if let Err(_e) = state.comment_store.archive(
                             episode_id,
                             &json_body,
                             "dandanplay",
                         ).await {
-                            warn!("Failed to archive comments: {}", e);
+                            warn!("归档弹幕失败");
                         }
                         
                         Ok(Some(json_body))
                     }
-                    Err(e) => {
-                        warn!("Failed to fetch comments from API: {}", e);
+                    Err(_e) => {
+                        warn!("从接口获取弹幕失败");
                         Ok(None) // 返回 None 而不是 Err，让 Worker 知道数据不存在
                     }
                 }
@@ -351,7 +385,7 @@ async fn try_auto_fetch(
         }
     } else {
         // 不支持的 cache_key 类型
-        debug!("Unsupported cache_key format for auto-fetch: {}", cache_key);
+        debug!("不支持自动获取的缓存键格式");
         Ok(None)
     }
 }

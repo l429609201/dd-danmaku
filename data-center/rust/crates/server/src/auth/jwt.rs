@@ -10,6 +10,9 @@ pub struct Claims {
     pub role: String,       // 角色
     pub exp: u64,          // 过期时间（Unix timestamp）
     pub iat: u64,          // 签发时间
+    // 每次签发唯一，避免同一秒登录或刷新生成相同令牌；兼容已有会话。
+    #[serde(default)]
+    pub jti: String,
 }
 
 /// JWT 服务
@@ -47,6 +50,7 @@ impl JwtService {
             role: role.to_string(),
             exp,
             iat: now,
+            jti: uuid::Uuid::new_v4().to_string(),
         };
         
         encode(

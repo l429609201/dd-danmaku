@@ -18,6 +18,18 @@ pub struct PaginationQuery {
     pub page_size: u64,
 }
 
+impl PaginationQuery {
+    /// 在进入仓储之前拒绝零值、过大页长与偏移溢出。
+    fn validate(&self) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+        if self.page == 0 || !(1..=100).contains(&self.page_size)
+            || (self.page - 1).checked_mul(self.page_size).filter(|offset| *offset <= i64::MAX as u64).is_none()
+        {
+            return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new("invalid_pagination", "分页参数无效：page 至少为1，page_size 为1到100，偏移不可溢出"))));
+        }
+        Ok(())
+    }
+}
+
 fn default_page() -> u64 {
     1
 }
@@ -38,7 +50,8 @@ pub struct PaginatedResponse<T> {
 
 impl<T> PaginatedResponse<T> {
     pub fn new(items: Vec<T>, total: u64, page: u64, page_size: u64) -> Self {
-        let total_pages = (total + page_size - 1) / page_size;
+        // 页长为零时不除零；使用商和余数避免 total + page_size 溢出。
+        let total_pages = if page_size == 0 { 0 } else { total / page_size + u64::from(total % page_size != 0) };
         Self {
             items,
             total,
@@ -170,6 +183,7 @@ pub async fn list_messages(
     State(state): State<Arc<AppState>>,
     Query(query): Query<MessageListQuery>,
 ) -> ApiResult<PaginatedResponse<db::entities::control_message::Model>> {
+    query.pagination.validate()?;
     let msg_query = MessageQuery {
         page: query.pagination.page,
         page_size: query.pagination.page_size,
@@ -231,6 +245,7 @@ pub async fn list_events(
     State(state): State<Arc<AppState>>,
     Query(query): Query<EventListQuery>,
 ) -> ApiResult<PaginatedResponse<db::entities::runtime_event::Model>> {
+    query.pagination.validate()?;
     let event_query = EventQuery {
         page: query.pagination.page,
         page_size: query.pagination.page_size,
@@ -256,6 +271,7 @@ pub async fn recent_errors(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PaginationQuery>,
 ) -> ApiResult<Vec<db::entities::runtime_event::Model>> {
+    query.validate()?;
     let errors = RuntimeEventRepo::recent_errors(&state.db, query.page_size)
         .await
         .map_err(db_error_to_response)?;

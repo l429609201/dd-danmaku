@@ -116,6 +116,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/messages/{id}", get(api::admin::get_message))
         .route("/events", get(api::admin::list_events))
         .route("/events/errors", get(api::admin::recent_errors))
+        // 节点与控制消息属于管理资源，认证后还需数据库中的管理员角色。
+        .route_layer(middleware::from_fn(auth::admin_middleware))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
     
     // Worker Bridge WebSocket 路由（两种模式都需要）

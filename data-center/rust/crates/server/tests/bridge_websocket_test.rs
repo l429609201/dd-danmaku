@@ -1,7 +1,19 @@
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use std::sync::Arc;
+use axum::{body::Body, http::Request};
+use tower::ServiceExt;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+// 使用真实管理员登录，保留线上 WebSocket 升级前的会话验证。
+async fn admin_token(app: &axum::Router, db: &sea_orm::DatabaseConnection) -> String {
+    db::UserRepo::create(db, "bridge-admin".into(), server::auth::PasswordService::hash_password("bridge-password-123").unwrap(), None, None, "admin".into()).await.unwrap();
+    let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/v2/auth/login").header("content-type", "application/json").body(Body::from(json!({"username":"bridge-admin","password":"bridge-password-123"}).to_string())).unwrap()).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = axum::body::to_bytes(response.into_body(), 65536).await.unwrap();
+    let login: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    login["token"].as_str().unwrap().to_owned()
+}
 
 /// WebSocket 客户端测试：验证 Worker Bridge 完整流程
 #[tokio::test]
@@ -11,8 +23,9 @@ async fn test_worker_bridge_flow() {
     let db = db::init_db(&config).await.unwrap();
     db::test_helper::create_test_schema(&db).await.unwrap();
     
-    let state = server::AppState::new_for_test(db);
+    let state = server::AppState::new_for_test(db.clone());
     let app = server::create_router(state);
+    let token = admin_token(&app, &db).await;
     
     // 在后台启动服务器
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -27,7 +40,9 @@ async fn test_worker_bridge_flow() {
     
     // 连接 WebSocket
     let ws_url = format!("ws://{}/api/ws/worker", addr);
-    let (ws_stream, _) = connect_async(&ws_url).await
+    let mut request = ws_url.into_client_request().unwrap();
+    request.headers_mut().insert("Authorization", format!("Bearer {token}").parse().unwrap());
+    let (ws_stream, _) = connect_async(request).await
         .expect("Failed to connect to WebSocket");
     
     let (mut write, mut read) = ws_stream.split();
@@ -126,6 +141,7 @@ async fn test_cache_hit_flow() {
         ..state
     };
     let app = server::create_router(state);
+    let token = admin_token(&app, &db).await;
     
     // 启动服务器
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -139,7 +155,9 @@ async fn test_cache_hit_flow() {
     
     // 连接 WebSocket
     let ws_url = format!("ws://{}/api/ws/worker", addr);
-    let (ws_stream, _) = connect_async(&ws_url).await
+    let mut request = ws_url.into_client_request().unwrap();
+    request.headers_mut().insert("Authorization", format!("Bearer {token}").parse().unwrap());
+    let (ws_stream, _) = connect_async(request).await
         .expect("Failed to connect to WebSocket");
     
     let (mut write, mut read) = ws_stream.split();

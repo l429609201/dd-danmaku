@@ -81,8 +81,10 @@ impl UserRepo {
         role: Option<String>,
         is_active: Option<bool>,
     ) -> Result<app_user::Model, DbErr> {
+        // 账户停用和会话撤销必须同进同退，失败不能遗留可复活的登录。
+        let txn = db.begin().await?;
         let user = app_user::Entity::find_by_id(id)
-            .one(db)
+            .one(&txn)
             .await?
             .ok_or(DbErr::RecordNotFound(format!("User {} not found", id)))?;
         
@@ -102,17 +104,25 @@ impl UserRepo {
         }
         active_user.updated_at = Set(chrono::Utc::now().naive_utc());
         
-        active_user.update(db).await
+        let user = active_user.update(&txn).await?;
+        if !user.is_active {
+            app_user_session::Entity::delete_many()
+                .filter(app_user_session::Column::UserId.eq(id)).exec(&txn).await?;
+        }
+        txn.commit().await?;
+        Ok(user)
     }
     
-    /// 更新密码
+    /// 更新密码并原子撤销该用户的全部登录会话
     pub async fn update_password(
         db: &DatabaseConnection,
         id: i64,
         new_password_hash: String,
     ) -> Result<app_user::Model, DbErr> {
+        // 密码和会话放在同一事务内，撤销失败时也回滚密码写入。
+        let txn = db.begin().await?;
         let user = app_user::Entity::find_by_id(id)
-            .one(db)
+            .one(&txn)
             .await?
             .ok_or(DbErr::RecordNotFound(format!("User {} not found", id)))?;
         
@@ -120,7 +130,11 @@ impl UserRepo {
         active_user.password_hash = Set(new_password_hash);
         active_user.updated_at = Set(chrono::Utc::now().naive_utc());
         
-        active_user.update(db).await
+        let user = active_user.update(&txn).await?;
+        app_user_session::Entity::delete_many()
+            .filter(app_user_session::Column::UserId.eq(id)).exec(&txn).await?;
+        txn.commit().await?;
+        Ok(user)
     }
     
     /// 更新最后登录时间
@@ -143,9 +157,17 @@ impl UserRepo {
     
     /// 删除用户
     pub async fn delete(db: &DatabaseConnection, id: i64) -> Result<(), DbErr> {
-        app_user::Entity::delete_by_id(id)
-            .exec(db)
-            .await?;
+        // 同一事务内先删凭据，避免外键失败和用户删除后残留可用会话。
+        let txn = db.begin().await?;
+        app_user_session::Entity::delete_many()
+            .filter(app_user_session::Column::UserId.eq(id)).exec(&txn).await?;
+        app_user_api_token::Entity::delete_many()
+            .filter(app_user_api_token::Column::UserId.eq(id)).exec(&txn).await?;
+        let result = app_user::Entity::delete_by_id(id).exec(&txn).await?;
+        if result.rows_affected == 0 {
+            return Err(DbErr::RecordNotFound("User not found".to_string()));
+        }
+        txn.commit().await?;
         Ok(())
     }
 }
@@ -188,6 +210,33 @@ impl SessionRepo {
         session.insert(db).await
     }
     
+    /// 原子轮换会话；旧令牌只能被消费一次，失败时保留原会话。
+    pub async fn rotate(
+        db: &DatabaseConnection,
+        user_id: i64,
+        old_token: &str,
+        new_token: String,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), DbErr> {
+        let txn = db.begin().await?;
+        let deleted = app_user_session::Entity::delete_many()
+            .filter(app_user_session::Column::Token.eq(old_token))
+            .filter(app_user_session::Column::UserId.eq(user_id))
+            .filter(app_user_session::Column::ExpiresAt.gt(chrono::Utc::now().naive_utc()))
+            .exec(&txn).await?;
+        if deleted.rows_affected != 1 {
+            return Err(DbErr::RecordNotFound("Session not found".to_string()));
+        }
+        app_user_session::ActiveModel {
+            user_id: Set(user_id), token: Set(new_token),
+            ip_address: Set(None), user_agent: Set(None),
+            expires_at: Set(expires_at.naive_utc()),
+            created_at: Set(chrono::Utc::now().naive_utc()),
+            ..Default::default()
+        }.insert(&txn).await?;
+        txn.commit().await
+    }
+
     /// 删除会话（登出）
     pub async fn delete_by_token(
         db: &DatabaseConnection,

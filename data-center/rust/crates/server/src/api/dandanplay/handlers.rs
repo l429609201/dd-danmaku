@@ -8,7 +8,6 @@ use axum::{
 use std::sync::Arc;
 
 use crate::AppState;
-use super::models::*;
 use serde_json::Value;
 use crate::structured_response_store::StructuredResponseStore;
 
@@ -129,123 +128,114 @@ fn raw_response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Respon
     response
 }
 
-/// POST /api/v2/extcomment - 获取第三方弹幕
+/// POST /api/v2/extcomment：兼容本地 XML 转换接口，不冒充官方未声明的接口。
 pub async fn get_ext_comments(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<ExtCommentRequest>,
-) -> Result<Json<ExtCommentResponse>, (StatusCode, String)> {
-    tracing::info!("Get external comments from: {}", req.url);
-    
-    // 1. 验证 URL
-    if !is_valid_external_url(&req.url) {
-        tracing::warn!("Invalid or forbidden external URL: {}", req.url);
-        return Err((StatusCode::BAD_REQUEST, "无效的外部弹幕 URL".to_string()));
+    Json(req): Json<super::models::ExtCommentRequest>,
+) -> Result<Response, (StatusCode, String)> {
+    external_comments(&state, req).await
+}
+
+/// GET 兼容现有脚本的 ?url= 调用，与 POST 共用安全下载和字段缓存。
+pub async fn get_ext_comments_query(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(req): axum::extract::Query<super::models::ExtCommentRequest>,
+) -> Result<Response, (StatusCode, String)> {
+    external_comments(&state, req).await
+}
+
+async fn external_comments(state: &AppState, req: super::models::ExtCommentRequest)
+    -> Result<Response, (StatusCode, String)> {
+    let url = external_url(&req.url)?;
+    let payload = serde_json::json!({"url": url.as_str()});
+    let key = StructuredResponseStore::request_key("extcomment", None, Some(&payload));
+    let store = StructuredResponseStore::new(state.db.clone());
+    if let Some(value) = store.get("extcomment", &key).await
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "读取外部弹幕字段缓存失败".into()))? {
+        return structured_response(value);
     }
-    
-    // 2. 下载弹幕 XML
-    let xml_content = match state.dandanplay_client.http_client.get(&req.url).await {
-        Ok(content) => content,
-        Err(e) => {
-            tracing::error!("Failed to fetch external comments: {}", e);
-            return Err((StatusCode::BAD_GATEWAY, format!("无法获取外部弹幕: {}", e)));
-        }
-    };
-    
-    // 3. 解析 XML
-    let parsed = match super::xml_parser::parse_xml_to_json(&xml_content) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("Failed to parse external XML: {}", e);
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("解析外部弹幕失败: {}", e)));
-        }
-    };
-    
-    // 4. 转换为标准响应格式
-    let comments: Vec<Comment> = parsed.comments.into_iter().map(|c| Comment {
-        id: c.id,
-        position: c.position,
-        message: c.message,
+    let xml = fetch_external_xml(url).await?;
+    let value = external_xml_value(&xml)?;
+    let assembled = store.ingest("extcomment", &key, &value).await
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "外部弹幕规范字段保存失败".into()))?
+        .ok_or_else(|| (StatusCode::BAD_GATEWAY, "外部弹幕规范字段不完整".into()))?;
+    structured_response(assembled)
+}
+
+fn external_xml_value(xml: &str) -> Result<Value, (StatusCode, String)> {
+    // 旧手写解析器会把 HTML/JSON 或任意文本当作空弹幕成功，边界先校验 XML 根。
+    let document = xml.trim_start_matches('\u{feff}').trim_start();
+    if !(document.starts_with("<i>") || document.starts_with("<i ") || document.starts_with("<?xml"))
+        || !document.trim_end().ends_with("</i>") {
+        return Err((StatusCode::BAD_GATEWAY, "外部弹幕不是受支持的 XML".into()));
+    }
+    let parsed = super::xml_parser::parse_xml_to_json(&xml)
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "外部弹幕不是受支持的 XML".into()))?;
+    // 响应只由解析后的规范字段组装，不回放任意上游正文。
+    let comments: Vec<_> = parsed.comments.into_iter().map(|c| {
+        let fields: Vec<_> = c.position.split(',').collect();
+        // B 站 XML 为时间/模式/字号/颜色/时间戳/池/用户/行号；字号不是颜色。
+        let position = if fields.len() >= 8 {
+            format!("{},{},{},{}", fields[0], fields[1], fields[3], fields[6])
+        } else { c.position };
+        super::models::Comment { id: c.id, position, message: c.message }
     }).collect();
-    
-    let resp = ExtCommentResponse {
-        count: comments.len() as i32,
-        comments,
-    };
-    
-    tracing::info!("Fetched {} external comments from {}", resp.count, req.url);
-    Ok(Json(resp))
+    Ok(serde_json::json!({"count": comments.len(), "comments": comments}))
 }
 
-/// 验证外部 URL 是否合法
-///
-/// 白名单策略：只允许信任的弹幕源
-fn is_valid_external_url(url: &str) -> bool {
-    // 必须是 HTTP 或 HTTPS
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return false;
+fn external_url(value: &str) -> Result<reqwest::Url, (StatusCode, String)> {
+    let invalid = || (StatusCode::BAD_REQUEST, "无效的外部弹幕 URL".into());
+    let url = reqwest::Url::parse(value).map_err(|_| invalid())?;
+    // 必须使用解析器的真实 host；禁止 userinfo、非标准端口与任意子域。
+    if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty()
+        || url.password().is_some() || url.port().is_some() || url.fragment().is_some()
+        || !matches!(url.host_str(), Some("api.dandanplay.net" | "api.acplay.net"
+            | "comment.bilibili.com" | "api.bilibili.com")) {
+        return Err(invalid());
     }
-    
-    // 白名单域名
-    const ALLOWED_DOMAINS: &[&str] = &[
-        "api.dandanplay.net",
-        "api.acplay.net",
-        "comment.bilibili.com",
-        "api.bilibili.com",
-        // 可以根据需要添加更多信任的源
-    ];
-    
-    // 提取域名
-    let domain = extract_domain(url);
-    
-    // 检查是否在白名单中
-    ALLOWED_DOMAINS.iter().any(|&allowed| {
-        domain == allowed || domain.ends_with(&format!(".{}", allowed))
-    })
+    Ok(url)
 }
 
-/// 从 URL 中提取域名
-fn extract_domain(url: &str) -> String {
-    // 移除协议
-    let without_protocol = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-    
-    // 提取域名部分（到第一个 / 或 : 为止）
-    without_protocol
-        .split('/')
-        .next()
-        .unwrap_or("")
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .to_lowercase()
+fn public_address(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [a,b,_,_] = ip.octets();
+            // 同时拒绝共享、文档、基准测试、保留地址，不能只检查 RFC1918。
+            !(ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_multicast()
+                || a == 0 || a >= 240 || (a == 100 && (64..=127).contains(&b))
+                || (a == 192 && b == 0) || (a == 198 && (b == 18 || b == 19 || b == 51))
+                || (a == 203 && b == 0))
+        }
+        // IPv6 仅允许全球单播；拒绝映射 IPv4、ULA、回环和文档段。
+        std::net::IpAddr::V6(ip) => {
+            let s = ip.segments();
+            s[0] & 0xe000 == 0x2000 && !(s[0] == 0x2001 && (s[1] == 0xdb8 || s[1] < 0x200))
+        }
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_is_valid_external_url() {
-        // 有效的 URL
-        assert!(is_valid_external_url("https://api.dandanplay.net/api/v2/comment/123"));
-        assert!(is_valid_external_url("https://comment.bilibili.com/1.xml"));
-        assert!(is_valid_external_url("http://api.acplay.net/comments.xml"));
-        
-        // 子域名应该被允许
-        assert!(is_valid_external_url("https://cdn.api.dandanplay.net/data.xml"));
-        
-        // 无效的 URL
-        assert!(!is_valid_external_url("https://evil.com/malicious.xml"));
-        assert!(!is_valid_external_url("ftp://api.dandanplay.net/file.xml"));
-        assert!(!is_valid_external_url("file:///etc/passwd"));
+async fn fetch_external_xml(url: reqwest::Url) -> Result<String, (StatusCode, String)> {
+    let failure = || (StatusCode::BAD_GATEWAY, "无法获取外部弹幕".into());
+    let host = url.host_str().ok_or_else(failure)?.to_owned();
+    let port = url.port_or_known_default().ok_or_else(failure)?;
+    let addresses: Vec<_> = tokio::time::timeout(std::time::Duration::from_secs(5),
+        tokio::net::lookup_host((host.as_str(), port))).await.map_err(|_| failure())?
+        .map_err(|_| failure())?.collect();
+    if addresses.is_empty() || addresses.iter().any(|address| !public_address(address.ip())) {
+        return Err((StatusCode::BAD_REQUEST, "外部弹幕域名解析到禁止的地址".into()));
     }
-
-    #[test]
-    fn test_extract_domain() {
-        assert_eq!(extract_domain("https://api.dandanplay.net/path"), "api.dandanplay.net");
-        assert_eq!(extract_domain("http://example.com:8080/path"), "example.com");
-        assert_eq!(extract_domain("https://sub.domain.com/path/to/file"), "sub.domain.com");
+    // 固定本次已验证的 DNS 结果以防重绑定，禁代理和跳转，避免白名单绕过。
+    let client = reqwest::Client::builder().no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .resolve_to_addrs(&host, &addresses).build().map_err(|_| failure())?;
+    let mut response = client.get(url).send().await.map_err(|_| failure())?;
+    if !response.status().is_success() { return Err(failure()); }
+    const MAX_XML_BYTES: usize = 8 * 1024 * 1024;
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| failure())? {
+        if chunk.len() > MAX_XML_BYTES.saturating_sub(body.len()) { return Err(failure()); }
+        body.extend_from_slice(&chunk);
     }
+    String::from_utf8(body).map_err(|_| failure())
 }

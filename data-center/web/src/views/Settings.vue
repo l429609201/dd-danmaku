@@ -7,13 +7,13 @@
       <table class="data-table">
         <thead><tr><th>配置项</th><th>值</th><th>说明</th><th>操作</th></tr></thead>
         <tbody>
-          <tr v-for="s in items" :key="s.key">
-            <td class="key">{{ s.key }}</td>
+          <tr v-for="s in items" :key="`${s.namespace}:${s.key}`">
+            <td class="key">{{ s.namespace }} / {{ s.key }}</td>
             <td>
-              <input v-model="s.value" class="input" :type="s.is_secret ? 'password' : 'text'" />
+              <input v-model="s.value" class="input" :type="s.is_secret ? 'password' : 'text'" :disabled="s.is_secret" />
             </td>
             <td>{{ s.description || '—' }}</td>
-            <td><button class="link" @click="save(s)">保存</button></td>
+            <td><button class="link" :disabled="s.is_secret" @click="save(s)">保存</button></td>
           </tr>
           <tr v-if="!items.length"><td colspan="4" class="empty">暂无配置</td></tr>
         </tbody>
@@ -38,6 +38,9 @@
       </fieldset>
     </form>
 
+    <!-- 保留外部控制/MCP 展示骨架，当前 Rust 不支持时禁止任何读写操作。 -->
+    <p class="hint">当前 Rust 后端未提供外部控制密钥 / MCP 管理接口；以下为未启用展示。</p>
+    <fieldset disabled style="border: 0; padding: 0; margin: 0; min-width: 0;">
     <!-- 外部控制密钥（MCP / 外部诊断专用，独立于登录） -->
     <div class="panel" style="margin-top: 20px;">
       <div class="panel-head">
@@ -104,6 +107,8 @@
         其它客户端见各自文档。保存后重启客户端生效。
       </p>
     </div>
+
+    </fieldset>
 
     <div v-if="showPasswordModal" class="modal-mask" @click.self="closePasswordModal">
       <div class="modal">
@@ -182,6 +187,8 @@ export default {
       finally { upstreamSaving.value = false }
     }
 
+    // 禁用区即使被程序触发也不访问未实现端点。
+    const unavailableExternalControl = () => Promise.reject(new Error('当前 Rust 后端未提供此接口'))
     // 外部控制密钥
     const extToken = ref('')
     const extShow = ref(false)
@@ -235,7 +242,7 @@ export default {
       extLoading.value = true
       msg.value = ''
       try {
-        const res = await apiV2('/ext/token')
+        const res = await unavailableExternalControl()
         extToken.value = res.data.token || ''
         extShow.value = true
       } catch (e) {
@@ -250,7 +257,7 @@ export default {
       extLoading.value = true
       msg.value = ''
       try {
-        const res = await apiV2('/ext/token/rotate', { method: 'POST' })
+        const res = await unavailableExternalControl()
         extToken.value = res.data.token || ''
         extShow.value = true
         msg.value = res.message || '密钥已轮换，请复制并更新 MCP 配置'
@@ -282,13 +289,16 @@ export default {
       msg.value = ''
       try {
         const res = await apiV2('/settings')
-        items.value = res.data || []
+        // 官方凭据使用独立表单，通用列表按 namespace + key 唯一标识。
+        items.value = (res.configs || []).filter(s => s.namespace !== 'dandanplay')
       } catch (e) { msg.value = e.message }
     }
 
     const save = async (s) => {
       try {
-        await apiV2(`/settings/${encodeURIComponent(s.key)}`, { method: 'PUT', body: { value: s.value } })
+        // 后端接收批量配置契约；脱敏值禁止被当成真实密钥保存。
+        if (s.is_secret) return
+        await apiV2('/settings', { method: 'PUT', body: { configs: [{ namespace: s.namespace, key: s.key, value: s.value }] } })
         msg.value = `已保存 ${s.key}`
       } catch (e) { msg.value = e.message }
     }

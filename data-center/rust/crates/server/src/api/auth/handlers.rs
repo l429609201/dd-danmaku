@@ -113,7 +113,7 @@ pub async fn logout(
     // 删除会话
     SessionRepo::delete_by_token(&state.db, token)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "认证操作失败".to_string()))?;
     
     Ok(StatusCode::NO_CONTENT)
 }
@@ -131,7 +131,7 @@ pub async fn get_me(
     
     let user = UserRepo::find_by_id(&state.db, user_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "认证操作失败".to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "User not found".to_string()))?;
     
     let user_info = UserInfo {
@@ -161,31 +161,29 @@ pub async fn change_password(
     // 获取用户
     let user = UserRepo::find_by_id(&state.db, user_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "认证操作失败".to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "User not found".to_string()))?;
     
     // 验证旧密码
     let password_valid = PasswordService::verify_password(&change_req.old_password, &user.password_hash)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "认证操作失败".to_string()))?;
     
     if !password_valid {
         return Err((StatusCode::UNAUTHORIZED, "Old password is incorrect".to_string()));
     }
     
+    // 与创建及重置密码保持相同的 bcrypt 安全长度约束。
+    crate::api::users::handlers::validate_password(&change_req.new_password)?;
     // 哈希新密码
     let new_password_hash = PasswordService::hash_password(&change_req.new_password)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "认证操作失败".to_string()))?;
     
     // 更新密码
     UserRepo::update_password(&state.db, user_id, new_password_hash)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "认证操作失败".to_string()))?;
     
-    // 删除该用户的所有会话（强制重新登录）
-    SessionRepo::delete_by_user_id(&state.db, user_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    
+    // Repository 在同一事务中更新密码并撤销所有旧会话。
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -203,12 +201,12 @@ pub async fn refresh_token(
     // 获取用户
     let user = UserRepo::find_by_id(&state.db, user_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "认证操作失败".to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "User not found".to_string()))?;
     
     // 生成新 Token
     let new_token = state.jwt.generate_token(user.id, &user.username, &user.role)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "认证操作失败".to_string()))?;
     
     // 计算过期时间
     let expires_at = chrono::Utc::now() + state.jwt.expiry_duration();
@@ -221,22 +219,13 @@ pub async fn refresh_token(
         .and_then(|h| h.strip_prefix("Bearer "))
         .ok_or((StatusCode::UNAUTHORIZED, "Missing token".to_string()))?;
     
-    // 删除旧会话
-    SessionRepo::delete_by_token(&state.db, old_token)
+    // 事务轮换，禁止重复消费旧令牌，并避免新会话写入失败导致无会话。
+    SessionRepo::rotate(&state.db, user.id, old_token, new_token.clone(), expires_at)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    
-    // 保存新会话
-    SessionRepo::create(
-        &state.db,
-        user.id,
-        new_token.clone(),
-        None,
-        None,
-        expires_at,
-    )
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| match e {
+            sea_orm::DbErr::RecordNotFound(_) => (StatusCode::UNAUTHORIZED, "Session not found".to_string()),
+            _ => (StatusCode::INTERNAL_SERVER_ERROR, "刷新会话失败".to_string()),
+        })?;
     
     // 构造响应
     let user_info = UserInfo {

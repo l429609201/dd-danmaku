@@ -9,6 +9,26 @@ use std::sync::Arc;
 use crate::AppState;
 use super::models::*;
 
+/// 保留内部错误日志，同时将不存在的更新映射为 404。
+fn rule_db_err(error: sea_orm::DbErr) -> StatusCode {
+    if matches!(error, sea_orm::DbErr::RecordNotFound(_)) {
+        return StatusCode::NOT_FOUND;
+    }
+    tracing::error!(error = %error, "规则数据库操作失败");
+    StatusCode::INTERNAL_SERVER_ERROR
+}
+
+/// IP 规则仅接受有效的 IPv4/IPv6 地址或 CIDR，不允许空匹配意外影响所有用户。
+fn valid_ip_pattern(pattern: &str) -> bool {
+    if let Some((address, prefix)) = pattern.split_once('/') {
+        let Ok(address) = address.parse::<std::net::IpAddr>() else { return false; };
+        let Ok(prefix) = prefix.parse::<u8>() else { return false; };
+        prefix <= if address.is_ipv4() { 32 } else { 128 }
+    } else {
+        pattern.parse::<std::net::IpAddr>().is_ok()
+    }
+}
+
 /// 分页查询参数
 #[derive(Debug, Deserialize)]
 pub struct PaginationQuery {
@@ -33,11 +53,14 @@ pub async fn get_ip_rules(
 ) -> Result<Json<IpRuleListResponse>, StatusCode> {
     let page = params.page.max(1);
     let page_size = params.page_size.clamp(1, 100);
-    let offset = (page - 1) * page_size;
+    // OFFSET 为有符号整数，拒绝极端分页参数而不是算术溢出。
+    let offset = (page - 1).checked_mul(page_size)
+        .filter(|offset| *offset <= i64::MAX as u64)
+        .ok_or(StatusCode::BAD_REQUEST)?;
     
     let (rules, total) = db::IpRuleRepo::find_all(&state.db, offset, page_size)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(rule_db_err)?;
     
     let rule_infos: Vec<IpRuleInfo> = rules
         .into_iter()
@@ -71,7 +94,7 @@ pub async fn get_ip_rule(
 ) -> Result<Json<IpRuleInfo>, StatusCode> {
     let rule = db::IpRuleRepo::find_by_id(&state.db, id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(rule_db_err)?
         .ok_or(StatusCode::NOT_FOUND)?;
     
     Ok(Json(IpRuleInfo {
@@ -94,6 +117,10 @@ pub async fn create_ip_rule(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateIpRuleRequest>,
 ) -> Result<Json<IpRuleInfo>, StatusCode> {
+    // 在访问数据库前拒绝无效匹配模式。
+    if !valid_ip_pattern(req.ip_pattern.trim()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     // 验证 rule_type
     let rule_type = match req.rule_type.as_str() {
         "allow" => db::entities::ip_rule::IpRuleType::Allow,
@@ -105,13 +132,13 @@ pub async fn create_ip_rule(
     
     let rule = db::IpRuleRepo::create(
         &state.db,
-        req.ip_pattern,
+        req.ip_pattern.trim().to_string(),
         rule_type,
         req.description,
         priority,
     )
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(rule_db_err)?;
     
     Ok(Json(IpRuleInfo {
         id: rule.id,
@@ -134,6 +161,10 @@ pub async fn update_ip_rule(
     Path(id): Path<i64>,
     Json(req): Json<UpdateIpRuleRequest>,
 ) -> Result<Json<IpRuleInfo>, StatusCode> {
+    // 在访问数据库前拒绝无效匹配模式。
+    if req.ip_pattern.as_ref().is_some_and(|pattern| !valid_ip_pattern(pattern.trim())) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     // 验证 rule_type
     let rule_type = if let Some(ref rt) = req.rule_type {
         Some(match rt.as_str() {
@@ -148,14 +179,14 @@ pub async fn update_ip_rule(
     let rule = db::IpRuleRepo::update(
         &state.db,
         id,
-        req.ip_pattern,
+        req.ip_pattern.map(|pattern| pattern.trim().to_string()),
         rule_type,
         req.description,
         req.is_active,
         req.priority,
     )
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(rule_db_err)?;
     
     Ok(Json(IpRuleInfo {
         id: rule.id,
@@ -179,7 +210,7 @@ pub async fn delete_ip_rule(
 ) -> Result<StatusCode, StatusCode> {
     let deleted = db::IpRuleRepo::delete(&state.db, id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(rule_db_err)?;
     
     if deleted {
         Ok(StatusCode::NO_CONTENT)
@@ -201,7 +232,7 @@ pub async fn batch_ip_rules(
     
     let affected = db::IpRuleRepo::batch_set_active(&state.db, req.ids, is_active)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(rule_db_err)?;
     
     Ok(Json(serde_json::json!({
         "affected": affected
@@ -215,11 +246,14 @@ pub async fn get_ua_rules(
 ) -> Result<Json<UaRuleListResponse>, StatusCode> {
     let page = params.page.max(1);
     let page_size = params.page_size.clamp(1, 100);
-    let offset = (page - 1) * page_size;
+    // OFFSET 为有符号整数，拒绝极端分页参数而不是算术溢出。
+    let offset = (page - 1).checked_mul(page_size)
+        .filter(|offset| *offset <= i64::MAX as u64)
+        .ok_or(StatusCode::BAD_REQUEST)?;
     
     let (rules, total) = db::UaRuleRepo::find_all(&state.db, offset, page_size)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(rule_db_err)?;
     
     let rule_infos: Vec<UaRuleInfo> = rules
         .into_iter()
@@ -253,7 +287,7 @@ pub async fn get_ua_rule(
 ) -> Result<Json<UaRuleInfo>, StatusCode> {
     let rule = db::UaRuleRepo::find_by_id(&state.db, id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(rule_db_err)?
         .ok_or(StatusCode::NOT_FOUND)?;
     
     Ok(Json(UaRuleInfo {
@@ -276,6 +310,10 @@ pub async fn create_ua_rule(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateUaRuleRequest>,
 ) -> Result<Json<UaRuleInfo>, StatusCode> {
+    // 在访问数据库前拒绝无效匹配模式。
+    if req.ua_pattern.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     // 验证 rule_type
     let rule_type = match req.rule_type.as_str() {
         "allow" => db::entities::ua_rule::UaRuleType::Allow,
@@ -293,7 +331,7 @@ pub async fn create_ua_rule(
         priority,
     )
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(rule_db_err)?;
     
     Ok(Json(UaRuleInfo {
         id: rule.id,
@@ -316,6 +354,10 @@ pub async fn update_ua_rule(
     Path(id): Path<i64>,
     Json(req): Json<UpdateUaRuleRequest>,
 ) -> Result<Json<UaRuleInfo>, StatusCode> {
+    // 在访问数据库前拒绝无效匹配模式。
+    if req.ua_pattern.as_ref().is_some_and(|pattern| pattern.trim().is_empty()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     // 验证 rule_type
     let rule_type = if let Some(ref rt) = req.rule_type {
         Some(match rt.as_str() {
@@ -337,7 +379,7 @@ pub async fn update_ua_rule(
         req.priority,
     )
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(rule_db_err)?;
     
     Ok(Json(UaRuleInfo {
         id: rule.id,
@@ -361,7 +403,7 @@ pub async fn delete_ua_rule(
 ) -> Result<StatusCode, StatusCode> {
     let deleted = db::UaRuleRepo::delete(&state.db, id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(rule_db_err)?;
     
     if deleted {
         Ok(StatusCode::NO_CONTENT)
@@ -383,7 +425,7 @@ pub async fn batch_ua_rules(
     
     let affected = db::UaRuleRepo::batch_set_active(&state.db, req.ids, is_active)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(rule_db_err)?;
     
     Ok(Json(serde_json::json!({
         "affected": affected
