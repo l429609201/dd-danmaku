@@ -165,6 +165,8 @@ pub async fn init_admin_from_env(db: &sea_orm::DatabaseConnection) -> anyhow::Re
         info!("👤 用户表已有账户，跳过初始管理员创建");
         return Ok(());
     }
+    // 明确记录空表触发初始化，再检查环境配置，避免启动日志缺少阶段信息。
+    info!("👤 app_users 为空，开始初始化管理员");
     let username = std::env::var("ADMIN_USERNAME").unwrap_or_default().trim().to_string();
     if username.is_empty() {
         tracing::warn!("⚠️ 用户表为空且未配置 ADMIN_USERNAME，跳过初始管理员创建");

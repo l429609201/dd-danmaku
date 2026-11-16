@@ -1,6 +1,7 @@
 use anyhow::Result;
 use tracing::{info, warn};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+// 日志模块独立于业务和认证逻辑，统一管理控制台及文件输出。
+mod logging;
 
 use db;
 use server;
@@ -119,18 +120,10 @@ fn apply_legacy_env() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 日志级别：RUST_LOG 优先，其次旧 compose 的 LOG_LEVEL
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        let level = env_or("LOG_LEVEL", "info").to_lowercase();
-        let level = if level == "warning" { "warn".to_string() } else { level };
-        format!("{level},sqlx=warn").into()
-    });
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    // 在数据库等服务初始化前启用日志，启动失败也能保留排障记录。
+    logging::init();
 
-    info!("Starting data-center Rust backend v{}", env!("CARGO_PKG_VERSION"));
+    info!("启动 data-center Rust 后端 v{}", env!("CARGO_PKG_VERSION"));
 
     // 环境变量单线程阶段处理（tokio worker 尚未读取 env）
     apply_legacy_env();
@@ -155,7 +148,7 @@ async fn main() -> Result<()> {
     }
 
     let addr = env_or("LISTEN_ADDR", "0.0.0.0:7759");
-    info!("Database initialized, starting server...");
+    info!("数据库初始化完成，准备启动服务");
     server::run_server(db, &addr).await?;
 
     Ok(())

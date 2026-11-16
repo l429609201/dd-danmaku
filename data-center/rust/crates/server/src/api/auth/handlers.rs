@@ -13,28 +13,42 @@ pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, (StatusCode, String)> {
-    // 查找用户
+    // 记录认证阶段及失败原因，但不记录密码、令牌或请求正文。
     let user = UserRepo::find_by_username(&state.db, &req.username)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::UNAUTHORIZED, "Invalid username or password".to_string()))?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "登录失败：查询用户数据库失败");
+            (StatusCode::INTERNAL_SERVER_ERROR, "查询用户失败，请查看服务日志".to_string())
+        })?
+        .ok_or_else(|| {
+            tracing::warn!(username = %req.username, "登录失败：用户不存在");
+            (StatusCode::UNAUTHORIZED, "Invalid username or password".to_string())
+        })?;
     
     // 检查用户是否激活
     if !user.is_active {
+        tracing::warn!(user_id = user.id, "登录失败：账户已停用");
         return Err((StatusCode::FORBIDDEN, "User is disabled".to_string()));
     }
     
     // 验证密码
     let password_valid = PasswordService::verify_password(&req.password, &user.password_hash)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| {
+            tracing::error!(user_id = user.id, "登录失败：数据库密码哈希无效");
+            (StatusCode::INTERNAL_SERVER_ERROR, "账户密码校验异常，请查看服务日志".to_string())
+        })?;
     
     if !password_valid {
+        tracing::warn!(user_id = user.id, "登录失败：密码不匹配");
         return Err((StatusCode::UNAUTHORIZED, "Invalid username or password".to_string()));
     }
     
     // 生成 JWT Token
     let token = state.jwt.generate_token(user.id, &user.username, &user.role)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| {
+            tracing::error!(user_id = user.id, "登录失败：生成访问令牌失败");
+            (StatusCode::INTERNAL_SERVER_ERROR, "生成访问令牌失败，请查看服务日志".to_string())
+        })?;
     
     // 计算过期时间
     let expires_at = chrono::Utc::now() + state.jwt.expiry_duration();
@@ -49,12 +63,19 @@ pub async fn login(
         expires_at,
     )
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    .map_err(|_| {
+        // 会话写入可能涉及令牌，禁止把数据库错误原文输出到日志或响应。
+        tracing::error!(user_id = user.id, "登录失败：保存用户会话失败");
+        (StatusCode::INTERNAL_SERVER_ERROR, "保存登录会话失败，请查看服务日志".to_string())
+    })?;
     
     // 更新最后登录时间
     UserRepo::update_last_login(&state.db, user.id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|_| {
+            tracing::error!(user_id = user.id, "登录失败：更新最后登录时间失败");
+            (StatusCode::INTERNAL_SERVER_ERROR, "更新登录状态失败，请查看服务日志".to_string())
+        })?;
     
     // 构造响应
     let user_info = UserInfo {
@@ -68,6 +89,7 @@ pub async fn login(
         created_at: user.created_at.and_utc().to_rfc3339(),
     };
     
+    tracing::info!(user_id = user.id, "用户登录成功");
     Ok(Json(LoginResponse {
         token,
         user: user_info,

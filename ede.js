@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.4.1
+// @version      1.4.2
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -70,7 +70,7 @@
 
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.4.1', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.4.2', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -1542,14 +1542,20 @@
                             || typeof this._?.listener?.pause !== 'function'
                             || typeof this._?.listener?.play !== 'function') return;
                         const renderer = this._.engine.render;
+                        const framing = this._.engine.framing;
+                        let frameTime = this.media.currentTime;
                         const running = !this._.paused;
                         // 原库在启动时绑定 render；只重启本实例帧循环，不发事件、不清空弹幕。
                         if (running) this._.listener.pause();
-                        this._.engine = { ...this._.engine, render: (stage, comment) => {
+                        this._.engine = { ...this._.engine, framing: stage => {
+                            // 同一帧所有弹幕共用一个媒体时间，避免逐条采样产生位置偏差。
+                            frameTime = this.media.currentTime;
+                            return framing.call(this, stage);
+                        }, render: (stage, comment) => {
                             if (comment.mode === 'rtl' || comment.mode === 'ltr') {
                                 // currentTime 已包含倍速，不能再将累计媒体时间差乘当前速率。
                                 const distance = (this._.width + comment.width)
-                                    * (this.media.currentTime - comment.time) / this._.duration;
+                                    * (frameTime - comment.time) / this._.duration;
                                 comment.x = comment.mode === 'rtl' ? this._.width - distance : distance - comment.width;
                             }
                             renderer.call(this, stage, comment);
@@ -2030,6 +2036,34 @@
         danmakuClock?.dispose();
         const events = new EventTarget();
         let media = null, remote = null, timer = null, last = null, disposed = false;
+        let waiting = false, seeking = false, smooth = null;
+        // 媒体时间可能每 100ms 才更新；用单调时钟补齐帧间运动，小误差只调整后续斜率。
+        const smoothState = (actual, now, continuous = false) => {
+            const paused = actual.paused || waiting || seeking;
+            const rate = actual.rate;
+            const reset = () => {
+                smooth = { position: actual.position, at: now, raw: actual.position,
+                    changedAt: now, paused, rate, correction: 0 };
+                return { position: smooth.position, paused, rate };
+            };
+            if (!smooth) return reset();
+            // 未收到时间推进时只允许短暂外推，避免漏发 waiting 后无限空跑。
+            const end = continuous ? now : Math.min(now, smooth.changedAt + 250);
+            const elapsed = Math.max(0, end - smooth.at) / 1000;
+            const position = smooth.position + (smooth.paused ? 0 : elapsed * smooth.rate * (1 + smooth.correction));
+            const changed = actual.position !== smooth.raw;
+            if (changed && Math.abs(actual.position - position) > Math.max(1, 0.25 * rate)) return reset();
+            let correction = smooth.correction;
+            if (changed) {
+                const error = actual.position - position;
+                // 容忍 100ms 量化及采样相位；不把每次小幅回拨直接画到屏幕上。
+                correction = Math.abs(error) <= 0.12 * rate ? 0 : Math.max(-0.1, Math.min(0.1, error / rate));
+            }
+            smooth = { position, at: now, raw: actual.position,
+                changedAt: changed || paused !== smooth.paused ? now : smooth.changedAt,
+                paused, rate, correction };
+            return { position, paused, rate };
+        };
         // 保留节点引用，旧容器离开文档后仍可迁移原弹幕层。
         const overlay = getById(eleIds.danmakuWrapper);
         const names = ['play', 'playing', 'pause', 'waiting', 'seeking', 'seeked', 'ratechange', 'loadedmetadata', 'emptied'];
@@ -2058,11 +2092,13 @@
         const state = () => {
             const now = performance.now(), actual = local();
             // 真实视频时间已包含倍速；迟到的服务端进度不能重新锚定正在渲染的本地视频。
-            if (media && media.id !== eleIds.h5VideoAdapter) return actual;
-            if (remote && now - remote.at > 15000) { releaseRemote(); return local(); }
-            if (!remote) return actual;
-            return { position: remote.position + (remote.paused ? 0 : (now - remote.at) / 1000 * remote.rate),
-                paused: remote.paused, rate: remote.rate };
+            if (media && media.id !== eleIds.h5VideoAdapter) return smoothState(actual, now);
+            if (remote && now - remote.at > 15000) releaseRemote();
+            const source = remote
+                ? { position: remote.position + (remote.paused ? 0 : (now - remote.at) / 1000 * remote.rate),
+                    paused: remote.paused, rate: remote.rate }
+                : local();
+            return smoothState(source, now, !!remote);
         };
         const emit = name => events.dispatchEvent(new Event(name));
         const sync = (seek = false) => {
@@ -2075,6 +2111,21 @@
             last = { ...next, at: now };
         };
         const localEvent = event => {
+            // 先结算旧斜率，再切换状态；暂停和缓冲保持当前位置，不追回量化采样点。
+            state();
+            if (event.type === 'waiting' || event.type === 'emptied') waiting = true;
+            if (event.type === 'playing' || (event.type === 'play' && media?.id === eleIds.h5VideoAdapter)) {
+                waiting = false; seeking = false;
+            }
+            if (event.type === 'seeking') {
+                // 虚拟播放器的 seeking 是瞬时通知，不会配对发出 seeked。
+                seeking = media?.id !== eleIds.h5VideoAdapter && media?.seeking === true;
+                smooth = null;
+            }
+            if (event.type === 'seeked' || event.type === 'loadedmetadata') {
+                seeking = false;
+                smooth = null;
+            }
             // 虚拟适配器的合成暂停/播放事件不能清除刚确认的服务端锚点。
             if (media?.id !== eleIds.h5VideoAdapter) remote = null;
             sync(event.type === 'seeking');
@@ -2084,6 +2135,7 @@
             if (next === media) return false;
             if (media) names.forEach(name => media.removeEventListener(name, localEvent));
             media = next;
+            waiting = false; seeking = false; smooth = null;
             if (media) names.forEach(name => media.addEventListener(name, localEvent));
             remote = null;
             return true;
@@ -14069,7 +14121,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             // 提前探测 DLL 并加载会话级默认值；失败静默回退普通 JS 模式。
             ddBackend.prepare().then(state => {
                 const version = String(state?.version ?? state?.Version ?? '离线');
-                logger.info(`[运行版本] 脚本修订=playback-rate-sync-v1，DLL=${/^[0-9.]{3,30}$/.test(version) ? version : '离线'}`);
+                logger.info(`[运行版本] 脚本修订=media-clock-smoothing-v1，DLL=${/^[0-9.]{3,30}$/.test(version) ? version : '离线'}`);
                 if (window.ede && !window.ede.danmaku) lsCache.clear();
                 // 只有纯 JS 官方源需要浏览器签名，DLL 在线时完全交给后端。
                 if (!state && lsGetItem(lsKeys.useOfficialApi.id)) ddSign.warmup();
