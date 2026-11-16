@@ -158,19 +158,38 @@ pub fn create_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// 首次启动初始化管理员：用户表为空且设置了 ADMIN_USERNAME/ADMIN_PASSWORD 时创建
+/// 用户表为空时初始化管理员；未指定密码则生成随机密码，仅创建成功后输出一次。
 pub async fn init_admin_from_env(db: &sea_orm::DatabaseConnection) -> anyhow::Result<()> {
-    let username = std::env::var("ADMIN_USERNAME").unwrap_or_default().trim().to_string();
-    let password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
-    if username.is_empty() || password.is_empty() {
-        return Ok(());
-    }
+    // 已有账户时不生成、不输出密码，也不覆盖数据库中的账户。
     if db::UserRepo::count(db).await? > 0 {
+        info!("👤 用户表已有账户，跳过初始管理员创建");
         return Ok(());
     }
+    let username = std::env::var("ADMIN_USERNAME").unwrap_or_default().trim().to_string();
+    if username.is_empty() {
+        tracing::warn!("⚠️ 用户表为空且未配置 ADMIN_USERNAME，跳过初始管理员创建");
+        return Ok(());
+    }
+    let configured_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
+    let generated = configured_password.is_empty();
+    let password = if generated {
+        // 使用系统安全随机源生成 192 位随机密码，不使用时间戳或普通伪随机数。
+        use base64::Engine;
+        use ring::rand::SecureRandom;
+        let mut bytes = [0u8; 24];
+        ring::rand::SystemRandom::new().fill(&mut bytes)
+            .map_err(|_| anyhow::anyhow!("生成初始管理员随机密码失败"))?;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    } else {
+        configured_password
+    };
     let hash = auth::PasswordService::hash_password(&password)?;
     db::UserRepo::create(db, username.clone(), hash, None, None, "admin".to_string()).await?;
     info!("👤 已创建初始管理员: {}", username);
+    // 按用户要求显示自动生成的初始密码；显式配置的密码不写入日志。
+    if generated {
+        tracing::warn!("🔑 初始管理员随机密码: {}（仅本次创建时显示，请妥善保存并登录后修改密码）", password);
+    }
     Ok(())
 }
 

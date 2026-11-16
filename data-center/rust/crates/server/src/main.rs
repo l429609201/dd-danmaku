@@ -149,7 +149,7 @@ async fn main() -> Result<()> {
     db::schema::ensure_schema(&db).await?;
     info!("✅ 数据库表结构已就绪");
 
-    // 首次启动按 ADMIN_USERNAME/ADMIN_PASSWORD 创建管理员
+    // 首次启动按 ADMIN_USERNAME 创建管理员，未配置密码时生成并输出一次随机密码。
     if let Err(e) = server::init_admin_from_env(&db).await {
         warn!("⚠️ 初始化管理员失败: {e:#}");
     }
