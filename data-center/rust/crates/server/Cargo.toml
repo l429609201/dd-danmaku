@@ -15,7 +15,8 @@ sea-orm = { workspace = true }
 # Web 框架
 axum = { workspace = true, features = ["ws"] }
 tower = { workspace = true }
-tower-http = { workspace = true }
+# 管理页面由同一端口提供静态文件，无需独立前端服务。
+tower-http = { workspace = true, features = ["fs"] }
 
 # HTTP 客户端（使用 axum 的 hyper 依赖，零新增）
 hyper = "1.12"

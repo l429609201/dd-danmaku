@@ -12,6 +12,8 @@ use tower_http::cors::CorsLayer;
 use tracing::info;
 
 mod health;
+// 管理前端静态资源与 SPA 页面路由。
+mod web_ui;
 mod api;
 mod bridge;
 mod cache_service;
@@ -99,11 +101,6 @@ pub struct HealthResponse {
     pub database: String,
 }
 
-/// 根路由处理器
-async fn root() -> &'static str {
-    "data-center Rust backend"
-}
-
 /// 创建应用路由
 pub fn create_router(state: AppState) -> Router {
     let run_mode = state.run_mode;
@@ -127,8 +124,12 @@ pub fn create_router(state: AppState) -> Router {
     
     // ========== 根据运行模式选择性启用路由 ==========
     
+    // 前端不依赖运行模式，API 鉴权仍由各 API 路由负责。
+    let web_directory = web_ui::directory();
+    let web_fallback = axum::routing::any(web_ui::serve).with_state(web_directory.clone());
+    info!(directory = %web_directory.display(), "🖥️ 管理 UI 静态资源已挂载");
     let mut router = Router::new()
-        .route("/", get(root))
+        .fallback_service(web_fallback)
         .route("/health", get(health::health_check))
         .nest("/api/admin", admin_routes)
         .nest("/api/ws", bridge_routes)
