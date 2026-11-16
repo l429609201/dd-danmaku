@@ -33,6 +33,9 @@
     let corsProxy = 'https://danmu-api.misaka10876.top/cors/';
     // 用户代理标识
     let userAgent = 'misaka10876/v1.0.0';
+    // 自定义 API 使用独立前端标识；浏览器标准 User-Agent 不可靠可改，使用扩展头区分。
+    // 官方协议继续使用上面的原有标识，不能被前端产品 UA 覆盖。
+    const frontendApiUserAgent = 'DD-Danmaku-Js/1.4.2 (https://github.com/l429609201/dd-danmaku)';
     // 日志级别: 0=关闭, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG (默认 INFO)
     let logLevel = 3;
     // ------ 用户配置 end ------
@@ -488,6 +491,9 @@
         TASK_RESULT_EXPIRED: '后端任务结果已过期', OPERATION_CANCELLED: '后端任务已取消',
         BACKEND_TASK_WAIT_TIMEOUT: '等待后端任务状态超时，尚未确认最终结果',
         BACKEND_UNAVAILABLE: '无法连接 Emby 插件后端，尚未确认任务结果',
+        DOWNLOAD_CONTEXT_MISSING: '下载缺少当前匹配任务、来源、分集或登录会话',
+        DOWNLOAD_VIEW_EXPIRED: '播放页面或加载任务已变更，已停止旧弹幕请求',
+        BACKEND_DOWNLOAD_INVALID_RESPONSE: '后端下载响应格式无效',
         INTERNAL_ERROR: '后端内部处理失败', MATCH_FAILED: '匹配失败', BACKEND_CAPABILITY_MISSING: 'DLL 后端缺少所需能力',
         OFFICIAL_PROXY_UNAVAILABLE: '官方代理不可用', OFFICIAL_SIGNING_UNAVAILABLE: '官方签名未配置',
         OFFICIAL_USER_MARK_INCOMPLETE: '官方用户认证信息不完整', PROXY_DISABLED: '插件代理已禁用', PROXY_NOT_CONFIGURED: '插件代理尚未配置',
@@ -891,6 +897,9 @@
                     data.modeUsed = match.ModeUsed || match.modeUsed;
                     if (!data || !['matched', 'ambiguous', 'unmatched', 'insufficient_metadata'].includes(data.status))
                         throw new Error('在线匹配响应协议无效');
+                    // 下载交接绑定本次后端证明，避免靠裸 epid 或旧集全局字段拼接下载请求。
+                    data.downloadContext = { selectionTaskId: taskId, sourceId: window.ede.backendSourceId,
+                        itemId: String(payload.itemId || '') };
                     // HTTP 已确认的结果立即返回，日志订阅在 finally 后台收尾。
                     return data;
                 } catch (error) {
@@ -3538,6 +3547,8 @@
         const fetchOpts = Object.keys(commentSignHeaders).length > 0
             ? { headers: commentSignHeaders, timeoutMs: 100000 }
             : { timeoutMs: 100000 };
+        if (ddBackend.isDll() && manualDanmakuSelection?.key !== manualDanmakuKey(playback?.itemId))
+            fetchOpts.downloadContext = playback?.episode_info?.backendDownloadContext;
 
         // [v2.7.0] 轮询异步任务：/taskcomment/{taskId}
         // 轮询必须有上限：服务端任务异常或状态字段不兼容时，不能让“正在获取”永久占用播放页。
@@ -3629,6 +3640,13 @@
                 }
             })
             .catch((error) => {
+                // 下载启动前的异常也必须可定位；只记录固定分类和异常类型，不透传 URL/令牌。
+                if (ddBackend.isDll() && typeof error.code !== 'string') {
+                    const failure = createBackendError({ code: error.name === 'AbortError'
+                        ? 'DOWNLOAD_VIEW_EXPIRED' : 'BACKEND_DOWNLOAD_INVALID_RESPONSE' });
+                    logger.error(`[API请求] comment 获取弹幕失败: ${formatBackendError(failure)}，异常类型=${/^[A-Za-z]{1,40}$/.test(error.name || '') ? error.name : 'Error'}`);
+                    throw failure;
+                }
                 logger.error(`[API请求] comment 获取弹幕失败: ${error.code ? formatBackendError(error) : '请求失败'}`);
                 // DLL 失败交给加载入口展示，不能吞为 null 后覆盖成“未获取到弹幕”。
                 if (ddBackend.isDll() && error.code) throw error;
@@ -4000,6 +4018,12 @@
 
     if (token) requestHeaders.Authorization = `Bearer ${token}`;
     if (headers) Object.assign(requestHeaders, headers);
+    // 独立 JS 模式只标记已配置的自定义来源，避免影响官方、Emby 或其它第三方请求。
+    if (!ddBackend.isDll() && !isDandanplayApi && !ddSign.isProxiedOfficial(url)
+        && getCustomApiList().some(source => {
+            const prefix = String(normalizeCustomApiPrefix(source.url, source.appId, source.appSecret) || '').replace(/\/+$/, '');
+            return prefix && (url === prefix || url.startsWith(prefix + '/'));
+        })) requestHeaders['X-User-Agent'] = frontendApiUserAgent;
 
     // 插件代理使用内部虚拟前缀，绝不把该地址发到网络或退回浏览器直连。
     // 后端在线且本人明确手动搜索选择才保存；自动匹配仅取弹幕，不写 XML。
@@ -4011,15 +4035,22 @@
             const client = getHostApiClient();
             const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
             const embyToken = client?.accessToken?.();
-            const selectionTaskId = String(window.ede?.backendEpisodeTaskId || window.ede?.backendMatchTaskId || '');
-            const sourceId = url.startsWith('emby-proxy://custom/')
-                ? String(window.ede?.backendSourceId || '') : 'official';
+            const automaticContext = opts.downloadContext;
+            const selectionTaskId = String(automaticContext?.selectionTaskId || window.ede?.backendEpisodeTaskId || window.ede?.backendMatchTaskId || '');
+            const sourceId = automaticContext?.sourceId || (url.startsWith('emby-proxy://custom/')
+                ? String(window.ede?.backendSourceId || '') : 'official');
             const itemId = String(window.ede?.itemId || '');
+            if (automaticContext && automaticContext.itemId !== itemId)
+                throw createBackendError({ code: 'DOWNLOAD_VIEW_EXPIRED' });
             const episodeId = target.pathname.startsWith('/comment/')
                 ? target.pathname.slice('/comment/'.length)
                 : target.pathname.slice(target.pathname.indexOf('/comment/') + '/comment/'.length);
-            if (!base || !embyToken || !selectionTaskId || !sourceId || !itemId || !/^[A-Za-z0-9_-]{1,160}$/.test(episodeId))
-                throw new Error('后端下载所需匹配任务不存在，拒绝浏览器直连');
+            if (!base || !embyToken || !selectionTaskId || !sourceId || !itemId || !/^[A-Za-z0-9_-]{1,160}$/.test(episodeId)) {
+                // 只输出缺项布尔值，不泄漏令牌、上游地址或凭据。
+                logger.warn(`[后端下载] 交接校验失败：会话=${Boolean(base && embyToken)}，任务=${Boolean(selectionTaskId)}，来源=${Boolean(sourceId)}，媒体=${Boolean(itemId)}，分集=${/^[A-Za-z0-9_-]{1,160}$/.test(episodeId)}`);
+                throw createBackendError({ code: 'DOWNLOAD_CONTEXT_MISSING' });
+            }
+            logger.info('[后端下载] 匹配结果已交接，正在请求后端受理');
             const backendHeaders = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Emby-Token': embyToken };
             // 请求开始前固定播放身份，不能把旧集的创建响应绑定到新集。
             const view = window.ede, loadId = view?.lastLoadId, generation = playbackViewGeneration;
@@ -4081,14 +4112,18 @@
                     if (taskStatus === 'succeeded') {
                         const { response: resultResponse, data: taskBody } = await readDownloadTask(`/dd-danmaku/api/business/tasks/${taskId}/result`);
                         checkDownloadView();
-                        if (!resultResponse.ok || taskBody?.success === false) throw createBackendError(taskBody, resultResponse.status, taskId);
+                        // 下载结果为原始 comment 协议，不同于 match 的 success/data 信封。
+                        if (!resultResponse.ok || taskBody?.success === false || !taskBody || typeof taskBody !== 'object')
+                            throw createBackendError(taskBody || {}, resultResponse.status, taskId, true, 'BACKEND_DOWNLOAD_INVALID_RESPONSE');
                         return taskBody?.data || taskBody;
                     }
                 }
-                throw createBackendError({ errorCode: 'UPSTREAM_TIMEOUT' }, null, taskId);
+                throw createBackendError({ errorCode: 'BACKEND_TASK_WAIT_TIMEOUT' }, null, taskId);
             } catch (error) {
-                if (error.code || error.name === 'AbortError') throw error;
-                throw createBackendError({ errorCode: 'UPSTREAM_UNAVAILABLE' });
+                // 保留真实后端错误；前端中止或断连不能伪装成外部 comment 接口失败。
+                if (typeof error.code === 'string') throw error;
+                throw createBackendError({ code: !currentDownloadView() ? 'DOWNLOAD_VIEW_EXPIRED'
+                    : error.name === 'AbortError' ? 'BACKEND_TASK_WAIT_TIMEOUT' : 'BACKEND_UNAVAILABLE' });
             } finally {
                 clearInterval(viewTimer); controller.abort();
                 view?.abortControllers?.delete(controller);
@@ -4901,6 +4936,7 @@
         const selected = result.selected;
         logger.info(`[后端在线匹配] 来源=${result.SourceName || result.sourceName || sourceId}，状态=matched`);
         return { backendResolved: true, directMatch: true, backendSourceId: sourceId,
+            downloadContext: result.downloadContext,
             episodeInfo: { ...selected, episodes: [selected] },
             // 虚拟前缀只用于前端分流到后端下载任务，不代表任何真实上游地址。
             apiPrefix: official ? corsProxy + 'https://api.dandanplay.net/api/v2' : 'emby-proxy://custom',
@@ -5490,6 +5526,7 @@
                 apiAppSecret: res.apiAppSecret || '',
                 seriesOrMovieId: seriesOrMovieId,
                 backendResolved: res.backendResolved === true,
+                backendDownloadContext: res.downloadContext,
                 // 独立保存源精确校验标记，不冒充后端确认。
                 apiExactMatched: res.apiExactMatched === true,
             };
@@ -14212,7 +14249,11 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             try {
                 const resp = await fetch(url + path, {
                     method: 'GET',
-                    headers: { 'Accept': 'application/json' },
+                    // 自定义源探测同样标记前端；官方地址保持原请求头。
+                    headers: !ddBackend.isDll() && !ddSign.isProxiedOfficial(url)
+                        && !String(url).includes('api.dandanplay.net')
+                        ? { 'Accept': 'application/json', 'X-User-Agent': frontendApiUserAgent }
+                        : { 'Accept': 'application/json' },
                     signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined,
                 });
                 if (!resp.ok) continue;
