@@ -4039,7 +4039,10 @@
     const savePurpose = manualDanmakuSelection?.key === manualDanmakuKey(window.ede?.itemId)
         ? 'selection' : 'none';
     if (ddBackend.isDll() && (url.startsWith('emby-proxy://custom/') || ddSign.isProxiedOfficial(url))) {
-        const target = url.startsWith('emby-proxy://custom/') ? new URL(url) : new URL(url.slice(corsProxy.length));
+        // 内部虚拟协议仅是路由标记，使用标准 HTTP 基准解析路径，避免依赖宿主的非标准协议实现。
+        const target = url.startsWith('emby-proxy://custom/')
+            ? new URL(url.slice('emby-proxy://custom'.length), 'https://dd-proxy.invalid')
+            : new URL(url.slice(corsProxy.length));
         if (target.pathname.startsWith('/comment/') || target.pathname.match(/\/api\/v2\/comment\//)) {
             const client = getHostApiClient();
             const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
@@ -4147,7 +4150,8 @@
 
     if (url.startsWith('emby-proxy://custom/')) {
         if (!ddBackend.isDll()) throw new Error('Emby 插件代理不可用');
-        const target = new URL(url);
+        // 与业务下载分支采用相同的标准 HTTP 路径解析，避免虚拟协议落入错误操作。
+        const target = new URL(url.slice('emby-proxy://custom'.length), 'https://dd-proxy.invalid');
         const client = getHostApiClient();
         const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
         const embyToken = client?.accessToken?.();
@@ -4160,7 +4164,13 @@
             query.set('Operation', 'search'); query.set('Keyword', target.searchParams.get('keyword') || '');
         } else {
             const match = /^\/(bangumi|comment|taskcomment)\/([A-Za-z0-9_-]+)$/.exec(path);
-            if (!match || method !== 'GET') throw new Error('不支持的插件代理操作');
+            if (!match || method !== 'GET') {
+                // 只记录路由形态，不输出域名、查询串、令牌或分集正文，定位浏览器 URL 解析差异。
+                const route = path.startsWith('/comment/') ? 'comment' : path.startsWith('/taskcomment/') ? 'taskcomment'
+                    : path.startsWith('/bangumi/') ? 'bangumi' : 'unknown';
+                logger.error(`[插件代理] 路由拒绝：操作=${route}，路径长度=${path.length}，路径匹配=${Boolean(match)}，GET=${method === 'GET'}，DLL=${ddBackend.isDll()}`);
+                throw createBackendError({ code: 'DOWNLOAD_CLIENT_ERROR' });
+            }
             query.set('Operation', match[1] === 'taskcomment' ? 'task' : match[1]);
             query.set('Id', match[2]);
             if (match[1] !== 'bangumi') {
