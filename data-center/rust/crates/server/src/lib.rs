@@ -63,6 +63,8 @@ pub struct AppState {
     pub redis: Arc<RedisCacheService>,
     pub geoip: Arc<GeoIpService>,
     pub alias_ai: Arc<AliasAiService>,
+    /// 进程启动时间，用于计算运行时长；不可序列化，仅在内存中存在。
+    pub start_time: Arc<std::time::Instant>,
 }
 
 /// 允许旧 handler 继续使用 `State<Arc<AppState>>` 提取器。
@@ -88,6 +90,7 @@ impl AppState {
             redis: Arc::new(RedisCacheService::new_sync()), // 同步创建（禁用状态）
             geoip: Arc::new(GeoIpService::new()),
             alias_ai: Arc::new(AliasAiService::new()),
+            start_time: Arc::new(std::time::Instant::now()),
             db,
         }
     }
@@ -256,6 +259,7 @@ pub async fn run_server(
         redis,
         geoip,
         alias_ai,
+        start_time: Arc::new(std::time::Instant::now()),
     };
 
     // Worker 模式：配置了 CONTROL_WORKER_WS_URL 时主动连接 Worker 控制通道

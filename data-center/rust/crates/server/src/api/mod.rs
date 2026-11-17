@@ -16,3 +16,7 @@ pub mod episode_links_admin;
 pub mod db_stats;
 pub mod media_admin;
 pub mod entities_admin;
+// 服务器日志文件读取（只读）
+pub mod server_logs;
+// 数据库迁移管理 API
+pub mod migration_api;

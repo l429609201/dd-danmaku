@@ -38,9 +38,9 @@
           <el-icon><Connection /></el-icon>
           <span>连接与控制</span>
         </el-menu-item>
-        <el-menu-item index="/worker-logs">
+        <el-menu-item index="/log-center">
           <el-icon><Document /></el-icon>
-          <span>Worker 日志</span>
+          <span>日志中心</span>
         </el-menu-item>
       </el-menu-item-group>
 
@@ -130,6 +130,10 @@
 
       <!-- 设置 -->
       <el-menu-item-group title="设置">
+        <el-menu-item index="/migration">
+          <el-icon><List /></el-icon>
+          <span>数据迁移</span>
+        </el-menu-item>
         <el-menu-item index="/settings">
           <el-icon><Setting /></el-icon>
           <span>系统设置</span>
@@ -158,7 +162,7 @@ import {
   DataLine, Connection, Document, Box, ChatDotSquare,
   Film, VideoPlay, FolderOpened, Edit, Cpu, Bell,
   DataAnalysis, Key, Lock, Filter, Monitor, Link,
-  Delete, User, Setting, DArrowLeft, DArrowRight
+  Delete, User, Setting, DArrowLeft, DArrowRight, List
 } from '@element-plus/icons-vue'
 
 const themeStore = useThemeStore()

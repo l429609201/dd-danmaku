@@ -85,6 +85,19 @@ pub fn create_management_routes(state: &AppState) -> Router<AppState> {
         .route("/worker-logs", get(api::keys::get_worker_logs))
         .route("/ip-stats", get(api::keys::get_ip_stats))
         .route("/ip-stats/top", get(api::keys::get_top_ips))
+        // 服务器日志文件（只读，读取 CONFIG_PATH/logs/*.log）
+        .route("/server-files", get(api::server_logs::list_server_log_files))
+        .route("/server-logs", get(api::server_logs::get_server_logs))
+        .route_layer(middleware::from_fn(auth::admin_middleware))
+        .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
+
+    // 数据库迁移管理 API 路由（需要认证）
+    let migration_routes = Router::new()
+        .route("/status", get(api::migration_api::get_migration_status))
+        .route("/runs", get(api::migration_api::list_migration_runs))
+        .route("/start", post(api::migration_api::start_migration))
+        .route("/cancel", post(api::migration_api::cancel_migration))
+        .route("/{run_id}/tables", get(api::migration_api::get_migration_tables))
         .route_layer(middleware::from_fn(auth::admin_middleware))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
     
@@ -131,6 +144,7 @@ pub fn create_management_routes(state: &AppState) -> Router<AppState> {
         .nest("/api/v2/logs", logs_routes.merge(geoip_routes))
         .nest("/api/v2/cleanup", cleanup_routes)
         .nest("/api/v2/media/aliases", alias_ai_routes)
+        .nest("/api/v2/migration", migration_routes)
 }
 
 /// 仅 API 模式开放的公共弹幕接口，与管理后台路由分离。

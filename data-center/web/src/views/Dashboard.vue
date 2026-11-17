@@ -1,673 +1,356 @@
 <template>
   <div class="page">
-    <h1 class="page-title">概览</h1>
+    <div class="page-header">
+      <h1 class="page-title">仪表盘</h1>
+      <el-button size="small" :loading="loading" @click="load">刷新</el-button>
+    </div>
 
-    <div v-if="loading" class="loading">加载中...</div>
-    <div v-else-if="error" class="error-box">{{ error }}</div>
-
-    <template v-else>
-      <!-- Worker 状态卡片 -->
-      <div class="cards">
-        <div class="card" :class="data.worker.online_nodes > 0 ? 'card-ok' : ''">
-          <div class="card-label">Worker 连接</div>
-          <div class="card-value">{{ data.worker.online_nodes }} / {{ data.worker.total_nodes }}</div>
-          <div class="card-sub">当前在线 / 已登记节点</div>
-          <div class="card-sub">延迟：未采集</div>
-        </div>
-        <div class="card" @click="goto('/cache')">
-          <div class="card-label">缓存总数</div>
-          <div class="card-value">{{ data.totals.cache_count }}</div>
-        </div>
-        <div class="card" @click="goto('/episodes')">
-          <div class="card-label">集数链接</div>
-          <div class="card-value">{{ data.totals.episode_links ?? '未采集' }}</div>
-        </div>
-        <div class="card">
-          <div class="card-label">待刷新任务</div>
-          <div class="card-value">{{ data.totals.refresh_pending ?? '未采集' }}</div>
-        </div>
-        <div class="card">
-          <div class="card-label">今日缓存命中</div>
-          <div class="card-value">{{ data.today.cache_hits ?? '未采集' }}</div>
-          <div class="card-sub">429 兜底 {{ data.today.fallback_hits ?? '未采集' }}</div>
-        </div>
-        <div class="card">
-          <div class="card-label">今日 429 兜底</div>
-          <div class="card-value">{{ data.today.fallback_hits ?? '未采集' }}</div>
-          <div class="card-sub">缓存命中 {{ data.today.cache_hits ?? '未采集' }}</div>
-        </div>
-        <div class="card card-accent" @click="goto('/key-pool')">
-          <div class="card-label">密钥池</div>
-          <div class="card-value">{{ insightCards ? insightCards.keyTotal : '—' }}</div>
-          <div class="card-sub">限流中 {{ insightCards ? insightCards.keyLimited : '未采集' }} 项</div>
-        </div>
+    <!-- 顶部汇总卡片 -->
+    <div class="cards">
+      <!-- 在线 Worker -->
+      <div class="card" :class="data.worker.online_nodes > 0 ? 'card-ok' : 'card-warn'">
+        <div class="card-label">在线 Worker</div>
+        <div class="card-value">{{ data.worker.online_nodes ?? '—' }}</div>
+        <div class="card-sub">共 {{ data.worker.total_nodes ?? 0 }} 个节点</div>
       </div>
 
-      <!-- 本地端系统资源（CPU / 内存实时占用） -->
-      <!-- 保留概览展示骨架与图表交互，未实现的指标明确显示未知，不调用不存在的接口。 -->
-      <div class="panel" style="margin-bottom: 24px;">
-        <h2 class="panel-title">本地弹幕统计与系统信息</h2>
-        <p>弹幕集数 {{ data.stats.danmaku.total_episodes }}；条数 {{ data.stats.danmaku.total_comments }}；容量 {{ data.stats.danmaku.total_size_mb.toFixed(2) }} MB（数据库记录）</p>
-        <p>版本 {{ data.stats.system.version }}；{{ data.stats.system.os }} / {{ data.stats.system.arch }}；运行时间 {{ data.stats.uptime_seconds == null ? '未采集' : data.stats.uptime_seconds + ' 秒' }}</p>
-        <p>Rust 工具链 {{ data.stats.system.rust_version || '未采集' }}；构建时间 {{ data.stats.system.build_time || '未采集' }}</p>
-      </div>
-      <h2 class="section-title">本地端系统资源</h2>
-      <div class="cards" v-if="sys && sys.available">
-        <div class="card" :class="sys.cpu.system_percent > 85 ? 'card-warn' : 'card-accent'">
-          <div class="card-label">系统 CPU</div>
-          <div class="card-value">{{ sys.cpu.system_percent }}%</div>
-          <div class="card-sub">{{ sys.cpu.cores }} 核</div>
-        </div>
-        <div class="card" :class="sys.cpu.process_percent > 60 ? 'card-warn' : ''">
-          <div class="card-label">本进程 CPU</div>
-          <div class="card-value">{{ sys.cpu.process_percent }}%</div>
-          <div class="card-sub">整机占比（已按核数归一）</div>
-        </div>
-        <div class="card" :class="sys.memory.system_percent > 90 ? 'card-warn' : 'card-accent'">
-          <div class="card-label">系统内存</div>
-          <div class="card-value">{{ sys.memory.system_percent }}%</div>
-          <div class="card-sub">{{ fmtBytes(sys.memory.system_used) }} / {{ fmtBytes(sys.memory.system_total) }}</div>
-        </div>
-        <div class="card">
-          <div class="card-label">本进程内存</div>
-          <div class="card-value">{{ fmtBytes(sys.memory.process_rss) }}</div>
-          <div class="card-sub">占系统 {{ sys.memory.process_percent }}%</div>
-        </div>
-        <div class="card" v-if="sys.cpu.load1 !== null && sys.cpu.load1 !== undefined">
-          <div class="card-label">系统负载</div>
-          <div class="card-value">{{ sys.cpu.load1 }}</div>
-          <div class="card-sub">5分钟 {{ sys.cpu.load5 }} / 15分钟 {{ sys.cpu.load15 }}</div>
-        </div>
-        <div class="card" v-if="sys.process" :class="loopLagClass">
-          <div class="card-label">事件循环延迟</div>
-          <div class="card-value">{{ sys.eventloop ? sys.eventloop.loop_lag_ms : '—' }} ms</div>
-          <div class="card-sub">运行任务 {{ sys.eventloop ? sys.eventloop.running_tasks : '—' }} / 线程 {{ sys.process.threads }}</div>
-        </div>
-        <div class="card" v-if="sys.db_pool && sys.db_pool.checkedout !== undefined" :class="poolClass">
-          <div class="card-label">DB 连接池</div>
-          <div class="card-value">{{ sys.db_pool.checkedout }}/{{ (sys.db_pool.size || 0) + (sys.db_pool.overflow || 0) }}</div>
-          <div class="card-sub">在用 {{ sys.db_pool.checkedout }} / 空闲 {{ sys.db_pool.checkedin }}</div>
-        </div>
-        <div class="card" v-if="sys.queues" :class="queueClass">
-          <div class="card-label">削峰队列深度</div>
-          <div class="card-value">{{ sys.queues.entity_ingest.depth }}</div>
-          <div class="card-sub">日志缓冲 {{ sys.queues.access_log.depth }} / 丢弃 {{ sys.queues.entity_ingest.dropped }}</div>
-        </div>
-      </div>
-      <div class="cards" v-else-if="sys && !sys.available">
-        <div class="card"><div class="card-sub">当前 Rust API 未提供 CPU、内存与队列采集指标</div></div>
+      <!-- 响应缓存 -->
+      <div class="card card-accent">
+        <div class="card-label">响应缓存条目</div>
+        <div class="card-value">{{ fmt(data.cache.total_entries) }}</div>
+        <div class="card-sub">API 缓存</div>
       </div>
 
-
-      <!-- Worker 今日运行指标（CF 侧真实流量） -->
-      <h2 class="section-title">Worker 今日流量（CF 侧）</h2><p v-if="!wm" class="empty">当前 API 未提供 Worker 流量指标，未知不等于零。</p>
-      <div class="cards" v-if="wm">
-        <div class="card card-accent">
-          <div class="card-label">请求数</div>
-          <div class="card-value">{{ wm.total_requests }}</div>
-          <div class="card-sub">响应 {{ wm.total_responses }}</div>
-        </div>
-        <div class="card">
-          <div class="card-label">缓存命中率</div>
-          <div class="card-value">{{ wm.hit_rate }}%</div>
-          <div class="card-sub">命中 {{ wm.cache_hits }} / 回源 {{ wm.cache_miss }}</div>
-        </div>
-        <div class="card">
-          <div class="card-label">命中明细</div>
-          <div class="card-value">{{ wm.cache_hits }}</div>
-          <div class="card-sub">内存 {{ wm.mem_cache_hits }}<span v-if="isWorkerMode"> / R2 {{ wm.r2_cache_hits }}</span></div>
-        </div>
-        <div class="card">
-          <div class="card-label">出/入流量</div>
-          <div class="card-value">{{ fmtBytes(wm.bytes_out) }}</div>
-          <div class="card-sub">入 {{ fmtBytes(wm.bytes_in) }}</div>
-        </div>
-        <div class="card" :class="wm.blocked_total > 0 ? 'card-warn' : ''">
-          <div class="card-label">拦截总数</div>
-          <div class="card-value">{{ wm.blocked_total }}</div>
-          <div class="card-sub">IP {{ wm.blocked_ip }} / UA {{ wm.blocked_ua }} / 封禁 {{ wm.blocked_abuse }}</div>
-        </div>
-        <div class="card" :class="wm.invalid_route > 0 ? 'card-warn' : ''">
-          <div class="card-label">非法路由</div>
-          <div class="card-value">{{ wm.invalid_route }}</div>
-          <div class="card-sub">上游 429: {{ wm.upstream_429 }}</div>
-        </div>
+      <!-- 弹幕集数 -->
+      <div class="card">
+        <div class="card-label">本地弹幕</div>
+        <div class="card-value">{{ fmt(data.danmaku.total_episodes) }}</div>
+        <div class="card-sub">{{ fmtBytes(data.danmaku.total_size_mb * 1024 * 1024) }}</div>
       </div>
 
-      <h2 class="section-title">Cloudflare 工具调用（今日）</h2><p v-if="!tools" class="empty">当前 API 未提供工具调用指标。</p>
-      <div class="cards" v-if="tools">
-        <div class="card" v-for="group in toolGroups" :key="group.name"
-             :class="group.errors > 0 ? 'card-warn' : 'card-accent'">
-          <div class="card-label">{{ group.name }}</div>
-          <div class="card-value">{{ group.attempts }}</div>
-          <div class="card-sub">成功 {{ group.success }} / 失败 {{ group.errors }}</div>
-          <div class="card-sub">{{ group.detail }}</div>
-        </div>
+      <!-- 总弹幕条数 -->
+      <div class="card">
+        <div class="card-label">弹幕条数</div>
+        <div class="card-value">{{ fmt(data.danmaku.total_comments) }}</div>
+        <div class="card-sub">累计存档</div>
       </div>
 
-      <h2 class="section-title">Worker 应用内存水位（最新快照）</h2><p v-if="!memoryWatermark" class="empty">当前 API 未提供内存水位快照。</p>
-      <div class="cards" v-if="memoryWatermark">
-        <div class="card card-accent">
-          <div class="card-label">粗略估算</div>
-          <div class="card-value">{{ fmtBytes(memoryWatermark.estimated_bytes) }}</div>
-          <div class="card-sub">非真实 isolate 内存；真实值请查看 Cloudflare 控制台</div>
-        </div>
-        <div class="card"><div class="card-label">API 缓存</div><div class="card-value">{{ memoryWatermark.api_cache || 0 }}</div><div class="card-sub">日志 {{ memoryWatermark.logs || 0 }} 条</div></div>
-        <div class="card"><div class="card-label">限流 / IP</div><div class="card-value">{{ memoryWatermark.rate_limit_counters || 0 }}</div><div class="card-sub">IP 统计 {{ memoryWatermark.ip_stats || 0 }}</div></div>
-        <div class="card"><div class="card-label">OAuth / 空结果</div><div class="card-value">{{ memoryWatermark.oauth_token_cache || 0 }}</div><div class="card-sub">空结果计数 {{ memoryWatermark.empty_search_counter || 0 }}</div></div>
-        <div class="card"><div class="card-label">认证追踪</div><div class="card-value">{{ memoryWatermark.auth_fail_tracker || 0 }}</div><div class="card-sub">封禁 {{ memoryWatermark.auth_ban_tracker || 0 }} / 滥用 {{ memoryWatermark.abuse_tracker || 0 }}</div></div>
-        <div class="card"><div class="card-label">DO 水位</div><div class="card-value">{{ memoryWatermark.do_pending_rpc || 0 }}</div><div class="card-sub">WebSocket {{ memoryWatermark.do_websocket_connections || 0 }} / 请求中 {{ memoryWatermark.pending_requests || 0 }}</div></div>
+      <!-- 番剧数量 -->
+      <div class="card card-accent">
+        <div class="card-label">番剧条目</div>
+        <div class="card-value">{{ fmt(data.media.anime_count) }}</div>
+        <div class="card-sub">{{ fmt(data.media.episode_count) }} 集 · {{ fmt(data.media.alias_count) }} 个别名</div>
       </div>
 
-      <!-- Worker 近 7 天趋势图 -->
-      <div class="panel" style="margin-bottom: 24px;">
-        <h2 class="panel-title">近 7 天 Worker 流量趋势</h2>
-        <div v-show="trendHasData" ref="trendChart" class="chart"></div>
-        <div v-show="!trendHasData" class="empty">当前 API 未提供近 7 天趋势指标</div>
+      <!-- 密钥与规则 -->
+      <div class="card">
+        <div class="card-label">密钥 / 规则</div>
+        <div class="card-value">{{ fmt((data.keys_rules.api_key_count ?? 0) + (data.keys_rules.sign_key_count ?? 0)) }}</div>
+        <div class="card-sub">IP 规则 {{ fmt(data.keys_rules.ip_rule_count) }} · UA 规则 {{ fmt(data.keys_rules.ua_rule_count) }}</div>
       </div>
+    </div>
 
-      <!-- 分布图表：状态码 / 拦截 / 命中 -->
-      <div class="chart-grid">
-        <div class="panel">
-          <h2 class="panel-title">状态码分布（今日）</h2>
-          <div v-show="hasDist" ref="statusChart" class="chart chart-sm"></div>
-          <div v-show="!hasDist" class="empty">暂无数据</div>
-        </div>
-        <div class="panel">
-          <h2 class="panel-title">拦截类型分布（今日）</h2>
-          <div v-show="hasBlocked" ref="blockChart" class="chart chart-sm"></div>
-          <div v-show="!hasBlocked" class="empty">拦截指标未采集</div>
-        </div>
-        <div class="panel">
-          <h2 class="panel-title">缓存命中构成（今日）</h2>
-          <div v-show="hasHit" ref="hitChart" class="chart chart-sm"></div>
-          <div v-show="!hasHit" class="empty">命中指标未采集</div>
-        </div>
-      </div>
-
-      <!-- 运维洞察已改为按日聚合，文案必须与后端 stat_date 口径一致。 -->
-      <h2 class="section-title">运维洞察（今日）</h2>
-      <div class="chart-grid">
-        <div class="panel">
-          <h2 class="panel-title">各接口上游限流（今日）</h2>
-          <div v-show="has429" ref="api429Chart" class="chart chart-sm"></div>
-          <div v-show="!has429" class="empty">上游限流指标未采集</div>
-        </div>
-        <div class="panel">
-          <h2 class="panel-title">UA 来源 Top（今日）</h2>
-          <div v-show="hasUaTop" ref="uaTopChart" class="chart chart-sm"></div>
-          <div v-show="!hasUaTop" class="empty">UA 指标未采集</div>
-        </div>
-        <div class="panel">
-          <h2 class="panel-title">缓存来源构成（今日）</h2>
-          <div v-show="hasCacheSrc" ref="cacheSrcChart" class="chart chart-sm"></div>
-          <div v-show="!hasCacheSrc" class="empty">缓存来源指标未采集</div>
-        </div>
-      </div>
-
-      <!-- 请求来源地图 -->
-      <div class="panel" style="margin: 24px 0;">
-        <h2 class="panel-title">请求来源分布
-          <!-- 库文件状态灯：绿=已加载，红=缺库（hover 提示放置路径） -->
-          <span class="geo-dot" :class="geoLibReady ? 'geo-dot--ok' : 'geo-dot--err'"
-                :title="geoLibReady ? 'GeoLite2 地理库已加载' : '地理分布接口未接入，库状态未知'"></span>
-          <span class="map-sub" v-if="geo && geo.available">已解析 {{ geo.resolved }} / {{ geo.total_ips }} 个 IP</span>
-          <span class="map-sub map-sub--err" v-else-if="geo && !geo.available">未配置地理库</span>
-        </h2>
-        <!-- 世界底图常驻：库可用即渲染，散点逐个动画铺上；库不可用仍显示底图+提示 -->
-        <div ref="mapChart" class="chart chart-map"></div>
-        <div v-if="!geoLibReady" class="geo-tip">
-          当前概览 API 未提供地理分布，地理库状态未知
-        </div>
-      </div>
-
-      <!-- 最近错误 -->
+    <!-- 两列详情面板 -->
+    <div class="detail-grid">
+      <!-- 系统信息 -->
       <div class="panel">
-        <h2 class="panel-title">最近错误事件</h2>
-        <table class="data-table" v-if="data.recent_errors.length">
-          <thead><tr><th>事件</th><th>消息</th><th>时间</th></tr></thead>
+        <div class="section-title">系统信息</div>
+        <table class="data-table">
           <tbody>
-            <tr v-for="(e, i) in data.recent_errors" :key="i">
-              <td>{{ e.event }}</td>
-              <td>{{ e.message }}</td>
-              <td>{{ fmt(e.created_at) }}</td>
-            </tr>
+            <tr><td>版本</td><td>{{ data.system.version ?? '—' }}</td></tr>
+            <tr v-if="data.system.rust_version"><td>Rust 版本</td><td>{{ data.system.rust_version }}</td></tr>
+            <tr v-if="data.system.build_time"><td>构建时间</td><td>{{ data.system.build_time }}</td></tr>
+            <tr><td>运行平台</td><td>{{ data.system.os ?? '—' }} / {{ data.system.arch ?? '—' }}</td></tr>
+            <tr><td>运行时长</td><td>{{ fmtUptime(data.system.uptime_seconds) }}</td></tr>
           </tbody>
         </table>
-        <div v-else class="empty">错误事件详情未接入（仅有累计事件数）</div>
       </div>
-    </template>
+
+      <!-- 媒体库统计 -->
+      <div class="panel">
+        <div class="section-title">媒体库</div>
+        <table class="data-table">
+          <tbody>
+            <tr><td>番剧数量</td><td>{{ fmt(data.media.anime_count) }}</td></tr>
+            <tr><td>集数条目</td><td>{{ fmt(data.media.episode_count) }}</td></tr>
+            <tr><td>已审核别名</td><td>{{ fmt(data.media.alias_count) }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 密钥与规则 -->
+      <div class="panel">
+        <div class="section-title">密钥与规则</div>
+        <table class="data-table">
+          <tbody>
+            <tr><td>API 密钥池</td><td>{{ fmt(data.keys_rules.api_key_count) }}</td></tr>
+            <tr><td>签名密钥池</td><td>{{ fmt(data.keys_rules.sign_key_count) }}</td></tr>
+            <tr><td>IP 规则</td><td>{{ fmt(data.keys_rules.ip_rule_count) }}</td></tr>
+            <tr><td>UA 规则</td><td>{{ fmt(data.keys_rules.ua_rule_count) }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 弹幕详细 -->
+      <div class="panel">
+        <div class="section-title">本地弹幕</div>
+        <table class="data-table">
+          <tbody>
+            <tr><td>剧集数</td><td>{{ fmt(data.danmaku.total_episodes) }}</td></tr>
+            <tr><td>弹幕条数</td><td>{{ fmt(data.danmaku.total_comments) }}</td></tr>
+            <tr><td>存储大小</td><td>{{ fmtBytes(data.danmaku.total_size_mb * 1024 * 1024) }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 近期错误事件 -->
+    <div class="panel" style="margin-top: 16px">
+      <div class="section-title">近期错误事件</div>
+      <div v-if="errorLoading" class="loading">加载中…</div>
+      <div v-else-if="recentErrors.length === 0" class="empty">暂无错误事件</div>
+      <table v-else class="data-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>类型</th>
+            <th>消息</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="ev in recentErrors" :key="ev.id">
+            <td style="white-space:nowrap">{{ fmtTime(ev.created_at) }}</td>
+            <td>{{ ev.event_type }}</td>
+            <td>{{ ev.message }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </template>
 
-<script>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+<script setup>
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import * as echarts from 'echarts'
-import { apiV2 } from '../utils/api.js'
-import { getCacheConfig } from '../api/system.js'
+import { apiV2 } from '@/utils/api'
 
-export default {
-  name: 'Dashboard',
-  setup() {
-    // 未知或 API 模式不展示 R2 指标，也不从指标内容反推运行模式。
-    const runMode = ref(null)
-    const isWorkerMode = computed(() => runMode.value === 'worker')
-    const router = useRouter()
-    const loading = ref(true)
-    const error = ref('')
-    const data = ref(null)
-    const geo = ref(null)
-    // 图表 DOM 引用
-    const trendChart = ref(null)
-    const statusChart = ref(null)
-    const blockChart = ref(null)
-    const hitChart = ref(null)
-    const mapChart = ref(null)
-    // 运维洞察图表引用
-    const api429Chart = ref(null)
-    const uaTopChart = ref(null)
-    const cacheSrcChart = ref(null)
-    // 图表实例（统一管理便于 resize/dispose）
-    const charts = {}
-    // 数据有无标志（控制空态显示）
-    const trendHasData = ref(false)
-    const hasDist = ref(false)
-    const hasBlocked = ref(false)
-    const hasHit = ref(false)
-    const geoAvailable = ref(false)
-    const geoLibReady = ref(false)  // 地理库文件是否加载成功（状态灯用）
-    let geoRenderTimer = null       // 渐进渲染定时器
-    // 运维洞察状态
-    const has429 = ref(false)
-    const hasUaTop = ref(false)
-    const hasCacheSrc = ref(false)
-    const insightCards = ref(null)
-    const cs = ref(null)  // 弹幕存储统计
-    const sys = ref(null)  // 本地端系统资源（CPU/内存）
-    let sysTimer = null    // 系统资源轮询定时器
+const router = useRouter()
+const loading = ref(false)
+const errorLoading = ref(false)
 
-    const wm = computed(() => (data.value ? data.value.worker_metrics_today : null))
-    const tools = computed(() => (data.value ? data.value.cloudflare_tools_today : null))
-    const memoryWatermark = computed(() => (data.value ? data.value.worker_memory_latest : null))
-    const toolGroups = computed(() => {
-      const src = tools.value || {}
-      const build = (name, items) => {
-        const rows = items.map(item => [item[1], src[item[0]] || {}])
-        const sum = key => rows.reduce((n, row) => n + Number(row[1][key] || 0), 0)
-        return {
-          name, attempts: sum('attempts'), success: sum('success'), errors: sum('errors'),
-          detail: rows.map(row => `${row[0]} ${Number(row[1].attempts || 0)}`).join(' / '),
-        }
-      }
-      return [
-        ...(isWorkerMode.value ? [build('R2', [['r2Get', '读取'], ['r2Put', '写入'], ['r2List', '列表'], ['r2Delete', '删除']])] : []),
-        build('Durable Object', [['doRpc', 'RPC'], ['doConfig', '配置'], ['doStorageGet', '存储读'], ['doStoragePut', '存储写'], ['doWsSend', 'WS发送']]),
-        build('Assets', [['assetsFetch', '静态资源']]),
-      ]
-    })
+// 默认数据结构（防止模板渲染时 undefined）
+const makeDefault = () => ({
+  worker: { online_nodes: null, total_nodes: null, total_messages: 0, recent_events: 0 },
+  cache: { total_entries: 0, hit_rate: null, total_size_mb: null },
+  danmaku: { total_episodes: 0, total_comments: 0, total_size_mb: 0 },
+  system: { version: null, rust_version: null, build_time: null, os: null, arch: null, uptime_seconds: null },
+  media: { anime_count: 0, episode_count: 0, alias_count: 0 },
+  keys_rules: { api_key_count: 0, sign_key_count: 0, ip_rule_count: 0, ua_rule_count: 0 },
+})
 
-    // 运行健康度告警色：超阈值标黄，便于肉眼发现瓶颈
-    const loopLagClass = computed(() => {
-      const lag = sys.value && sys.value.eventloop ? sys.value.eventloop.loop_lag_ms : 0
-      return lag > 100 ? 'card-warn' : ''  // >100ms 说明事件循环被阻塞
-    })
-    const poolClass = computed(() => {
-      const p = sys.value && sys.value.db_pool
-      if (!p || p.checkedout === undefined) return ''
-      const cap = (p.size || 0) + (p.overflow || 0)
-      return cap > 0 && p.checkedout / cap > 0.8 ? 'card-warn' : ''  // 连接池 >80%
-    })
-    const queueClass = computed(() => {
-      const q = sys.value && sys.value.queues
-      if (!q) return ''
-      const d = q.entity_ingest.depth + q.access_log.depth
-      return d > 3000 ? 'card-warn' : ''  // 队列积压
-    })
+const data = ref(makeDefault())
+const recentErrors = ref([])
 
-    const load = async () => {
-      loading.value = true
-      error.value = ''
-      try {
-        // 模式读取失败不影响概览主数据，R2 仍保持隐藏。
-        const [stats, cacheConfig] = await Promise.all([
-          apiV2('/dashboard/stats'), getCacheConfig().catch(() => null),
-        ])
-        runMode.value = cacheConfig?.run_mode ?? null
-        // 适配既有展示骨架；未采集值保留 null，不用零或离线冒充实测。
-        data.value = {
-          stats, worker: stats.worker,
-          totals: { cache_count: stats.cache.total_entries, episode_links: null, refresh_pending: null },
-          today: { cache_hits: null, fallback_hits: null }, recent_errors: [],
-          worker_metrics_today: null, cloudflare_tools_today: null, worker_memory_latest: null,
-        }
-        sys.value = { available: false }
-        loading.value = false
-        await nextTick()
-        // 保留图表渲染及空态，不请求尚未实现的统计接口。
-        renderTodayCharts()
-      } catch (e) {
-        error.value = e.message
-        loading.value = false
-      }
+// 加载仪表盘统计
+async function load() {
+  loading.value = true
+  try {
+    const stats = await apiV2('/dashboard/stats')
+    data.value = {
+      worker: stats.worker ?? makeDefault().worker,
+      cache: stats.cache ?? makeDefault().cache,
+      danmaku: stats.danmaku ?? makeDefault().danmaku,
+      system: stats.system ?? makeDefault().system,
+      media: stats.media ?? makeDefault().media,
+      keys_rules: stats.keys_rules ?? makeDefault().keys_rules,
     }
-
-    // 未采集是独立状态；保留绘图/交互函数以便将来接入真实契约。
-    const unavailableMetric = () => Promise.reject(new Error('当前 API 未提供该统计指标'))
-    // 加载本地端系统资源（CPU/内存），失败静默
-    const loadSystem = async () => {
-      try {
-        const res = await unavailableMetric()
-        sys.value = res.data
-      } catch (e) { /* 系统资源采集失败不阻塞页面 */ }
-    }
-
-    // 今日分布饼图（状态码/拦截/命中），数据来自 summary
-    const renderTodayCharts = () => {
-      const m = data.value && data.value.worker_metrics_today
-      if (!m) return
-      // 状态码分布
-      const statusData = [
-        { name: '2xx', value: m.status_2xx || 0, itemStyle: { color: '#52c41a' } },
-        { name: '4xx', value: m.status_4xx || 0, itemStyle: { color: '#faad14' } },
-        { name: '5xx', value: m.status_5xx || 0, itemStyle: { color: '#ff4d4f' } },
-      ].filter(x => x.value > 0)
-      hasDist.value = statusData.length > 0
-      if (hasDist.value) drawPie(statusChart, '状态码', statusData)
-      // 拦截类型分布
-      const blockData = [
-        { name: 'IP 拦截', value: m.blocked_ip || 0 },
-        { name: 'UA 拦截', value: m.blocked_ua || 0 },
-        { name: '滥用封禁', value: m.blocked_abuse || 0 },
-        { name: '非法路由', value: m.invalid_route || 0 },
-      ].filter(x => x.value > 0)
-      hasBlocked.value = blockData.length > 0
-      if (hasBlocked.value) drawPie(blockChart, '拦截', blockData)
-      // 命中构成
-      const hitData = [
-        { name: '内存命中', value: m.mem_cache_hits || 0, itemStyle: { color: '#1677ff' } },
-        ...(isWorkerMode.value ? [{ name: 'R2 命中', value: m.r2_cache_hits || 0, itemStyle: { color: '#13c2c2' } }] : []),
-        { name: '回源', value: m.cache_miss || 0, itemStyle: { color: '#faad14' } },
-      ].filter(x => x.value > 0)
-      hasHit.value = hitData.length > 0
-      if (hasHit.value) drawPie(hitChart, '命中', hitData)
-    }
-
-    const drawPie = async (elRef, name, seriesData) => {
-      if (!elRef.value) return
-      // 先等 DOM 真正显示（v-show 刚置 true），否则 0 宽容器会画歪/图例重叠
-      await nextTick()
-      const c = echarts.getInstanceByDom(elRef.value) || echarts.init(elRef.value)
-      charts[name] = c
-      c.setOption({
-        tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-        // 图例右侧纵向滚动；用百分比宽度区分饼图区与图例区，避免重叠
-        legend: {
-          type: 'scroll', orient: 'vertical', right: '2%', top: 'middle',
-          itemWidth: 10, itemHeight: 10, itemGap: 8,
-          textStyle: { fontSize: 11 },
-          formatter: (v) => (v && v.length > 8 ? v.slice(0, 8) + '…' : v),
-        },
-        series: [{
-          // 饼图占左 60% 区域居中，右侧 40% 留给图例，杜绝重叠
-          name, type: 'pie', radius: ['35%', '58%'], center: ['30%', '50%'],
-          data: seriesData, label: { show: false }, emphasis: { label: { show: true } },
-        }],
-      }, true) // 第二参 true：清空旧 option，避免复用实例残留
-      c.resize() // 兜底：确保按当前真实容器尺寸渲染
-    }
-
-    // 横向柱状图（接口429 / UA Top）
-    const drawBar = async (elRef, name, categories, values, color) => {
-      if (!elRef.value) return
-      // 先等 DOM 显示，否则 0 宽容器会把整图压成一条竖条
-      await nextTick()
-      const c = echarts.getInstanceByDom(elRef.value) || echarts.init(elRef.value)
-      charts[name] = c
-      c.setOption({
-        // tooltip 显示完整类目名（Y 轴标签会被截断，靠 tooltip 看全名）
-        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-        grid: { left: 8, right: 16, top: 10, bottom: 8, containLabel: true },
-        xAxis: { type: 'value', minInterval: 1 },
-        yAxis: {
-          type: 'category', data: categories,
-          axisLabel: {
-            fontSize: 11,
-            width: 96, overflow: 'truncate', // 限宽并截断，避免长名重叠糊成一团
-            formatter: (v) => (v && v.length > 12 ? v.slice(0, 12) + '…' : v),
-          },
-        },
-        series: [{
-          name, type: 'bar', data: values, barMaxWidth: 22,
-          itemStyle: { color: color || '#1677ff', borderRadius: [0, 4, 4, 0] },
-        }],
-      }, true)
-      c.resize() // 兜底：按真实容器尺寸重绘，杜绝竖条
-    }
-
-    // 缓存来源英文值 → 中文展示（与 WorkerLogs 保持一致）
-    const cacheSourceLabel = (s) => ({
-      'MEM': '内存缓存',
-      'LOCAL': '本地缓存',
-      'LOCAL-STALE': '本地缓存(过期)',
-      'LOCAL-COMMENT': '本地弹幕兜底',
-      'LOCAL-EMPTY': '空结果负缓存',
-      'LOCAL-ALIAS-FALLBACK': '本地别名兜底',
-      'LOCAL-ASSEMBLED-SERIES': '本地系列组装',
-      'LOCAL-ASSEMBLED-EPISODES': '本地分集组装',
-      'STALE-QUOTA': '配额超限旧缓存',
-      'R2': 'R2缓存',
-      'MISS': '未命中(回源)',
-      'UPSTREAM-429': '上游限流',
-    }[s] || s || '未知')
-
-    // 加载运维洞察：密钥池状态 + 弹幕水位 + 429/UA/缓存来源
-    const loadInsights = async () => {
-      // 密钥池状态卡 + 弹幕水位（独立 try，互不影响）
-      try {
-        const st = await unavailableMetric()
-        const states = (st.data && st.data.items) || []
-        let total = 0, limited = 0
-        states.forEach(s => {
-          total = Math.max(total, s.key_count || 0)
-          const ks = s.key_state || {}
-          Object.values(ks).forEach(grp => {
-            Object.values(grp || {}).forEach(v => { if (v && v.limited) limited++ })
-          })
-        })
-        insightCards.value = { keyTotal: total, keyLimited: limited }
-      } catch (e) { /* 忽略 */ }
-      try {
-        const r = await unavailableMetric()
-        cs.value = r.data
-      } catch (e) { /* 忽略 */ }
-      // 洞察图表（drawBar/drawPie 内部已等 nextTick 再渲染，避免 0 宽容器画歪）
-      try {
-        // 后端已按 stat_date 聚合；不再传废弃的 hours 参数，默认读取今天。
-        const res = await unavailableMetric()
-        const d = res.data || {}
-        const a429 = (d.api_429 || []).filter(x => x.count > 0)
-        has429.value = a429.length > 0
-        if (has429.value) drawBar(api429Chart, '接口429', a429.map(x => x.api_group), a429.map(x => x.count), '#ff4d4f')
-        const uaTop = (d.ua_top || []).slice(0, 10).reverse()
-        hasUaTop.value = uaTop.length > 0
-        if (hasUaTop.value) drawBar(uaTopChart, 'UA Top', uaTop.map(x => x.ua_type), uaTop.map(x => x.count), '#1677ff')
-        const srcData = (d.cache_sources || []).filter(x => x.count > 0 && (x.source !== 'R2' || isWorkerMode.value))
-          .map(x => ({ name: cacheSourceLabel(x.source), value: x.count }))
-        hasCacheSrc.value = srcData.length > 0
-        if (hasCacheSrc.value) drawPie(cacheSrcChart, '缓存来源', srcData)
-      } catch (e) { /* 忽略 */ }
-    }
-
-    // 加载并渲染 Worker 流量趋势图
-    const loadTrends = async () => {
-      try {
-        const res = await unavailableMetric()
-        const d = res.data
-        // 判断是否有非零数据点
-        const sum = (arr) => (arr || []).reduce((a, b) => a + (b || 0), 0)
-        trendHasData.value = sum(d.requests) + sum(d.hits) + sum(d.miss) + sum(d.blocked) > 0
-        if (!trendHasData.value) return
-        await nextTick()
-        if (!trendChart.value) return
-        const c = echarts.init(trendChart.value)
-        charts.trend = c
-        c.setOption({
-          tooltip: { trigger: 'axis' },
-          legend: { data: ['请求', '命中', '回源', '拦截'] },
-          grid: { left: 50, right: 20, top: 40, bottom: 30 },
-          xAxis: { type: 'category', data: d.labels },
-          yAxis: { type: 'value' },
-          series: [
-            { name: '请求', type: 'line', smooth: true, data: d.requests, itemStyle: { color: '#1677ff' } },
-            { name: '命中', type: 'line', smooth: true, data: d.hits, itemStyle: { color: '#52c41a' } },
-            { name: '回源', type: 'line', smooth: true, data: d.miss, itemStyle: { color: '#faad14' } },
-            { name: '拦截', type: 'line', smooth: true, data: d.blocked, itemStyle: { color: '#ff4d4f' } },
-          ],
-        })
-      } catch (e) { /* 趋势图失败不阻塞页面 */ }
-    }
-
-    // 确保世界底图 GeoJSON 已注册：优先本地 /world.json，失败回退 CDN
-    const ensureWorldMap = async () => {
-      if (echarts.getMap('world')) return true
-      // 1. 本地静态资源（把 world.json 放 public/ 即走本地，无外网依赖）
-      let json = await fetch('/world.json').then(r => r.ok ? r.json() : null).catch(() => null)
-      // 2. 回退 CDN（本地未放置时兜底）
-      if (!json) {
-        json = await fetch('https://fastly.jsdelivr.net/npm/echarts@4.9.0/map/json/world.json')
-          .then(r => r.ok ? r.json() : null).catch(() => null)
-      }
-      if (json) { echarts.registerMap('world', json); return true }
-      return false
-    }
-
-    // 渲染世界底图（常驻，即使 0 个点）
-    const renderBaseMap = (hasMap) => {
-      if (!mapChart.value) return null
-      const c = echarts.getInstanceByDom(mapChart.value) || echarts.init(mapChart.value)
-      charts.map = c
-      c.setOption({
-        tooltip: { trigger: 'item', formatter: (p) => `${p.name}<br/>请求量: ${p.value ? p.value[2] : 0}` },
-        visualMap: { min: 0, max: 1, calculable: true, left: 10, bottom: 10,
-          inRange: { color: ['#a3d2ff', '#1677ff', '#ff4d4f'] } },
-        geo: hasMap ? { map: 'world', roam: true, itemStyle: { areaColor: '#f0f2f5', borderColor: '#ccc' } } : undefined,
-        series: [{ type: 'scatter', coordinateSystem: hasMap ? 'geo' : undefined,
-          data: [], symbolSize: 6, encode: { value: 2 } }],
-      })
-      c.resize()
-      return c
-    }
-
-    // C1 渐进渲染：点按请求量降序，用定时器逐个铺到地图上，视觉上一个个冒出
-    const progressiveRender = (c, pts, hasMap) => {
-      if (geoRenderTimer) { clearInterval(geoRenderTimer); geoRenderTimer = null }
-      const maxV = Math.max(...pts.map(p => p.value[2]), 1)
-      // 点多时每帧多铺几个，控制总时长在 ~4 秒内
-      const step = Math.max(1, Math.ceil(pts.length / 120))
-      let i = 0
-      const shown = []
-      geoRenderTimer = setInterval(() => {
-        if (i >= pts.length) { clearInterval(geoRenderTimer); geoRenderTimer = null; return }
-        for (let k = 0; k < step && i < pts.length; k++, i++) shown.push(pts[i])
-        c.setOption({
-          visualMap: { min: 0, max: maxV },
-          series: [{ type: 'scatter', coordinateSystem: hasMap ? 'geo' : undefined,
-            data: shown.slice(), symbolSize: (v) => 6 + (v[2] / maxV) * 24, encode: { value: 2 } }],
-        })
-      }, 30)
-    }
-
-    // 加载并渲染请求来源地图（城市级散点，底图常驻 + 渐进动画）
-    const loadGeoMap = async () => {
-      try {
-        const res = await unavailableMetric()
-        geo.value = res.data
-        // 库是否就绪：available 反映 mmdb 是否加载成功（状态灯 + 提示）
-        geoLibReady.value = !!(res.data && res.data.available)
-        geoAvailable.value = !!(res.data && res.data.available && res.data.points.length)
-        await nextTick()
-        if (!mapChart.value) return
-        // 底图常驻：无论有无点、库是否可用，都先渲染世界地图
-        const hasMap = await ensureWorldMap()
-        await nextTick()
-        const c = renderBaseMap(hasMap)
-        if (!c) return
-        // 有点则渐进铺点
-        const pts = (geo.value && geo.value.points) || []
-        if (pts.length) progressiveRender(c, pts, hasMap)
-      } catch (e) { /* 地图失败不阻塞 */ }
-    }
-
-    const onResize = () => { Object.values(charts).forEach(c => c && c.resize()) }
-
-    const goto = (path) => router.push(path)
-    const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
-    // 字节数人类可读
-    const fmtBytes = (n) => {
-      n = Number(n) || 0
-      if (n < 1024) return n + ' B'
-      if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'
-      if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB'
-      return (n / 1073741824).toFixed(2) + ' GB'
-    }
-
-    onMounted(() => {
-      load()
-      window.addEventListener('resize', onResize)
-      // 系统资源每 5 秒轮询刷新（轻量接口，仅采集 CPU/内存）
-      // 当前后端没有资源采集接口，不能启动无效轮询。
-    })
-    onUnmounted(() => {
-      window.removeEventListener('resize', onResize)
-      if (sysTimer) clearInterval(sysTimer)
-      if (geoRenderTimer) clearInterval(geoRenderTimer)  // 清渐进渲染定时器
-      Object.values(charts).forEach(c => c && c.dispose())
-    })
-    return {
-      isWorkerMode, loading, error, data, wm, tools, toolGroups, memoryWatermark, geo, goto, fmt, fmtBytes,
-      trendChart, statusChart, blockChart, hitChart, mapChart,
-      trendHasData, hasDist, hasBlocked, hasHit, geoAvailable, geoLibReady,
-      api429Chart, uaTopChart, cacheSrcChart,
-      has429, hasUaTop, hasCacheSrc, insightCards, cs, sys,
-      loopLagClass, poolClass, queueClass,
-      // 保留统计区加载入口供展示骨架接入；当前入口仅返回未实现状态，不调用旧接口。
-      loadSystem, loadInsights, loadTrends, loadGeoMap,
-    }
+  } catch (e) {
+    console.error('仪表盘加载失败', e)
+  } finally {
+    loading.value = false
   }
 }
+
+// 加载近期错误事件
+async function loadErrors() {
+  errorLoading.value = true
+  try {
+    const res = await apiV2('/admin/events/errors?page=1&page_size=10')
+    recentErrors.value = res.items ?? res ?? []
+  } catch (e) {
+    recentErrors.value = []
+  } finally {
+    errorLoading.value = false
+  }
+}
+
+// 格式化数字（加千分位）
+function fmt(n) {
+  if (n == null) return '—'
+  return Number(n).toLocaleString('zh-CN')
+}
+
+// 格式化字节大小
+function fmtBytes(bytes) {
+  if (!bytes) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+// 格式化运行时长
+function fmtUptime(secs) {
+  if (secs == null) return '—'
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  const s = secs % 60
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
+}
+
+// 格式化时间
+function fmtTime(ts) {
+  if (!ts) return '—'
+  return new Date(ts).toLocaleString('zh-CN', { hour12: false })
+}
+
+onMounted(() => {
+  load()
+  loadErrors()
+})
 </script>
 
 <style scoped>
-.page { padding: 24px; }
-.page-title { font-size: 22px; margin-bottom: 20px; color: var(--color-text); }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
-.card { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); cursor: default; transition: transform .2s; border: 1px solid var(--color-border-light); }
-.card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
-.card-ok { border-left: 4px solid var(--color-success); }
-.card-warn { border-left: 4px solid var(--color-warning); }
-.card-accent { border-left: 4px solid var(--color-primary); }
-.section-title { font-size: 16px; margin: 8px 0 14px; color: var(--color-text-secondary); }
-.chart { width: 100%; height: 320px; }
-.chart-sm { height: 260px; }
-.chart-map { height: 460px; }
-.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
-.map-sub { font-size: 12px; color: var(--color-text-secondary); font-weight: normal; margin-left: 10px; }
-.map-sub--err { color: var(--color-danger); }
-/* 库文件状态灯 */
-.geo-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
-  margin-left: 8px; vertical-align: middle; cursor: help; }
-.geo-dot--ok { background: var(--color-success); box-shadow: 0 0 4px var(--color-success); }
-.geo-dot--err { background: var(--color-danger); box-shadow: 0 0 4px var(--color-danger); }
-.geo-tip { margin-top: 8px; font-size: 12px; color: var(--color-danger); }
-.card-label { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 8px; }
-.card-value { font-size: 26px; font-weight: 600; color: var(--color-text); }
-.card-sub { color: var(--color-text-secondary); font-size: 12px; margin-top: 4px; }
-.panel { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); border: 1px solid var(--color-border-light); }
-.panel-title { font-size: 16px; margin-bottom: 14px; color: var(--color-text); }
-.data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--color-border-lighter); font-size: 13px; }
-.data-table th { color: var(--color-text-secondary); font-weight: 500; }
-.loading, .error-box, .empty { padding: 40px; text-align: center; color: var(--color-text-secondary); }
-.error-box { color: var(--color-danger); }
+.page {
+  padding: var(--spacing-lg);
+  max-width: 1200px;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-lg);
+}
+
+.page-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text);
+  margin: 0;
+}
+
+/* 顶部汇总卡片网格 */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+}
+
+.card {
+  background: var(--color-bg-overlay);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+}
+
+.card-ok {
+  border-left: 3px solid var(--color-success);
+}
+
+.card-warn {
+  border-left: 3px solid var(--color-warning);
+}
+
+.card-accent {
+  border-left: 3px solid var(--color-primary);
+}
+
+.card-label {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-bottom: 4px;
+}
+
+.card-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--color-text);
+  line-height: 1.2;
+}
+
+.card-sub {
+  font-size: 12px;
+  color: var(--color-text-placeholder);
+  margin-top: 4px;
+}
+
+/* 详情面板网格 */
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.panel {
+  background: var(--color-bg-overlay);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.data-table th {
+  text-align: left;
+  color: var(--color-text-secondary);
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid var(--color-border);
+  font-weight: 500;
+}
+
+.data-table td {
+  padding: 5px 8px 5px 0;
+  color: var(--color-text);
+  border-bottom: 1px solid var(--color-border-light, var(--color-border));
+  vertical-align: top;
+}
+
+.data-table td:first-child {
+  color: var(--color-text-secondary);
+  width: 40%;
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.loading {
+  color: var(--color-text-secondary);
+  padding: var(--spacing-sm);
+  font-size: 13px;
+}
+
+.empty {
+  color: var(--color-text-placeholder);
+  font-size: 13px;
+  padding: var(--spacing-sm);
+  text-align: center;
+}
 </style>

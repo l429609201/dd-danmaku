@@ -64,6 +64,10 @@ pub struct DashboardStats {
     pub worker: WorkerStats,
     pub cache: CacheStats,
     pub danmaku: DanmakuStats,
+    /// 媒体库统计：番剧、剧集、别名数量
+    pub media: MediaStats,
+    /// 密钥与规则统计
+    pub keys_rules: KeysRulesStats,
     pub uptime_seconds: Option<u64>,
 }
 
@@ -78,6 +82,23 @@ pub struct SystemStats {
     pub cpu_usage: Option<f32>,
     pub memory_used_mb: Option<u64>,
     pub memory_total_mb: Option<u64>,
+}
+
+/// 媒体库统计
+#[derive(Debug, Serialize)]
+pub struct MediaStats {
+    pub anime_count: u64,
+    pub episode_count: u64,
+    pub alias_count: u64,
+}
+
+/// 密钥与规则统计
+#[derive(Debug, Serialize)]
+pub struct KeysRulesStats {
+    pub api_key_count: u64,
+    pub sign_key_count: u64,
+    pub ip_rule_count: u64,
+    pub ua_rule_count: u64,
 }
 
 /// Worker 统计

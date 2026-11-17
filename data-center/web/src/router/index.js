@@ -86,10 +86,16 @@ const routes = [
         meta: { title: '签名密钥' }
       },
       {
-        path: 'worker-logs',
-        name: 'WorkerLogs',
-        component: () => import('../views/WorkerLogs.vue'),
-        meta: { title: 'Worker 日志' }
+        path: 'log-center',
+        name: 'LogCenter',
+        component: () => import('../views/LogCenter.vue'),
+        meta: { title: '日志中心' }
+      },
+      {
+        path: 'migration',
+        name: 'Migration',
+        component: () => import('../views/Migration.vue'),
+        meta: { title: '数据迁移' }
       },
       {
         path: 'db-stats',
