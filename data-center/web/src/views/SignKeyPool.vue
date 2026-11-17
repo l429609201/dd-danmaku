@@ -1,4 +1,8 @@
 <template>
+  <section>
+    <RustSecurityCrud kind="sign" />
+    <p role="alert" class="contract-warning">Rust 当前签名密钥模型尚未实现本页的 wasm 密钥组、UA 绑定、随机生成与明文复制契约。 原功能保留，等待后端补齐；当前不发送旧接口请求。</p>
+    <fieldset disabled style="border: 0; padding: 0; margin: 0; min-width: 0; opacity: .65">
   <div class="panel" style="margin-top: 20px;">
     <div class="panel-head">
       <h2 class="panel-title">签名密钥池</h2>
@@ -55,13 +59,18 @@
       </div>
     </div>
   </div>
+    </fieldset>
+  </section>
 </template>
 
 <script>
+import RustSecurityCrud from './RustSecurityCrud.vue'
 import { reactive, ref, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+// 旧业务语义尚未在 Rust 实现：保留页面但阻止旧接口及误写请求。
+const apiV2 = async () => { throw new Error('当前 Rust 后端尚未实现此页面的业务契约') }
 
 export default {
+  components: { RustSecurityCrud },
   name: 'SignKeyPool',
   setup() {
     const items = ref([])

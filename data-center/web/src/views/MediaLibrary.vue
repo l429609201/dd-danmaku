@@ -7,7 +7,7 @@
       <el-input v-model="keyword" placeholder="搜索番剧名" clearable style="width: 240px" @keyup.enter="reload" />
       <el-checkbox v-model="onlyMissing" label="仅看有缺失" border @change="reload" />
       <el-button type="primary" :icon="Search" @click="reload">查询</el-button>
-      <el-button :icon="Refresh" :loading="rebuilding" @click="rebuild">从缓存回填</el-button>
+      <el-button :icon="Refresh" disabled title="Rust 规范化媒体已是主读源，尚未实现缓存回填任务" @click="rebuild">从缓存回填（待实现）</el-button>
     </div>
 
     <div v-loading="loading">
@@ -196,14 +196,14 @@ export default {
     // 拉取外部 ID 与别名；失败不阻塞抽屉展示（属增值信息）
     const loadMeta = async (animeId) => {
       try {
-        const res = await apiV2(`/media/meta/${animeId}`)
+        const res = await apiV2(`/media/meta/${encodeURIComponent(animeId)}`)
         meta.value = res.data || { external_ids: [], aliases: [] }
       } catch (e) { meta.value = { external_ids: [], aliases: [] } }
     }
 
     const openDetail = async (animeId) => {
       try {
-        const res = await apiV2(`/media/${animeId}`)
+        const res = await apiV2(`/media/${encodeURIComponent(animeId)}`)
         detail.value = res.data
         drawerVisible.value = true
         // 重置新增表单，避免上一个番剧的残留输入
@@ -222,7 +222,7 @@ export default {
     const saveExternalId = async () => {
       if (!extForm.value.provider) { ElMessage.warning('请填写平台标识'); return }
       try {
-        await apiV2(`/media/meta/${detail.value.anime_id}/external-id`,
+        await apiV2(`/media/meta/${encodeURIComponent(detail.value.anime_id)}/external-id`,
           { method: 'PUT', body: JSON.stringify(extForm.value) })
         ElMessage.success('已保存')
         extForm.value = { provider: '', external_id: '', external_url: '' }
@@ -238,7 +238,7 @@ export default {
     const saveAlias = async () => {
       if (!aliasForm.value.alias) { ElMessage.warning('请填写别名'); return }
       try {
-        await apiV2(`/media/meta/${detail.value.anime_id}/alias`,
+        await apiV2(`/media/meta/${encodeURIComponent(detail.value.anime_id)}/alias`,
           { method: 'PUT', body: JSON.stringify(aliasForm.value) })
         ElMessage.success('已保存')
         aliasForm.value = { alias: '', lang: 'zh-Hans' }
@@ -265,16 +265,8 @@ export default {
     // 海报图加载失败：隐藏 img，露出底层占位（避免浏览器破图标）
     const onImgError = (e) => { if (e && e.target) e.target.style.display = 'none' }
 
-    // 从已存储的响应缓存批量回填媒体库
-    const rebuild = async () => {
-      rebuilding.value = true
-      try {
-        const res = await apiV2('/media/rebuild', { method: 'POST' })
-        ElMessage.success(res.message || '回填完成')
-        page.value = 1
-        await load()
-      } catch (e) { ElMessage.error(e.message) } finally { rebuilding.value = false }
-    }
+    // Rust 的规范化媒体为主读源，尚无缓存回填任务，不能以成功提示冒充执行。
+    const rebuild = async () => { ElMessage.warning('当前 Rust 后端尚未实现缓存回填任务，未发送请求') }
 
     onMounted(load)
     return { items, total, page, pageSize, keyword, onlyMissing, loading, rebuilding,

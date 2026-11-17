@@ -109,7 +109,18 @@ pub fn create_management_routes(state: &AppState) -> Router<AppState> {
         .route_layer(middleware::from_fn(auth::admin_middleware))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
     
+    // 新增管理能力与既有 UI 保持路径一致，并统一执行会话和角色校验。
+    let ui_routes = api::cache_admin::routes()
+        .merge(api::comment_admin::router())
+        .merge(api::episode_links_admin::routes())
+        .merge(api::db_stats::routes())
+        .merge(api::media_admin::routes())
+        .merge(api::entities_admin::routes())
+        .route_layer(middleware::from_fn(auth::admin_middleware))
+        .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
+
     Router::new()
+        .nest("/api/v2", ui_routes)
         .nest("/api/v2/auth", auth_routes)
         .nest("/api/v2/users", users_routes)
         .nest("/api/v2/settings", settings_routes)

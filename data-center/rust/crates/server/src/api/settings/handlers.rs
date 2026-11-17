@@ -121,6 +121,8 @@ pub async fn get_cache_config(
 ) -> Result<Json<CacheConfig>, (StatusCode, String)> {
     // SQL 冷缓存始终存在；TTL 由各条目和请求策略决定，不伪造统一容量/TTL。
     Ok(Json(CacheConfig {
+        // 使用已解析且实际生效的状态，不重新读取部署环境或数据库配置。
+        run_mode: state.run_mode,
         enabled: true,
         ttl_seconds: None,
         max_entries: None,

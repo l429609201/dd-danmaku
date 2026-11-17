@@ -1,195 +1,50 @@
-// 番剧和剧集管理 API
-import { get, post, put, del } from '@/utils/request'
+// 媒体 API：只适配 Rust 当前真实提供的契约，不把链接、别名等旧能力映射成普通 CRUD。
+import { apiV2 } from '../utils/api.js'
 
-// ========== 番剧 API ==========
+const unsupported = (feature) => Promise.reject(new Error(`当前 Rust 后端尚未实现${feature}，未发送请求`))
+const pathId = (id) => encodeURIComponent(String(id))
 
-/**
- * 获取番剧列表
- * @param {Object} params - 查询参数
- * @param {number} params.page - 页码
- * @param {number} params.limit - 每页数量
- * @param {string} params.keyword - 搜索关键词
- * @param {string} params.source - 来源（official/bilibili/dandanplay）
- * @returns {Promise<{total: number, list: Array}>}
- */
-export function getAnimeList(params) {
-  return get('/animes', params)
+// Rust 分页使用 page_size；保留旧 limit 入参，并向旧调用方提供 list 别名。
+export async function getAnimeList(params = {}) {
+  if (params.source) return unsupported('按媒体来源筛选')
+  const q = new URLSearchParams({ page: params.page ?? 1, page_size: params.page_size ?? params.limit ?? 20 })
+  const keyword = String(params.keyword ?? '').trim()
+  if (keyword) q.set('q', keyword)
+  const res = await apiV2(`/media/animes${keyword ? '/search' : ''}?${q}`)
+  return { ...res, list: res.animes }
 }
 
-/**
- * 获取番剧详情
- * @param {number} id - 番剧 ID
- * @returns {Promise<Object>}
- */
-export function getAnimeDetail(id) {
-  return get(`/animes/${id}`)
+// 详情保留 Rust 的 { anime, episodes, total_episodes }，不伪造弹幕覆盖信息。
+export const getAnimeDetail = (id) => apiV2(`/media/animes/${pathId(id)}`)
+export const searchAnime = (query, limit = 20) => String(query ?? '').trim()
+  ? getAnimeList({ keyword: query, limit })
+  : Promise.reject(new Error('搜索关键词不能为空'))
+export const createAnime = (data) => apiV2('/media/animes', { method: 'POST', body: data })
+export const updateAnime = (id, data) => apiV2(`/media/animes/${pathId(id)}`, { method: 'PUT', body: data })
+export const deleteAnime = (id) => apiV2(`/media/animes/${pathId(id)}`, { method: 'DELETE' })
+
+// 元数据 URL 使用 upstream_anime_id（上游字符串标识），不是普通 CRUD 的数据库 PK。
+export const getAnimeAliases = async (upstreamAnimeId) => (await apiV2(`/media/meta/${pathId(upstreamAnimeId)}`)).data.aliases
+export const addAnimeAlias = (upstreamAnimeId, alias) => apiV2(`/media/meta/${pathId(upstreamAnimeId)}/alias`, { method: 'PUT', body: { alias } })
+export const deleteAnimeAlias = (_upstreamAnimeId, aliasId) => apiV2(`/media/meta/alias/${pathId(aliasId)}`, { method: 'DELETE' })
+export const getAnimeExternalIds = async (upstreamAnimeId) => (await apiV2(`/media/meta/${pathId(upstreamAnimeId)}`)).data.external_ids
+
+export async function getEpisodeList(params = {}) {
+  if (params.animeId != null || params.anime_id != null) {
+    // by-anime 返回全部分集，不能冒充已执行分页；需要分页时显式拒绝。
+    return unsupported('按番剧筛选的分页分集列表（可使用 getAnimeEpisodes 获取全部）')
+  }
+  const q = new URLSearchParams({ page: params.page ?? 1, page_size: params.page_size ?? params.limit ?? 20 })
+  const res = await apiV2(`/media/episodes?${q}`)
+  return { ...res, list: res.episodes }
 }
+export const getEpisodeDetail = (id) => apiV2(`/media/episodes/${pathId(id)}`)
+export const createEpisode = (data) => apiV2('/media/episodes', { method: 'POST', body: data })
+export const updateEpisode = (id, data) => apiV2(`/media/episodes/${pathId(id)}`, { method: 'PUT', body: data })
+export const deleteEpisode = (id) => apiV2(`/media/episodes/${pathId(id)}`, { method: 'DELETE' })
+export const getAnimeEpisodes = (animeId) => apiV2(`/media/episodes/by-anime?${new URLSearchParams({ anime_id: animeId })}`)
 
-/**
- * 搜索番剧（按标题）
- * @param {string} query - 搜索关键词
- * @param {number} limit - 返回数量限制
- * @returns {Promise<Array>}
- */
-export function searchAnime(query, limit = 20) {
-  return get('/animes/search', { query, limit })
-}
-
-/**
- * 创建番剧
- * @param {Object} data - 番剧数据
- * @returns {Promise<Object>}
- */
-export function createAnime(data) {
-  return post('/animes', data)
-}
-
-/**
- * 更新番剧
- * @param {number} id - 番剧 ID
- * @param {Object} data - 番剧数据
- * @returns {Promise<Object>}
- */
-export function updateAnime(id, data) {
-  return put(`/animes/${id}`, data)
-}
-
-/**
- * 删除番剧
- * @param {number} id - 番剧 ID
- * @returns {Promise<void>}
- */
-export function deleteAnime(id) {
-  return del(`/animes/${id}`)
-}
-
-/**
- * 获取番剧别名列表
- * @param {number} animeId - 番剧 ID
- * @returns {Promise<Array>}
- */
-export function getAnimeAliases(animeId) {
-  return get(`/animes/${animeId}/aliases`)
-}
-
-/**
- * 添加番剧别名
- * @param {number} animeId - 番剧 ID
- * @param {string} alias - 别名
- * @returns {Promise<Object>}
- */
-export function addAnimeAlias(animeId, alias) {
-  return post(`/animes/${animeId}/aliases`, { alias })
-}
-
-/**
- * 删除番剧别名
- * @param {number} animeId - 番剧 ID
- * @param {number} aliasId - 别名 ID
- * @returns {Promise<void>}
- */
-export function deleteAnimeAlias(animeId, aliasId) {
-  return del(`/animes/${animeId}/aliases/${aliasId}`)
-}
-
-/**
- * 获取番剧外部 ID 列表
- * @param {number} animeId - 番剧 ID
- * @returns {Promise<Array>}
- */
-export function getAnimeExternalIds(animeId) {
-  return get(`/animes/${animeId}/external-ids`)
-}
-
-// ========== 剧集 API ==========
-
-/**
- * 获取剧集列表
- * @param {Object} params - 查询参数
- * @param {number} params.animeId - 番剧 ID
- * @param {number} params.page - 页码
- * @param {number} params.limit - 每页数量
- * @returns {Promise<{total: number, list: Array}>}
- */
-export function getEpisodeList(params) {
-  return get('/episodes', params)
-}
-
-/**
- * 获取剧集详情
- * @param {number} id - 剧集 ID
- * @returns {Promise<Object>}
- */
-export function getEpisodeDetail(id) {
-  return get(`/episodes/${id}`)
-}
-
-/**
- * 创建剧集
- * @param {Object} data - 剧集数据
- * @returns {Promise<Object>}
- */
-export function createEpisode(data) {
-  return post('/episodes', data)
-}
-
-/**
- * 更新剧集
- * @param {number} id - 剧集 ID
- * @param {Object} data - 剧集数据
- * @returns {Promise<Object>}
- */
-export function updateEpisode(id, data) {
-  return put(`/episodes/${id}`, data)
-}
-
-/**
- * 删除剧集
- * @param {number} id - 剧集 ID
- * @returns {Promise<void>}
- */
-export function deleteEpisode(id) {
-  return del(`/episodes/${id}`)
-}
-
-/**
- * 获取番剧的所有剧集
- * @param {number} animeId - 番剧 ID
- * @returns {Promise<Array>}
- */
-export function getAnimeEpisodes(animeId) {
-  return get(`/animes/${animeId}/episodes`)
-}
-
-// ========== dandanplay API ==========
-
-/**
- * 视频文件匹配
- * @param {Object} data - 匹配参数
- * @param {string} data.fileName - 文件名
- * @param {string} data.fileHash - 文件哈希（可选）
- * @param {number} data.fileSize - 文件大小（可选）
- * @param {number} data.videoDuration - 视频时长（可选）
- * @returns {Promise<{success: boolean, matches: Array}>}
- */
-export function matchVideo(data) {
-  return post('/dandanplay/match', data)
-}
-
-/**
- * 获取弹幕
- * @param {string} episodeId - 剧集 ID
- * @returns {Promise<{count: number, comments: Array}>}
- */
-export function getComments(episodeId) {
-  return get(`/dandanplay/comment/${episodeId}`)
-}
-
-/**
- * 获取外部弹幕
- * @param {string} url - 弹幕 URL
- * @returns {Promise<{count: number, comments: Array}>}
- */
-export function getExtComments(url) {
-  return post('/dandanplay/extcomment', { url })
-}
+// 公共弹幕 API 只在 Rust API 模式开放；非 API 模式由后端返回明确错误。
+export const matchVideo = (data) => apiV2('/match', { method: 'POST', body: data })
+export const getComments = (episodeId) => apiV2(`/comment/${pathId(episodeId)}`)
+export const getExtComments = (url) => apiV2('/extcomment', { method: 'POST', body: { url } })

@@ -1,4 +1,8 @@
 <template>
+  <section>
+    <RustSecurityCrud kind="user" />
+    <p role="alert" class="contract-warning">Rust 当前单用户白名单不是本页的用户组；尚未实现用户组绑定、品牌标记及 wasm 混淆换算。 原功能保留，等待后端补齐；当前不发送旧接口请求。</p>
+    <fieldset disabled style="border: 0; padding: 0; margin: 0; min-width: 0; opacity: .65">
   <div class="panel" style="margin-top: 20px;">
     <div class="panel-head">
       <h2 class="panel-title">用户允许名单池</h2>
@@ -97,13 +101,18 @@
       </div>
     </div>
   </div>
+    </fieldset>
+  </section>
 </template>
 
 <script>
+import RustSecurityCrud from './RustSecurityCrud.vue'
 import { computed, reactive, ref, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+// 旧业务语义尚未在 Rust 实现：保留页面但阻止旧接口及误写请求。
+const apiV2 = async () => { throw new Error('当前 Rust 后端尚未实现此页面的业务契约') }
 
 export default {
+  components: { RustSecurityCrud },
   name: 'UserAllowPool',
   setup() {
     const items = ref([])

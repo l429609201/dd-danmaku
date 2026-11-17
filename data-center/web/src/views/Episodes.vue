@@ -203,10 +203,13 @@ export default {
     }
     const saveCreate = async () => {
       const f = createForm.value
-      if (!f.local_title || !f.dandan_episode_id) { ElMessage.warning('本地标题和 episodeId 为必填'); return }
+      if (!String(f.local_title || '').trim() || !String(f.dandan_episode_id || '').trim()) { ElMessage.warning('本地标题和 episodeId 为必填'); return }
+      // 季号是非负整数，分集号保持字符串以支持 SP/OVA 等真实标识。
+      if (f.season_number != null && f.season_number !== '' && (!Number.isInteger(f.season_number) || f.season_number < 0)) { ElMessage.warning('季号必须为非负整数'); return }
       try {
         // source_cache_key 后端必填，手动创建用 manual 占位标识
-        const body = { ...f, match_source: 'manual', source_cache_key: 'manual:' + f.dandan_episode_id }
+        const body = { ...f, local_title: f.local_title.trim(), dandan_episode_id: String(f.dandan_episode_id).trim(), match_source: 'manual', source_cache_key: 'manual:' + String(f.dandan_episode_id).trim() }
+        if (body.season_number === '') delete body.season_number
         await apiV2('/episodes/links', { method: 'POST', body })
         ElMessage.success('创建成功'); createVisible.value = false; reload()
       } catch (e) { ElMessage.error(e.message) }

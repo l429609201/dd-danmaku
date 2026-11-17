@@ -105,14 +105,15 @@ pub async fn list_nodes(
     State(state): State<Arc<AppState>>,
     Query(query): Query<NodeListQuery>,
 ) -> ApiResult<Vec<db::entities::control_node::Model>> {
-    let nodes = if let Some(true) = query.connected {
-        ControlNodeRepo::list_connected(&state.db)
-            .await
-            .map_err(db_error_to_response)?
-    } else {
-        ControlNodeRepo::list_all(&state.db)
-            .await
-            .map_err(db_error_to_response)?
+    // 显式 false 表示离线记录筛选，不能退化为返回全部节点。
+    let nodes = match query.connected {
+        Some(true) => ControlNodeRepo::list_connected(&state.db)
+            .await.map_err(db_error_to_response)?,
+        Some(false) => ControlNodeRepo::list_all(&state.db)
+            .await.map_err(db_error_to_response)?
+            .into_iter().filter(|node| !node.connected).collect(),
+        None => ControlNodeRepo::list_all(&state.db)
+            .await.map_err(db_error_to_response)?,
     };
 
     Ok(Json(nodes))

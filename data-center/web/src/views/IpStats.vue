@@ -1,4 +1,14 @@
 <template>
+  <section>
+    <h2>Rust IP 请求明细（非聚合统计）</h2>
+    <p role="status">{{ nativeError }}</p>
+    <input v-model="nativeIp" placeholder="精确 IP 筛选" /><button @click="nativePage = 1; loadNative()">查询明细</button>
+    <table><thead><tr><th>IP</th><th>路径</th><th>方法</th><th>状态</th><th>时间</th><th>耗时</th></tr></thead>
+      <tbody><tr v-for="r in nativeRows" :key="r.id"><td>{{ r.ip_address }}</td><td>{{ r.path }}</td><td>{{ r.method }}</td><td>{{ r.status_code }}</td><td>{{ fmt(r.request_time) }}</td><td>{{ r.response_time_ms ?? '—' }}</td></tr></tbody>
+    </table>
+    <button :disabled="nativePage <= 1" @click="nativePage--; loadNative()">上一页</button>{{ nativePage }} / {{ Math.max(1, Math.ceil(nativeTotal / 50)) }}<button :disabled="nativePage * 50 >= nativeTotal" @click="nativePage++; loadNative()">下一页</button>
+    <p role="alert" class="contract-warning">Rust 当前仅实现逐请求 IP 日志与 Top 10 计数，尚未实现本页按 Worker 聚合、违规数、路径统计、排序与时间筛选。 原功能保留，等待后端补齐；当前不发送旧接口请求。</p>
+    <fieldset disabled style="border: 0; padding: 0; margin: 0; min-width: 0; opacity: .65">
   <div class="page">
     <h1 class="page-title">IP 请求统计</h1>
     <div class="toolbar">
@@ -53,17 +63,33 @@
       </div>
     </div>
   </div>
+    </fieldset>
+  </section>
 </template>
 
 <script>
 import { ref, computed, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+import { apiV2 as nativeApi } from '../utils/api.js'
+// 旧聚合业务语义尚未在 Rust 实现：保留页面但阻止旧接口及误写请求。
+const apiV2 = async () => { throw new Error('当前 Rust 后端尚未实现此页面的业务契约') }
 import Pager from '../components/Pager.vue'
 
 export default {
   name: 'IpStats',
   components: { Pager },
   setup() {
+    const nativeRows = ref([]), nativeTotal = ref(0), nativePage = ref(1), nativeIp = ref(''), nativeError = ref('')
+    const loadNative = async () => {
+      try {
+        // Rust 返回逐请求 stats；不能用它伪造违规计数或 Worker 聚合。
+        const q = new URLSearchParams({ page: nativePage.value, page_size: 50 })
+        if (nativeIp.value.trim()) q.set('ip', nativeIp.value.trim())
+        const res = await nativeApi(`/logs/ip-stats?${q}`)
+        if (!Array.isArray(res?.stats)) throw new Error('Rust IP 明细响应不符合契约')
+        nativeRows.value = res.stats; nativeTotal.value = res.total; nativeError.value = ''
+      } catch (e) { nativeError.value = e.message }
+    }
+    onMounted(loadNative)
     const items = ref([])
     const total = ref(0)
     const totalEstimated = ref(false)  // 后端截断 COUNT 时为 true
@@ -141,7 +167,7 @@ export default {
     }
 
     onMounted(load)
-    return { items, total, totalEstimated, page, pageSize, keyword, orderBy, msg,
+    return { nativeRows, nativeTotal, nativePage, nativeIp, nativeError, loadNative, items, total, totalEstimated, page, pageSize, keyword, orderBy, msg,
       range, startAt, endAt, rangeHint, load, reload, onRange, goPage, fmt, topPaths }
   }
 }

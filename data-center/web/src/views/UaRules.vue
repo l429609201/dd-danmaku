@@ -1,4 +1,8 @@
 <template>
+  <section>
+    <RustSecurityCrud kind="ua" />
+    <p role="alert" class="contract-warning">Rust 当前仅实现 UA allow/deny 匹配规则，尚未实现本页的 UA 限流、路径与回源配额、签名/用户组绑定、导入导出及下发；不能将两种规则互相映射。 原功能保留，等待后端补齐；当前不发送旧接口请求。</p>
+    <fieldset disabled style="border: 0; padding: 0; margin: 0; min-width: 0; opacity: .65">
   <div class="page">
     <h1 class="page-title">UA 限流</h1>
     <div class="toolbar">
@@ -131,16 +135,20 @@
       </div>
     </div>
   </div>
+    </fieldset>
+  </section>
 </template>
 
 <script>
+import RustSecurityCrud from './RustSecurityCrud.vue'
 import { reactive, ref, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+// 旧业务语义尚未在 Rust 实现：保留页面但阻止旧接口及误写请求。
+const apiV2 = async () => { throw new Error('当前 Rust 后端尚未实现此页面的业务契约') }
 import Pager from '../components/Pager.vue'
 
 export default {
   name: 'UaRules',
-  components: { Pager },
+  components: { Pager, RustSecurityCrud },
   setup() {
     const items = ref([])
     const total = ref(0)

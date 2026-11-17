@@ -133,6 +133,8 @@ pub struct DatabaseConfig {
 /// 缓存配置
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CacheConfig {
+    /// 仅投影已生效的进程模式；此字段不属于可写配置。
+    pub run_mode: crate::RunMode,
     pub enabled: bool,
     pub ttl_seconds: Option<u32>,
     pub max_entries: Option<u32>,

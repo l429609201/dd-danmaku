@@ -1,6 +1,7 @@
 <template>
   <div class="page">
     <h1 class="page-title">数据清理</h1>
+    <p role="status">Rust 仅支持按策略 ID 清理 worker_logs/ip_stats；全局定时调度、全部启用项执行、行数统计与脏缓存扫描/分页/清洗尚未实现。旧控件保留并禁用，不发送无效请求。</p>
     <p v-if="msg" class="msg">{{ msg }}</p>
 
     <!-- Tab 切换：数据表清理 / 数据清洗 -->
@@ -11,6 +12,7 @@
 
     <!-- ============ Tab1：数据表清理 ============ -->
     <template v-if="activeTab === 'table'">
+    <fieldset disabled style="border: 0; padding: 0; margin: 0">
     <!-- 定时任务配置 -->
     <div class="panel">
       <h2 class="panel-title">定时清理任务</h2>
@@ -30,6 +32,7 @@
       </div>
     </div>
 
+    </fieldset>
     <!-- 表策略 -->
     <div class="panel">
       <h2 class="panel-title">可清理表（勾选启用，设置保留天数）</h2>
@@ -38,33 +41,34 @@
           <tr><th>表</th><th>当前行数</th><th>启用</th><th>保留天数</th><th>最后清理</th><th>上次删除</th><th>操作</th></tr>
         </thead>
         <tbody>
-          <tr v-for="p in policies" :key="p.table_key" :class="{ sensitive: !p.is_safe }">
+          <tr v-for="p in policies" :key="p.id" :class="{ sensitive: !['worker_logs', 'ip_stats'].includes(p.target_table) }">
             <td>
-              {{ p.display_name }}
-              <span v-if="!p.is_safe" class="badge-warn">敏感</span>
+              {{ p.name }}（{{ p.target_table }}）
+              <span v-if="!['worker_logs', 'ip_stats'].includes(p.target_table)" class="badge-warn">敏感</span>
             </td>
             <td>{{ p.row_count != null ? p.row_count.toLocaleString() : '—' }}</td>
             <td>
               <label class="switch">
-                <input type="checkbox" v-model="p.enabled" @change="savePolicy(p)" />
+                <input type="checkbox" v-model="p.is_active" @change="savePolicy(p)" />
               </label>
             </td>
             <td>
-              <input type="number" min="0" v-model.number="p.retention_days"
+              <input type="number" min="1" max="36500" v-model.number="p.retention_days"
                      class="num" @change="savePolicy(p)" />
             </td>
-            <td>{{ fmt(p.last_cleanup_at) }}</td>
-            <td>{{ p.last_deleted || 0 }}</td>
+            <td>{{ fmt(p.last_run_at) }}</td>
+            <td>{{ p.last_cleanup_count ?? 0 }}</td>
             <td><button class="link" :disabled="running" @click="runOne(p)">清理此表</button></td>
           </tr>
         </tbody>
       </table>
-      <p class="tip">敏感表（红色）删除会影响业务数据/缓存，请谨慎启用。保留天数=0 表示不按天清理。</p>
+      <p class="tip">敏感表（红色）删除会影响业务数据/缓存，请谨慎启用。Rust 仅允许保留 1–36500 天，且不接受自定义清理条件。</p>
     </div>
     </template>
 
     <!-- ============ Tab2：数据清洗 ============ -->
     <template v-else>
+    <fieldset disabled style="border: 0; padding: 0; margin: 0">
     <!-- 专项清理：脏缓存 -->
     <div class="panel">
       <h2 class="panel-title">脏缓存清理</h2>
@@ -157,6 +161,7 @@
         <button class="btn" :disabled="detailPage >= totalPages || scanning" @click="gotoPage(detailPage + 1)">下一页</button>
       </div>
     </div>
+    </fieldset>
     </template>
 
     <!-- 清理结果（两个 tab 共用） -->
@@ -192,7 +197,13 @@
 
 <script>
 import { ref, computed, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+import { apiV2 as requestV2 } from '../utils/api.js'
+
+// Rust 只实现这些清理契约；旧清洗/调度代码保留但任何事件均不得发出错误请求。
+const apiV2 = (path, options) => {
+  if (path === '/cleanup/policies' || /^\/cleanup\/policies\/\d+$/.test(path) || path === '/cleanup/execute') return requestV2(path, options)
+  throw new Error('Rust 尚未实现此调度/清洗契约')
+}
 
 export default {
   name: 'Cleanup',
@@ -226,19 +237,20 @@ export default {
     const load = async () => {
       try {
         const res = await apiV2('/cleanup/policies')
-        policies.value = res.data.policies || []
-        schedule.value = res.data.schedule || { enabled: true, interval_seconds: 3600 }
-        intervalMin.value = Math.round((schedule.value.interval_seconds || 3600) / 60)
+        // Rust 返回裸 policies 数组，不包含全局 schedule。
+        policies.value = res.policies
       } catch (e) { msg.value = e.message }
     }
 
     const savePolicy = async (p) => {
+      // 清空数字输入会产生空串，不能发送被 Rust 拒绝的非法保留期。
+      if (!Number.isInteger(p.retention_days) || p.retention_days < 1 || p.retention_days > 36500) { msg.value = '保留天数必须为 1–36500 的整数'; await load(); return }
       try {
-        await apiV2(`/cleanup/policies/${p.table_key}`, {
+        await apiV2(`/cleanup/policies/${p.id}`, {
           method: 'PUT',
-          body: { enabled: p.enabled, retention_days: p.retention_days },
+          body: { is_active: p.is_active, retention_days: p.retention_days },
         })
-        msg.value = `已更新 ${p.display_name}`
+        msg.value = `已更新 ${p.name}`
       } catch (e) { msg.value = e.message; load() }
     }
 
@@ -253,17 +265,22 @@ export default {
     }
 
     const doRun = async (keys) => {
+      if (!Array.isArray(keys) || keys.length !== 1) { msg.value = 'Rust 尚未实现全部启用项执行'; return }
+      const p = policies.value.find(p => p.id === keys[0])
+      if (!p || !['worker_logs', 'ip_stats'].includes(p.target_table) || p.condition?.trim() || !Number.isInteger(p.retention_days) || p.retention_days < 1 || p.retention_days > 36500) { msg.value = '此策略超出 Rust 支持的安全清理范围'; return }
+      if (!confirm(`确认按策略「${p.name}」删除 ${p.target_table} 中超过 ${p.retention_days} 天的数据？`)) return
       running.value = true
       msg.value = ''
       try {
-        const res = await apiV2('/cleanup/run', { method: 'POST', body: { table_keys: keys } })
-        lastResult.value = JSON.stringify(res.data, null, 2)
+        // 单策略执行采用 Rust policy_id；不把旧表键请求映射成删除全部。
+        const res = await apiV2('/cleanup/execute', { method: 'POST', body: { policy_id: keys[0] } })
+        lastResult.value = JSON.stringify(res, null, 2)
         msg.value = '清理完成'
         await load()
       } catch (e) { msg.value = e.message } finally { running.value = false }
     }
     const runAll = () => doRun(null)
-    const runOne = (p) => doRun([p.table_key])
+    const runOne = (p) => doRun([p.id])
 
     // 构造脏缓存清理请求体（清理时用顶部勾选的脏类型）
     const dirtyBody = (extra = {}) => ({

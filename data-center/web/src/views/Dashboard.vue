@@ -115,7 +115,7 @@
         <div class="card">
           <div class="card-label">命中明细</div>
           <div class="card-value">{{ wm.cache_hits }}</div>
-          <div class="card-sub">内存 {{ wm.mem_cache_hits }} / R2 {{ wm.r2_cache_hits }}</div>
+          <div class="card-sub">内存 {{ wm.mem_cache_hits }}<span v-if="isWorkerMode"> / R2 {{ wm.r2_cache_hits }}</span></div>
         </div>
         <div class="card">
           <div class="card-label">出/入流量</div>
@@ -245,10 +245,14 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { apiV2 } from '../utils/api.js'
+import { getCacheConfig } from '../api/system.js'
 
 export default {
   name: 'Dashboard',
   setup() {
+    // 未知或 API 模式不展示 R2 指标，也不从指标内容反推运行模式。
+    const runMode = ref(null)
+    const isWorkerMode = computed(() => runMode.value === 'worker')
     const router = useRouter()
     const loading = ref(true)
     const error = ref('')
@@ -297,7 +301,7 @@ export default {
         }
       }
       return [
-        build('R2', [['r2Get', '读取'], ['r2Put', '写入'], ['r2List', '列表'], ['r2Delete', '删除']]),
+        ...(isWorkerMode.value ? [build('R2', [['r2Get', '读取'], ['r2Put', '写入'], ['r2List', '列表'], ['r2Delete', '删除']])] : []),
         build('Durable Object', [['doRpc', 'RPC'], ['doConfig', '配置'], ['doStorageGet', '存储读'], ['doStoragePut', '存储写'], ['doWsSend', 'WS发送']]),
         build('Assets', [['assetsFetch', '静态资源']]),
       ]
@@ -325,7 +329,11 @@ export default {
       loading.value = true
       error.value = ''
       try {
-        const stats = await apiV2('/dashboard/stats')
+        // 模式读取失败不影响概览主数据，R2 仍保持隐藏。
+        const [stats, cacheConfig] = await Promise.all([
+          apiV2('/dashboard/stats'), getCacheConfig().catch(() => null),
+        ])
+        runMode.value = cacheConfig?.run_mode ?? null
         // 适配既有展示骨架；未采集值保留 null，不用零或离线冒充实测。
         data.value = {
           stats, worker: stats.worker,
@@ -378,7 +386,7 @@ export default {
       // 命中构成
       const hitData = [
         { name: '内存命中', value: m.mem_cache_hits || 0, itemStyle: { color: '#1677ff' } },
-        { name: 'R2 命中', value: m.r2_cache_hits || 0, itemStyle: { color: '#13c2c2' } },
+        ...(isWorkerMode.value ? [{ name: 'R2 命中', value: m.r2_cache_hits || 0, itemStyle: { color: '#13c2c2' } }] : []),
         { name: '回源', value: m.cache_miss || 0, itemStyle: { color: '#faad14' } },
       ].filter(x => x.value > 0)
       hasHit.value = hitData.length > 0
@@ -484,7 +492,7 @@ export default {
         const uaTop = (d.ua_top || []).slice(0, 10).reverse()
         hasUaTop.value = uaTop.length > 0
         if (hasUaTop.value) drawBar(uaTopChart, 'UA Top', uaTop.map(x => x.ua_type), uaTop.map(x => x.count), '#1677ff')
-        const srcData = (d.cache_sources || []).filter(x => x.count > 0)
+        const srcData = (d.cache_sources || []).filter(x => x.count > 0 && (x.source !== 'R2' || isWorkerMode.value))
           .map(x => ({ name: cacheSourceLabel(x.source), value: x.count }))
         hasCacheSrc.value = srcData.length > 0
         if (hasCacheSrc.value) drawPie(cacheSrcChart, '缓存来源', srcData)
@@ -617,7 +625,7 @@ export default {
       Object.values(charts).forEach(c => c && c.dispose())
     })
     return {
-      loading, error, data, wm, tools, toolGroups, memoryWatermark, geo, goto, fmt, fmtBytes,
+      isWorkerMode, loading, error, data, wm, tools, toolGroups, memoryWatermark, geo, goto, fmt, fmtBytes,
       trendChart, statusChart, blockChart, hitChart, mapChart,
       trendHasData, hasDist, hasBlocked, hasHit, geoAvailable, geoLibReady,
       api429Chart, uaTopChart, cacheSrcChart,

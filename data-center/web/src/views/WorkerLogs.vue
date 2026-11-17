@@ -1,9 +1,10 @@
 <template>
   <div class="app-page">
     <h1 class="app-page__title">Worker 日志</h1>
+    <p role="status">当前读取 Rust 数据库日志（节点、级别、消息、extra_data）；轮转文件、实时 SSE、请求字段搜索及结构化请求/响应体尚未实现。</p>
 
     <div class="app-toolbar">
-      <el-select v-model="selectedFile" placeholder="当前日志文件" style="width: 320px"
+      <el-select disabled v-model="selectedFile" placeholder="当前日志文件" style="width: 320px"
                  popper-class="worker-log-file-popper" @change="reload">
         <el-option v-for="f in files" :key="f.name" :label="fileLabel(f)" :value="f.name">
           <div class="log-file-option">
@@ -20,14 +21,14 @@
         <el-option label="WARN" value="WARN" />
         <el-option label="ERROR" value="ERROR" />
       </el-select>
-      <el-input v-model="keyword" placeholder="关键词（跨字段搜）" clearable style="width: 200px" @keyup.enter="reload" @clear="reload" />
-      <el-input v-model="ipSearch" placeholder="搜索 IP" clearable style="width: 160px" @keyup.enter="reload" @clear="reload" />
-      <el-input v-model="uaSearch" placeholder="搜索 X-UA" clearable style="width: 170px" @keyup.enter="reload" @clear="reload" />
-      <el-input v-model="userIdSearch" placeholder="搜索 用户ID" clearable style="width: 150px" @keyup.enter="reload" @clear="reload" />
+      <el-input disabled v-model="keyword" placeholder="关键词（跨字段搜）" clearable style="width: 200px" @keyup.enter="reload" @clear="reload" />
+      <el-input disabled v-model="ipSearch" placeholder="搜索 IP" clearable style="width: 160px" @keyup.enter="reload" @clear="reload" />
+      <el-input disabled v-model="uaSearch" placeholder="搜索 X-UA" clearable style="width: 170px" @keyup.enter="reload" @clear="reload" />
+      <el-input disabled v-model="userIdSearch" placeholder="搜索 用户ID" clearable style="width: 150px" @keyup.enter="reload" @clear="reload" />
       <el-button type="primary" :icon="Search" @click="reload">查询</el-button>
       <el-switch v-model="prettyJson" active-text="JSON格式化" style="margin-right: 16px" />
       <div class="app-toolbar__spacer" />
-      <el-switch v-model="streaming" active-text="实时" @change="toggleStream" />
+      <el-switch disabled v-model="streaming" active-text="实时" @change="toggleStream" />
     </div>
 
     <el-card shadow="never">
@@ -41,6 +42,10 @@
             <div v-if="row._bodyLoading" class="body-empty">加载请求/响应体…</div>
             <div v-else class="body-expand">
               <!-- 搜索词：GET 请求的参数在 URL query 而非 body，单独展示便于排查 -->
+              <div v-if="row.extra_data" class="body-block">
+                <span class="body-label">extra_data（原始附加数据，不假映射请求/响应体）</span>
+                <pre class="body-pre">{{ renderBody(row.extra_data) }}</pre>
+              </div>
               <div v-if="row.query" class="body-block">
                 <span class="body-label">搜索词</span>
                 <pre class="body-pre">{{ row.query }}</pre>
@@ -53,7 +58,7 @@
                 <span class="body-label">响应体</span>
                 <pre class="body-pre" :key="(prettyJson ? 'p' : 'r') + '-resp'">{{ renderBody(row.response_body) }}</pre>
               </div>
-              <div v-if="!row.query && !row.request_body && !row.response_body" class="body-empty">
+              <div v-if="!row.extra_data && !row.query && !row.request_body && !row.response_body" class="body-empty">
                 该条日志无搜索词/请求体/响应体（拦截类早退路径）
               </div>
             </div>
@@ -67,8 +72,8 @@
             <el-tag :type="levelType(row.level)" size="small">{{ row.level }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="worker_id" label="Worker" width="120">
-          <template #default="{ row }">{{ row.worker_id || '—' }}</template>
+        <el-table-column prop="node_id" label="Worker" width="120">
+          <template #default="{ row }">{{ row.node_id || '—' }}</template>
         </el-table-column>
         <el-table-column label="IP" width="130">
           <template #default="{ row }"><span class="app-mono">{{ row.client_ip || '—' }}</span></template>
@@ -121,7 +126,7 @@
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
-import { apiV2, getAuthHeaders } from '../utils/api.js'
+import { apiV2 } from '../utils/api.js'
 
 export default {
   name: 'WorkerLogs',
@@ -148,34 +153,20 @@ export default {
 
     // 加载轮转文件列表
     const loadFiles = async () => {
-      try {
-        const res = await apiV2('/worker-logs/files')
-        files.value = res.data?.files || []
-        // 默认选中当前文件
-        if (files.value.length > 0 && !selectedFile.value) {
-          selectedFile.value = files.value[0].name
-        }
-      } catch (e) {
-        ElMessage.warning('文件列表加载失败: ' + e.message)
-      }
+      ElMessage.warning('Rust 尚未实现轮转文件列表')
     }
 
     // 统一拉取某一页，append=false 时替换（首次/查询），true 时追加（滚动加载）
     const fetchPage = async (targetPage, append) => {
       const q = new URLSearchParams({ page: targetPage, page_size: PAGE_SIZE })
-      // 新接口：日志在轮转文件里，selectedFile 指定查哪个文件
-      if (selectedFile.value) q.set('file', selectedFile.value)
+      // Rust 仅接受分页、level 与 node_id；不发送会被静默忽略的旧筛选参数。
       if (level.value) q.set('level', level.value)
-      if (keyword.value) q.set('keyword', keyword.value)
-      if (ipSearch.value) q.set('ip', ipSearch.value)
-      if (uaSearch.value) q.set('ua', uaSearch.value)
-      if (userIdSearch.value) q.set('user_id', userIdSearch.value)
-      const res = await apiV2(`/worker-logs?${q.toString()}`)
+      const res = await apiV2(`/logs/worker-logs?${q.toString()}`)
       // total_estimated=true 时显示「约 N 条」
       totalEstimated.value = res.total_estimated || false
       // 每条加唯一 _uid，防止 el-table row-key 因 id 缺失把全部行当同一行；
       // 文件里的日志没有数据库 id，用时间戳+随机数生成
-      const mapped = (res.items || []).map((item, idx) => ({
+      const mapped = res.logs.map((item, idx) => ({
         ...item,
         _uid: item.id ? `db-${item.id}` : `f-${targetPage}-${idx}-${Date.now()}`,
         // body 已随列表返回，标记已加载
@@ -184,7 +175,7 @@ export default {
       items.value = append ? items.value.concat(mapped) : mapped
       page.value = targetPage
       // 本页数量不足 PAGE_SIZE 说明已到末页
-      hasMore.value = mapped.length >= PAGE_SIZE
+      hasMore.value = targetPage * PAGE_SIZE < res.total
     }
 
     // 展开行：body 已随列表返回（文件存储无列宽限制），不再按需加载。
@@ -232,42 +223,11 @@ export default {
 
     // fetch 流式读取 SSE（可携带 Authorization 头，EventSource 不支持自定义头）
     const startStream = async () => {
-      abortCtrl = new AbortController()
-      try {
-        const resp = await fetch('/api/v2/worker-logs/stream', {
-          headers: { ...getAuthHeaders() }, signal: abortCtrl.signal,
-        })
-        const reader = resp.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-        while (streaming.value) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const parts = buffer.split('\n\n')
-          buffer = parts.pop()
-          for (const part of parts) {
-            const line = part.split('\n').find(l => l.startsWith('data: '))
-            if (!line) continue
-            try {
-              const item = JSON.parse(line.slice(6))
-              // 客户端过滤：不匹配当前搜索条件的实时日志直接跳过，与历史查询保持一致
-              if (!matchFilter(item)) continue
-              // SSE 推送无数据库 id，客户端生成唯一 _uid 避免 el-table 全部行共用同一 key
-              item._uid = `sse-${Date.now()}-${Math.random().toString(36).slice(2)}`
-              item._live = true
-              // 实时流本身已带 body，无需再走详情接口
-              item._bodyLoaded = true
-              item.has_body = !!(item.request_body || item.response_body || item.query)
-              items.value.unshift(item)
-              if (items.value.length > 200) items.value.pop()
-            } catch { /* 忽略心跳 */ }
-          }
-        }
-      } catch (e) {
-        if (streaming.value) ElMessage.warning('实时连接中断: ' + e.message)
-      }
+      // 不连接不存在的 SSE 接口，防止误把 HTML/错误响应当日志流。
+      streaming.value = false
+      ElMessage.warning('Rust 尚未实现实时日志流')
     }
+
     const toggleStream = (on) => {
       if (on) startStream()
       else if (abortCtrl) abortCtrl.abort()
@@ -329,7 +289,6 @@ export default {
     }
 
     onMounted(async () => {
-      await loadFiles()  // 先加载文件列表
       await reload()
       await nextTick()
       window.addEventListener('scroll', onScroll, { passive: true })
@@ -355,7 +314,7 @@ export default {
     return { items, tableRef, files, selectedFile, level, keyword, ipSearch, uaSearch, userIdSearch,
       loading, loadingMore, hasMore, totalEstimated, streaming, prettyJson, expandedRows, Search,
       reload, loadMore, toggleStream, levelType, sourceType, sourceLabel, rowClass, fmtBytes, fmtJson,
-      renderBody, fmt, fileLabel, fileRange, onExpand, decodeText }
+      renderBody, fmt, fileLabel, fileRange, onExpand, decodeText, loadFiles, matchFilter }
   }
 }
 </script>

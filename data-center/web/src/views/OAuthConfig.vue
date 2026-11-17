@@ -1,4 +1,8 @@
 <template>
+  <section>
+    <RustSecurityCrud kind="oauth" />
+    <p role="alert" class="contract-warning">Rust 当前仅实现单 provider 客户端配置，尚未实现本页的 JWT 密钥/有效期、允许用户、多 provider、导入导出与 Worker 下发。 原功能保留，等待后端补齐；当前不发送旧接口请求。</p>
+    <fieldset disabled style="border: 0; padding: 0; margin: 0; min-width: 0; opacity: .65">
   <div class="page">
     <div class="panel">
       <div class="panel-head">
@@ -138,16 +142,21 @@
       </div>
     </div>
   </div>
+    </fieldset>
+  </section>
 </template>
 
 <script>
+import RustSecurityCrud from './RustSecurityCrud.vue'
 import { computed, reactive, ref, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+// 旧业务语义尚未在 Rust 实现：保留页面但阻止旧接口及误写请求。
+const apiV2 = async () => { throw new Error('当前 Rust 后端尚未实现此页面的业务契约') }
 
 // 后端返回的脱敏占位：提交时原样回传表示「保留原值不修改」
 const REDACTED = '***REDACTED***'
 
 export default {
+  components: { RustSecurityCrud },
   name: 'OAuthConfig',
   setup() {
     const items = ref([])

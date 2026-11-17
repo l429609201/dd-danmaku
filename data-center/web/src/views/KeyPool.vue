@@ -1,4 +1,8 @@
 <template>
+  <section>
+    <RustSecurityCrud kind="api" />
+    <p role="alert" class="contract-warning">Rust 当前 API 密钥模型不是本页的 App ID/Secret 密钥池，尚未实现 UA 授权、配额状态、转发 UA、导入导出及下发。 原功能保留，等待后端补齐；当前不发送旧接口请求。</p>
+    <fieldset disabled style="border: 0; padding: 0; margin: 0; min-width: 0; opacity: .65">
   <div class="page">
     <h1 class="page-title">密钥池</h1>
     <div class="toolbar">
@@ -115,22 +119,28 @@
     </div>
 
     <!-- 签名密钥池（客户端请求验签，按 UA 分组） -->
-    <SignKeyPool />
+
 
     <!-- 用户允许名单池（按 X-Ddd-User 过滤，UA 规则绑定） -->
-    <UserAllowPool />
+
   </div>
+    </fieldset>
+    <SignKeyPool />
+    <UserAllowPool />
+  </section>
 </template>
 
 <script>
+import RustSecurityCrud from './RustSecurityCrud.vue'
 import { reactive, ref, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+// 旧业务语义尚未在 Rust 实现：保留页面但阻止旧接口及误写请求。
+const apiV2 = async () => { throw new Error('当前 Rust 后端尚未实现此页面的业务契约') }
 import SignKeyPool from './SignKeyPool.vue'
 import UserAllowPool from './UserAllowPool.vue'
 
 export default {
   name: 'KeyPool',
-  components: { SignKeyPool, UserAllowPool },
+  components: { SignKeyPool, UserAllowPool, RustSecurityCrud },
   setup() {
     const items = ref([])
     const states = ref([])

@@ -15,8 +15,8 @@
         <div class="redis-head">
           <h2 class="panel-title">{{ enginePerfTitle }}</h2>
           <span class="redis-badge" v-if="data.engine_perf && data.engine_perf.version">v{{ data.engine_perf.version }}</span>
-          <span class="redis-badge" :class="data.redis.enabled ? 'badge-ok' : 'badge-warn'">
-            Redis {{ data.redis.enabled ? '在线' : '未启用' }}
+          <span class="redis-badge" :class="data.redis.error ? 'badge-warn' : data.redis.enabled ? 'badge-ok' : 'badge-warn'">
+            Redis {{ data.redis.error ? '状态未验证' : data.redis.enabled ? '在线' : '未启用' }}
           </span>
         </div>
         <div class="redis-groups">
@@ -82,6 +82,10 @@
           </div>
         </div>
       </div>
+      <div class="panel" v-else-if="data.redis && data.redis.error">
+        <h2 class="panel-title">Redis 状态</h2>
+        <p class="muted">{{ data.redis.error }}（{{ data.redis.enabled ? '已配置启用' : '未启用' }}）</p>
+      </div>
       <div class="panel" v-else-if="data.redis && !data.redis.enabled">
         <h2 class="panel-title">Redis 状态</h2>
         <p class="muted">Redis 未启用，响应缓存使用 SQL 冷备模式。</p>
@@ -101,8 +105,8 @@
                 <td>{{ fmtBytes(t.size_bytes) }}</td>
                 <td>
                   <div class="ratio-wrap">
-                    <div class="ratio-bar" :style="{ width: t.size_ratio + '%' }"></div>
-                    <span class="ratio-text">{{ t.size_ratio }}%</span>
+                    <div class="ratio-bar" v-if="t.size_ratio != null" :style="{ width: t.size_ratio + '%' }"></div>
+                    <span class="ratio-text">{{ t.size_ratio == null ? '未知' : t.size_ratio + '%' }}</span>
                   </div>
                 </td>
                 <td>{{ t.forecast_available ? t.rows_24h.toLocaleString() : '—' }}</td>
@@ -126,7 +130,7 @@
 
 <script>
 import { ref, computed, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+import { getDatabaseStats } from '../api/system.js'
 
 export default {
   name: 'DbStats',
@@ -139,8 +143,8 @@ export default {
     const load = async () => {
       loading.value = true; error.value = ''
       try {
-        const res = await apiV2('/dashboard/db-stats')
-        data.value = res.data
+        // Rust 返回裸统计对象；容量、池与 Redis 未采集值保持未知。
+        data.value = await getDatabaseStats()
         updatedAt.value = new Date().toLocaleTimeString()
       } catch (e) { error.value = e.message } finally { loading.value = false }
     }
@@ -155,7 +159,9 @@ export default {
     const enginePerfTitle = computed(() => '数据库性能指标')
 
     const fmtBytes = (n) => {
-      n = Number(n) || 0
+      // 未采集容量不等于 0 字节，避免运维误判。
+      if (n == null || !Number.isFinite(Number(n))) return '未知'
+      n = Number(n)
       if (n < 1024) return n + ' B'
       if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'
       if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB'

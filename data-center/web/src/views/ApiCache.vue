@@ -120,6 +120,8 @@
           <el-descriptions-item label="刷新时间">{{ fmt(detail.refresh_after) }}</el-descriptions-item>
           <el-descriptions-item label="过期时间">{{ fmt(detail.expire_at) }}</el-descriptions-item>
         </el-descriptions>
+        <!-- 旧响应缓存仅用于诊断；SQL 未保存响应体时不假装可从业务数据恢复。 -->
+        <el-alert v-if="detail.body_note" :title="detail.body_note" type="info" :closable="false" />
         <pre class="json-body">{{ prettyBody }}</pre>
       </template>
     </el-drawer>

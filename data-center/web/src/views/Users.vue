@@ -25,6 +25,15 @@
           </tr>
         </tbody>
       </table>
+      <!-- 使用后端分页契约，避免只显示默认首页导致其余用户无法管理。 -->
+      <div class="panel-head">
+        <span>共 {{ total }} 位用户；第 {{ page }} / {{ totalPages }} 页</span>
+        <div>
+          <select v-model.number="pageSize" @change="changePage(1)"><option :value="20">20 条</option><option :value="50">50 条</option><option :value="100">100 条</option></select>
+          <button class="btn" :disabled="loading || page <= 1" @click="changePage(page - 1)">上一页</button>
+          <button class="btn" :disabled="loading || page >= totalPages" @click="changePage(page + 1)">下一页</button>
+        </div>
+      </div>
     </div>
 
     <!-- Token 管理 -->
@@ -73,7 +82,7 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { apiV2 } from '../utils/api.js'
 
 export default {
@@ -87,24 +96,58 @@ export default {
     const newToken = ref('')
     const form = ref({ username: '', password: '', display_name: '', role: 'viewer' })
 
+    const total = ref(0)
+    const page = ref(1)
+    const pageSize = ref(20)
+    const loading = ref(false)
+    const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+    let userRequest = 0
+    let tokenRequest = 0
+
+    // 用户切换立即擦除明文及旧列表，迟到响应不得覆盖当前用户的数据。
+    watch(tokenUserId, () => {
+      newToken.value = ''
+      tokens.value = []
+      tokenRequest++
+    }, { flush: 'sync' })
+
     const load = async () => {
+      const requestId = ++userRequest
+      loading.value = true
       msg.value = ''
       try {
-        const u = await apiV2('/users')
-        // 后端返回 UserListResponse，Token 必须按实际用户归属加载。
+        const u = await apiV2(`/users?page=${page.value}&page_size=${pageSize.value}`)
+        if (requestId !== userRequest) return
+        total.value = u.total
+        if (page.value > totalPages.value) {
+          // 删除末页最后一个用户时回到仍存在的页，避免列表永久空白。
+          page.value = totalPages.value
+          return await load()
+        }
         users.value = u.users || []
         if (!users.value.some(user => user.id === tokenUserId.value)) {
           tokenUserId.value = users.value[0]?.id ?? null
         }
         await loadTokens()
-      } catch (e) { msg.value = e.message }
+      } catch (e) { if (requestId === userRequest) msg.value = e.message }
+      finally { if (requestId === userRequest) loading.value = false }
+    }
+
+    const changePage = async (value) => {
+      page.value = Math.max(1, Math.min(value, totalPages.value))
+      newToken.value = ''
+      await load()
     }
 
     const loadTokens = async () => {
+      const userId = tokenUserId.value
+      const requestId = ++tokenRequest
       try {
-        tokens.value = tokenUserId.value
-          ? await apiV2(`/users/${tokenUserId.value}/tokens`) : []
-      } catch (e) { msg.value = e.message; tokens.value = [] }
+        const rows = userId ? await apiV2(`/users/${userId}/tokens`) : []
+        if (requestId === tokenRequest && userId === tokenUserId.value) tokens.value = rows
+      } catch (e) {
+        if (requestId === tokenRequest && userId === tokenUserId.value) { msg.value = e.message; tokens.value = [] }
+      }
     }
 
     const openCreate = () => {
@@ -132,24 +175,41 @@ export default {
     }
 
     const createToken = async () => {
+      const userId = tokenUserId.value
+      if (!userId) return
       const name = prompt('Token 名称：')
       if (!name) return
+      newToken.value = ''
+      const requestId = tokenRequest
       try {
-        const res = await apiV2(`/users/${tokenUserId.value}/tokens`, { method: 'POST', body: { name, scopes: [] } })
+        const res = await apiV2(`/users/${userId}/tokens`, { method: 'POST', body: { name, scopes: [] } })
+        // 创建过程中切换用户或离开页面时，不再展示旧用户的敏感明文。
+        if (userId !== tokenUserId.value || requestId !== tokenRequest) return
         newToken.value = res.token.token
-        load()
-      } catch (e) { msg.value = e.message }
+        await loadTokens()
+      } catch (e) { if (userId === tokenUserId.value) msg.value = e.message }
     }
 
     const delToken = async (t) => {
-      if (!confirm(`确认删除 Token ${t.name}？`)) return
-      try { await apiV2(`/users/${tokenUserId.value}/tokens/${t.id}`, { method: 'DELETE' }); load() }
-      catch (e) { msg.value = e.message }
+      const userId = tokenUserId.value
+      if (!userId || !confirm(`确认删除 Token ${t.name}？`)) return
+      newToken.value = ''
+      try {
+        await apiV2(`/users/${userId}/tokens/${t.id}`, { method: 'DELETE' })
+        if (userId === tokenUserId.value) await loadTokens()
+      } catch (e) { if (userId === tokenUserId.value) msg.value = e.message }
     }
 
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
     onMounted(load)
+    onUnmounted(() => {
+      // 离开页面即擦除明文，并让所有在途响应失效。
+      newToken.value = ''
+      userRequest++
+      tokenRequest++
+    })
     return { users, tokens, tokenUserId, loadTokens, msg, creating, newToken, form,
+      total, page, pageSize, totalPages, loading, changePage,
       openCreate, saveCreate, toggleActive, del, createToken, delToken, fmt }
   }
 }

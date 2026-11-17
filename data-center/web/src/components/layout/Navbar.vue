@@ -49,7 +49,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { useThemeStore } from '@/stores/theme'
@@ -136,8 +136,9 @@ const fetchUserInfo = async () => {
   }
 
   try {
-    const result = await get('/api/v2/auth/me')
-    username.value = (result.data && result.data.username) || '用户'
+    // Axios 已统一带 /api/v2 前缀；后端直接返回 UserInfo，不再重复前缀或读取 data 信封。
+    const result = await get('/auth/me')
+    username.value = result.username || '用户'
   } catch (error) {
     console.error('获取用户信息异常:', error)
   }

@@ -1,138 +1,42 @@
-// 缓存管理 API
-import { get, post, del } from '@/utils/request'
+// Rust 缓存管理：响应缓存按数据库行 ID 定位，不将旧 cache_key 当成行 ID。
+import { apiV2 } from '../utils/api.js'
 
-/**
- * 获取 API 响应缓存列表
- * @param {Object} params - 查询参数
- * @param {number} params.page - 页码
- * @param {number} params.limit - 每页数量
- * @param {string} params.keyword - 搜索关键词（缓存键）
- * @param {string} params.source - 来源筛选
- * @returns {Promise<{total: number, list: Array}>}
- */
-export function getCacheList(params) {
-  return get('/cache', params)
+const unsupported = (feature) => Promise.reject(new Error(`当前 Rust 后端尚未实现${feature}，未发送请求`))
+const cacheId = (id) => {
+  if (!/^\d+$/.test(String(id)) || Number(id) <= 0) throw new Error('响应缓存操作需要正整数行 ID，不能使用缓存键')
+  return encodeURIComponent(String(id))
 }
+const episodePath = (episodeId) => `/comment-store/entries/${encodeURIComponent(String(episodeId))}`
 
-/**
- * 获取缓存详情
- * @param {string} key - 缓存键
- * @returns {Promise<Object>}
- */
-export function getCacheDetail(key) {
-  return get(`/cache/${encodeURIComponent(key)}`)
+// 支持旧 limit 入参，实际发送 Rust 的 page_size；不静默忽略旧来源筛选。
+export async function getCacheList(params = {}) {
+  const { limit, ...query } = params
+  if (query.source) return unsupported('按缓存来源筛选')
+  const q = new URLSearchParams(Object.entries({ ...query, page: query.page ?? 1, page_size: query.page_size ?? limit ?? 20 })
+    .filter(([, value]) => value != null && value !== ''))
+  const res = await apiV2(`/cache/responses?${q}`)
+  return { ...res, list: res.items }
 }
+export const getCacheDetail = (id) => apiV2(`/cache/responses/${cacheId(id)}`)
+export const deleteCache = (id) => apiV2(`/cache/responses/${cacheId(id)}`, { method: 'DELETE' })
+export const getCacheStats = () => apiV2('/cache/stats')
+// 旧 refreshCache 声称重新拉取，而 Rust 只支持标记；不能假映射这两种语义。
+export const refreshCache = () => unsupported('主动重新获取缓存（可改用 markCacheRefresh 标记）')
+export const markCacheRefresh = (id) => apiV2(`/cache/responses/${cacheId(id)}/mark-refresh`, { method: 'POST' })
+export const batchDeleteCache = () => unsupported('批量删除响应缓存')
+export const clearAllCache = () => unsupported('清空全部响应缓存')
 
-/**
- * 删除缓存
- * @param {string} key - 缓存键
- * @returns {Promise<void>}
- */
-export function deleteCache(key) {
-  return del(`/cache/${encodeURIComponent(key)}`)
+export async function getCommentStoreList(params = {}) {
+  const { limit, ...query } = params
+  const q = new URLSearchParams(Object.entries({ ...query, page: query.page ?? 1, page_size: query.page_size ?? limit ?? 20 })
+    .filter(([, value]) => value != null && value !== ''))
+  const res = await apiV2(`/comment-store/entries?${q}`)
+  return { ...res, list: res.items }
 }
-
-/**
- * 批量删除缓存
- * @param {Array<string>} keys - 缓存键列表
- * @returns {Promise<{deleted: number}>}
- */
-export function batchDeleteCache(keys) {
-  return post('/cache/batch-delete', { keys })
-}
-
-/**
- * 清空所有缓存
- * @param {string} source - 可选：只清空指定来源的缓存
- * @returns {Promise<{deleted: number}>}
- */
-export function clearAllCache(source) {
-  return post('/cache/clear', { source })
-}
-
-/**
- * 获取缓存统计信息
- * @returns {Promise<{total: number, bySource: Object, size: number}>}
- */
-export function getCacheStats() {
-  return get('/cache/stats')
-}
-
-/**
- * 刷新缓存（重新获取数据）
- * @param {string} key - 缓存键
- * @returns {Promise<Object>}
- */
-export function refreshCache(key) {
-  return post(`/cache/${encodeURIComponent(key)}/refresh`)
-}
-
-// ========== 弹幕存储 API ==========
-
-/**
- * 获取弹幕存储列表
- * @param {Object} params - 查询参数
- * @param {number} params.page - 页码
- * @param {number} params.limit - 每页数量
- * @param {string} params.keyword - 搜索关键词（剧集 ID）
- * @returns {Promise<{total: number, list: Array}>}
- */
-export function getCommentStoreList(params) {
-  return get('/comment-store', params)
-}
-
-/**
- * 获取弹幕存储详情
- * @param {string} episodeId - 剧集 ID
- * @returns {Promise<Object>}
- */
-export function getCommentStoreDetail(episodeId) {
-  return get(`/comment-store/${episodeId}`)
-}
-
-/**
- * 删除弹幕存储
- * @param {string} episodeId - 剧集 ID
- * @returns {Promise<void>}
- */
-export function deleteCommentStore(episodeId) {
-  return del(`/comment-store/${episodeId}`)
-}
-
-/**
- * 批量删除弹幕存储
- * @param {Array<string>} episodeIds - 剧集 ID 列表
- * @returns {Promise<{deleted: number}>}
- */
-export function batchDeleteCommentStore(episodeIds) {
-  return post('/comment-store/batch-delete', { episodeIds })
-}
-
-/**
- * 清空所有弹幕存储
- * @returns {Promise<{deleted: number}>}
- */
-export function clearAllCommentStore() {
-  return post('/comment-store/clear')
-}
-
-/**
- * 获取弹幕存储统计信息
- * @returns {Promise<{total: number, totalSize: number, totalComments: number}>}
- */
-export function getCommentStoreStats() {
-  return get('/comment-store/stats')
-}
-
-/**
- * 归档弹幕（手动保存）
- * @param {string} episodeId - 剧集 ID
- * @param {Object} data - 弹幕数据
- * @param {number} data.count - 弹幕数量
- * @param {Array} data.comments - 弹幕列表
- * @param {string} data.source - 来源
- * @returns {Promise<void>}
- */
-export function archiveComments(episodeId, data) {
-  return post(`/comment-store/${episodeId}/archive`, data)
-}
+export const getCommentStoreDetail = (episodeId) => apiV2(`${episodePath(episodeId)}?offset=0&limit=100`)
+// 后端仅允许删除规范化记录；旧文件存储明确返回 501，不进行磁盘删除。
+export const deleteCommentStore = (episodeId) => apiV2(episodePath(episodeId), { method: 'DELETE' })
+export const getCommentStoreStats = () => apiV2('/comment-store/stats')
+export const batchDeleteCommentStore = () => unsupported('批量删除弹幕存储')
+export const clearAllCommentStore = () => unsupported('清空全部弹幕存储')
+export const archiveComments = () => unsupported('手动归档弹幕')

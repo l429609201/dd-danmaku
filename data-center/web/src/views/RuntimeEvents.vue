@@ -35,7 +35,7 @@
 
 <script>
 import { ref, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+import { getEventList } from '../api/worker.js'
 import Pager from '../components/Pager.vue'
 
 export default {
@@ -53,12 +53,11 @@ export default {
     const load = async () => {
       msg.value = ''
       try {
-        const q = new URLSearchParams({ page: page.value, page_size: pageSize.value })
-        if (level.value) q.set('level', level.value)
-        if (category.value) q.set('category', category.value)
-        const res = await apiV2(`/runtime-events?${q.toString()}`)
-        items.value = res.items || []
-        total.value = res.total || 0
+        // Rust admin 事件接口使用 snake_case 分页，响应无 data 包裹。
+        const res = await getEventList({ page: page.value, page_size: pageSize.value,
+          level: level.value, category: category.value })
+        items.value = res.items
+        total.value = res.total
       } catch (e) { msg.value = e.message }
     }
 

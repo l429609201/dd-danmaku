@@ -256,6 +256,110 @@ body {
 }
 
 /* ============================================================
+   控制台公共视觉：限定在实际布局内，统一旧页面而不影响登录页或弹层组件。
+   三层选择器覆盖页面 scoped 的硬编码颜色，状态色仍由语义类单独保留。
+   ============================================================ */
+.app-layout .layout-content .page {
+  max-width: 1560px;
+  margin-inline: auto;
+  padding: 0;
+  min-width: 0;
+  line-height: 1.6;
+}
+.app-layout .layout-content .page-title {
+  color: var(--color-text);
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: -.5px;
+  margin-bottom: 20px;
+}
+.app-layout .layout-content :is(.panel, .card) {
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 20px;
+}
+.app-layout .layout-content :is(.panel-title, .card-value) { color: var(--color-text); }
+.app-layout .layout-content :is(.page-desc, .card-label, .card-sub, .pager-info) {
+  color: var(--color-text-secondary);
+}
+.app-layout .layout-content :is(.toolbar, .panel-head, .list-head, .cfg-row, .pager) {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.app-layout .layout-content .btn {
+  min-height: 36px;
+  padding: 7px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+.app-layout .layout-content .btn:hover:not(:disabled) {
+  background: var(--color-bg-page);
+  border-color: var(--color-primary);
+}
+.app-layout .layout-content .btn-primary {
+  background: var(--color-primary-dark);
+  border-color: var(--color-primary-dark);
+  color: #fff;
+}
+.app-layout .layout-content .btn-primary:hover:not(:disabled) {
+  background: var(--color-primary);
+}
+.app-layout .layout-content .btn-danger {
+  color: var(--color-danger);
+  background: var(--color-bg);
+  border-color: var(--color-danger);
+}
+.app-layout .layout-content .btn:disabled { opacity: .5; cursor: not-allowed; }
+.app-layout .layout-content :is(.input, .num) {
+  min-height: 36px;
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: inherit;
+}
+.app-layout .layout-content :is(.input, .num)::placeholder { color: var(--color-text-placeholder); }
+.app-layout .layout-content :is(button, input, select, textarea, a):focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+.app-layout .layout-content .data-table { color: var(--color-text); }
+.app-layout .layout-content .data-table :is(th, td) {
+  border-bottom-color: var(--color-border-light);
+  padding: 12px;
+}
+.app-layout .layout-content .data-table th {
+  background: var(--color-bg-page);
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+.app-layout .layout-content .data-table tbody tr:hover { background: var(--color-bg-page); }
+/* 窄屏让表格在卡片内滚动，不挤压字段或改变表格语义。 */
+.app-layout .layout-content .panel { overflow-x: auto; }
+.app-layout .layout-content .cards { gap: 16px; }
+@media (max-width: 768px) {
+  .app-layout .layout-content :is(.panel, .card) { padding: 16px; }
+  .app-layout .layout-content .page-title { font-size: 21px; margin-bottom: 16px; }
+  .app-layout .layout-content .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .app-layout .layout-content .input { min-width: 0; }
+  .app-layout .layout-content .data-table { min-width: 560px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  body, .app-layout .layout-content .btn { transition: none; }
+}
+
+/* ============================================================
    工具类
    ============================================================ */
 .transition-base {

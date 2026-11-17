@@ -351,7 +351,8 @@ export default {
         })
         showPasswordModal.value = false
         resetPasswordForm()
-        msg.value = res.message || '密码修改成功，请重新登录'
+        // Rust 改密成功返回 204，无正文也必须继续清理会话并重新登录。
+        msg.value = res?.message || '密码修改成功，请重新登录'
         // 修改密码后主动清除本地令牌，避免继续使用旧会话造成困惑
         setTimeout(() => {
           localStorage.removeItem('access_token')
