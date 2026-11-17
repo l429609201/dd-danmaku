@@ -49,7 +49,12 @@ impl ControlConfig {
 
     fn full_url(&self) -> String {
         let sep = if self.ws_url.contains('?') { '&' } else { '?' };
-        format!("{}{}node_id={}", self.ws_url, sep, self.node_id)
+        // node_id 拼入 URL 前 percent-encode，防止含特殊字符时破坏查询参数结构。
+        let encoded_node_id = self.node_id.chars().map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c.to_string() }
+            else { format!("%{:02X}", c as u32) }
+        }).collect::<String>();
+        format!("{}{}node_id={}", self.ws_url, sep, encoded_node_id)
     }
 }
 

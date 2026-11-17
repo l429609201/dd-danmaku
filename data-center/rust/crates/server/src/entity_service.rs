@@ -61,7 +61,10 @@ impl EntityService {
         }
         if search {
             let parents = data.get("animes").and_then(Value::as_array).ok_or_else(|| anyhow::anyhow!("搜索响应缺少 animes"))?;
-            anyhow::ensure!(ids.len() == parents.len(), "搜索候选缺少有效 animeId");
+            // 单条候选缺少有效 animeId 时跳过该条，正常入库其余结果，不因个别异常导致全批 502。
+            if ids.len() < parents.len() {
+                tracing::warn!(total = parents.len(), valid = ids.len(), "搜索候选中部分条目缺少有效 animeId，已跳过");
+            }
             catalog_search_member::Entity::delete_many().filter(catalog_search_member::Column::RequestKey.eq(cache_key)).exec(&txn).await?;
             catalog_search_result::Entity::delete_by_id(cache_key).exec(&txn).await?;
             let has_more = match data.get("hasMore") {None => false, Some(Value::Bool(v)) => *v, _ => anyhow::bail!("hasMore 必须为布尔值")};
@@ -624,7 +627,15 @@ async fn upsert_alias(db:&impl ConnectionTrait,aid:i64,alias:&str,lang:Option<St
     let now=Utc::now().naive_utc();
     let old=anime_alias::Entity::find().filter(anime_alias::Column::AnimeId.eq(aid))
         .filter(anime_alias::Column::AliasNorm.eq(&norm)).one(db).await?;
-    if let Some(ref old)=old {if old.source=="manual"||old.verified_by.is_some()||old.confidence>=confidence{return Ok(());}}
+    // 人工维护或已人工验证的记录不覆盖；置信度更高时覆盖；置信度相等时仅当新 status 更高优先级时更新（pending→approved）。
+    if let Some(ref old)=old {
+        let status_priority = |s: &str| match s { "approved" => 2, "pending" => 1, _ => 0 };
+        let same_or_lower_confidence = old.confidence > confidence;
+        let same_confidence_no_upgrade = old.confidence == confidence && status_priority(status) <= status_priority(&old.status);
+        if old.source=="manual" || old.verified_by.is_some() || same_or_lower_confidence || same_confidence_no_upgrade {
+            return Ok(());
+        }
+    }
     let exists=old.is_some();
     let mut row=old.map(IntoActiveModel::into_active_model).unwrap_or_else(||anime_alias::ActiveModel {
         anime_id:Set(aid),alias:Set(alias.chars().take(500).collect()),alias_norm:Set(norm.clone()),

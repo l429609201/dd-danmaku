@@ -640,34 +640,34 @@ export default {
 
 <style scoped>
 .page { padding: 24px; }
-.page-title { font-size: 22px; margin-bottom: 20px; color: #333; }
+.page-title { font-size: 22px; margin-bottom: 20px; color: var(--color-text); }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
-.card { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); cursor: default; transition: transform .2s; }
-.card:hover { transform: translateY(-2px); }
-.card-ok { border-left: 4px solid #52c41a; }
-.card-warn { border-left: 4px solid #faad14; }
-.card-accent { border-left: 4px solid #1677ff; }
-.section-title { font-size: 16px; margin: 8px 0 14px; color: #555; }
+.card { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); cursor: default; transition: transform .2s; border: 1px solid var(--color-border-light); }
+.card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.card-ok { border-left: 4px solid var(--color-success); }
+.card-warn { border-left: 4px solid var(--color-warning); }
+.card-accent { border-left: 4px solid var(--color-primary); }
+.section-title { font-size: 16px; margin: 8px 0 14px; color: var(--color-text-secondary); }
 .chart { width: 100%; height: 320px; }
 .chart-sm { height: 260px; }
 .chart-map { height: 460px; }
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
-.map-sub { font-size: 12px; color: #999; font-weight: normal; margin-left: 10px; }
-.map-sub--err { color: #f56c6c; }
+.map-sub { font-size: 12px; color: var(--color-text-secondary); font-weight: normal; margin-left: 10px; }
+.map-sub--err { color: var(--color-danger); }
 /* 库文件状态灯 */
 .geo-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
   margin-left: 8px; vertical-align: middle; cursor: help; }
-.geo-dot--ok { background: #52c41a; box-shadow: 0 0 4px #52c41a; }
-.geo-dot--err { background: #f5222d; box-shadow: 0 0 4px #f5222d; }
-.geo-tip { margin-top: 8px; font-size: 12px; color: #f56c6c; }
-.card-label { color: #888; font-size: 13px; margin-bottom: 8px; }
-.card-value { font-size: 26px; font-weight: 600; color: #333; }
-.card-sub { color: #999; font-size: 12px; margin-top: 4px; }
-.panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-.panel-title { font-size: 16px; margin-bottom: 14px; color: #333; }
+.geo-dot--ok { background: var(--color-success); box-shadow: 0 0 4px var(--color-success); }
+.geo-dot--err { background: var(--color-danger); box-shadow: 0 0 4px var(--color-danger); }
+.geo-tip { margin-top: 8px; font-size: 12px; color: var(--color-danger); }
+.card-label { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 8px; }
+.card-value { font-size: 26px; font-weight: 600; color: var(--color-text); }
+.card-sub { color: var(--color-text-secondary); font-size: 12px; margin-top: 4px; }
+.panel { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); border: 1px solid var(--color-border-light); }
+.panel-title { font-size: 16px; margin-bottom: 14px; color: var(--color-text); }
 .data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
-.data-table th { color: #888; font-weight: 500; }
-.loading, .error-box, .empty { padding: 40px; text-align: center; color: #999; }
-.error-box { color: #d4380d; }
+.data-table th, .data-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--color-border-lighter); font-size: 13px; }
+.data-table th { color: var(--color-text-secondary); font-weight: 500; }
+.loading, .error-box, .empty { padding: 40px; text-align: center; color: var(--color-text-secondary); }
+.error-box { color: var(--color-danger); }
 </style>

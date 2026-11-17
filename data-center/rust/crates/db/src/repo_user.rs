@@ -86,7 +86,8 @@ impl UserRepo {
         let user = app_user::Entity::find_by_id(id)
             .one(&txn)
             .await?
-            .ok_or(DbErr::RecordNotFound(format!("User {} not found", id)))?;
+            // 不将内部 DB id 暴露给上层；服务层可针对业务场景添加更具体的错误说明。
+            .ok_or(DbErr::RecordNotFound("目标用户不存在".to_string()))?;
         
         let mut active_user: app_user::ActiveModel = user.into();
         
@@ -124,7 +125,8 @@ impl UserRepo {
         let user = app_user::Entity::find_by_id(id)
             .one(&txn)
             .await?
-            .ok_or(DbErr::RecordNotFound(format!("User {} not found", id)))?;
+            // 不将内部 DB id 暴露给上层；服务层可针对业务场景添加更具体的错误说明。
+            .ok_or(DbErr::RecordNotFound("目标用户不存在".to_string()))?;
         
         let mut active_user: app_user::ActiveModel = user.into();
         active_user.password_hash = Set(new_password_hash);
@@ -145,7 +147,8 @@ impl UserRepo {
         let user = app_user::Entity::find_by_id(id)
             .one(db)
             .await?
-            .ok_or(DbErr::RecordNotFound(format!("User {} not found", id)))?;
+            // 不将内部 DB id 暴露给上层；服务层可针对业务场景添加更具体的错误说明。
+            .ok_or(DbErr::RecordNotFound("目标用户不存在".to_string()))?;
         
         let mut active_user: app_user::ActiveModel = user.into();
         active_user.last_login_at = Set(Some(chrono::Utc::now().naive_utc()));
@@ -334,7 +337,7 @@ impl ApiTokenRepo {
         let token = app_user_api_token::Entity::find_by_id(id)
             .one(db)
             .await?
-            .ok_or(DbErr::RecordNotFound(format!("API Token {} not found", id)))?;
+            .ok_or(DbErr::RecordNotFound("目标 API Token 不存在".to_string()))?;
         
         let mut active_token: app_user_api_token::ActiveModel = token.into();
         active_token.last_used_at = Set(Some(chrono::Utc::now().naive_utc()));

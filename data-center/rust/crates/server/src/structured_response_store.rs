@@ -145,13 +145,13 @@ fn text(object: &Map<String, Value>, name: &str) -> anyhow::Result<Option<String
     match object.get(name) { None | Some(Value::Null) => Ok(None), Some(Value::String(v)) => Ok(Some(v.clone())), _ => anyhow::bail!("字段 {name} 必须为字符串或 null") }
 }
 fn integer(object: &Map<String, Value>, name: &str) -> anyhow::Result<Option<i64>> {
-    match object.get(name) { None => Ok(None), Some(v) => v.as_i64().map(Some).ok_or_else(|| anyhow::anyhow!("字段 {name} 必须为 i64 整数")) }
+    match object.get(name) { None | Some(Value::Null) => Ok(None), Some(v) => v.as_i64().map(Some).ok_or_else(|| anyhow::anyhow!("字段 {name} 必须为 i64 整数")) }
 }
 fn boolean(object: &Map<String, Value>, name: &str) -> anyhow::Result<Option<bool>> {
-    match object.get(name) { None => Ok(None), Some(v) => v.as_bool().map(Some).ok_or_else(|| anyhow::anyhow!("字段 {name} 必须为布尔值")) }
+    match object.get(name) { None | Some(Value::Null) => Ok(None), Some(v) => v.as_bool().map(Some).ok_or_else(|| anyhow::anyhow!("字段 {name} 必须为布尔值")) }
 }
 fn number(object: &Map<String, Value>, name: &str) -> anyhow::Result<Option<f64>> {
-    match object.get(name) { None => Ok(None), Some(v) => v.as_f64().map(Some).ok_or_else(|| anyhow::anyhow!("字段 {name} 必须为数字")) }
+    match object.get(name) { None | Some(Value::Null) => Ok(None), Some(v) => v.as_f64().map(Some).ok_or_else(|| anyhow::anyhow!("字段 {name} 必须为数字")) }
 }
 fn warn_unknown(object: &Map<String, Value>, fields: &[&str], list: Option<&str>) {
     let count = object.keys().filter(|key| !fields.contains(&key.as_str()) && list != Some(key.as_str())).count();

@@ -279,7 +279,7 @@ export default {
 </script>
 
 <style scoped>
-.page-desc { color: #909399; font-size: 13px; margin-bottom: 16px; }
+.page-desc { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
 
 /* 竖式海报网格：自适应列数，窄屏少列、宽屏多列 */
 .poster-grid {
@@ -288,15 +288,16 @@ export default {
   gap: 18px;
 }
 .poster-card {
-  background: #fff; border-radius: 12px; overflow: hidden; cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, .06); transition: transform .15s, box-shadow .15s;
+  background: var(--color-bg); border-radius: 12px; overflow: hidden; cursor: pointer;
+  box-shadow: var(--shadow-sm); transition: transform .15s, box-shadow .15s;
+  border: 1px solid var(--color-border-light);
 }
-.poster-card:hover { transform: translateY(-4px); box-shadow: 0 8px 20px rgba(0, 0, 0, .12); }
+.poster-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); }
 
 /* 海报图区：2:3 竖图比例 */
 .poster-img {
   position: relative; width: 100%; aspect-ratio: 2 / 3;
-  background: linear-gradient(135deg, #c6d4e8, #93a8c9); overflow: hidden;
+  background: linear-gradient(135deg, var(--color-border), color-mix(in srgb, var(--color-border) 60%, var(--color-primary))); overflow: hidden;
 }
 .poster-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .poster-ph {
@@ -320,10 +321,10 @@ export default {
 
 .poster-meta { padding: 10px 12px 12px; }
 .poster-title {
-  font-size: 14px; font-weight: 600; color: #303133; line-height: 1.4;
+  font-size: 14px; font-weight: 600; color: var(--color-text); line-height: 1.4;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.poster-sub { font-size: 12px; color: #909399; margin: 4px 0 8px; }
+.poster-sub { font-size: 12px; color: var(--color-text-secondary); margin: 4px 0 8px; }
 
 /* 详情抽屉 */
 .detail-head { display: flex; gap: 16px; }
@@ -331,9 +332,9 @@ export default {
   flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .cover-ph { color: #fff; font-size: 28px; font-weight: 700; opacity: .85; }
 .detail-meta { flex: 1; font-size: 13px; }
-.meta-row { margin-bottom: 8px; color: #606266; }
-.meta-row b { color: #909399; margin-right: 8px; font-weight: 500; }
-.summary { margin-top: 10px; color: #909399; line-height: 1.6; max-height: 96px; overflow: auto; }
+.meta-row { margin-bottom: 8px; color: var(--color-text-secondary); }
+.meta-row b { color: var(--color-text-secondary); margin-right: 8px; font-weight: 500; }
+.summary { margin-top: 10px; color: var(--color-text-secondary); line-height: 1.6; max-height: 96px; overflow: auto; }
 
 /* 外部 ID / 别名的行内新增表单 */
 .add-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }

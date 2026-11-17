@@ -230,10 +230,10 @@ export default {
 <style scoped>
 .stat-row { margin-bottom: 16px; }
 .stat-card { border-radius: 10px; }
-.stat-card.is-accent { background: #ecf5ff; }
-.stat-label { font-size: 13px; color: #909399; }
-.stat-value { font-size: 26px; font-weight: 600; color: #303133; margin-top: 4px; }
-.stat-sub { font-size: 12px; color: #c0c4cc; margin-top: 2px; }
+.stat-card.is-accent { background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
+.stat-label { font-size: 13px; color: var(--color-text-secondary); }
+.stat-value { font-size: 26px; font-weight: 600; color: var(--color-text); margin-top: 4px; }
+.stat-sub { font-size: 12px; color: var(--color-text-disabled); margin-top: 2px; }
 .src-tags { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
 .src-tag { font-family: monospace; }
 </style>

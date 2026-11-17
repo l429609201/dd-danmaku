@@ -213,9 +213,13 @@ pub async fn run_server(
         .unwrap_or_else(|_| "/app/config/danmaku".to_string());
     let comment_store = Arc::new(db::CommentStoreService::new(db.clone(), danmaku_dir));
     
-    // JWT 服务（使用环境变量配置密钥，默认测试密钥）
+    // JWT 服务：密钥必须显式配置且不短于 32 字节，否则拒绝启动以防止伪造 token。
     let jwt_secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "change_me_in_production_secret_key_1234567890".to_string());
+        .ok()
+        .filter(|s| s.len() >= 32)
+        .expect("JWT_SECRET 环境变量未设置或长度不足 32 字节（当前为空或过短），\
+                 请在生产环境中配置一个随机生成的高强度密钥，例如：\
+                 openssl rand -base64 48");
     let jwt_expiry_hours = std::env::var("JWT_EXPIRY_HOURS")
         .ok()
         .and_then(|s| s.parse().ok())

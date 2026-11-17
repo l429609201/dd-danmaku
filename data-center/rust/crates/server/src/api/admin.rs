@@ -12,10 +12,21 @@ use db::{ControlNodeRepo, ControlMessageRepo, MessageQuery, RuntimeEventRepo, Ev
 /// 通用分页参数
 #[derive(Debug, Deserialize)]
 pub struct PaginationQuery {
-    #[serde(default = "default_page")]
+    #[serde(default = "default_page", deserialize_with = "query_u64")]
     pub page: u64,
-    #[serde(default = "default_page_size")]
+    #[serde(default = "default_page_size", deserialize_with = "query_u64")]
     pub page_size: u64,
+}
+
+// URL 查询参数经 flatten 缓冲后为字符串，需显式解析；仍拒绝负数、小数和溢出。
+fn query_u64<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Value { Number(u64), Text(String) }
+    match Value::deserialize(deserializer)? {
+        Value::Number(value) => Ok(value),
+        Value::Text(value) => value.parse().map_err(serde::de::Error::custom),
+    }
 }
 
 impl PaginationQuery {
@@ -267,13 +278,14 @@ pub async fn list_events(
     )))
 }
 
-/// 获取最近的错误
+/// 获取最近的错误（分页）
 pub async fn recent_errors(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PaginationQuery>,
 ) -> ApiResult<Vec<db::entities::runtime_event::Model>> {
     query.validate()?;
-    let errors = RuntimeEventRepo::recent_errors(&state.db, query.page_size)
+    // 修复：同时传入 page 以支持偏移分页，而不是仅用 page_size 作行数上限。
+    let errors = RuntimeEventRepo::recent_errors(&state.db, query.page, query.page_size)
         .await
         .map_err(db_error_to_response)?;
 

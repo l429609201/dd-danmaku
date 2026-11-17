@@ -133,15 +133,18 @@ impl RuntimeEventRepo {
         Ok(results)
     }
 
-    /// 获取最近的错误事件
+    /// 获取最近的错误事件（分页）
     pub async fn recent_errors(
         db: &DatabaseConnection,
-        limit: u64,
+        page: u64,
+        page_size: u64,
     ) -> Result<Vec<runtime_event::Model>, DbErr> {
+        let offset = (page.saturating_sub(1)) * page_size;
         runtime_event::Entity::find()
             .filter(runtime_event::Column::Level.eq("ERROR"))
             .order_by_desc(runtime_event::Column::CreatedAt)
-            .limit(limit)
+            .offset(offset)
+            .limit(page_size)
             .all(db)
             .await
     }
@@ -227,8 +230,8 @@ mod tests {
         .await
         .unwrap();
         
-        // 获取错误
-        let errors = RuntimeEventRepo::recent_errors(&db, 10).await.unwrap();
+        // 获取错误（分页：第1页，每页10条）
+        let errors = RuntimeEventRepo::recent_errors(&db, 1, 10).await.unwrap();
         
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].level, "ERROR");

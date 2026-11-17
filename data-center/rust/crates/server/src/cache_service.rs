@@ -384,7 +384,7 @@ fn cacheable_body(api_path: &str, body: &str, is_empty: bool) -> bool {
     // 非法错误码不应被当作成功；成功空搜索同样可拆为零成员的结构化结果。
     if !data.is_object() || data.get("success") == Some(&Value::Bool(false))
         || data.get("success").is_some_and(|value| !value.is_boolean())
-        || data.get("errorCode").is_some_and(|code| code.as_i64() != Some(0)) {
+        || data.get("errorCode").is_some_and(|code| !code.is_null() && code.as_i64() != Some(0)) {
         return false;
     }
     let search = api_path.contains("/search/anime") || api_path.contains("/search/episodes");

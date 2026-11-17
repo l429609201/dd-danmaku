@@ -148,13 +148,13 @@ export default {
 </script>
 
 <style scoped>
-.page-desc { color: #909399; font-size: 13px; margin-bottom: 16px; }
+.page-desc { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
 .stat-row { margin-bottom: 16px; }
 .stat-card { border-radius: 10px; }
-.stat-card.is-accent { background: #ecf5ff; }
-.stat-label { font-size: 13px; color: #909399; }
-.stat-value { font-size: 26px; font-weight: 600; color: #303133; margin-top: 4px; }
-.raw-head { display: flex; justify-content: space-between; align-items: center; margin: 16px 0 8px; font-size: 13px; color: #606266; }
+.stat-card.is-accent { background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
+.stat-label { font-size: 13px; color: var(--color-text-secondary); }
+.stat-value { font-size: 26px; font-weight: 600; color: var(--color-text); margin-top: 4px; }
+.raw-head { display: flex; justify-content: space-between; align-items: center; margin: 16px 0 8px; font-size: 13px; color: var(--color-text-secondary); }
 .json-body { background: #1e1e1e; color: #d4d4d4; padding: 14px;
   border-radius: 8px; font-size: 12px; max-height: 50vh; overflow: auto; white-space: pre-wrap; }
 </style>

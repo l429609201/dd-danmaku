@@ -80,6 +80,12 @@ const routes = [
         meta: { title: '密钥池' }
       },
       {
+        path: 'sign-key-pool',
+        name: 'SignKeyPool',
+        component: () => import('../views/SignKeyPool.vue'),
+        meta: { title: '签名密钥' }
+      },
+      {
         path: 'worker-logs',
         name: 'WorkerLogs',
         component: () => import('../views/WorkerLogs.vue'),
@@ -143,28 +149,15 @@ router.beforeEach(async (to, from, next) => {
     document.title = `${to.meta.title} - Worker 数据交互中心`
   }
 
-  console.log('🛣️ 路由守卫:', {
-    to: to.path,
-    from: from.path,
-    requiresAuth: to.meta.requiresAuth
-  })
-
   // 检查认证状态
   if (to.meta.requiresAuth !== false) {
     const token = localStorage.getItem('access_token')
-    console.log('🔐 检查认证状态:', { hasToken: !!token })
-
     if (!token) {
-      console.warn('⚠️ 未找到令牌，跳转到登录页')
       next('/login')
     } else {
-      // 已登录，允许访问
-      console.log('✅ 令牌存在，允许访问')
       next()
     }
   } else {
-    // 不需要认证的页面（如登录页）
-    console.log('🔓 无需认证的页面')
     next()
   }
 })

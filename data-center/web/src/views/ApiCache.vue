@@ -239,12 +239,12 @@ export default {
 <style scoped>
 .stat-row { margin-bottom: 16px; }
 .stat-card { border-radius: 10px; }
-.stat-card.is-warn { background: #fffbe6; }
-.stat-label { font-size: 13px; color: #909399; }
-.stat-value { font-size: 26px; font-weight: 600; color: #303133; margin-top: 4px; }
-.stat-unit { font-size: 13px; font-weight: 400; color: #909399; }
-.stat-sub { font-size: 12px; color: #c0c4cc; margin-top: 2px; }
-.expired { color: #f56c6c; }
+.stat-card.is-warn { background: color-mix(in srgb, var(--color-warning) 10%, transparent); }
+.stat-label { font-size: 13px; color: var(--color-text-secondary); }
+.stat-value { font-size: 26px; font-weight: 600; color: var(--color-text); margin-top: 4px; }
+.stat-unit { font-size: 13px; font-weight: 400; color: var(--color-text-secondary); }
+.stat-sub { font-size: 12px; color: var(--color-text-disabled); margin-top: 2px; }
+.expired { color: var(--color-danger); }
 .json-body { margin-top: 16px; background: #1e1e1e; color: #d4d4d4; padding: 14px;
   border-radius: 8px; font-size: 12px; max-height: 50vh; overflow: auto; white-space: pre-wrap; }
 </style>
