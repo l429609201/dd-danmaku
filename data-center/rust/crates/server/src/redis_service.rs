@@ -2,6 +2,23 @@ use redis::{Client, aio::ConnectionManager, AsyncCommands, RedisError};
 use std::time::Duration;
 use tracing::{info, warn, error};
 
+/// 只记录解析后的服务端地址；不输出用户名、密码、查询参数或解析错误原文。
+/// 复用 Redis 自身解析器，避免 IPv6、百分号编码或畸形 URL 绕过字符串脱敏。
+fn redis_log_endpoint(url: &str) -> String {
+    let Ok(client) = Client::open(url) else {
+        return "[无效 Redis 地址，已隐藏]".to_string();
+    };
+    let info = client.get_connection_info();
+    match &info.addr {
+        redis::ConnectionAddr::Tcp(host, port) => format!("redis://{host}:{port}/{}", info.redis.db),
+        redis::ConnectionAddr::TcpTls { host, port, .. } => {
+            format!("rediss://{host}:{port}/{}", info.redis.db)
+        }
+        // 本地 socket 路径也可能含敏感目录或参数，不记录原始路径。
+        redis::ConnectionAddr::Unix(_) => "redis+unix://[路径已隐藏]".to_string(),
+    }
+}
+
 /// Redis 热缓存服务
 /// 
 /// 功能：
@@ -45,7 +62,7 @@ impl RedisCacheService {
         
         match Self::connect(&redis_url).await {
             Ok(manager) => {
-                info!("✅ Redis 缓存已连接: {}", redis_url);
+                info!("✅ Redis 缓存已连接: {}", redis_log_endpoint(&redis_url));
                 Self {
                     manager: Some(manager),
                     prefix,
@@ -53,7 +70,8 @@ impl RedisCacheService {
                 }
             },
             Err(e) => {
-                warn!("⚠️  Redis 连接失败: {}，缓存降级到 SQL", e);
+                // 错误正文可能回显认证参数或服务端内容，仅保留安全的错误分类。
+                warn!("⚠️ Redis 连接失败: 地址={}，错误类型={:?}，缓存降级到 SQL", redis_log_endpoint(&redis_url), e.kind());
                 Self {
                     manager: None,
                     prefix,
@@ -236,7 +254,7 @@ impl RedisCacheService {
             .arg(&full_pattern)
             .arg("COUNT")
             .arg(100)
-            .query_async::<_, (u64, Vec<String>)>(&mut conn)
+            .query_async::<(u64, Vec<String>)>(&mut conn)
             .await
         {
             Ok((_, keys)) => {

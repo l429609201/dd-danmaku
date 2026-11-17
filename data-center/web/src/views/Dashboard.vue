@@ -8,11 +8,11 @@
     <template v-else>
       <!-- Worker 状态卡片 -->
       <div class="cards">
-        <div class="card" :class="data.worker.connected ? 'card-ok' : 'card-warn'">
+        <div class="card" :class="data.worker.online_nodes > 0 ? 'card-ok' : ''">
           <div class="card-label">Worker 连接</div>
-          <div class="card-value">{{ data.worker.connected ? '在线' : '离线' }}</div>
-          <div class="card-sub">节点: {{ data.worker.node_id || '—' }}</div>
-          <div class="card-sub">延迟: {{ data.worker.latency_ms }} ms</div>
+          <div class="card-value">{{ data.worker.online_nodes }} / {{ data.worker.total_nodes }}</div>
+          <div class="card-sub">当前在线 / 已登记节点</div>
+          <div class="card-sub">延迟：未采集</div>
         </div>
         <div class="card" @click="goto('/cache')">
           <div class="card-label">缓存总数</div>
@@ -20,30 +20,37 @@
         </div>
         <div class="card" @click="goto('/episodes')">
           <div class="card-label">集数链接</div>
-          <div class="card-value">{{ data.totals.episode_links }}</div>
+          <div class="card-value">{{ data.totals.episode_links ?? '未采集' }}</div>
         </div>
         <div class="card">
           <div class="card-label">待刷新任务</div>
-          <div class="card-value">{{ data.totals.refresh_pending }}</div>
+          <div class="card-value">{{ data.totals.refresh_pending ?? '未采集' }}</div>
         </div>
         <div class="card">
           <div class="card-label">今日缓存命中</div>
-          <div class="card-value">{{ data.today.cache_hits }}</div>
-          <div class="card-sub">429 兜底 {{ data.today.fallback_hits }}</div>
+          <div class="card-value">{{ data.today.cache_hits ?? '未采集' }}</div>
+          <div class="card-sub">429 兜底 {{ data.today.fallback_hits ?? '未采集' }}</div>
         </div>
         <div class="card">
           <div class="card-label">今日 429 兜底</div>
-          <div class="card-value">{{ data.today.fallback_hits }}</div>
-          <div class="card-sub">缓存命中 {{ data.today.cache_hits }}</div>
+          <div class="card-value">{{ data.today.fallback_hits ?? '未采集' }}</div>
+          <div class="card-sub">缓存命中 {{ data.today.cache_hits ?? '未采集' }}</div>
         </div>
         <div class="card card-accent" @click="goto('/key-pool')">
           <div class="card-label">密钥池</div>
           <div class="card-value">{{ insightCards ? insightCards.keyTotal : '—' }}</div>
-          <div class="card-sub">限流中 {{ insightCards ? insightCards.keyLimited : 0 }} 项</div>
+          <div class="card-sub">限流中 {{ insightCards ? insightCards.keyLimited : '未采集' }} 项</div>
         </div>
       </div>
 
       <!-- 本地端系统资源（CPU / 内存实时占用） -->
+      <!-- 保留概览展示骨架与图表交互，未实现的指标明确显示未知，不调用不存在的接口。 -->
+      <div class="panel" style="margin-bottom: 24px;">
+        <h2 class="panel-title">本地弹幕统计与系统信息</h2>
+        <p>弹幕集数 {{ data.stats.danmaku.total_episodes }}；条数 {{ data.stats.danmaku.total_comments }}；容量 {{ data.stats.danmaku.total_size_mb.toFixed(2) }} MB（数据库记录）</p>
+        <p>版本 {{ data.stats.system.version }}；{{ data.stats.system.os }} / {{ data.stats.system.arch }}；运行时间 {{ data.stats.uptime_seconds == null ? '未采集' : data.stats.uptime_seconds + ' 秒' }}</p>
+        <p>Rust 工具链 {{ data.stats.system.rust_version || '未采集' }}；构建时间 {{ data.stats.system.build_time || '未采集' }}</p>
+      </div>
       <h2 class="section-title">本地端系统资源</h2>
       <div class="cards" v-if="sys && sys.available">
         <div class="card" :class="sys.cpu.system_percent > 85 ? 'card-warn' : 'card-accent'">
@@ -88,12 +95,12 @@
         </div>
       </div>
       <div class="cards" v-else-if="sys && !sys.available">
-        <div class="card"><div class="card-sub">系统资源采集不可用（psutil 缺失或异常）</div></div>
+        <div class="card"><div class="card-sub">当前 Rust API 未提供 CPU、内存与队列采集指标</div></div>
       </div>
 
 
       <!-- Worker 今日运行指标（CF 侧真实流量） -->
-      <h2 class="section-title">Worker 今日流量（CF 侧）</h2>
+      <h2 class="section-title">Worker 今日流量（CF 侧）</h2><p v-if="!wm" class="empty">当前 API 未提供 Worker 流量指标，未知不等于零。</p>
       <div class="cards" v-if="wm">
         <div class="card card-accent">
           <div class="card-label">请求数</div>
@@ -108,7 +115,7 @@
         <div class="card">
           <div class="card-label">命中明细</div>
           <div class="card-value">{{ wm.cache_hits }}</div>
-          <div class="card-sub">内存 {{ wm.mem_cache_hits }} / R2 {{ wm.r2_cache_hits }}</div>
+          <div class="card-sub">内存 {{ wm.mem_cache_hits }}<span v-if="isWorkerMode"> / R2 {{ wm.r2_cache_hits }}</span></div>
         </div>
         <div class="card">
           <div class="card-label">出/入流量</div>
@@ -127,7 +134,7 @@
         </div>
       </div>
 
-      <h2 class="section-title">Cloudflare 工具调用（今日）</h2>
+      <h2 class="section-title">Cloudflare 工具调用（今日）</h2><p v-if="!tools" class="empty">当前 API 未提供工具调用指标。</p>
       <div class="cards" v-if="tools">
         <div class="card" v-for="group in toolGroups" :key="group.name"
              :class="group.errors > 0 ? 'card-warn' : 'card-accent'">
@@ -138,7 +145,7 @@
         </div>
       </div>
 
-      <h2 class="section-title">Worker 应用内存水位（最新快照）</h2>
+      <h2 class="section-title">Worker 应用内存水位（最新快照）</h2><p v-if="!memoryWatermark" class="empty">当前 API 未提供内存水位快照。</p>
       <div class="cards" v-if="memoryWatermark">
         <div class="card card-accent">
           <div class="card-label">粗略估算</div>
@@ -156,7 +163,7 @@
       <div class="panel" style="margin-bottom: 24px;">
         <h2 class="panel-title">近 7 天 Worker 流量趋势</h2>
         <div v-show="trendHasData" ref="trendChart" class="chart"></div>
-        <div v-show="!trendHasData" class="empty">暂无趋势数据（需 Worker 连接并上报指标后生成）</div>
+        <div v-show="!trendHasData" class="empty">当前 API 未提供近 7 天趋势指标</div>
       </div>
 
       <!-- 分布图表：状态码 / 拦截 / 命中 -->
@@ -169,12 +176,12 @@
         <div class="panel">
           <h2 class="panel-title">拦截类型分布（今日）</h2>
           <div v-show="hasBlocked" ref="blockChart" class="chart chart-sm"></div>
-          <div v-show="!hasBlocked" class="empty">今日无拦截</div>
+          <div v-show="!hasBlocked" class="empty">拦截指标未采集</div>
         </div>
         <div class="panel">
           <h2 class="panel-title">缓存命中构成（今日）</h2>
           <div v-show="hasHit" ref="hitChart" class="chart chart-sm"></div>
-          <div v-show="!hasHit" class="empty">暂无命中数据</div>
+          <div v-show="!hasHit" class="empty">命中指标未采集</div>
         </div>
       </div>
 
@@ -184,17 +191,17 @@
         <div class="panel">
           <h2 class="panel-title">各接口上游限流（今日）</h2>
           <div v-show="has429" ref="api429Chart" class="chart chart-sm"></div>
-          <div v-show="!has429" class="empty">今日无上游限流</div>
+          <div v-show="!has429" class="empty">上游限流指标未采集</div>
         </div>
         <div class="panel">
           <h2 class="panel-title">UA 来源 Top（今日）</h2>
           <div v-show="hasUaTop" ref="uaTopChart" class="chart chart-sm"></div>
-          <div v-show="!hasUaTop" class="empty">暂无 UA 数据</div>
+          <div v-show="!hasUaTop" class="empty">UA 指标未采集</div>
         </div>
         <div class="panel">
           <h2 class="panel-title">缓存来源构成（今日）</h2>
           <div v-show="hasCacheSrc" ref="cacheSrcChart" class="chart chart-sm"></div>
-          <div v-show="!hasCacheSrc" class="empty">暂无来源数据</div>
+          <div v-show="!hasCacheSrc" class="empty">缓存来源指标未采集</div>
         </div>
       </div>
 
@@ -203,14 +210,14 @@
         <h2 class="panel-title">请求来源分布
           <!-- 库文件状态灯：绿=已加载，红=缺库（hover 提示放置路径） -->
           <span class="geo-dot" :class="geoLibReady ? 'geo-dot--ok' : 'geo-dot--err'"
-                :title="geoLibReady ? 'GeoLite2 地理库已加载' : '未找到 GeoLite2-City.mmdb，请放到 /app/config/ 后重启后端'"></span>
+                :title="geoLibReady ? 'GeoLite2 地理库已加载' : '地理分布接口未接入，库状态未知'"></span>
           <span class="map-sub" v-if="geo && geo.available">已解析 {{ geo.resolved }} / {{ geo.total_ips }} 个 IP</span>
           <span class="map-sub map-sub--err" v-else-if="geo && !geo.available">未配置地理库</span>
         </h2>
         <!-- 世界底图常驻：库可用即渲染，散点逐个动画铺上；库不可用仍显示底图+提示 -->
         <div ref="mapChart" class="chart chart-map"></div>
         <div v-if="!geoLibReady" class="geo-tip">
-          未配置 IP 地理库。请下载 GeoLite2-City.mmdb 放到 /app/config/ 后重启
+          当前概览 API 未提供地理分布，地理库状态未知
         </div>
       </div>
 
@@ -227,7 +234,7 @@
             </tr>
           </tbody>
         </table>
-        <div v-else class="empty">暂无错误事件</div>
+        <div v-else class="empty">错误事件详情未接入（仅有累计事件数）</div>
       </div>
     </template>
   </div>
@@ -238,10 +245,14 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { apiV2 } from '../utils/api.js'
+import { getCacheConfig } from '../api/system.js'
 
 export default {
   name: 'Dashboard',
   setup() {
+    // 未知或 API 模式不展示 R2 指标，也不从指标内容反推运行模式。
+    const runMode = ref(null)
+    const isWorkerMode = computed(() => runMode.value === 'worker')
     const router = useRouter()
     const loading = ref(true)
     const error = ref('')
@@ -290,7 +301,7 @@ export default {
         }
       }
       return [
-        build('R2', [['r2Get', '读取'], ['r2Put', '写入'], ['r2List', '列表'], ['r2Delete', '删除']]),
+        ...(isWorkerMode.value ? [build('R2', [['r2Get', '读取'], ['r2Put', '写入'], ['r2List', '列表'], ['r2Delete', '删除']])] : []),
         build('Durable Object', [['doRpc', 'RPC'], ['doConfig', '配置'], ['doStorageGet', '存储读'], ['doStoragePut', '存储写'], ['doWsSend', 'WS发送']]),
         build('Assets', [['assetsFetch', '静态资源']]),
       ]
@@ -318,26 +329,35 @@ export default {
       loading.value = true
       error.value = ''
       try {
-        const res = await apiV2('/dashboard/summary')
-        data.value = res.data
+        // 模式读取失败不影响概览主数据，R2 仍保持隐藏。
+        const [stats, cacheConfig] = await Promise.all([
+          apiV2('/dashboard/stats'), getCacheConfig().catch(() => null),
+        ])
+        runMode.value = cacheConfig?.run_mode ?? null
+        // 适配既有展示骨架；未采集值保留 null，不用零或离线冒充实测。
+        data.value = {
+          stats, worker: stats.worker,
+          totals: { cache_count: stats.cache.total_entries, episode_links: null, refresh_pending: null },
+          today: { cache_hits: null, fallback_hits: null }, recent_errors: [],
+          worker_metrics_today: null, cloudflare_tools_today: null, worker_memory_latest: null,
+        }
+        sys.value = { available: false }
         loading.value = false
         await nextTick()
-        // 并行渲染各图表，互不阻塞
+        // 保留图表渲染及空态，不请求尚未实现的统计接口。
         renderTodayCharts()
-        loadTrends()
-        loadGeoMap()
-        loadInsights()
-        loadSystem()
       } catch (e) {
         error.value = e.message
         loading.value = false
       }
     }
 
+    // 未采集是独立状态；保留绘图/交互函数以便将来接入真实契约。
+    const unavailableMetric = () => Promise.reject(new Error('当前 API 未提供该统计指标'))
     // 加载本地端系统资源（CPU/内存），失败静默
     const loadSystem = async () => {
       try {
-        const res = await apiV2('/dashboard/system')
+        const res = await unavailableMetric()
         sys.value = res.data
       } catch (e) { /* 系统资源采集失败不阻塞页面 */ }
     }
@@ -366,7 +386,7 @@ export default {
       // 命中构成
       const hitData = [
         { name: '内存命中', value: m.mem_cache_hits || 0, itemStyle: { color: '#1677ff' } },
-        { name: 'R2 命中', value: m.r2_cache_hits || 0, itemStyle: { color: '#13c2c2' } },
+        ...(isWorkerMode.value ? [{ name: 'R2 命中', value: m.r2_cache_hits || 0, itemStyle: { color: '#13c2c2' } }] : []),
         { name: '回源', value: m.cache_miss || 0, itemStyle: { color: '#faad14' } },
       ].filter(x => x.value > 0)
       hasHit.value = hitData.length > 0
@@ -445,7 +465,7 @@ export default {
     const loadInsights = async () => {
       // 密钥池状态卡 + 弹幕水位（独立 try，互不影响）
       try {
-        const st = await apiV2('/key-pool/states')
+        const st = await unavailableMetric()
         const states = (st.data && st.data.items) || []
         let total = 0, limited = 0
         states.forEach(s => {
@@ -458,13 +478,13 @@ export default {
         insightCards.value = { keyTotal: total, keyLimited: limited }
       } catch (e) { /* 忽略 */ }
       try {
-        const r = await apiV2('/comment-store/stats')
+        const r = await unavailableMetric()
         cs.value = r.data
       } catch (e) { /* 忽略 */ }
       // 洞察图表（drawBar/drawPie 内部已等 nextTick 再渲染，避免 0 宽容器画歪）
       try {
         // 后端已按 stat_date 聚合；不再传废弃的 hours 参数，默认读取今天。
-        const res = await apiV2('/dashboard/insights')
+        const res = await unavailableMetric()
         const d = res.data || {}
         const a429 = (d.api_429 || []).filter(x => x.count > 0)
         has429.value = a429.length > 0
@@ -472,7 +492,7 @@ export default {
         const uaTop = (d.ua_top || []).slice(0, 10).reverse()
         hasUaTop.value = uaTop.length > 0
         if (hasUaTop.value) drawBar(uaTopChart, 'UA Top', uaTop.map(x => x.ua_type), uaTop.map(x => x.count), '#1677ff')
-        const srcData = (d.cache_sources || []).filter(x => x.count > 0)
+        const srcData = (d.cache_sources || []).filter(x => x.count > 0 && (x.source !== 'R2' || isWorkerMode.value))
           .map(x => ({ name: cacheSourceLabel(x.source), value: x.count }))
         hasCacheSrc.value = srcData.length > 0
         if (hasCacheSrc.value) drawPie(cacheSrcChart, '缓存来源', srcData)
@@ -482,7 +502,7 @@ export default {
     // 加载并渲染 Worker 流量趋势图
     const loadTrends = async () => {
       try {
-        const res = await apiV2('/dashboard/metrics-trends?days=7')
+        const res = await unavailableMetric()
         const d = res.data
         // 判断是否有非零数据点
         const sum = (arr) => (arr || []).reduce((a, b) => a + (b || 0), 0)
@@ -561,7 +581,7 @@ export default {
     // 加载并渲染请求来源地图（城市级散点，底图常驻 + 渐进动画）
     const loadGeoMap = async () => {
       try {
-        const res = await apiV2('/dashboard/ip-geo')
+        const res = await unavailableMetric()
         geo.value = res.data
         // 库是否就绪：available 反映 mmdb 是否加载成功（状态灯 + 提示）
         geoLibReady.value = !!(res.data && res.data.available)
@@ -596,7 +616,7 @@ export default {
       load()
       window.addEventListener('resize', onResize)
       // 系统资源每 5 秒轮询刷新（轻量接口，仅采集 CPU/内存）
-      sysTimer = setInterval(loadSystem, 5000)
+      // 当前后端没有资源采集接口，不能启动无效轮询。
     })
     onUnmounted(() => {
       window.removeEventListener('resize', onResize)
@@ -605,12 +625,14 @@ export default {
       Object.values(charts).forEach(c => c && c.dispose())
     })
     return {
-      loading, error, data, wm, tools, toolGroups, memoryWatermark, geo, goto, fmt, fmtBytes,
+      isWorkerMode, loading, error, data, wm, tools, toolGroups, memoryWatermark, geo, goto, fmt, fmtBytes,
       trendChart, statusChart, blockChart, hitChart, mapChart,
       trendHasData, hasDist, hasBlocked, hasHit, geoAvailable, geoLibReady,
       api429Chart, uaTopChart, cacheSrcChart,
       has429, hasUaTop, hasCacheSrc, insightCards, cs, sys,
       loopLagClass, poolClass, queueClass,
+      // 保留统计区加载入口供展示骨架接入；当前入口仅返回未实现状态，不调用旧接口。
+      loadSystem, loadInsights, loadTrends, loadGeoMap,
     }
   }
 }
@@ -618,34 +640,34 @@ export default {
 
 <style scoped>
 .page { padding: 24px; }
-.page-title { font-size: 22px; margin-bottom: 20px; color: #333; }
+.page-title { font-size: 22px; margin-bottom: 20px; color: var(--color-text); }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
-.card { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); cursor: default; transition: transform .2s; }
-.card:hover { transform: translateY(-2px); }
-.card-ok { border-left: 4px solid #52c41a; }
-.card-warn { border-left: 4px solid #faad14; }
-.card-accent { border-left: 4px solid #1677ff; }
-.section-title { font-size: 16px; margin: 8px 0 14px; color: #555; }
+.card { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); cursor: default; transition: transform .2s; border: 1px solid var(--color-border-light); }
+.card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.card-ok { border-left: 4px solid var(--color-success); }
+.card-warn { border-left: 4px solid var(--color-warning); }
+.card-accent { border-left: 4px solid var(--color-primary); }
+.section-title { font-size: 16px; margin: 8px 0 14px; color: var(--color-text-secondary); }
 .chart { width: 100%; height: 320px; }
 .chart-sm { height: 260px; }
 .chart-map { height: 460px; }
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
-.map-sub { font-size: 12px; color: #999; font-weight: normal; margin-left: 10px; }
-.map-sub--err { color: #f56c6c; }
+.map-sub { font-size: 12px; color: var(--color-text-secondary); font-weight: normal; margin-left: 10px; }
+.map-sub--err { color: var(--color-danger); }
 /* 库文件状态灯 */
 .geo-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
   margin-left: 8px; vertical-align: middle; cursor: help; }
-.geo-dot--ok { background: #52c41a; box-shadow: 0 0 4px #52c41a; }
-.geo-dot--err { background: #f5222d; box-shadow: 0 0 4px #f5222d; }
-.geo-tip { margin-top: 8px; font-size: 12px; color: #f56c6c; }
-.card-label { color: #888; font-size: 13px; margin-bottom: 8px; }
-.card-value { font-size: 26px; font-weight: 600; color: #333; }
-.card-sub { color: #999; font-size: 12px; margin-top: 4px; }
-.panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-.panel-title { font-size: 16px; margin-bottom: 14px; color: #333; }
+.geo-dot--ok { background: var(--color-success); box-shadow: 0 0 4px var(--color-success); }
+.geo-dot--err { background: var(--color-danger); box-shadow: 0 0 4px var(--color-danger); }
+.geo-tip { margin-top: 8px; font-size: 12px; color: var(--color-danger); }
+.card-label { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 8px; }
+.card-value { font-size: 26px; font-weight: 600; color: var(--color-text); }
+.card-sub { color: var(--color-text-secondary); font-size: 12px; margin-top: 4px; }
+.panel { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); border: 1px solid var(--color-border-light); }
+.panel-title { font-size: 16px; margin-bottom: 14px; color: var(--color-text); }
 .data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
-.data-table th { color: #888; font-weight: 500; }
-.loading, .error-box, .empty { padding: 40px; text-align: center; color: #999; }
-.error-box { color: #d4380d; }
+.data-table th, .data-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--color-border-lighter); font-size: 13px; }
+.data-table th { color: var(--color-text-secondary); font-weight: 500; }
+.loading, .error-box, .empty { padding: 40px; text-align: center; color: var(--color-text-secondary); }
+.error-box { color: var(--color-danger); }
 </style>

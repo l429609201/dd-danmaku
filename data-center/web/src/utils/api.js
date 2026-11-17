@@ -17,7 +17,7 @@ export function getAuthHeaders() {
 
   if (token) {
     const authHeader = `${tokenType.charAt(0).toUpperCase() + tokenType.slice(1)} ${token}`
-    console.log('🔑 生成认证头:', authHeader.substring(0, 20) + '...')
+    // 认证头含敏感令牌，禁止输出全部或任何前缀。
     return {
       'Authorization': authHeader
     }
@@ -123,8 +123,13 @@ export function isLoggedIn() {
 /**
  * 登出
  */
-export function logout() {
-  localStorage.removeItem('access_token')
-  localStorage.removeItem('token_type')
-  window.location.href = '/'
+export async function logout() {
+  // 先撤销服务端会话，网络失败时仍清除本机凭据，避免退出后继续携带旧令牌。
+  try {
+    await apiV2('/auth/logout', { method: 'POST' })
+  } finally {
+    localStorage.removeItem('access_token')
+    localStorage.removeItem('token_type')
+    window.location.href = '/login'
+  }
 }

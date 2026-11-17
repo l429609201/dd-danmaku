@@ -203,10 +203,13 @@ export default {
     }
     const saveCreate = async () => {
       const f = createForm.value
-      if (!f.local_title || !f.dandan_episode_id) { ElMessage.warning('本地标题和 episodeId 为必填'); return }
+      if (!String(f.local_title || '').trim() || !String(f.dandan_episode_id || '').trim()) { ElMessage.warning('本地标题和 episodeId 为必填'); return }
+      // 季号是非负整数，分集号保持字符串以支持 SP/OVA 等真实标识。
+      if (f.season_number != null && f.season_number !== '' && (!Number.isInteger(f.season_number) || f.season_number < 0)) { ElMessage.warning('季号必须为非负整数'); return }
       try {
         // source_cache_key 后端必填，手动创建用 manual 占位标识
-        const body = { ...f, match_source: 'manual', source_cache_key: 'manual:' + f.dandan_episode_id }
+        const body = { ...f, local_title: f.local_title.trim(), dandan_episode_id: String(f.dandan_episode_id).trim(), match_source: 'manual', source_cache_key: 'manual:' + String(f.dandan_episode_id).trim() }
+        if (body.season_number === '') delete body.season_number
         await apiV2('/episodes/links', { method: 'POST', body })
         ElMessage.success('创建成功'); createVisible.value = false; reload()
       } catch (e) { ElMessage.error(e.message) }
@@ -227,10 +230,10 @@ export default {
 <style scoped>
 .stat-row { margin-bottom: 16px; }
 .stat-card { border-radius: 10px; }
-.stat-card.is-accent { background: #ecf5ff; }
-.stat-label { font-size: 13px; color: #909399; }
-.stat-value { font-size: 26px; font-weight: 600; color: #303133; margin-top: 4px; }
-.stat-sub { font-size: 12px; color: #c0c4cc; margin-top: 2px; }
+.stat-card.is-accent { background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
+.stat-label { font-size: 13px; color: var(--color-text-secondary); }
+.stat-value { font-size: 26px; font-weight: 600; color: var(--color-text); margin-top: 4px; }
+.stat-sub { font-size: 12px; color: var(--color-text-disabled); margin-top: 2px; }
 .src-tags { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
 .src-tag { font-family: monospace; }
 </style>

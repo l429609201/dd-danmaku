@@ -142,19 +142,8 @@ internal static class BackendRemoteVideoHash
 
     private static bool IsApprovedPrivate(Uri target, PluginConfiguration configuration)
     {
-        IEnumerable<string?> values = configuration.BackendPrivateSourcePrefixes ?? [];
-        if (configuration.DanmakuProxyEnabled) values = values.Append(configuration.DanmakuProxyBaseUrl);
-        foreach (var value in values)
-        {
-            if (!Uri.TryCreate(value, UriKind.Absolute, out var approved) || approved.Scheme is not ("http" or "https")
-                || approved.UserInfo.Length != 0 || approved.Query.Length != 0 || approved.Fragment.Length != 0) continue;
-            if (!string.Equals(target.Scheme, approved.Scheme, StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(target.Host, approved.Host, StringComparison.OrdinalIgnoreCase)
-                || target.Port != approved.Port) continue;
-            var path = approved.AbsolutePath.TrimEnd('/');
-            if (target.AbsolutePath.Equals(path, StringComparison.Ordinal) || target.AbsolutePath.StartsWith(path + "/", StringComparison.Ordinal)) return true;
-        }
-        return false;
+        // 与来源 API 使用同一地址策略，已认证会话无需额外授权普通内网。
+        return BackendSourcePolicy.IsApprovedPrivateBase(target, configuration);
     }
 
     private static async Task<BackendVideoHashResult> CalculateAsync(Uri uri, Dictionary<string, string> headers,

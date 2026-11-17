@@ -90,6 +90,32 @@ impl CommentStoreService {
         Ok(Some(response))
     }
 
+    /// 读取归档原文，供协议接口保留上游扩展字段；不改变旧 get 的类型契约。
+    pub async fn get_raw(&self, episode_id: &str) -> Result<Option<String>> {
+        let episode_id = episode_id.trim();
+        if episode_id.is_empty() {
+            return Ok(None);
+        }
+        let Some(row) = LocalCommentStore::find()
+            .filter(local_comment_store::Column::EpisodeId.eq(episode_id))
+            .one(&self.db).await?
+        else {
+            return Ok(None);
+        };
+        // 异步读取避免大弹幕文件阻塞服务执行器；损坏或缺失归档交由调用方回源。
+        let body = match tokio::fs::read_to_string(&row.file_path).await {
+            Ok(body) => body,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let _: serde_json::Value = serde_json::from_str(&body)
+            .context("归档弹幕不是有效 JSON")?;
+        let mut active: local_comment_store::ActiveModel = row.into();
+        active.last_used_at = Set(Some(chrono::Utc::now().naive_utc()));
+        active.update(&self.db).await?;
+        Ok(Some(body))
+    }
+
     /// 存储弹幕（以条数为准更新：新条数 >= 旧才覆盖）
     pub async fn archive(
         &self,

@@ -1,4 +1,8 @@
 <template>
+  <section>
+    <RustSecurityCrud kind="user" />
+    <p role="alert" class="contract-warning">Rust 当前单用户白名单不是本页的用户组；尚未实现用户组绑定、品牌标记及 wasm 混淆换算。 原功能保留，等待后端补齐；当前不发送旧接口请求。</p>
+    <fieldset disabled style="border: 0; padding: 0; margin: 0; min-width: 0; opacity: .65">
   <div class="panel" style="margin-top: 20px;">
     <div class="panel-head">
       <h2 class="panel-title">用户允许名单池</h2>
@@ -97,13 +101,18 @@
       </div>
     </div>
   </div>
+    </fieldset>
+  </section>
 </template>
 
 <script>
+import RustSecurityCrud from './RustSecurityCrud.vue'
 import { computed, reactive, ref, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+// 旧业务语义尚未在 Rust 实现：保留页面但阻止旧接口及误写请求。
+const apiV2 = async () => { throw new Error('当前 Rust 后端尚未实现此页面的业务契约') }
 
 export default {
+  components: { RustSecurityCrud },
   name: 'UserAllowPool',
   setup() {
     const items = ref([])
@@ -248,33 +257,33 @@ export default {
 </script>
 
 <style scoped>
-.panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 24px; }
+.panel { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); margin-bottom: 24px; border: 1px solid var(--color-border-light); }
 .panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.panel-title { font-size: 16px; color: #333; }
-.hint { color: #666; font-size: 12px; margin-bottom: 10px; }
-.hint code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
-.tip { background: #e6f4ff; border: 1px solid #91caff; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: #0958d9; font-size: 13px; }
+.panel-title { font-size: 16px; color: var(--color-text); }
+.hint { color: var(--color-text-secondary); font-size: 12px; margin-bottom: 10px; }
+.hint code { background: var(--color-bg-page); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+.tip { background: color-mix(in srgb, var(--color-primary) 8%, transparent); border: 1px solid color-mix(in srgb, var(--color-primary) 25%, transparent); padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: var(--color-primary); font-size: 13px; }
 .data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
-.data-table th { color: #888; font-weight: 500; }
+.data-table th, .data-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--color-border-lighter); font-size: 13px; }
+.data-table th { color: var(--color-text-secondary); font-weight: 500; }
 .key { font-family: monospace; font-size: 12px; }
-.msg { color: #555; font-size: 12px; max-width: 320px; word-break: break-all; }
+.msg { color: var(--color-text-secondary); font-size: 12px; max-width: 320px; word-break: break-all; }
 .actions { display: flex; gap: 8px; }
-.link { background: none; border: none; color: #1677ff; cursor: pointer; font-size: 13px; }
-.link.danger { color: #cf1322; }
-.empty { text-align: center; color: #999; padding: 20px; }
-.btn { padding: 8px 16px; border: 1px solid #d9d9d9; background: #fff; border-radius: 6px; cursor: pointer; }
+.link { background: none; border: none; color: var(--color-primary); cursor: pointer; font-size: 13px; }
+.link.danger { color: var(--color-danger); }
+.empty { text-align: center; color: var(--color-text-disabled); padding: 20px; }
+.btn { padding: 8px 16px; border: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-text); border-radius: 6px; cursor: pointer; }
 .btn:disabled { opacity: .6; cursor: not-allowed; }
-.btn-primary { background: #1677ff; color: #fff; border-color: #1677ff; }
-.input { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-family: inherit; font-size: 13px; }
+.btn-primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+.input { padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 6px; font-family: inherit; font-size: 13px; background: var(--color-bg); color: var(--color-text); }
 .input.full { width: 100%; box-sizing: border-box; }
 textarea.input { resize: vertical; font-family: monospace; }
-.chk { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #555; margin-bottom: 14px; }
+.chk { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--color-text-secondary); margin-bottom: 14px; }
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.modal { width: 520px; max-width: 92vw; background: #fff; border-radius: 12px; padding: 20px; }
+.modal { width: 520px; max-width: 92vw; background: var(--color-bg-elevated); border-radius: 12px; padding: 20px; border: 1px solid var(--color-border); }
 .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.modal-close { border: none; background: none; font-size: 22px; color: #999; cursor: pointer; }
+.modal-close { border: none; background: none; font-size: 22px; color: var(--color-text-secondary); cursor: pointer; }
 .form-item { margin-bottom: 14px; }
-.form-item label { display: block; margin-bottom: 6px; color: #555; font-size: 13px; }
+.form-item label { display: block; margin-bottom: 6px; color: var(--color-text-secondary); font-size: 13px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 </style>

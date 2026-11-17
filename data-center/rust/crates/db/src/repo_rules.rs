@@ -1,4 +1,5 @@
 use sea_orm::*;
+use sea_orm::sea_query::Expr;
 use crate::entities::{ip_rule, IpRule};
 
 /// IP 规则仓储
@@ -46,7 +47,7 @@ impl IpRuleRepo {
         description: Option<String>,
         priority: i32,
     ) -> Result<ip_rule::Model, DbErr> {
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         
         let rule = ip_rule::ActiveModel {
             ip_pattern: Set(ip_pattern),
@@ -95,7 +96,7 @@ impl IpRuleRepo {
             active_model.priority = Set(p);
         }
         
-        active_model.updated_at = Set(chrono::Utc::now());
+        active_model.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active_model.update(db).await
     }
@@ -115,7 +116,7 @@ impl IpRuleRepo {
         let result = IpRule::update_many()
             .filter(ip_rule::Column::Id.is_in(ids))
             .col_expr(ip_rule::Column::IsActive, Expr::value(is_active))
-            .col_expr(ip_rule::Column::UpdatedAt, Expr::value(chrono::Utc::now()))
+            .col_expr(ip_rule::Column::UpdatedAt, Expr::value(chrono::Utc::now().naive_utc()))
             .exec(db)
             .await?;
         
@@ -177,7 +178,7 @@ impl UaRuleRepo {
     ) -> Result<crate::entities::ua_rule::Model, DbErr> {
         use crate::entities::ua_rule;
         
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         
         let rule = ua_rule::ActiveModel {
             ua_pattern: Set(ua_pattern),
@@ -228,7 +229,7 @@ impl UaRuleRepo {
             active_model.priority = Set(p);
         }
         
-        active_model.updated_at = Set(chrono::Utc::now());
+        active_model.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active_model.update(db).await
     }
@@ -251,7 +252,7 @@ impl UaRuleRepo {
         let result = UaRule::update_many()
             .filter(ua_rule::Column::Id.is_in(ids))
             .col_expr(ua_rule::Column::IsActive, Expr::value(is_active))
-            .col_expr(ua_rule::Column::UpdatedAt, Expr::value(chrono::Utc::now()))
+            .col_expr(ua_rule::Column::UpdatedAt, Expr::value(chrono::Utc::now().naive_utc()))
             .exec(db)
             .await?;
         

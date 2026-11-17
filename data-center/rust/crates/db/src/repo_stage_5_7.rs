@@ -1,5 +1,6 @@
 use sea_orm::*;
-use crate::entities::{key_pools, logs_stats, cleanup_policy};
+use sea_orm::sea_query::Expr;
+use crate::entities::{api_key_pool, sign_key_pool, user_allow_pool, oauth_config, worker_log, ip_stats, cleanup_policy};
 
 // ==================== 阶段 5: 密钥和安全 ====================
 
@@ -11,21 +12,21 @@ impl ApiKeyPoolRepo {
         db: &DatabaseConnection,
         offset: u64,
         limit: u64,
-    ) -> Result<(Vec<key_pools::Model>, u64), DbErr> {
-        let query = key_pools::Entity::find().order_by_desc(key_pools::Column::CreatedAt);
+    ) -> Result<(Vec<api_key_pool::Model>, u64), DbErr> {
+        let query = api_key_pool::Entity::find().order_by_desc(api_key_pool::Column::CreatedAt);
         let total = query.clone().count(db).await?;
         let keys = query.offset(offset).limit(limit).all(db).await?;
         Ok((keys, total))
     }
     
-    pub async fn find_by_id(db: &DatabaseConnection, id: i64) -> Result<Option<key_pools::Model>, DbErr> {
-        key_pools::Entity::find_by_id(id).one(db).await
+    pub async fn find_by_id(db: &DatabaseConnection, id: i64) -> Result<Option<api_key_pool::Model>, DbErr> {
+        api_key_pool::Entity::find_by_id(id).one(db).await
     }
     
-    pub async fn find_active(db: &DatabaseConnection) -> Result<Vec<key_pools::Model>, DbErr> {
-        key_pools::Entity::find()
-            .filter(key_pools::Column::IsActive.eq(true))
-            .order_by_asc(key_pools::Column::Priority)
+    pub async fn find_active(db: &DatabaseConnection) -> Result<Vec<api_key_pool::Model>, DbErr> {
+        api_key_pool::Entity::find()
+            .filter(api_key_pool::Column::IsActive.eq(true))
+            .order_by_asc(api_key_pool::Column::Priority)
             .all(db)
             .await
     }
@@ -36,9 +37,9 @@ impl ApiKeyPoolRepo {
         api_key: String,
         source: String,
         priority: i32,
-    ) -> Result<key_pools::Model, DbErr> {
-        let now = chrono::Utc::now();
-        let model = key_pools::ActiveModel {
+    ) -> Result<api_key_pool::Model, DbErr> {
+        let now = chrono::Utc::now().naive_utc();
+        let model = api_key_pool::ActiveModel {
             name: Set(name),
             api_key: Set(api_key),
             source: Set(source),
@@ -61,33 +62,33 @@ impl ApiKeyPoolRepo {
         source: Option<String>,
         is_active: Option<bool>,
         priority: Option<i32>,
-    ) -> Result<key_pools::Model, DbErr> {
-        let model = key_pools::Entity::find_by_id(id)
+    ) -> Result<api_key_pool::Model, DbErr> {
+        let model = api_key_pool::Entity::find_by_id(id)
             .one(db)
             .await?
             .ok_or(DbErr::RecordNotFound("API key not found".to_string()))?;
         
-        let mut active: key_pools::ActiveModel = model.into();
+        let mut active: api_key_pool::ActiveModel = model.into();
         if let Some(n) = name { active.name = Set(n); }
         if let Some(k) = api_key { active.api_key = Set(k); }
         if let Some(s) = source { active.source = Set(s); }
         if let Some(a) = is_active { active.is_active = Set(a); }
         if let Some(p) = priority { active.priority = Set(p); }
-        active.updated_at = Set(chrono::Utc::now());
+        active.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active.update(db).await
     }
     
     pub async fn delete(db: &DatabaseConnection, id: i64) -> Result<bool, DbErr> {
-        let result = key_pools::Entity::delete_by_id(id).exec(db).await?;
+        let result = api_key_pool::Entity::delete_by_id(id).exec(db).await?;
         Ok(result.rows_affected > 0)
     }
     
     pub async fn increment_use_count(db: &DatabaseConnection, id: i64) -> Result<(), DbErr> {
-        key_pools::Entity::update_many()
-            .filter(key_pools::Column::Id.eq(id))
-            .col_expr(key_pools::Column::UseCount, Expr::col(key_pools::Column::UseCount).add(1))
-            .col_expr(key_pools::Column::LastUsedAt, Expr::value(chrono::Utc::now()))
+        api_key_pool::Entity::update_many()
+            .filter(api_key_pool::Column::Id.eq(id))
+            .col_expr(api_key_pool::Column::UseCount, Expr::col(api_key_pool::Column::UseCount).add(1))
+            .col_expr(api_key_pool::Column::LastUsedAt, Expr::value(chrono::Utc::now().naive_utc()))
             .exec(db)
             .await?;
         Ok(())
@@ -102,20 +103,20 @@ impl SignKeyPoolRepo {
         db: &DatabaseConnection,
         offset: u64,
         limit: u64,
-    ) -> Result<(Vec<key_pools::SignKeyModel>, u64), DbErr> {
-        let query = key_pools::SignKeyEntity::find().order_by_desc(key_pools::sign_key::Column::CreatedAt);
+    ) -> Result<(Vec<sign_key_pool::Model>, u64), DbErr> {
+        let query = sign_key_pool::Entity::find().order_by_desc(sign_key_pool::Column::CreatedAt);
         let total = query.clone().count(db).await?;
         let keys = query.offset(offset).limit(limit).all(db).await?;
         Ok((keys, total))
     }
     
-    pub async fn find_by_id(db: &DatabaseConnection, id: i64) -> Result<Option<key_pools::SignKeyModel>, DbErr> {
-        key_pools::SignKeyEntity::find_by_id(id).one(db).await
+    pub async fn find_by_id(db: &DatabaseConnection, id: i64) -> Result<Option<sign_key_pool::Model>, DbErr> {
+        sign_key_pool::Entity::find_by_id(id).one(db).await
     }
     
-    pub async fn find_active(db: &DatabaseConnection) -> Result<Vec<key_pools::SignKeyModel>, DbErr> {
-        key_pools::SignKeyEntity::find()
-            .filter(key_pools::sign_key::Column::IsActive.eq(true))
+    pub async fn find_active(db: &DatabaseConnection) -> Result<Vec<sign_key_pool::Model>, DbErr> {
+        sign_key_pool::Entity::find()
+            .filter(sign_key_pool::Column::IsActive.eq(true))
             .all(db)
             .await
     }
@@ -125,9 +126,9 @@ impl SignKeyPoolRepo {
         name: String,
         sign_key: String,
         purpose: String,
-    ) -> Result<key_pools::SignKeyModel, DbErr> {
-        let now = chrono::Utc::now();
-        let model = key_pools::SignKeyActiveModel {
+    ) -> Result<sign_key_pool::Model, DbErr> {
+        let now = chrono::Utc::now().naive_utc();
+        let model = sign_key_pool::ActiveModel {
             name: Set(name),
             sign_key: Set(sign_key),
             purpose: Set(purpose),
@@ -147,24 +148,24 @@ impl SignKeyPoolRepo {
         sign_key: Option<String>,
         purpose: Option<String>,
         is_active: Option<bool>,
-    ) -> Result<key_pools::SignKeyModel, DbErr> {
-        let model = key_pools::SignKeyEntity::find_by_id(id)
+    ) -> Result<sign_key_pool::Model, DbErr> {
+        let model = sign_key_pool::Entity::find_by_id(id)
             .one(db)
             .await?
             .ok_or(DbErr::RecordNotFound("Sign key not found".to_string()))?;
         
-        let mut active: key_pools::SignKeyActiveModel = model.into();
+        let mut active: sign_key_pool::ActiveModel = model.into();
         if let Some(n) = name { active.name = Set(n); }
         if let Some(k) = sign_key { active.sign_key = Set(k); }
         if let Some(p) = purpose { active.purpose = Set(p); }
         if let Some(a) = is_active { active.is_active = Set(a); }
-        active.updated_at = Set(chrono::Utc::now());
+        active.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active.update(db).await
     }
     
     pub async fn delete(db: &DatabaseConnection, id: i64) -> Result<bool, DbErr> {
-        let result = key_pools::SignKeyEntity::delete_by_id(id).exec(db).await?;
+        let result = sign_key_pool::Entity::delete_by_id(id).exec(db).await?;
         Ok(result.rows_affected > 0)
     }
 }
@@ -177,20 +178,20 @@ impl UserAllowPoolRepo {
         db: &DatabaseConnection,
         offset: u64,
         limit: u64,
-    ) -> Result<(Vec<key_pools::UserAllowModel>, u64), DbErr> {
-        let query = key_pools::UserAllowEntity::find().order_by_desc(key_pools::user_allow::Column::CreatedAt);
+    ) -> Result<(Vec<user_allow_pool::Model>, u64), DbErr> {
+        let query = user_allow_pool::Entity::find().order_by_desc(user_allow_pool::Column::CreatedAt);
         let total = query.clone().count(db).await?;
         let users = query.offset(offset).limit(limit).all(db).await?;
         Ok((users, total))
     }
     
-    pub async fn find_by_id(db: &DatabaseConnection, id: i64) -> Result<Option<key_pools::UserAllowModel>, DbErr> {
-        key_pools::UserAllowEntity::find_by_id(id).one(db).await
+    pub async fn find_by_id(db: &DatabaseConnection, id: i64) -> Result<Option<user_allow_pool::Model>, DbErr> {
+        user_allow_pool::Entity::find_by_id(id).one(db).await
     }
     
-    pub async fn find_by_identifier(db: &DatabaseConnection, identifier: &str) -> Result<Option<key_pools::UserAllowModel>, DbErr> {
-        key_pools::UserAllowEntity::find()
-            .filter(key_pools::user_allow::Column::UserIdentifier.eq(identifier))
+    pub async fn find_by_identifier(db: &DatabaseConnection, identifier: &str) -> Result<Option<user_allow_pool::Model>, DbErr> {
+        user_allow_pool::Entity::find()
+            .filter(user_allow_pool::Column::UserIdentifier.eq(identifier))
             .one(db)
             .await
     }
@@ -200,9 +201,9 @@ impl UserAllowPoolRepo {
         user_identifier: String,
         user_type: String,
         description: Option<String>,
-    ) -> Result<key_pools::UserAllowModel, DbErr> {
-        let now = chrono::Utc::now();
-        let model = key_pools::UserAllowActiveModel {
+    ) -> Result<user_allow_pool::Model, DbErr> {
+        let now = chrono::Utc::now().naive_utc();
+        let model = user_allow_pool::ActiveModel {
             user_identifier: Set(user_identifier),
             user_type: Set(user_type),
             description: Set(description),
@@ -220,23 +221,23 @@ impl UserAllowPoolRepo {
         user_type: Option<String>,
         description: Option<String>,
         is_active: Option<bool>,
-    ) -> Result<key_pools::UserAllowModel, DbErr> {
-        let model = key_pools::UserAllowEntity::find_by_id(id)
+    ) -> Result<user_allow_pool::Model, DbErr> {
+        let model = user_allow_pool::Entity::find_by_id(id)
             .one(db)
             .await?
             .ok_or(DbErr::RecordNotFound("User not found".to_string()))?;
         
-        let mut active: key_pools::UserAllowActiveModel = model.into();
+        let mut active: user_allow_pool::ActiveModel = model.into();
         if let Some(t) = user_type { active.user_type = Set(t); }
         if description.is_some() { active.description = Set(description); }
         if let Some(a) = is_active { active.is_active = Set(a); }
-        active.updated_at = Set(chrono::Utc::now());
+        active.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active.update(db).await
     }
     
     pub async fn delete(db: &DatabaseConnection, id: i64) -> Result<bool, DbErr> {
-        let result = key_pools::UserAllowEntity::delete_by_id(id).exec(db).await?;
+        let result = user_allow_pool::Entity::delete_by_id(id).exec(db).await?;
         Ok(result.rows_affected > 0)
     }
 }
@@ -245,20 +246,20 @@ impl UserAllowPoolRepo {
 pub struct OAuthConfigRepo;
 
 impl OAuthConfigRepo {
-    pub async fn find_all(db: &DatabaseConnection) -> Result<Vec<key_pools::OAuthConfigModel>, DbErr> {
-        key_pools::OAuthConfigEntity::find()
-            .order_by_asc(key_pools::oauth_config::Column::Provider)
+    pub async fn find_all(db: &DatabaseConnection) -> Result<Vec<oauth_config::Model>, DbErr> {
+        oauth_config::Entity::find()
+            .order_by_asc(oauth_config::Column::Provider)
             .all(db)
             .await
     }
     
-    pub async fn find_by_id(db: &DatabaseConnection, id: i64) -> Result<Option<key_pools::OAuthConfigModel>, DbErr> {
-        key_pools::OAuthConfigEntity::find_by_id(id).one(db).await
+    pub async fn find_by_id(db: &DatabaseConnection, id: i64) -> Result<Option<oauth_config::Model>, DbErr> {
+        oauth_config::Entity::find_by_id(id).one(db).await
     }
     
-    pub async fn find_by_provider(db: &DatabaseConnection, provider: &str) -> Result<Option<key_pools::OAuthConfigModel>, DbErr> {
-        key_pools::OAuthConfigEntity::find()
-            .filter(key_pools::oauth_config::Column::Provider.eq(provider))
+    pub async fn find_by_provider(db: &DatabaseConnection, provider: &str) -> Result<Option<oauth_config::Model>, DbErr> {
+        oauth_config::Entity::find()
+            .filter(oauth_config::Column::Provider.eq(provider))
             .one(db)
             .await
     }
@@ -270,9 +271,9 @@ impl OAuthConfigRepo {
         client_secret: String,
         redirect_uri: String,
         scope: Option<String>,
-    ) -> Result<key_pools::OAuthConfigModel, DbErr> {
-        let now = chrono::Utc::now();
-        let model = key_pools::OAuthConfigActiveModel {
+    ) -> Result<oauth_config::Model, DbErr> {
+        let now = chrono::Utc::now().naive_utc();
+        let model = oauth_config::ActiveModel {
             provider: Set(provider),
             client_id: Set(client_id),
             client_secret: Set(client_secret),
@@ -294,25 +295,25 @@ impl OAuthConfigRepo {
         redirect_uri: Option<String>,
         scope: Option<String>,
         is_active: Option<bool>,
-    ) -> Result<key_pools::OAuthConfigModel, DbErr> {
-        let model = key_pools::OAuthConfigEntity::find_by_id(id)
+    ) -> Result<oauth_config::Model, DbErr> {
+        let model = oauth_config::Entity::find_by_id(id)
             .one(db)
             .await?
             .ok_or(DbErr::RecordNotFound("OAuth config not found".to_string()))?;
         
-        let mut active: key_pools::OAuthConfigActiveModel = model.into();
+        let mut active: oauth_config::ActiveModel = model.into();
         if let Some(c) = client_id { active.client_id = Set(c); }
         if let Some(s) = client_secret { active.client_secret = Set(s); }
         if let Some(r) = redirect_uri { active.redirect_uri = Set(r); }
         if scope.is_some() { active.scope = Set(scope); }
         if let Some(a) = is_active { active.is_active = Set(a); }
-        active.updated_at = Set(chrono::Utc::now());
+        active.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active.update(db).await
     }
     
     pub async fn delete(db: &DatabaseConnection, id: i64) -> Result<bool, DbErr> {
-        let result = key_pools::OAuthConfigEntity::delete_by_id(id).exec(db).await?;
+        let result = oauth_config::Entity::delete_by_id(id).exec(db).await?;
         Ok(result.rows_affected > 0)
     }
 }
@@ -329,17 +330,17 @@ impl WorkerLogRepo {
         limit: u64,
         level: Option<String>,
         node_id: Option<String>,
-    ) -> Result<(Vec<logs_stats::Model>, u64), DbErr> {
-        let mut query = logs_stats::Entity::find();
+    ) -> Result<(Vec<worker_log::Model>, u64), DbErr> {
+        let mut query = worker_log::Entity::find();
         
         if let Some(l) = level {
-            query = query.filter(logs_stats::Column::Level.eq(l));
+            query = query.filter(worker_log::Column::Level.eq(l));
         }
         if let Some(n) = node_id {
-            query = query.filter(logs_stats::Column::NodeId.eq(n));
+            query = query.filter(worker_log::Column::NodeId.eq(n));
         }
         
-        query = query.order_by_desc(logs_stats::Column::CreatedAt);
+        query = query.order_by_desc(worker_log::Column::CreatedAt);
         
         let total = query.clone().count(db).await?;
         let logs = query.offset(offset).limit(limit).all(db).await?;
@@ -352,21 +353,21 @@ impl WorkerLogRepo {
         level: String,
         message: String,
         extra_data: Option<String>,
-    ) -> Result<logs_stats::Model, DbErr> {
-        let model = logs_stats::ActiveModel {
+    ) -> Result<worker_log::Model, DbErr> {
+        let model = worker_log::ActiveModel {
             node_id: Set(node_id),
             level: Set(level),
             message: Set(message),
             extra_data: Set(extra_data),
-            created_at: Set(chrono::Utc::now()),
+            created_at: Set(chrono::Utc::now().naive_utc()),
             ..Default::default()
         };
         model.insert(db).await
     }
     
-    pub async fn delete_old(db: &DatabaseConnection, before: chrono::DateTime<chrono::Utc>) -> Result<u64, DbErr> {
-        let result = logs_stats::Entity::delete_many()
-            .filter(logs_stats::Column::CreatedAt.lt(before))
+    pub async fn delete_old(db: &DatabaseConnection, before: chrono::NaiveDateTime) -> Result<u64, DbErr> {
+        let result = worker_log::Entity::delete_many()
+            .filter(worker_log::Column::CreatedAt.lt(before))
             .exec(db)
             .await?;
         Ok(result.rows_affected)
@@ -382,14 +383,14 @@ impl IpStatsRepo {
         offset: u64,
         limit: u64,
         ip: Option<String>,
-    ) -> Result<(Vec<logs_stats::IpStatsModel>, u64), DbErr> {
-        let mut query = logs_stats::IpStatsEntity::find();
+    ) -> Result<(Vec<ip_stats::Model>, u64), DbErr> {
+        let mut query = ip_stats::Entity::find();
         
         if let Some(i) = ip {
-            query = query.filter(logs_stats::ip_stats::Column::IpAddress.eq(i));
+            query = query.filter(ip_stats::Column::IpAddress.eq(i));
         }
         
-        query = query.order_by_desc(logs_stats::ip_stats::Column::RequestTime);
+        query = query.order_by_desc(ip_stats::Column::RequestTime);
         
         let total = query.clone().count(db).await?;
         let stats = query.offset(offset).limit(limit).all(db).await?;
@@ -404,14 +405,14 @@ impl IpStatsRepo {
         status_code: i32,
         user_agent: Option<String>,
         response_time_ms: Option<i32>,
-    ) -> Result<logs_stats::IpStatsModel, DbErr> {
-        let model = logs_stats::IpStatsActiveModel {
+    ) -> Result<ip_stats::Model, DbErr> {
+        let model = ip_stats::ActiveModel {
             ip_address: Set(ip_address),
             path: Set(path),
             method: Set(method),
             status_code: Set(status_code),
             user_agent: Set(user_agent),
-            request_time: Set(chrono::Utc::now()),
+            request_time: Set(chrono::Utc::now().naive_utc()),
             response_time_ms: Set(response_time_ms),
             ..Default::default()
         };
@@ -420,7 +421,7 @@ impl IpStatsRepo {
     
     pub async fn get_top_ips(db: &DatabaseConnection, limit: u64) -> Result<Vec<(String, i64)>, DbErr> {
         // 简化实现：返回最近的 IP 和计数
-        let stats = logs_stats::IpStatsEntity::find()
+        let stats = ip_stats::Entity::find()
             .limit(limit)
             .all(db)
             .await?;
@@ -436,9 +437,9 @@ impl IpStatsRepo {
         Ok(result)
     }
     
-    pub async fn delete_old(db: &DatabaseConnection, before: chrono::DateTime<chrono::Utc>) -> Result<u64, DbErr> {
-        let result = logs_stats::IpStatsEntity::delete_many()
-            .filter(logs_stats::ip_stats::Column::RequestTime.lt(before))
+    pub async fn delete_old(db: &DatabaseConnection, before: chrono::NaiveDateTime) -> Result<u64, DbErr> {
+        let result = ip_stats::Entity::delete_many()
+            .filter(ip_stats::Column::RequestTime.lt(before))
             .exec(db)
             .await?;
         Ok(result.rows_affected)
@@ -477,7 +478,7 @@ impl CleanupPolicyRepo {
         retention_days: i32,
         schedule: String,
     ) -> Result<cleanup_policy::Model, DbErr> {
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         let model = cleanup_policy::ActiveModel {
             name: Set(name),
             target_table: Set(target_table),
@@ -514,7 +515,7 @@ impl CleanupPolicyRepo {
         if let Some(r) = retention_days { active.retention_days = Set(r); }
         if let Some(a) = is_active { active.is_active = Set(a); }
         if let Some(s) = schedule { active.schedule = Set(s); }
-        active.updated_at = Set(chrono::Utc::now());
+        active.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active.update(db).await
     }
@@ -531,7 +532,7 @@ impl CleanupPolicyRepo {
     ) -> Result<(), DbErr> {
         cleanup_policy::Entity::update_many()
             .filter(cleanup_policy::Column::Id.eq(id))
-            .col_expr(cleanup_policy::Column::LastRunAt, Expr::value(chrono::Utc::now()))
+            .col_expr(cleanup_policy::Column::LastRunAt, Expr::value(chrono::Utc::now().naive_utc()))
             .col_expr(cleanup_policy::Column::LastCleanupCount, Expr::value(cleanup_count))
             .exec(db)
             .await?;

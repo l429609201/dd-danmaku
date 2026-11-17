@@ -15,8 +15,8 @@
         <div class="redis-head">
           <h2 class="panel-title">{{ enginePerfTitle }}</h2>
           <span class="redis-badge" v-if="data.engine_perf && data.engine_perf.version">v{{ data.engine_perf.version }}</span>
-          <span class="redis-badge" :class="data.redis.enabled ? 'badge-ok' : 'badge-warn'">
-            Redis {{ data.redis.enabled ? '在线' : '未启用' }}
+          <span class="redis-badge" :class="data.redis.error ? 'badge-warn' : data.redis.enabled ? 'badge-ok' : 'badge-warn'">
+            Redis {{ data.redis.error ? '状态未验证' : data.redis.enabled ? '在线' : '未启用' }}
           </span>
         </div>
         <div class="redis-groups">
@@ -82,6 +82,10 @@
           </div>
         </div>
       </div>
+      <div class="panel" v-else-if="data.redis && data.redis.error">
+        <h2 class="panel-title">Redis 状态</h2>
+        <p class="muted">{{ data.redis.error }}（{{ data.redis.enabled ? '已配置启用' : '未启用' }}）</p>
+      </div>
       <div class="panel" v-else-if="data.redis && !data.redis.enabled">
         <h2 class="panel-title">Redis 状态</h2>
         <p class="muted">Redis 未启用，响应缓存使用 SQL 冷备模式。</p>
@@ -101,8 +105,8 @@
                 <td>{{ fmtBytes(t.size_bytes) }}</td>
                 <td>
                   <div class="ratio-wrap">
-                    <div class="ratio-bar" :style="{ width: t.size_ratio + '%' }"></div>
-                    <span class="ratio-text">{{ t.size_ratio }}%</span>
+                    <div class="ratio-bar" v-if="t.size_ratio != null" :style="{ width: t.size_ratio + '%' }"></div>
+                    <span class="ratio-text">{{ t.size_ratio == null ? '未知' : t.size_ratio + '%' }}</span>
                   </div>
                 </td>
                 <td>{{ t.forecast_available ? t.rows_24h.toLocaleString() : '—' }}</td>
@@ -126,7 +130,7 @@
 
 <script>
 import { ref, computed, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+import { getDatabaseStats } from '../api/system.js'
 
 export default {
   name: 'DbStats',
@@ -139,8 +143,8 @@ export default {
     const load = async () => {
       loading.value = true; error.value = ''
       try {
-        const res = await apiV2('/dashboard/db-stats')
-        data.value = res.data
+        // Rust 返回裸统计对象；容量、池与 Redis 未采集值保持未知。
+        data.value = await getDatabaseStats()
         updatedAt.value = new Date().toLocaleTimeString()
       } catch (e) { error.value = e.message } finally { loading.value = false }
     }
@@ -155,7 +159,9 @@ export default {
     const enginePerfTitle = computed(() => '数据库性能指标')
 
     const fmtBytes = (n) => {
-      n = Number(n) || 0
+      // 未采集容量不等于 0 字节，避免运维误判。
+      if (n == null || !Number.isFinite(Number(n))) return '未知'
+      n = Number(n)
       if (n < 1024) return n + ' B'
       if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'
       if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB'
@@ -175,55 +181,55 @@ export default {
 
 <style scoped>
 .page { padding: 24px; }
-.page-title { font-size: 22px; margin-bottom: 20px; color: #333; }
+.page-title { font-size: 22px; margin-bottom: 20px; color: var(--color-text); }
 .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
-.btn { padding: 8px 16px; border: 1px solid #d9d9d9; background: #fff; border-radius: 6px; cursor: pointer; }
-.btn-primary { background: #1677ff; color: #fff; border-color: #1677ff; }
-.muted { color: #999; font-size: 12px; }
+.btn { padding: 8px 16px; border: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-text); border-radius: 6px; cursor: pointer; }
+.btn-primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+.muted { color: var(--color-text-disabled); font-size: 12px; }
 .hint { margin-top: 10px; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
-.card { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-.card-accent { border-left: 4px solid #1677ff; }
-.card-ok { border-left: 4px solid #52c41a; }
-.card-warn { border-left: 4px solid #faad14; }
-.card-label { color: #888; font-size: 13px; margin-bottom: 8px; }
-.card-value { font-size: 24px; font-weight: 600; color: #333; }
-.card-sub { color: #999; font-size: 12px; margin-top: 4px; }
-.panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 24px; }
-.panel-title { font-size: 16px; margin-bottom: 14px; color: #333; }
+.card { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); border: 1px solid var(--color-border-light); }
+.card-accent { border-left: 4px solid var(--color-primary); }
+.card-ok { border-left: 4px solid var(--color-success); }
+.card-warn { border-left: 4px solid var(--color-warning); }
+.card-label { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 8px; }
+.card-value { font-size: 24px; font-weight: 600; color: var(--color-text); }
+.card-sub { color: var(--color-text-disabled); font-size: 12px; margin-top: 4px; }
+.panel { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); margin-bottom: 24px; border: 1px solid var(--color-border-light); }
+.panel-title { font-size: 16px; margin-bottom: 14px; color: var(--color-text); }
 .data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
-.data-table th { color: #888; font-weight: 500; }
+.data-table th, .data-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--color-border-lighter); font-size: 13px; }
+.data-table th { color: var(--color-text-secondary); font-weight: 500; }
 .key { font-family: monospace; font-size: 12px; }
-.ratio-wrap { position: relative; background: #f0f0f0; border-radius: 4px; height: 18px; min-width: 120px; }
-.ratio-bar { background: #1677ff; height: 100%; border-radius: 4px; max-width: 100%; }
-.ratio-text { position: absolute; left: 8px; top: 0; font-size: 11px; line-height: 18px; color: #333; }
+.ratio-wrap { position: relative; background: var(--color-border-lighter); border-radius: 4px; height: 18px; min-width: 120px; }
+.ratio-bar { background: var(--color-primary); height: 100%; border-radius: 4px; max-width: 100%; }
+.ratio-text { position: absolute; left: 8px; top: 0; font-size: 11px; line-height: 18px; color: var(--color-text); }
 
 .table-scroll { overflow-x: auto; }
 .forecast-note { margin: -6px 0 12px; }
-.forecast-row { background: #fcfdff; }
-.data-table td.warn { color: #cf1322; font-weight: 600; }
+.forecast-row { background: color-mix(in srgb, var(--color-primary) 3%, transparent); }
+.data-table td.warn { color: var(--color-danger); font-weight: 600; }
 .data-table th { white-space: nowrap; }
 
-.empty { text-align: center; color: #999; padding: 20px; }
+.empty { text-align: center; color: var(--color-text-disabled); padding: 20px; }
 .kv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-.kv { display: flex; justify-content: space-between; padding: 10px 12px; background: #fafafa; border-radius: 6px; font-size: 13px; }
-.kv span { color: #888; }
-.loading, .error-box { padding: 40px; text-align: center; color: #999; }
-.error-box { color: #d4380d; }
+.kv { display: flex; justify-content: space-between; padding: 10px 12px; background: var(--color-bg-page); border-radius: 6px; font-size: 13px; }
+.kv span { color: var(--color-text-secondary); }
+.loading, .error-box { padding: 40px; text-align: center; color: var(--color-text-disabled); }
+.error-box { color: var(--color-danger); }
 .metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-.metric { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; background: #fafafa; border-radius: 8px; }
-.m-label { color: #888; font-size: 13px; }
-.m-val { font-size: 16px; font-weight: 600; color: #333; }
-.m-val.warn { color: #cf1322; }
+.metric { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; background: var(--color-bg-page); border-radius: 8px; }
+.m-label { color: var(--color-text-secondary); font-size: 13px; }
+.m-val { font-size: 16px; font-weight: 600; color: var(--color-text); }
+.m-val.warn { color: var(--color-danger); }
 .redis-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
 .redis-head .panel-title { margin-bottom: 0; }
-.redis-badge { font-size: 12px; color: #888; background: #f5f5f5; padding: 2px 10px; border-radius: 10px; }
-.redis-badge.badge-ok { color: #389e0d; background: #f6ffed; }
-.redis-badge.badge-warn { color: #d48806; background: #fffbe6; }
+.redis-badge { font-size: 12px; color: var(--color-text-secondary); background: var(--color-bg-page); padding: 2px 10px; border-radius: 10px; }
+.redis-badge.badge-ok { color: var(--color-success); background: color-mix(in srgb, var(--color-success) 10%, transparent); }
+.redis-badge.badge-warn { color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 10%, transparent); }
 .redis-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
-.rgroup { background: #fafafa; border-radius: 8px; padding: 14px; }
-.rgroup-title { font-size: 13px; color: #1677ff; font-weight: 600; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #eee; }
+.rgroup { background: var(--color-bg-page); border-radius: 8px; padding: 14px; }
+.rgroup-title { font-size: 13px; color: var(--color-primary); font-weight: 600; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border-lighter); }
 .rgroup .kv { background: none; padding: 5px 0; }
-.rgroup .kv b.warn { color: #cf1322; }
+.rgroup .kv b.warn { color: var(--color-danger); }
 </style>

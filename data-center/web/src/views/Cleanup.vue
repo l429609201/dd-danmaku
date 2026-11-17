@@ -1,6 +1,7 @@
 <template>
   <div class="page">
     <h1 class="page-title">数据清理</h1>
+    <p role="status">Rust 仅支持按策略 ID 清理 worker_logs/ip_stats；全局定时调度、全部启用项执行、行数统计与脏缓存扫描/分页/清洗尚未实现。旧控件保留并禁用，不发送无效请求。</p>
     <p v-if="msg" class="msg">{{ msg }}</p>
 
     <!-- Tab 切换：数据表清理 / 数据清洗 -->
@@ -11,6 +12,7 @@
 
     <!-- ============ Tab1：数据表清理 ============ -->
     <template v-if="activeTab === 'table'">
+    <fieldset disabled style="border: 0; padding: 0; margin: 0">
     <!-- 定时任务配置 -->
     <div class="panel">
       <h2 class="panel-title">定时清理任务</h2>
@@ -30,6 +32,7 @@
       </div>
     </div>
 
+    </fieldset>
     <!-- 表策略 -->
     <div class="panel">
       <h2 class="panel-title">可清理表（勾选启用，设置保留天数）</h2>
@@ -38,33 +41,34 @@
           <tr><th>表</th><th>当前行数</th><th>启用</th><th>保留天数</th><th>最后清理</th><th>上次删除</th><th>操作</th></tr>
         </thead>
         <tbody>
-          <tr v-for="p in policies" :key="p.table_key" :class="{ sensitive: !p.is_safe }">
+          <tr v-for="p in policies" :key="p.id" :class="{ sensitive: !['worker_logs', 'ip_stats'].includes(p.target_table) }">
             <td>
-              {{ p.display_name }}
-              <span v-if="!p.is_safe" class="badge-warn">敏感</span>
+              {{ p.name }}（{{ p.target_table }}）
+              <span v-if="!['worker_logs', 'ip_stats'].includes(p.target_table)" class="badge-warn">敏感</span>
             </td>
             <td>{{ p.row_count != null ? p.row_count.toLocaleString() : '—' }}</td>
             <td>
               <label class="switch">
-                <input type="checkbox" v-model="p.enabled" @change="savePolicy(p)" />
+                <input type="checkbox" v-model="p.is_active" @change="savePolicy(p)" />
               </label>
             </td>
             <td>
-              <input type="number" min="0" v-model.number="p.retention_days"
+              <input type="number" min="1" max="36500" v-model.number="p.retention_days"
                      class="num" @change="savePolicy(p)" />
             </td>
-            <td>{{ fmt(p.last_cleanup_at) }}</td>
-            <td>{{ p.last_deleted || 0 }}</td>
+            <td>{{ fmt(p.last_run_at) }}</td>
+            <td>{{ p.last_cleanup_count ?? 0 }}</td>
             <td><button class="link" :disabled="running" @click="runOne(p)">清理此表</button></td>
           </tr>
         </tbody>
       </table>
-      <p class="tip">敏感表（红色）删除会影响业务数据/缓存，请谨慎启用。保留天数=0 表示不按天清理。</p>
+      <p class="tip">敏感表（红色）删除会影响业务数据/缓存，请谨慎启用。Rust 仅允许保留 1–36500 天，且不接受自定义清理条件。</p>
     </div>
     </template>
 
     <!-- ============ Tab2：数据清洗 ============ -->
     <template v-else>
+    <fieldset disabled style="border: 0; padding: 0; margin: 0">
     <!-- 专项清理：脏缓存 -->
     <div class="panel">
       <h2 class="panel-title">脏缓存清理</h2>
@@ -157,6 +161,7 @@
         <button class="btn" :disabled="detailPage >= totalPages || scanning" @click="gotoPage(detailPage + 1)">下一页</button>
       </div>
     </div>
+    </fieldset>
     </template>
 
     <!-- 清理结果（两个 tab 共用） -->
@@ -192,7 +197,13 @@
 
 <script>
 import { ref, computed, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+import { apiV2 as requestV2 } from '../utils/api.js'
+
+// Rust 只实现这些清理契约；旧清洗/调度代码保留但任何事件均不得发出错误请求。
+const apiV2 = (path, options) => {
+  if (path === '/cleanup/policies' || /^\/cleanup\/policies\/\d+$/.test(path) || path === '/cleanup/execute') return requestV2(path, options)
+  throw new Error('Rust 尚未实现此调度/清洗契约')
+}
 
 export default {
   name: 'Cleanup',
@@ -226,19 +237,20 @@ export default {
     const load = async () => {
       try {
         const res = await apiV2('/cleanup/policies')
-        policies.value = res.data.policies || []
-        schedule.value = res.data.schedule || { enabled: true, interval_seconds: 3600 }
-        intervalMin.value = Math.round((schedule.value.interval_seconds || 3600) / 60)
+        // Rust 返回裸 policies 数组，不包含全局 schedule。
+        policies.value = res.policies
       } catch (e) { msg.value = e.message }
     }
 
     const savePolicy = async (p) => {
+      // 清空数字输入会产生空串，不能发送被 Rust 拒绝的非法保留期。
+      if (!Number.isInteger(p.retention_days) || p.retention_days < 1 || p.retention_days > 36500) { msg.value = '保留天数必须为 1–36500 的整数'; await load(); return }
       try {
-        await apiV2(`/cleanup/policies/${p.table_key}`, {
+        await apiV2(`/cleanup/policies/${p.id}`, {
           method: 'PUT',
-          body: { enabled: p.enabled, retention_days: p.retention_days },
+          body: { is_active: p.is_active, retention_days: p.retention_days },
         })
-        msg.value = `已更新 ${p.display_name}`
+        msg.value = `已更新 ${p.name}`
       } catch (e) { msg.value = e.message; load() }
     }
 
@@ -253,17 +265,22 @@ export default {
     }
 
     const doRun = async (keys) => {
+      if (!Array.isArray(keys) || keys.length !== 1) { msg.value = 'Rust 尚未实现全部启用项执行'; return }
+      const p = policies.value.find(p => p.id === keys[0])
+      if (!p || !['worker_logs', 'ip_stats'].includes(p.target_table) || p.condition?.trim() || !Number.isInteger(p.retention_days) || p.retention_days < 1 || p.retention_days > 36500) { msg.value = '此策略超出 Rust 支持的安全清理范围'; return }
+      if (!confirm(`确认按策略「${p.name}」删除 ${p.target_table} 中超过 ${p.retention_days} 天的数据？`)) return
       running.value = true
       msg.value = ''
       try {
-        const res = await apiV2('/cleanup/run', { method: 'POST', body: { table_keys: keys } })
-        lastResult.value = JSON.stringify(res.data, null, 2)
+        // 单策略执行采用 Rust policy_id；不把旧表键请求映射成删除全部。
+        const res = await apiV2('/cleanup/execute', { method: 'POST', body: { policy_id: keys[0] } })
+        lastResult.value = JSON.stringify(res, null, 2)
         msg.value = '清理完成'
         await load()
       } catch (e) { msg.value = e.message } finally { running.value = false }
     }
     const runAll = () => doRun(null)
-    const runOne = (p) => doRun([p.table_key])
+    const runOne = (p) => doRun([p.id])
 
     // 构造脏缓存清理请求体（清理时用顶部勾选的脏类型）
     const dirtyBody = (extra = {}) => ({
@@ -399,69 +416,71 @@ export default {
 
 <style scoped>
 .page { padding: 24px; }
-.page-title { font-size: 22px; margin-bottom: 20px; color: #333; }
-.msg { color: #1677ff; margin-bottom: 12px; }
-.panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 18px; }
-.panel-title { font-size: 16px; margin-bottom: 14px; color: #333; }
+.page-title { font-size: 22px; margin-bottom: 20px; color: var(--color-text); }
+.msg { color: var(--color-primary); margin-bottom: 12px; }
+.panel { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); margin-bottom: 18px; border: 1px solid var(--color-border-light); }
+.panel-title { font-size: 16px; margin-bottom: 14px; color: var(--color-text); }
 .sched-row { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
 .switch { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-.interval { display: flex; align-items: center; gap: 8px; color: #555; }
-.num { width: 80px; padding: 5px 8px; border: 1px solid #d9d9d9; border-radius: 6px; text-align: center; }
+.interval { display: flex; align-items: center; gap: 8px; color: var(--color-text-secondary); }
+.num { width: 80px; padding: 5px 8px; border: 1px solid var(--color-border); border-radius: 6px; text-align: center; background: var(--color-bg); color: var(--color-text); }
 .data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
-.data-table th { color: #888; font-weight: 500; }
-.sensitive { background: #fff7f6; }
-.badge-warn { background: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; border-radius: 4px; padding: 0 6px; font-size: 11px; margin-left: 6px; }
-.btn { padding: 6px 14px; border: 1px solid #d9d9d9; background: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; }
-.btn-primary { background: #1677ff; color: #fff; border-color: #1677ff; }
-.btn-danger { background: #ff4d4f; color: #fff; border-color: #ff4d4f; }
-.purge-desc { flex: 1; min-width: 280px; color: #555; font-size: 13px; line-height: 1.6; }
-.purge-desc b { color: #cf1322; }
+.data-table th, .data-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--color-border-lighter); font-size: 13px; }
+.data-table th { color: var(--color-text-secondary); font-weight: 500; }
+.sensitive { background: color-mix(in srgb, var(--color-danger) 5%, transparent); }
+.badge-warn { background: color-mix(in srgb, var(--color-danger) 10%, transparent); color: var(--color-danger); border: 1px solid color-mix(in srgb, var(--color-danger) 30%, transparent); border-radius: 4px; padding: 0 6px; font-size: 11px; margin-left: 6px; }
+.btn { padding: 6px 14px; border: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-text); border-radius: 6px; cursor: pointer; font-size: 13px; transition: var(--transition-fast); }
+.btn-primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+.btn-primary:hover:not(:disabled) { background: var(--color-primary-dark); border-color: var(--color-primary-dark); }
+.btn-danger { background: var(--color-danger); color: #fff; border-color: var(--color-danger); }
+.purge-desc { flex: 1; min-width: 280px; color: var(--color-text-secondary); font-size: 13px; line-height: 1.6; }
+.purge-desc b { color: var(--color-danger); }
 .filter-grid { display: flex; gap: 20px; flex-wrap: wrap; margin: 14px 0; }
 .filter-item { display: flex; flex-direction: column; gap: 6px; }
-.filter-item label { font-size: 12px; color: #888; }
-.filter-item .input { padding: 6px 10px; border: 1px solid #d9d9d9; border-radius: 6px; min-width: 240px; font-size: 13px; }
+.filter-item label { font-size: 12px; color: var(--color-text-secondary); }
+.filter-item .input { padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px; min-width: 240px; font-size: 13px; background: var(--color-bg); color: var(--color-text); }
 .checks { display: flex; gap: 14px; align-items: center; }
-.checks label { display: flex; align-items: center; gap: 4px; font-size: 13px; color: #555; cursor: pointer; }
+.checks label { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--color-text-secondary); cursor: pointer; }
 .purge-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.scan-result { color: #1677ff; font-size: 13px; }
+.scan-result { color: var(--color-primary); font-size: 13px; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.link { color: #1677ff; background: none; border: none; cursor: pointer; font-size: 13px; }
+.link { color: var(--color-primary); background: none; border: none; cursor: pointer; font-size: 13px; }
 .link:disabled { opacity: .5; cursor: not-allowed; }
-.tip { color: #999; font-size: 12px; margin-top: 10px; }
-.result { background: #f6f8fa; padding: 12px; border-radius: 6px; font-size: 12px; overflow: auto; }
+.tip { color: var(--color-text-disabled); font-size: 12px; margin-top: 10px; }
+.result { background: var(--color-bg-page); padding: 12px; border-radius: 6px; font-size: 12px; overflow: auto; }
 /* Tab 切换 */
-.tabs { display: flex; gap: 8px; margin-bottom: 18px; border-bottom: 1px solid #eee; }
-.tab { padding: 10px 20px; border: none; background: none; cursor: pointer; font-size: 14px; color: #888; border-bottom: 2px solid transparent; margin-bottom: -1px; }
-.tab.active { color: #1677ff; border-bottom-color: #1677ff; font-weight: 500; }
+.tabs { display: flex; gap: 8px; margin-bottom: 18px; border-bottom: 1px solid var(--color-border-light); }
+.tab { padding: 10px 20px; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tab.active { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: 500; }
 /* 明细表 */
-.detail-sub { font-size: 12px; color: #999; font-weight: normal; margin-left: 8px; }
+.detail-sub { font-size: 12px; color: var(--color-text-disabled); font-weight: normal; margin-left: 8px; }
 .detail-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .detail-filter { display: flex; gap: 8px; flex-wrap: wrap; }
-.page-size { font-size: 13px; color: #555; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.page-size select { padding: 4px 8px; border: 1px solid #d9d9d9; border-radius: 6px; }
-.chip { padding: 4px 12px; border: 1px solid #d9d9d9; background: #fff; border-radius: 14px; cursor: pointer; font-size: 12px; color: #555; }
-.chip.on { background: #1677ff; color: #fff; border-color: #1677ff; }
+.page-size { font-size: 13px; color: var(--color-text-secondary); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.page-size select { padding: 4px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg); color: var(--color-text); }
+.chip { padding: 4px 12px; border: 1px solid var(--color-border); background: var(--color-bg); border-radius: 14px; cursor: pointer; font-size: 12px; color: var(--color-text-secondary); }
+.chip.on { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
 .detail-table td { font-size: 12px; }
 .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
 .ellipsis { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.snippet { max-width: 280px; color: #666; }
+.snippet { max-width: 280px; color: var(--color-text-secondary); }
 .reason-tag { padding: 1px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; }
-.r-empty { background: #fff7e6; color: #d46b08; }
-.r-fail { background: #fff1f0; color: #cf1322; }
-.r-error_code { background: #f9f0ff; color: #531dab; }
+.r-empty { background: color-mix(in srgb, var(--color-warning) 12%, transparent); color: var(--color-warning); }
+.r-fail { background: color-mix(in srgb, var(--color-danger) 10%, transparent); color: var(--color-danger); }
+.r-error_code { background: color-mix(in srgb, var(--color-primary) 8%, transparent); color: var(--color-primary); }
 .pager { display: flex; align-items: center; gap: 12px; margin-top: 14px; justify-content: center; }
-.pager-info { font-size: 13px; color: #888; }
+.pager-info { font-size: 13px; color: var(--color-text-secondary); }
 /* 详情弹窗 */
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.modal { background: #fff; border-radius: 10px; width: 720px; max-width: 92vw; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.2); }
-.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid #f0f0f0; }
-.modal-head h3 { font-size: 16px; color: #333; margin: 0; }
-.modal-close { border: none; background: none; font-size: 16px; color: #999; cursor: pointer; }
+.modal { background: var(--color-bg-elevated); border-radius: 10px; width: 720px; max-width: 92vw; max-height: 85vh; display: flex; flex-direction: column; box-shadow: var(--shadow-lg); border: 1px solid var(--color-border); }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--color-border-lighter); }
+.modal-head h3 { font-size: 16px; color: var(--color-text); margin: 0; }
+.modal-close { border: none; background: none; font-size: 16px; color: var(--color-text-secondary); cursor: pointer; }
+.modal-close:hover { color: var(--color-text); }
 .modal-body { padding: 16px 20px; overflow: auto; }
-.kv { display: flex; gap: 12px; padding: 5px 0; font-size: 13px; border-bottom: 1px dashed #f0f0f0; }
-.kv span { color: #888; min-width: 88px; }
-.kv b { color: #333; font-weight: 500; word-break: break-all; }
-.body-label { margin: 14px 0 6px; font-size: 13px; color: #555; }
+.kv { display: flex; gap: 12px; padding: 5px 0; font-size: 13px; border-bottom: 1px dashed var(--color-border-lighter); }
+.kv span { color: var(--color-text-secondary); min-width: 88px; }
+.kv b { color: var(--color-text); font-weight: 500; word-break: break-all; }
+.body-label { margin: 14px 0 6px; font-size: 13px; color: var(--color-text-secondary); }
 .body-pre { max-height: 360px; }
 </style>

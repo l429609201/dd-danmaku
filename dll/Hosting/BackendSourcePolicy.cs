@@ -22,11 +22,9 @@ internal static class BackendSourcePolicy
 
     internal static bool IsApprovedPrivateBase(Uri target, PluginConfiguration configuration)
     {
-        var prefix = target.AbsoluteUri.TrimEnd('/');
-        var approved = (configuration.BackendPrivateSourcePrefixes ?? []).AsEnumerable();
-        if (configuration.DanmakuProxyEnabled) approved = approved.Append(configuration.DanmakuProxyBaseUrl);
-        return approved.Any(value => Uri.TryCreate(value, UriKind.Absolute, out var uri)
-            && string.Equals(prefix, uri.AbsoluteUri.TrimEnd('/'), StringComparison.Ordinal));
+        // 来源由已认证的 Emby 用户配置，普通内网不再要求第二份管理员白名单。
+        // 保留方法签名兼容现有调用及旧配置；危险特殊地址仍由连接层拒绝。
+        return true;
     }
 
     internal static async Task RequireSafeTargetAsync(Uri target, bool allowPrivate, CancellationToken token)
@@ -93,15 +91,14 @@ internal static class BackendSourcePolicy
                 || b[0] == 198 && b[1] is 18 or 19
                 || b[0] == 198 && b[1] == 51 && b[2] == 100
                 || b[0] == 203 && b[1] == 0 && b[2] == 113) return false;
-            var privateAddress = b[0] is 10 or 127 || b[0] == 172 && b[1] is >= 16 and <= 31
-                || b[0] == 192 && b[1] == 168;
-            return !privateAddress || allowPrivate;
+            // RFC1918 和回环来源直接可用，不再按用户之外的内网权限分流。
+            return true;
         }
         if (address.AddressFamily != AddressFamily.InterNetworkV6 || address.ScopeId != 0
             || address.Equals(IPAddress.IPv6Any) || address.IsIPv6LinkLocal || address.IsIPv6Multicast) return false;
         var bytes = address.GetAddressBytes();
-        if (address.Equals(IPAddress.IPv6Loopback)) return allowPrivate;
-        if ((bytes[0] & 0xfe) == 0xfc) return allowPrivate;
+        if (address.Equals(IPAddress.IPv6Loopback)) return true;
+        if ((bytes[0] & 0xfe) == 0xfc) return true;
         // 只接受全球单播；拒绝 NAT64、隧道和文档地址，避免嵌入 IPv4 绕过。
         return (bytes[0] & 0xe0) == 0x20 && !(bytes[0] == 0x20 && bytes[1] == 0x01
             && (bytes[2] == 0x0d && bytes[3] == 0xb8 || bytes[2] == 0 || bytes[2] == 2))

@@ -4,16 +4,16 @@
 
     <div class="app-toolbar">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button type="primary" :icon="Connection" :loading="reconnecting" @click="reconnect">手动重连</el-button>
+      <el-button type="primary" :icon="Connection" :loading="reconnecting" title="Rust 后端尚未提供手动重连接口" @click="reconnect">手动重连（待实现）</el-button>
       <el-tag :type="liveConnected ? 'success' : 'info'" effect="dark">
-        实时连接: {{ liveConnected ? '已连接' : '未连接' }}
+        实时连接: {{ liveConnected === null ? '后端尚未提供实时状态' : liveConnected ? '已连接' : '未连接' }}
       </el-tag>
       <div class="app-toolbar__spacer" />
       <el-switch v-model="autoRefresh" active-text="自动刷新" @change="onAutoRefresh" />
     </div>
 
     <el-card shadow="never" class="mb16">
-      <template #header>长连接节点</template>
+      <template #header>长连接节点（数据库记录，非实时连接探针）</template>
       <el-table :data="nodes" size="small" v-loading="loading" empty-text="暂无节点">
         <el-table-column prop="node_id" label="节点" width="160" />
         <el-table-column prop="worker_id" label="Worker" width="140" />
@@ -39,12 +39,12 @@
         <div class="card-head">
           <span>消息审计</span>
           <div class="filters">
-            <el-select v-model="direction" placeholder="方向" clearable size="small" style="width: 150px" @change="load">
+            <el-select v-model="direction" placeholder="方向" clearable size="small" style="width: 150px" @change="reload">
               <el-option label="Worker→本地" value="worker_to_local" />
               <el-option label="本地→Worker" value="local_to_worker" />
             </el-select>
-            <el-input v-model="messageType" placeholder="消息类型" clearable size="small" style="width: 160px" @keyup.enter="load" />
-            <el-select v-model="status" placeholder="状态" clearable size="small" style="width: 120px" @change="load">
+            <el-input v-model="messageType" placeholder="消息类型" clearable size="small" style="width: 160px" @keyup.enter="reload" @clear="reload" />
+            <el-select v-model="status" placeholder="状态" clearable size="small" style="width: 120px" @change="reload">
               <el-option label="success" value="success" />
               <el-option label="failed" value="failed" />
               <el-option label="timeout" value="timeout" />
@@ -84,14 +84,14 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, Connection } from '@element-plus/icons-vue'
-import { apiV2 } from '../utils/api.js'
+import { getNodeList, getMessageList, reconnectControl } from '../api/worker.js'
 
 export default {
   name: 'Control',
   setup() {
     const nodes = ref([])
     const messages = ref([])
-    const liveConnected = ref(false)
+    const liveConnected = ref(null)
     const loading = ref(false)
     const reconnecting = ref(false)
     const autoRefresh = ref(false)
@@ -105,33 +105,36 @@ export default {
 
     const load = async () => {
       loading.value = true
-      try {
-        const res = await apiV2('/control/nodes')
-        nodes.value = res.data.nodes || []
-        liveConnected.value = !!res.data.live_connected
-        const q = new URLSearchParams({ page: page.value, page_size: pageSize.value })
-        if (direction.value) q.set('direction', direction.value)
-        if (messageType.value) q.set('message_type', messageType.value)
-        if (status.value) q.set('status', status.value)
-        const m = await apiV2(`/control/messages?${q.toString()}`)
-        messages.value = m.items || []
-        total.value = m.total || 0
-      } catch (e) { ElMessage.error(e.message) } finally { loading.value = false }
+      // 节点数组与分页消息分别来自 /api/admin，单个失败不遮蔽另一块数据。
+      const results = await Promise.allSettled([
+        getNodeList(),
+        getMessageList({ page: page.value, page_size: pageSize.value,
+          direction: direction.value, message_type: messageType.value, status: status.value })
+      ])
+      if (results[0].status === 'fulfilled') nodes.value = results[0].value
+      else ElMessage.error(results[0].reason.message)
+      if (results[1].status === 'fulfilled') {
+        messages.value = results[1].value.items
+        total.value = results[1].value.total
+      } else ElMessage.error(results[1].reason.message)
+      loading.value = false
     }
 
     const reconnect = async () => {
       reconnecting.value = true
       try {
-        const res = await apiV2('/control/reconnect', { method: 'POST' })
+        // 缺少真实重连接口时显示明确错误，不把持久化状态更新冒充重连。
+        const res = await reconnectControl()
         ElMessage.success(res.message || '已触发重连')
-        setTimeout(load, 1000)
+        await load()
       } catch (e) { ElMessage.error(e.message) } finally { reconnecting.value = false }
     }
 
+    const reload = () => { page.value = 1; load() }
     const onPage = (p) => { page.value = p; load() }
     const onAutoRefresh = (on) => {
+      if (timer) { clearInterval(timer); timer = null }
       if (on) timer = setInterval(load, 5000)
-      else if (timer) { clearInterval(timer); timer = null }
     }
     const statusType = (s) => ({ success: 'success', failed: 'danger', timeout: 'warning', pending: 'info' }[s] || 'info')
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
@@ -140,7 +143,7 @@ export default {
     onUnmounted(() => { if (timer) clearInterval(timer) })
     return { nodes, messages, liveConnected, loading, reconnecting, autoRefresh,
       direction, messageType, status, page, pageSize, total,
-      Refresh, Connection, load, reconnect, onPage, onAutoRefresh, statusType, fmt }
+      Refresh, Connection, load, reload, reconnect, onPage, onAutoRefresh, statusType, fmt }
   }
 }
 </script>

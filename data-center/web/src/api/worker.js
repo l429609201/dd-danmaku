@@ -1,207 +1,70 @@
-// Worker Bridge 管理 API
-import { get, post, del } from '@/utils/request'
+// Worker 管理走 Rust /api/admin；不要将缺失能力映射成语义不同的接口。
+import { authFetch } from '../utils/api.js'
 
-// ========== Control Node 管理 ==========
-
-/**
- * 获取 Worker 节点列表
- * @param {Object} params - 查询参数
- * @param {number} params.page - 页码
- * @param {number} params.limit - 每页数量
- * @param {string} params.status - 状态筛选（online/offline）
- * @returns {Promise<{total: number, list: Array}>}
- */
-export function getNodeList(params) {
-  return get('/nodes', params)
+async function adminRequest(path, options = {}) {
+  const response = await authFetch(`/api/admin${path}`, {
+    ...options,
+    body: options.body == null ? undefined : JSON.stringify(options.body)
+  })
+  const text = await response.text()
+  let data
+  try { data = text ? JSON.parse(text) : null } catch { data = text }
+  if (!response.ok) throw new Error(data?.message || data?.detail || (typeof data === 'string' && data) || `请求失败 (${response.status})`)
+  return data
 }
 
-/**
- * 获取节点详情
- * @param {string} nodeId - 节点 ID
- * @returns {Promise<Object>}
- */
+function queryString(params = {}) {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') query.set(key, value)
+  })
+  return query.size ? `?${query}` : ''
+}
+
+// 未实现的管理功能保留导出并明确失败，禁止返回伪造成功结果。
+const unavailable = (feature) => Promise.reject(new Error(`Rust 后端尚未提供${feature}接口`))
+const resourceId = (id) => encodeURIComponent(String(id))
+
+/** 获取节点：connected=true/false 分别筛选在线/离线；省略返回全部。裸数组，不分页。 */
+export function getNodeList(params = {}) {
+  return adminRequest(`/nodes${queryString(params)}`)
+}
 export function getNodeDetail(nodeId) {
-  return get(`/nodes/${nodeId}`)
+  return adminRequest(`/nodes/${resourceId(nodeId)}`)
 }
-
-/**
- * 注册节点
- * @param {Object} data - 节点数据
- * @param {string} data.nodeId - 节点 ID
- * @param {string} data.hostname - 主机名
- * @param {Object} data.metadata - 元数据
- * @returns {Promise<Object>}
- */
+/** 创建或更新：{ node_id, worker_id, worker_url, connected }。 */
 export function registerNode(data) {
-  return post('/nodes', data)
+  return adminRequest('/nodes', { method: 'POST', body: data })
 }
+export function deleteNode() { return unavailable('删除节点') }
+export function updateNodeStatus() { return unavailable('单独更新节点状态') }
+export function getNodeStats() { return unavailable('节点统计') }
 
-/**
- * 删除节点
- * @param {string} nodeId - 节点 ID
- * @returns {Promise<void>}
- */
-export function deleteNode(nodeId) {
-  return del(`/nodes/${nodeId}`)
+/** {page,page_size,node_id,direction,message_type,status} → {items,total,page,page_size,total_pages}。 */
+export function getMessageList(params = {}) {
+  return adminRequest(`/messages${queryString(params)}`)
 }
-
-/**
- * 更新节点状态
- * @param {string} nodeId - 节点 ID
- * @param {string} status - 状态（online/offline）
- * @returns {Promise<Object>}
- */
-export function updateNodeStatus(nodeId, status) {
-  return post(`/nodes/${nodeId}/status`, { status })
+// 详情标识是 message_id 字符串，不是数据库自增 id。
+export function getMessageDetail(messageId) {
+  return adminRequest(`/messages/${resourceId(messageId)}`)
 }
+export function sendMessage() { return unavailable('发送控制消息') }
+export function deleteMessage() { return unavailable('删除消息') }
+export function batchDeleteMessages() { return unavailable('批量删除消息') }
+export function getOnlineConnections() { return unavailable('实时连接列表') }
+export function getConnectionDetail() { return unavailable('实时连接详情') }
+export function disconnectConnection() { return unavailable('断开连接') }
+export function pingNode() { return unavailable('节点 Ping') }
+export function getConnectionStats() { return unavailable('实时连接统计') }
+export function reconnectControl() { return unavailable('手动重连') }
 
-/**
- * 获取节点统计信息
- * @returns {Promise<{total: number, online: number, offline: number}>}
- */
-export function getNodeStats() {
-  return get('/nodes/stats')
+/** {page,page_size,level,category,event} → {items,total,page,page_size,total_pages}。 */
+export function getEventList(params = {}) {
+  return adminRequest(`/events${queryString(params)}`)
 }
-
-// ========== Control Message 管理 ==========
-
-/**
- * 获取控制消息列表
- * @param {Object} params - 查询参数
- * @param {number} params.page - 页码
- * @param {number} params.limit - 每页数量
- * @param {string} params.targetNodeId - 目标节点 ID
- * @param {string} params.messageType - 消息类型
- * @returns {Promise<{total: number, list: Array}>}
- */
-export function getMessageList(params) {
-  return get('/messages', params)
+export function getRecentErrors(params = {}) {
+  return adminRequest(`/events/errors${queryString(params)}`)
 }
-
-/**
- * 获取消息详情
- * @param {number} id - 消息 ID
- * @returns {Promise<Object>}
- */
-export function getMessageDetail(id) {
-  return get(`/messages/${id}`)
-}
-
-/**
- * 发送控制消息
- * @param {Object} data - 消息数据
- * @param {string} data.targetNodeId - 目标节点 ID（可选，不填则广播）
- * @param {string} data.messageType - 消息类型
- * @param {Object} data.payload - 消息内容
- * @returns {Promise<Object>}
- */
-export function sendMessage(data) {
-  return post('/messages', data)
-}
-
-/**
- * 删除消息
- * @param {number} id - 消息 ID
- * @returns {Promise<void>}
- */
-export function deleteMessage(id) {
-  return del(`/messages/${id}`)
-}
-
-/**
- * 批量删除消息
- * @param {Array<number>} ids - 消息 ID 列表
- * @returns {Promise<{deleted: number}>}
- */
-export function batchDeleteMessages(ids) {
-  return post('/messages/batch-delete', { ids })
-}
-
-// ========== WebSocket 连接管理 ==========
-
-/**
- * 获取在线连接列表
- * @returns {Promise<Array>}
- */
-export function getOnlineConnections() {
-  return get('/bridge/connections')
-}
-
-/**
- * 获取连接详情
- * @param {string} connectionId - 连接 ID
- * @returns {Promise<Object>}
- */
-export function getConnectionDetail(connectionId) {
-  return get(`/bridge/connections/${connectionId}`)
-}
-
-/**
- * 断开连接
- * @param {string} connectionId - 连接 ID
- * @returns {Promise<void>}
- */
-export function disconnectConnection(connectionId) {
-  return post(`/bridge/connections/${connectionId}/disconnect`)
-}
-
-/**
- * 向指定节点发送 Ping
- * @param {string} nodeId - 节点 ID
- * @returns {Promise<{latency: number}>}
- */
-export function pingNode(nodeId) {
-  return post(`/bridge/nodes/${nodeId}/ping`)
-}
-
-/**
- * 获取连接统计信息
- * @returns {Promise<{total: number, byNode: Object}>}
- */
-export function getConnectionStats() {
-  return get('/bridge/stats')
-}
-
-// ========== Runtime Event 日志 ==========
-
-/**
- * 获取运行事件列表
- * @param {Object} params - 查询参数
- * @param {number} params.page - 页码
- * @param {number} params.limit - 每页数量
- * @param {string} params.eventType - 事件类型
- * @param {string} params.nodeId - 节点 ID
- * @param {string} params.startTime - 开始时间
- * @param {string} params.endTime - 结束时间
- * @returns {Promise<{total: number, list: Array}>}
- */
-export function getEventList(params) {
-  return get('/events', params)
-}
-
-/**
- * 获取事件详情
- * @param {number} id - 事件 ID
- * @returns {Promise<Object>}
- */
-export function getEventDetail(id) {
-  return get(`/events/${id}`)
-}
-
-/**
- * 清空事件日志
- * @param {string} beforeDate - 清空此日期之前的日志（可选）
- * @returns {Promise<{deleted: number}>}
- */
-export function clearEvents(beforeDate) {
-  return post('/events/clear', { beforeDate })
-}
-
-/**
- * 获取事件统计信息
- * @param {string} groupBy - 分组方式（type/node/date）
- * @returns {Promise<Object>}
- */
-export function getEventStats(groupBy = 'type') {
-  return get('/events/stats', { groupBy })
-}
+export function getEventDetail() { return unavailable('运行事件详情') }
+export function clearEvents() { return unavailable('清空运行事件') }
+export function getEventStats() { return unavailable('运行事件分组统计') }

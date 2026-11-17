@@ -71,3 +71,7 @@ AGENTS.md
 # 本地官方代理诊断工具，不参与插件构建或发布。
 /scripts/diagnose-official-proxy.mjs
 data-center/web/FRONTEND_PLAN.md
+
+# Rust 本地测试目录：保留本地文件，不影响已跟踪的测试。
+/data-center/rust/**/test/
+/data-center/rust/**/tests/

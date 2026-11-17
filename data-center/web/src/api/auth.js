@@ -34,7 +34,7 @@ export function getUserInfo() {
  * @returns {Promise<void>}
  */
 export function changePassword(oldPassword, newPassword) {
-  return post('/auth/change-password', { oldPassword, newPassword })
+  return post('/auth/change-password', { old_password: oldPassword, new_password: newPassword })
 }
 
 /**

@@ -3,7 +3,7 @@
 // @description  Emby弹幕插件 - Emby风格
 // @namespace    https://github.com/l429609201/dd-danmaku
 // @author       misaka10876, chen3861229
-// @version      1.4.1
+// @version      1.4.2
 // @copyright    2024, misaka10876 (https://github.com/l429609201)
 // @license      MIT; https://raw.githubusercontent.com/RyoLee/emby-danmaku/master/LICENSE
 // @icon         https://github.githubassets.com/pinned-octocat.svg
@@ -33,6 +33,9 @@
     let corsProxy = 'https://danmu-api.misaka10876.top/cors/';
     // 用户代理标识
     let userAgent = 'misaka10876/v1.0.0';
+    // 自定义 API 使用独立前端标识；浏览器标准 User-Agent 不可靠可改，使用扩展头区分。
+    // 官方协议继续使用上面的原有标识，不能被前端产品 UA 覆盖。
+    const frontendApiUserAgent = 'DD-Danmaku-Js/1.4.2 (https://github.com/l429609201/dd-danmaku)';
     // 日志级别: 0=关闭, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG (默认 INFO)
     let logLevel = 3;
     // ------ 用户配置 end ------
@@ -70,7 +73,7 @@
 
     // ------ 程序内部使用,请勿更改 start ------
     const openSourceLicense = {
-        self: { version: '1.4.1', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
+        self: { version: '1.4.2', name: 'Emby Danmaku Extension (misaka10876 Fork)', license: 'MIT License', url: 'https://github.com/l429609201/dd-danmaku' },
         chen3861229: { version: '1.45', name: 'Emby Danmaku Extension(Forked from original:1.11)', license: 'MIT License', url: 'https://github.com/chen3861229/dd-danmaku' },
         original: { version: '1.11', name: 'Emby Danmaku Extension', license: 'MIT License', url: 'https://github.com/RyoLee/emby-danmaku' },
         jellyfinFork: { version: '1.52', name: 'Jellyfin Danmaku Extension', license: 'MIT License', url: 'https://github.com/Izumiko/jellyfin-danmaku' },
@@ -486,6 +489,12 @@
         SOURCE_TARGET_DENIED: '来源地址不允许访问', SOURCE_TARGET_INVALID: '来源地址无效', SOURCE_DNS_FAILED: '来源域名解析失败',
         TASK_NOT_FOUND: '后端任务不存在或不属于当前用户', TASK_NOT_READY: '后端任务结果尚未就绪',
         TASK_RESULT_EXPIRED: '后端任务结果已过期', OPERATION_CANCELLED: '后端任务已取消',
+        BACKEND_TASK_WAIT_TIMEOUT: '等待后端任务状态超时，尚未确认最终结果',
+        BACKEND_UNAVAILABLE: '无法连接 Emby 插件后端，尚未确认任务结果',
+        DOWNLOAD_CONTEXT_MISSING: '下载缺少当前匹配任务、来源、分集或登录会话',
+        DOWNLOAD_VIEW_EXPIRED: '播放页面或加载任务已变更，已停止旧弹幕请求',
+        BACKEND_DOWNLOAD_INVALID_RESPONSE: '后端下载响应格式无效',
+        DOWNLOAD_CLIENT_ERROR: '前端弹幕下载处理异常',
         INTERNAL_ERROR: '后端内部处理失败', MATCH_FAILED: '匹配失败', BACKEND_CAPABILITY_MISSING: 'DLL 后端缺少所需能力',
         OFFICIAL_PROXY_UNAVAILABLE: '官方代理不可用', OFFICIAL_SIGNING_UNAVAILABLE: '官方签名未配置',
         OFFICIAL_USER_MARK_INCOMPLETE: '官方用户认证信息不完整', PROXY_DISABLED: '插件代理已禁用', PROXY_NOT_CONFIGURED: '插件代理尚未配置',
@@ -813,9 +822,22 @@
                 const headers = { Accept: 'application/json', 'Content-Type': 'application/json',
                     'X-Emby-Token': client.accessToken() };
                 const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), 130000);
-                let subscription;
+                // 后端匹配预算为 180 秒；前端留出受理、终态传播和结果读取时间。
+                const totalDeadline = Date.now() + 210000;
+                const timer = setTimeout(() => controller.abort(), 210000);
+                let subscription, taskId = '', taskCancelled = false;
                 const currentOperation = () => isCurrent() && session === resetIfSessionChanged();
+                const cancelTaskOnSwitch = () => {
+                    if (!taskId || taskCancelled || currentOperation()) return;
+                    taskCancelled = true;
+                    // 切集取消独立于已中止的业务请求，避免旧集继续占用匹配资源。
+                    const cancelController = new AbortController();
+                    const cancelTimer = setTimeout(() => cancelController.abort(), 3000);
+                    void fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/cancel`, {
+                        method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers,
+                        signal: cancelController.signal, body: JSON.stringify({ playbackEnded: true })
+                    }).catch(() => {}).finally(() => clearTimeout(cancelTimer));
+                };
                 try {
                     // business/match 自己创建唯一任务及事件流，无需额外空 operation 造成重复“开始”和主动中止日志。
                     const response = await fetch(`${base}/dd-danmaku/api/business/match`, {
@@ -827,22 +849,15 @@
                             return Object.fromEntries(allowed.filter(key => payload[key] !== undefined).map(key => [key, payload[key]]));
                         })()) });
                     let body = await response.json().catch(() => null);
-                    if (!isCurrent() || session !== resetIfSessionChanged()) return null;
-                    if (!response.ok || body?.success !== true || !/^[a-f0-9]{32}$/i.test(String(body?.data?.id ?? ''))) {
-                        throw createBackendError(body, response.status, null, true, response.status === 429 ? 'UPSTREAM_RATE_LIMITED' : 'UNKNOWN_ERROR');
+                    // 先保留安全的任务号，再检查切集；受理跨集时也必须取消旧任务。
+                    if (/^[a-f0-9]{32}$/i.test(String(body?.data?.id ?? ''))) taskId = String(body.data.id);
+                    if (!currentOperation()) return null;
+                    if (!response.ok || body?.success !== true || !taskId) {
+                        throw createBackendError(body, response.status, taskId, true, response.status === 429 ? 'UPSTREAM_RATE_LIMITED' : 'UNKNOWN_ERROR');
                     }
-                    const taskId = String(body.data.id);
-                    let taskCancelled = false;
-                    const cancelTaskOnSwitch = () => {
-                        if (taskCancelled || currentOperation()) return;
-                        taskCancelled = true;
-                        void fetch(`${base}/dd-danmaku/api/business/tasks/${taskId}/cancel`, {
-                            method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers,
-                            body: JSON.stringify({ playbackEnded: true }) }).catch(() => {});
-                    };
                     // 共用终态唤醒订阅，结果仍须经过原登录会话的 HTTP 状态与 result 校验。
                     subscription = await this.watchTask(taskId, currentOperation);
-                    const taskDeadline = Date.now() + 180000;
+                    const taskDeadline = Math.min(totalDeadline, Date.now() + 200000);
                     while (Date.now() < taskDeadline) {
                         if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
                         await subscription.wait(500, controller.signal);
@@ -871,7 +886,7 @@
                     }
                     // 匹配证明只归当前任务所有，旧集结果不得写进复用的 window.ede。
                     if (!currentOperation()) { cancelTaskOnSwitch(); return null; }
-                    if (!body?.data?.Match && !body?.data?.match) throw createBackendError({ errorCode: 'UPSTREAM_TIMEOUT' }, null, taskId);
+                    if (!body?.data?.Match && !body?.data?.match) throw createBackendError({ errorCode: 'BACKEND_TASK_WAIT_TIMEOUT' }, null, taskId);
                     const data = body.data;
                     window.ede.backendMatchTaskId = taskId;
                     window.ede.backendSourceId = data.SourceId || data.sourceId || '';
@@ -883,15 +898,21 @@
                     data.modeUsed = match.ModeUsed || match.modeUsed;
                     if (!data || !['matched', 'ambiguous', 'unmatched', 'insufficient_metadata'].includes(data.status))
                         throw new Error('在线匹配响应协议无效');
+                    // 下载交接绑定本次后端证明，避免靠裸 epid 或旧集全局字段拼接下载请求。
+                    data.downloadContext = { selectionTaskId: taskId, sourceId: window.ede.backendSourceId,
+                        itemId: String(payload.itemId || '') };
                     // HTTP 已确认的结果立即返回，日志订阅在 finally 后台收尾。
                     return data;
                 } catch (error) {
                     if (!currentOperation()) return null;
-                    if (!error.code) error.code = error?.name === 'AbortError' ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_UNAVAILABLE';
-                    const failure = createBackendError({ code: error.code, errorMessage: error.errorMessage }, error.httpStatus, error.taskId);
+                    // 只有后端明确返回的上游超时才标为 UPSTREAM_TIMEOUT，前端断连不冒充上游失败。
+                    const code = error?.name === 'AbortError' ? 'BACKEND_TASK_WAIT_TIMEOUT'
+                        : typeof error.code === 'string' ? error.code : 'BACKEND_UNAVAILABLE';
+                    const failure = createBackendError({ code, errorMessage: error.errorMessage }, error.httpStatus, error.taskId || taskId);
                     logger.warn(`[后端在线匹配] ${failure.message}${failure.taskId ? `，任务=${failure.taskId}` : ''}`);
                     throw failure;
                 } finally {
+                    cancelTaskOnSwitch();
                     clearTimeout(timer); controller.abort();
                     if (subscription) void subscription.close();
                 }
@@ -1542,14 +1563,20 @@
                             || typeof this._?.listener?.pause !== 'function'
                             || typeof this._?.listener?.play !== 'function') return;
                         const renderer = this._.engine.render;
+                        const framing = this._.engine.framing;
+                        let frameTime = this.media.currentTime;
                         const running = !this._.paused;
                         // 原库在启动时绑定 render；只重启本实例帧循环，不发事件、不清空弹幕。
                         if (running) this._.listener.pause();
-                        this._.engine = { ...this._.engine, render: (stage, comment) => {
+                        this._.engine = { ...this._.engine, framing: stage => {
+                            // 同一帧所有弹幕共用一个媒体时间，避免逐条采样产生位置偏差。
+                            frameTime = this.media.currentTime;
+                            return framing.call(this, stage);
+                        }, render: (stage, comment) => {
                             if (comment.mode === 'rtl' || comment.mode === 'ltr') {
                                 // currentTime 已包含倍速，不能再将累计媒体时间差乘当前速率。
                                 const distance = (this._.width + comment.width)
-                                    * (this.media.currentTime - comment.time) / this._.duration;
+                                    * (frameTime - comment.time) / this._.duration;
                                 comment.x = comment.mode === 'rtl' ? this._.width - distance : distance - comment.width;
                             }
                             renderer.call(this, stage, comment);
@@ -2030,6 +2057,34 @@
         danmakuClock?.dispose();
         const events = new EventTarget();
         let media = null, remote = null, timer = null, last = null, disposed = false;
+        let waiting = false, seeking = false, smooth = null;
+        // 媒体时间可能每 100ms 才更新；用单调时钟补齐帧间运动，小误差只调整后续斜率。
+        const smoothState = (actual, now, continuous = false) => {
+            const paused = actual.paused || waiting || seeking;
+            const rate = actual.rate;
+            const reset = () => {
+                smooth = { position: actual.position, at: now, raw: actual.position,
+                    changedAt: now, paused, rate, correction: 0 };
+                return { position: smooth.position, paused, rate };
+            };
+            if (!smooth) return reset();
+            // 未收到时间推进时只允许短暂外推，避免漏发 waiting 后无限空跑。
+            const end = continuous ? now : Math.min(now, smooth.changedAt + 250);
+            const elapsed = Math.max(0, end - smooth.at) / 1000;
+            const position = smooth.position + (smooth.paused ? 0 : elapsed * smooth.rate * (1 + smooth.correction));
+            const changed = actual.position !== smooth.raw;
+            if (changed && Math.abs(actual.position - position) > Math.max(1, 0.25 * rate)) return reset();
+            let correction = smooth.correction;
+            if (changed) {
+                const error = actual.position - position;
+                // 容忍 100ms 量化及采样相位；不把每次小幅回拨直接画到屏幕上。
+                correction = Math.abs(error) <= 0.12 * rate ? 0 : Math.max(-0.1, Math.min(0.1, error / rate));
+            }
+            smooth = { position, at: now, raw: actual.position,
+                changedAt: changed || paused !== smooth.paused ? now : smooth.changedAt,
+                paused, rate, correction };
+            return { position, paused, rate };
+        };
         // 保留节点引用，旧容器离开文档后仍可迁移原弹幕层。
         const overlay = getById(eleIds.danmakuWrapper);
         const names = ['play', 'playing', 'pause', 'waiting', 'seeking', 'seeked', 'ratechange', 'loadedmetadata', 'emptied'];
@@ -2058,11 +2113,13 @@
         const state = () => {
             const now = performance.now(), actual = local();
             // 真实视频时间已包含倍速；迟到的服务端进度不能重新锚定正在渲染的本地视频。
-            if (media && media.id !== eleIds.h5VideoAdapter) return actual;
-            if (remote && now - remote.at > 15000) { releaseRemote(); return local(); }
-            if (!remote) return actual;
-            return { position: remote.position + (remote.paused ? 0 : (now - remote.at) / 1000 * remote.rate),
-                paused: remote.paused, rate: remote.rate };
+            if (media && media.id !== eleIds.h5VideoAdapter) return smoothState(actual, now);
+            if (remote && now - remote.at > 15000) releaseRemote();
+            const source = remote
+                ? { position: remote.position + (remote.paused ? 0 : (now - remote.at) / 1000 * remote.rate),
+                    paused: remote.paused, rate: remote.rate }
+                : local();
+            return smoothState(source, now, !!remote);
         };
         const emit = name => events.dispatchEvent(new Event(name));
         const sync = (seek = false) => {
@@ -2075,6 +2132,21 @@
             last = { ...next, at: now };
         };
         const localEvent = event => {
+            // 先结算旧斜率，再切换状态；暂停和缓冲保持当前位置，不追回量化采样点。
+            state();
+            if (event.type === 'waiting' || event.type === 'emptied') waiting = true;
+            if (event.type === 'playing' || (event.type === 'play' && media?.id === eleIds.h5VideoAdapter)) {
+                waiting = false; seeking = false;
+            }
+            if (event.type === 'seeking') {
+                // 虚拟播放器的 seeking 是瞬时通知，不会配对发出 seeked。
+                seeking = media?.id !== eleIds.h5VideoAdapter && media?.seeking === true;
+                smooth = null;
+            }
+            if (event.type === 'seeked' || event.type === 'loadedmetadata') {
+                seeking = false;
+                smooth = null;
+            }
             // 虚拟适配器的合成暂停/播放事件不能清除刚确认的服务端锚点。
             if (media?.id !== eleIds.h5VideoAdapter) remote = null;
             sync(event.type === 'seeking');
@@ -2084,6 +2156,7 @@
             if (next === media) return false;
             if (media) names.forEach(name => media.removeEventListener(name, localEvent));
             media = next;
+            waiting = false; seeking = false; smooth = null;
             if (media) names.forEach(name => media.addEventListener(name, localEvent));
             remote = null;
             return true;
@@ -3445,8 +3518,13 @@
         const commentAppId = appId || window.ede.episode_info?.apiAppId || '';
         const commentAppSecret = appSecret || window.ede.episode_info?.apiAppSecret || '';
         // [兼容] 规范化 prefix：兜底处理缓存中遗留的旧格式（如缺少 /api/v2 的 dandanplay 地址）
-        const prefix = ddBackend.isDll()
-            ? (String(rawPrefix).includes('dandanplay') ? corsProxy + 'https://api.dandanplay.net/api/v2' : 'emby-proxy://custom')
+        // DLL 下载以匹配证明中的来源为准，不从上游地址猜测来源；签名和异步下载均由后端负责。
+        const dllMode = ddBackend.isDll();
+        const downloadContext = manualDanmakuSelection?.key !== manualDanmakuKey(window.ede?.itemId)
+            ? window.ede?.episode_info?.backendDownloadContext : null;
+        const backendSourceId = downloadContext?.sourceId || window.ede?.backendSourceId;
+        const prefix = dllMode
+            ? (backendSourceId === 'official' ? corsProxy + 'https://api.dandanplay.net/api/v2' : 'emby-proxy://custom')
             : normalizeCustomApiPrefix(rawPrefix, commentAppId, commentAppSecret);
         // 轮询使用本次加载快照；不能引用外层另一个函数的局部 current。
         const playback = window.ede;
@@ -3458,7 +3536,7 @@
 
         // [v2.7.0] 仅当当前源对应的 serverName 在 knownApiServers 中配置了 supportsAsync:true 时，
         // 才追加 async=1 参数，避免向不支持异步接口的服务器发送无效参数
-        const supportsAsyncPoll = (() => {
+        const supportsAsyncPoll = !dllMode && (() => {
             const list = getCustomApiList();
             const normalize = u => (u || '').replace(/\/$/, '');
             const matchedItem = list.find(i => normalize(i.url) === normalize(rawPrefix));
@@ -3471,10 +3549,11 @@
         const startTime = performance.now(); // [Log] 开始计时
 
         // [签名] 自定义API签名头（按原始 /comment URL 签名，不含 async 参数影响 path）
-        const commentSignHeaders = await buildCustomApiSignHeaders(commentAppId, commentAppSecret, url);
+        const commentSignHeaders = dllMode ? {} : await buildCustomApiSignHeaders(commentAppId, commentAppSecret, url);
         const fetchOpts = Object.keys(commentSignHeaders).length > 0
             ? { headers: commentSignHeaders, timeoutMs: 100000 }
             : { timeoutMs: 100000 };
+        if (dllMode && downloadContext) fetchOpts.downloadContext = downloadContext;
 
         // [v2.7.0] 轮询异步任务：/taskcomment/{taskId}
         // 轮询必须有上限：服务端任务异常或状态字段不兼容时，不能让“正在获取”永久占用播放页。
@@ -3566,6 +3645,17 @@
                 }
             })
             .catch((error) => {
+                // 普通 JS 异常不是后端坏响应；保留原异常作为 cause，只记录无 URL/参数的脚本行列。
+                if (dllMode && typeof error?.code !== 'string') {
+                    const failure = createBackendError({ code: error?.name === 'AbortError'
+                        ? 'DOWNLOAD_VIEW_EXPIRED' : 'DOWNLOAD_CLIENT_ERROR' });
+                    failure.cause = error;
+                    const locations = String(error?.stack || '').split('\n').slice(1)
+                        .map(line => line.match(/(?:ede[^\s/:?#]*\.js|<anonymous>):(\d+):(\d+)/))
+                        .filter(Boolean).slice(0, 4).map(match => `ede.js:${match[1]}:${match[2]}`).join(' ← ');
+                    logger.error(`[API请求] comment 获取弹幕失败: ${formatBackendError(failure)}，异常类型=${/^[A-Za-z]{1,40}$/.test(error?.name || '') ? error.name : 'Error'}${locations ? `，位置=${locations}` : ''}`);
+                    throw failure;
+                }
                 logger.error(`[API请求] comment 获取弹幕失败: ${error.code ? formatBackendError(error) : '请求失败'}`);
                 // DLL 失败交给加载入口展示，不能吞为 null 后覆盖成“未获取到弹幕”。
                 if (ddBackend.isDll() && error.code) throw error;
@@ -3937,26 +4027,42 @@
 
     if (token) requestHeaders.Authorization = `Bearer ${token}`;
     if (headers) Object.assign(requestHeaders, headers);
+    // 独立 JS 模式只标记已配置的自定义来源，避免影响官方、Emby 或其它第三方请求。
+    if (!ddBackend.isDll() && !isDandanplayApi && !ddSign.isProxiedOfficial(url)
+        && getCustomApiList().some(source => {
+            const prefix = String(normalizeCustomApiPrefix(source.url, source.appId, source.appSecret) || '').replace(/\/+$/, '');
+            return prefix && (url === prefix || url.startsWith(prefix + '/'));
+        })) requestHeaders['X-User-Agent'] = frontendApiUserAgent;
 
     // 插件代理使用内部虚拟前缀，绝不把该地址发到网络或退回浏览器直连。
     // 后端在线且本人明确手动搜索选择才保存；自动匹配仅取弹幕，不写 XML。
     const savePurpose = manualDanmakuSelection?.key === manualDanmakuKey(window.ede?.itemId)
         ? 'selection' : 'none';
     if (ddBackend.isDll() && (url.startsWith('emby-proxy://custom/') || ddSign.isProxiedOfficial(url))) {
-        const target = url.startsWith('emby-proxy://custom/') ? new URL(url) : new URL(url.slice(corsProxy.length));
+        // 内部虚拟协议仅是路由标记，使用标准 HTTP 基准解析路径，避免依赖宿主的非标准协议实现。
+        const target = url.startsWith('emby-proxy://custom/')
+            ? new URL(url.slice('emby-proxy://custom'.length), 'https://dd-proxy.invalid')
+            : new URL(url.slice(corsProxy.length));
         if (target.pathname.startsWith('/comment/') || target.pathname.match(/\/api\/v2\/comment\//)) {
             const client = getHostApiClient();
             const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
             const embyToken = client?.accessToken?.();
-            const selectionTaskId = String(window.ede?.backendEpisodeTaskId || window.ede?.backendMatchTaskId || '');
-            const sourceId = url.startsWith('emby-proxy://custom/')
-                ? String(window.ede?.backendSourceId || '') : 'official';
+            const automaticContext = opts.downloadContext;
+            const selectionTaskId = String(automaticContext?.selectionTaskId || window.ede?.backendEpisodeTaskId || window.ede?.backendMatchTaskId || '');
+            const sourceId = automaticContext?.sourceId || (url.startsWith('emby-proxy://custom/')
+                ? String(window.ede?.backendSourceId || '') : 'official');
             const itemId = String(window.ede?.itemId || '');
+            if (automaticContext && automaticContext.itemId !== itemId)
+                throw createBackendError({ code: 'DOWNLOAD_VIEW_EXPIRED' });
             const episodeId = target.pathname.startsWith('/comment/')
                 ? target.pathname.slice('/comment/'.length)
                 : target.pathname.slice(target.pathname.indexOf('/comment/') + '/comment/'.length);
-            if (!base || !embyToken || !selectionTaskId || !sourceId || !itemId || !/^[A-Za-z0-9_-]{1,160}$/.test(episodeId))
-                throw new Error('后端下载所需匹配任务不存在，拒绝浏览器直连');
+            if (!base || !embyToken || !selectionTaskId || !sourceId || !itemId || !/^[A-Za-z0-9_-]{1,160}$/.test(episodeId)) {
+                // 只输出缺项布尔值，不泄漏令牌、上游地址或凭据。
+                logger.warn(`[后端下载] 交接校验失败：会话=${Boolean(base && embyToken)}，任务=${Boolean(selectionTaskId)}，来源=${Boolean(sourceId)}，媒体=${Boolean(itemId)}，分集=${/^[A-Za-z0-9_-]{1,160}$/.test(episodeId)}`);
+                throw createBackendError({ code: 'DOWNLOAD_CONTEXT_MISSING' });
+            }
+            logger.info('[后端下载] 匹配结果已交接，正在请求后端受理');
             const backendHeaders = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Emby-Token': embyToken };
             // 请求开始前固定播放身份，不能把旧集的创建响应绑定到新集。
             const view = window.ede, loadId = view?.lastLoadId, generation = playbackViewGeneration;
@@ -4018,14 +4124,19 @@
                     if (taskStatus === 'succeeded') {
                         const { response: resultResponse, data: taskBody } = await readDownloadTask(`/dd-danmaku/api/business/tasks/${taskId}/result`);
                         checkDownloadView();
-                        if (!resultResponse.ok || taskBody?.success === false) throw createBackendError(taskBody, resultResponse.status, taskId);
-                        return taskBody?.data || taskBody;
+                        // 下载结果为原始 comment 协议，不同于 match 的 success/data 信封。
+                        if (!resultResponse.ok || taskBody?.success === false || !taskBody || typeof taskBody !== 'object')
+                            throw createBackendError(taskBody || {}, resultResponse.status, taskId, true, 'BACKEND_DOWNLOAD_INVALID_RESPONSE');
+                        // 保留根层 ddSave；调用方本就兼容 comments、data.comments 和直接数组。
+                        return taskBody;
                     }
                 }
-                throw createBackendError({ errorCode: 'UPSTREAM_TIMEOUT' }, null, taskId);
+                throw createBackendError({ errorCode: 'BACKEND_TASK_WAIT_TIMEOUT' }, null, taskId);
             } catch (error) {
-                if (error.code || error.name === 'AbortError') throw error;
-                throw createBackendError({ errorCode: 'UPSTREAM_UNAVAILABLE' });
+                // 保留真实后端错误；前端中止或断连不能伪装成外部 comment 接口失败。
+                if (typeof error.code === 'string') throw error;
+                throw createBackendError({ code: !currentDownloadView() ? 'DOWNLOAD_VIEW_EXPIRED'
+                    : error.name === 'AbortError' ? 'BACKEND_TASK_WAIT_TIMEOUT' : 'BACKEND_UNAVAILABLE' });
             } finally {
                 clearInterval(viewTimer); controller.abort();
                 view?.abortControllers?.delete(controller);
@@ -4039,7 +4150,8 @@
 
     if (url.startsWith('emby-proxy://custom/')) {
         if (!ddBackend.isDll()) throw new Error('Emby 插件代理不可用');
-        const target = new URL(url);
+        // 与业务下载分支采用相同的标准 HTTP 路径解析，避免虚拟协议落入错误操作。
+        const target = new URL(url.slice('emby-proxy://custom'.length), 'https://dd-proxy.invalid');
         const client = getHostApiClient();
         const base = String(client?.serverAddress?.() || '').replace(/\/$/, '');
         const embyToken = client?.accessToken?.();
@@ -4052,7 +4164,13 @@
             query.set('Operation', 'search'); query.set('Keyword', target.searchParams.get('keyword') || '');
         } else {
             const match = /^\/(bangumi|comment|taskcomment)\/([A-Za-z0-9_-]+)$/.exec(path);
-            if (!match || method !== 'GET') throw new Error('不支持的插件代理操作');
+            if (!match || method !== 'GET') {
+                // 只记录路由形态，不输出域名、查询串、令牌或分集正文，定位浏览器 URL 解析差异。
+                const route = path.startsWith('/comment/') ? 'comment' : path.startsWith('/taskcomment/') ? 'taskcomment'
+                    : path.startsWith('/bangumi/') ? 'bangumi' : 'unknown';
+                logger.error(`[插件代理] 路由拒绝：操作=${route}，路径长度=${path.length}，路径匹配=${Boolean(match)}，GET=${method === 'GET'}，DLL=${ddBackend.isDll()}`);
+                throw createBackendError({ code: 'DOWNLOAD_CLIENT_ERROR' });
+            }
             query.set('Operation', match[1] === 'taskcomment' ? 'task' : match[1]);
             query.set('Id', match[2]);
             if (match[1] !== 'bangumi') {
@@ -4838,6 +4956,7 @@
         const selected = result.selected;
         logger.info(`[后端在线匹配] 来源=${result.SourceName || result.sourceName || sourceId}，状态=matched`);
         return { backendResolved: true, directMatch: true, backendSourceId: sourceId,
+            downloadContext: result.downloadContext,
             episodeInfo: { ...selected, episodes: [selected] },
             // 虚拟前缀只用于前端分流到后端下载任务，不代表任何真实上游地址。
             apiPrefix: official ? corsProxy + 'https://api.dandanplay.net/api/v2' : 'emby-proxy://custom',
@@ -5427,6 +5546,7 @@
                 apiAppSecret: res.apiAppSecret || '',
                 seriesOrMovieId: seriesOrMovieId,
                 backendResolved: res.backendResolved === true,
+                backendDownloadContext: res.downloadContext,
                 // 独立保存源精确校验标记，不冒充后端确认。
                 apiExactMatched: res.apiExactMatched === true,
             };
@@ -14069,7 +14189,7 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             // 提前探测 DLL 并加载会话级默认值；失败静默回退普通 JS 模式。
             ddBackend.prepare().then(state => {
                 const version = String(state?.version ?? state?.Version ?? '离线');
-                logger.info(`[运行版本] 脚本修订=playback-rate-sync-v1，DLL=${/^[0-9.]{3,30}$/.test(version) ? version : '离线'}`);
+                logger.info(`[运行版本] 脚本修订=media-clock-smoothing-v1，DLL=${/^[0-9.]{3,30}$/.test(version) ? version : '离线'}`);
                 if (window.ede && !window.ede.danmaku) lsCache.clear();
                 // 只有纯 JS 官方源需要浏览器签名，DLL 在线时完全交给后端。
                 if (!state && lsGetItem(lsKeys.useOfficialApi.id)) ddSign.warmup();
@@ -14149,7 +14269,11 @@ keyToggleLabel.textContent = '此来源的 AppId / AppSecret';
             try {
                 const resp = await fetch(url + path, {
                     method: 'GET',
-                    headers: { 'Accept': 'application/json' },
+                    // 自定义源探测同样标记前端；官方地址保持原请求头。
+                    headers: !ddBackend.isDll() && !ddSign.isProxiedOfficial(url)
+                        && !String(url).includes('api.dandanplay.net')
+                        ? { 'Accept': 'application/json', 'X-User-Agent': frontendApiUserAgent }
+                        : { 'Accept': 'application/json' },
                     signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined,
                 });
                 if (!resp.ok) continue;

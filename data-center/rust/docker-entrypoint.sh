@@ -5,7 +5,7 @@ set -e
 
 # 默认配置
 DATABASE_URL="${DATABASE_URL:-sqlite:/app/data/database.db}"
-LISTEN_ADDR="${LISTEN_ADDR:-0.0.0.0:8080}"
+LISTEN_ADDR="${LISTEN_ADDR:-0.0.0.0:7759}"
 RUST_LOG="${RUST_LOG:-info,sqlx=warn}"
 
 echo "=== data-center Rust Backend ==="

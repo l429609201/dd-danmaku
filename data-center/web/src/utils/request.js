@@ -46,7 +46,8 @@ request.interceptors.request.use(
     }
 
     // 添加 token（如果存在）
-    const token = localStorage.getItem('token')
+    // 与登录页及 fetch 封装统一凭据键，避免登录成功后 Axios 请求仍未认证。
+    const token = localStorage.getItem('access_token')
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
@@ -83,7 +84,8 @@ request.interceptors.response.use(
         case 401:
           message = '未授权，请重新登录'
           // 清除 token 并跳转登录页
-          localStorage.removeItem('token')
+          localStorage.removeItem('access_token')
+          localStorage.removeItem('token_type')
           localStorage.removeItem('user')
           window.location.href = '/login'
           break

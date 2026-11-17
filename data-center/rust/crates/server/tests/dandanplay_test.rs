@@ -14,7 +14,8 @@ async fn test_app() -> axum::Router {
     let db = db::init_db(&config).await.unwrap();
     db::test_helper::create_test_schema(&db).await.unwrap();
     
-    let state = AppState::new_for_test(db);
+    let mut state = AppState::new_for_test(db);
+    state.run_mode = server::RunMode::Api;
     create_router(state)
 }
 
@@ -58,7 +59,8 @@ async fn test_dandanplay_get_comments() {
     let db = db::init_db(&config).await.unwrap();
     db::test_helper::create_test_schema(&db).await.unwrap();
     
-    let state = AppState::new_for_test(db.clone());
+    let mut state = AppState::new_for_test(db.clone());
+    state.run_mode = server::RunMode::Api;
     
     // 预先写入一些测试弹幕到本地存储
     let test_body = r#"{"count": 2, "comments": [{"cid": 1, "p": "10.5,1,25,16777215,1234567890", "m": "测试弹幕1"}, {"cid": 2, "p": "20.0,1,25,16777215,1234567891", "m": "测试弹幕2"}]}"#;

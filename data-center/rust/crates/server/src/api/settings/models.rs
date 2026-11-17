@@ -1,6 +1,25 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// 官方凭据只读投影；永不包含原始密钥或加密信封。
+#[derive(Serialize, Deserialize)]
+pub struct DandanplayConfigResponse {
+    pub app_id: String,
+    pub user_agent: String,
+    pub secret_configured: bool,
+    pub source: String,
+    pub encryption_ready: bool,
+}
+
+/// 不提供清空操作；省略或 null 保留已有数据库密钥，禁止 Debug 打印请求。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateDandanplayConfigRequest {
+    pub app_id: String,
+    pub user_agent: String,
+    pub app_secret: Option<String>,
+}
+
 /// 系统配置项
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConfigItem {
@@ -9,6 +28,7 @@ pub struct ConfigItem {
     pub value: String,
     pub description: Option<String>,
     pub updated_at: String,
+    pub is_secret: bool,
 }
 
 /// 获取配置请求
@@ -44,15 +64,15 @@ pub struct DashboardStats {
     pub worker: WorkerStats,
     pub cache: CacheStats,
     pub danmaku: DanmakuStats,
-    pub uptime_seconds: u64,
+    pub uptime_seconds: Option<u64>,
 }
 
 /// 系统统计
 #[derive(Debug, Serialize)]
 pub struct SystemStats {
     pub version: String,
-    pub rust_version: String,
-    pub build_time: String,
+    pub rust_version: Option<String>,
+    pub build_time: Option<String>,
     pub os: String,
     pub arch: String,
     pub cpu_usage: Option<f32>,
@@ -106,16 +126,19 @@ pub struct HealthStatus {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DatabaseConfig {
     pub url: String, // 敏感信息，需要脱敏
-    pub max_connections: u32,
-    pub min_connections: u32,
+    pub max_connections: Option<u32>,
+    pub min_connections: Option<u32>,
 }
 
 /// 缓存配置
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CacheConfig {
+    /// 仅投影已生效的进程模式；此字段不属于可写配置。
+    pub run_mode: crate::RunMode,
     pub enabled: bool,
-    pub ttl_seconds: u32,
-    pub max_entries: u32,
+    pub ttl_seconds: Option<u32>,
+    pub max_entries: Option<u32>,
+    pub redis_enabled: bool,
 }
 
 #[cfg(test)]
@@ -130,6 +153,7 @@ mod tests {
             value: "DataCenter".to_string(),
             description: Some("网站名称".to_string()),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            is_secret: false,
         };
         
         let json = serde_json::to_string(&item).unwrap();

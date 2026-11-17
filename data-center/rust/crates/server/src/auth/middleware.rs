@@ -22,10 +22,30 @@ pub async fn auth_middleware(
         .ok_or(StatusCode::UNAUTHORIZED)?;
     
     // 验证 Token
-    let claims = state
+    let mut claims = state
         .jwt
         .verify_token(token)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    // 签名有效不代表会话仍有效：登出、改密、删除和禁用必须即时生效。
+    let user_id = claims.sub.parse::<i64>().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let session = db::SessionRepo::find_by_token(&state.db, token)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if session.user_id != user_id {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let user = db::UserRepo::find_by_id(&state.db, user_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if !user.is_active {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    // 权限以数据库现值为准，避免降权后旧 JWT 继续保留管理员权限。
+    claims.role = user.role;
+    claims.username = user.username;
     
     // 将 Claims 插入到请求扩展中
     req.extensions_mut().insert(claims);

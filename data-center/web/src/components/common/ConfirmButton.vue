@@ -34,7 +34,7 @@
 <script setup>
 import { QuestionFilled } from '@element-plus/icons-vue'
 
-const props = defineProps({
+defineProps({
   // 提示标题
   title: {
     type: String,

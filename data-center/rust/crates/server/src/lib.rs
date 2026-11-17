@@ -12,19 +12,33 @@ use tower_http::cors::CorsLayer;
 use tracing::info;
 
 mod health;
+// 管理前端静态资源与 SPA 页面路由。
+mod web_ui;
 mod api;
 mod bridge;
 mod cache_service;
+// 按当前规范化表结构摄取与拼装上游媒体实体。
+mod entity_service;
+// 官方目录扩展字段独立规范化存储。
+pub mod catalog_fields;
+// 匹配与弹幕协议采用独立字段表，避免响应原文作为业务事实来源。
+pub mod structured_response_store;
+// 统一官方上游签名，凭据不与旧版不同结构的密钥表混用。
+pub mod dandanplay_upstream;
+// 专用加密配置服务，供后台更新和请求时签名共享。
+pub mod upstream_config;
 mod match_service;
 mod http_client;
-mod auth;
+pub mod auth;
 mod run_mode;
 mod router_modes;
 mod redis_service;
 mod geoip_service;
 mod alias_ai_service;
+// Worker 模式出站控制客户端（对应 Python control_client.py）
+pub mod control_client;
 
-pub use cache_service::CacheService;
+pub use cache_service::{CacheService, CacheGetOptions, CachedResponse};
 pub use bridge::ConnectionManager;
 pub use match_service::{VideoMatchService, MatchQuery, MatchedItem};
 pub use http_client::{SimpleHttpClient, HttpError};
@@ -32,6 +46,8 @@ pub use run_mode::RunMode;
 pub use redis_service::RedisCacheService;
 pub use geoip_service::{GeoIpService, GeoDistributionResponse};
 pub use alias_ai_service::{AliasAiService, ScoringResult, ScoringStatus};
+
+// 导出主要的公共函数和类型
 
 /// 应用状态
 #[derive(Clone)]
@@ -47,6 +63,14 @@ pub struct AppState {
     pub redis: Arc<RedisCacheService>,
     pub geoip: Arc<GeoIpService>,
     pub alias_ai: Arc<AliasAiService>,
+}
+
+/// 允许旧 handler 继续使用 `State<Arc<AppState>>` 提取器。
+/// AppState 字段均为 Arc/连接池句柄，克隆开销很小。
+impl axum::extract::FromRef<AppState> for Arc<AppState> {
+    fn from_ref(state: &AppState) -> Self {
+        Arc::new(state.clone())
+    }
 }
 
 impl AppState {
@@ -77,11 +101,6 @@ pub struct HealthResponse {
     pub database: String,
 }
 
-/// 根路由处理器
-async fn root() -> &'static str {
-    "data-center Rust backend"
-}
-
 /// 创建应用路由
 pub fn create_router(state: AppState) -> Router {
     let run_mode = state.run_mode;
@@ -90,13 +109,16 @@ pub fn create_router(state: AppState) -> Router {
     
     // Admin API 路由（Control Node/Message/Event 管理）
     let admin_routes = Router::new()
-        .route("/health", get(api::admin::health_check))
-        .route("/nodes", get(api::admin::list_nodes).post(api::admin::create_node))
-        .route("/nodes/{id}", delete(api::admin::delete_node))
-        .route("/messages", get(api::admin::list_messages).post(api::admin::create_message))
-        .route("/messages/{id}", delete(api::admin::delete_message))
+        .route("/health", get(health::health_check))
+        .route("/nodes", get(api::admin::list_nodes).post(api::admin::upsert_node))
+        .route("/nodes/{id}", get(api::admin::get_node))
+        .route("/messages", get(api::admin::list_messages))
+        .route("/messages/{id}", get(api::admin::get_message))
         .route("/events", get(api::admin::list_events))
-        .layer(middleware::from_fn_with_state(Arc::new(state.clone()), auth::auth_middleware));
+        .route("/events/errors", get(api::admin::recent_errors))
+        // 节点与控制消息属于管理资源，认证后还需数据库中的管理员角色。
+        .route_layer(middleware::from_fn(auth::admin_middleware))
+        .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
     
     // Worker Bridge WebSocket 路由（两种模式都需要）
     let bridge_routes = Router::new()
@@ -104,35 +126,75 @@ pub fn create_router(state: AppState) -> Router {
     
     // ========== 根据运行模式选择性启用路由 ==========
     
+    // 前端不依赖运行模式，API 鉴权仍由各 API 路由负责。
+    let web_directory = web_ui::directory();
+    let web_fallback = axum::routing::any(web_ui::serve).with_state(web_directory.clone());
+    info!(directory = %web_directory.display(), "🖥️ 管理 UI 静态资源已挂载");
     let mut router = Router::new()
-        .route("/", get(root))
+        .fallback_service(web_fallback)
         .route("/health", get(health::health_check))
         .nest("/api/admin", admin_routes)
-        .nest("/api/ws", bridge_routes);
+        .nest("/api/ws", bridge_routes)
+        // Worker/API 两种模式均提供登录及完整后台管理接口，仍保留 JWT 鉴权。
+        .merge(router_modes::create_management_routes(&state));
     
     match run_mode {
         RunMode::Worker => {
-            // Worker 模式：只启用与 CF 交互的 API
+            // Worker 模式只关闭公共弹幕接口，不关闭后台登录和配置管理。
             info!("🔧 运行模式：Worker - CloudFlare 数据中心");
-            info!("✅ 启用：Admin API、Worker Bridge");
-            info!("❌ 禁用：dandanplay API、OAuth、管理后台");
-            
-            // Worker 模式下不添加其他路由
+            info!("✅ 启用：管理后台、登录认证、Admin API、Worker Bridge");
+            info!("ℹ️ 未启用独立 dandanplay 公共接口");
         },
         RunMode::Api => {
             // API 模式：启用完整的弹幕服务和管理后台
             info!("🌐 运行模式：API - 独立弹幕服务端");
             info!("✅ 启用：dandanplay API、OAuth、完整管理后台");
             
-            // 使用辅助函数创建 API 模式路由
-            let api_routes = router_modes::create_api_mode_routes(&state);
-            router = router.merge(api_routes);
+            // 公共弹幕接口仅在 API 模式下添加，后台管理接口已在共享路由中注册。
+            router = router.merge(router_modes::create_dandanplay_routes());
         }
     }
     
     router
         .layer(CorsLayer::permissive())
-        .with_state(Arc::new(state))
+        .with_state(state)
+}
+
+/// 用户表为空时初始化管理员；未指定密码则生成随机密码，仅创建成功后输出一次。
+pub async fn init_admin_from_env(db: &sea_orm::DatabaseConnection) -> anyhow::Result<()> {
+    // 已有账户时不生成、不输出密码，也不覆盖数据库中的账户。
+    if db::UserRepo::count(db).await? > 0 {
+        info!("👤 用户表已有账户，跳过初始管理员创建");
+        return Ok(());
+    }
+    // 明确记录空表触发初始化，再检查环境配置，避免启动日志缺少阶段信息。
+    info!("👤 app_users 为空，开始初始化管理员");
+    let username = std::env::var("ADMIN_USERNAME").unwrap_or_default().trim().to_string();
+    if username.is_empty() {
+        tracing::warn!("⚠️ 用户表为空且未配置 ADMIN_USERNAME，跳过初始管理员创建");
+        return Ok(());
+    }
+    let configured_password = std::env::var("ADMIN_PASSWORD").unwrap_or_default();
+    let generated = configured_password.is_empty();
+    let password = if generated {
+        // 使用系统安全随机源生成 192 位随机密码，不使用时间戳或普通伪随机数。
+        use base64::Engine;
+        use ring::rand::SecureRandom;
+        let mut bytes = [0u8; 24];
+        ring::rand::SystemRandom::new().fill(&mut bytes)
+            .map_err(|_| anyhow::anyhow!("生成初始管理员随机密码失败"))?;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    } else {
+        configured_password
+    };
+    let hash = auth::PasswordService::hash_password(&password)?;
+    db::UserRepo::create(db, username.clone(), hash, None, None, "admin".to_string()).await?;
+    info!("👤 已创建初始管理员: {}", username);
+    // 按用户要求显示自动生成的初始密码；显式配置的密码不写入日志。
+    if generated {
+        tracing::warn!("🔑 初始管理员随机密码: {}（仅本次创建时显示，请妥善保存并登录后修改密码）", password);
+    }
+    Ok(())
 }
 
 /// 启动服务器
@@ -140,7 +202,9 @@ pub async fn run_server(
     db: sea_orm::DatabaseConnection,
     addr: &str,
 ) -> anyhow::Result<()> {
-    let cache = Arc::new(CacheService::new(db.clone()));
+    // 缓存与控制通道共用同一 Redis 实例，SQL 保留冷备。
+    let redis = Arc::new(RedisCacheService::new().await);
+    let cache = Arc::new(CacheService::new(db.clone()).with_redis(redis.clone()));
     let bridge_manager = Arc::new(ConnectionManager::new(30, 90)); // 30s 心跳间隔，90s 超时
     let match_service = Arc::new(VideoMatchService::new(db.clone()));
     
@@ -149,9 +213,13 @@ pub async fn run_server(
         .unwrap_or_else(|_| "/app/config/danmaku".to_string());
     let comment_store = Arc::new(db::CommentStoreService::new(db.clone(), danmaku_dir));
     
-    // JWT 服务（使用环境变量配置密钥，默认测试密钥）
+    // JWT 服务：密钥必须显式配置且不短于 32 字节，否则拒绝启动以防止伪造 token。
     let jwt_secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "change_me_in_production_secret_key_1234567890".to_string());
+        .ok()
+        .filter(|s| s.len() >= 32)
+        .expect("JWT_SECRET 环境变量未设置或长度不足 32 字节（当前为空或过短），\
+                 请在生产环境中配置一个随机生成的高强度密钥，例如：\
+                 openssl rand -base64 48");
     let jwt_expiry_hours = std::env::var("JWT_EXPIRY_HOURS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -165,7 +233,6 @@ pub async fn run_server(
         .unwrap_or(RunMode::Worker);
     
     // 辅助服务初始化
-    let redis = Arc::new(RedisCacheService::new().await);
     let geoip = Arc::new(GeoIpService::new());
     let alias_ai = Arc::new(AliasAiService::new());
     
@@ -190,6 +257,18 @@ pub async fn run_server(
         geoip,
         alias_ai,
     };
+
+    // Worker 模式：配置了 CONTROL_WORKER_WS_URL 时主动连接 Worker 控制通道
+    if state.run_mode.is_worker() {
+        match control_client::ControlConfig::from_env() {
+            Some(cfg) => {
+                info!("🔗 启动控制客户端: node_id={}", cfg.node_id);
+                control_client::ControlClient::new(cfg, state.clone()).spawn();
+            }
+            None => info!("ℹ️ 未配置 CONTROL_WORKER_WS_URL，控制客户端未启动"),
+        }
+    }
+
     let app = create_router(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

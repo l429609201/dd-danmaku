@@ -12,10 +12,33 @@ use db::{ControlNodeRepo, ControlMessageRepo, MessageQuery, RuntimeEventRepo, Ev
 /// 通用分页参数
 #[derive(Debug, Deserialize)]
 pub struct PaginationQuery {
-    #[serde(default = "default_page")]
+    #[serde(default = "default_page", deserialize_with = "query_u64")]
     pub page: u64,
-    #[serde(default = "default_page_size")]
+    #[serde(default = "default_page_size", deserialize_with = "query_u64")]
     pub page_size: u64,
+}
+
+// URL 查询参数经 flatten 缓冲后为字符串，需显式解析；仍拒绝负数、小数和溢出。
+fn query_u64<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Value { Number(u64), Text(String) }
+    match Value::deserialize(deserializer)? {
+        Value::Number(value) => Ok(value),
+        Value::Text(value) => value.parse().map_err(serde::de::Error::custom),
+    }
+}
+
+impl PaginationQuery {
+    /// 在进入仓储之前拒绝零值、过大页长与偏移溢出。
+    fn validate(&self) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+        if self.page == 0 || !(1..=100).contains(&self.page_size)
+            || (self.page - 1).checked_mul(self.page_size).filter(|offset| *offset <= i64::MAX as u64).is_none()
+        {
+            return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new("invalid_pagination", "分页参数无效：page 至少为1，page_size 为1到100，偏移不可溢出"))));
+        }
+        Ok(())
+    }
 }
 
 fn default_page() -> u64 {
@@ -38,7 +61,8 @@ pub struct PaginatedResponse<T> {
 
 impl<T> PaginatedResponse<T> {
     pub fn new(items: Vec<T>, total: u64, page: u64, page_size: u64) -> Self {
-        let total_pages = (total + page_size - 1) / page_size;
+        // 页长为零时不除零；使用商和余数避免 total + page_size 溢出。
+        let total_pages = if page_size == 0 { 0 } else { total / page_size + u64::from(total % page_size != 0) };
         Self {
             items,
             total,
@@ -92,14 +116,15 @@ pub async fn list_nodes(
     State(state): State<Arc<AppState>>,
     Query(query): Query<NodeListQuery>,
 ) -> ApiResult<Vec<db::entities::control_node::Model>> {
-    let nodes = if let Some(true) = query.connected {
-        ControlNodeRepo::list_connected(&state.db)
-            .await
-            .map_err(db_error_to_response)?
-    } else {
-        ControlNodeRepo::list_all(&state.db)
-            .await
-            .map_err(db_error_to_response)?
+    // 显式 false 表示离线记录筛选，不能退化为返回全部节点。
+    let nodes = match query.connected {
+        Some(true) => ControlNodeRepo::list_connected(&state.db)
+            .await.map_err(db_error_to_response)?,
+        Some(false) => ControlNodeRepo::list_all(&state.db)
+            .await.map_err(db_error_to_response)?
+            .into_iter().filter(|node| !node.connected).collect(),
+        None => ControlNodeRepo::list_all(&state.db)
+            .await.map_err(db_error_to_response)?,
     };
 
     Ok(Json(nodes))
@@ -170,6 +195,7 @@ pub async fn list_messages(
     State(state): State<Arc<AppState>>,
     Query(query): Query<MessageListQuery>,
 ) -> ApiResult<PaginatedResponse<db::entities::control_message::Model>> {
+    query.pagination.validate()?;
     let msg_query = MessageQuery {
         page: query.pagination.page,
         page_size: query.pagination.page_size,
@@ -231,6 +257,7 @@ pub async fn list_events(
     State(state): State<Arc<AppState>>,
     Query(query): Query<EventListQuery>,
 ) -> ApiResult<PaginatedResponse<db::entities::runtime_event::Model>> {
+    query.pagination.validate()?;
     let event_query = EventQuery {
         page: query.pagination.page,
         page_size: query.pagination.page_size,
@@ -251,12 +278,14 @@ pub async fn list_events(
     )))
 }
 
-/// 获取最近的错误
+/// 获取最近的错误（分页）
 pub async fn recent_errors(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PaginationQuery>,
 ) -> ApiResult<Vec<db::entities::runtime_event::Model>> {
-    let errors = RuntimeEventRepo::recent_errors(&state.db, query.page_size)
+    query.validate()?;
+    // 修复：同时传入 page 以支持偏移分页，而不是仅用 page_size 作行数上限。
+    let errors = RuntimeEventRepo::recent_errors(&state.db, query.page, query.page_size)
         .await
         .map_err(db_error_to_response)?;
 

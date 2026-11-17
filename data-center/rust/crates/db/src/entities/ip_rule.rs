@@ -58,8 +58,8 @@ mod tests {
             description: Some("测试 IP".to_string()),
             is_active: true,
             priority: 10,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: chrono::Utc::now().naive_utc(),
+            updated_at: chrono::Utc::now().naive_utc(),
         };
         
         assert_eq!(rule.ip_pattern, "192.168.1.1");

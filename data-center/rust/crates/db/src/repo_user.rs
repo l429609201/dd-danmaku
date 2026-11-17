@@ -54,7 +54,7 @@ impl UserRepo {
         email: Option<String>,
         role: String,
     ) -> Result<app_user::Model, DbErr> {
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         
         let user = app_user::ActiveModel {
             username: Set(username),
@@ -81,10 +81,13 @@ impl UserRepo {
         role: Option<String>,
         is_active: Option<bool>,
     ) -> Result<app_user::Model, DbErr> {
+        // 账户停用和会话撤销必须同进同退，失败不能遗留可复活的登录。
+        let txn = db.begin().await?;
         let user = app_user::Entity::find_by_id(id)
-            .one(db)
+            .one(&txn)
             .await?
-            .ok_or(DbErr::RecordNotFound(format!("User {} not found", id)))?;
+            // 不将内部 DB id 暴露给上层；服务层可针对业务场景添加更具体的错误说明。
+            .ok_or(DbErr::RecordNotFound("目标用户不存在".to_string()))?;
         
         let mut active_user: app_user::ActiveModel = user.into();
         
@@ -100,27 +103,40 @@ impl UserRepo {
         if let Some(active) = is_active {
             active_user.is_active = Set(active);
         }
-        active_user.updated_at = Set(chrono::Utc::now());
+        active_user.updated_at = Set(chrono::Utc::now().naive_utc());
         
-        active_user.update(db).await
+        let user = active_user.update(&txn).await?;
+        if !user.is_active {
+            app_user_session::Entity::delete_many()
+                .filter(app_user_session::Column::UserId.eq(id)).exec(&txn).await?;
+        }
+        txn.commit().await?;
+        Ok(user)
     }
     
-    /// 更新密码
+    /// 更新密码并原子撤销该用户的全部登录会话
     pub async fn update_password(
         db: &DatabaseConnection,
         id: i64,
         new_password_hash: String,
     ) -> Result<app_user::Model, DbErr> {
+        // 密码和会话放在同一事务内，撤销失败时也回滚密码写入。
+        let txn = db.begin().await?;
         let user = app_user::Entity::find_by_id(id)
-            .one(db)
+            .one(&txn)
             .await?
-            .ok_or(DbErr::RecordNotFound(format!("User {} not found", id)))?;
+            // 不将内部 DB id 暴露给上层；服务层可针对业务场景添加更具体的错误说明。
+            .ok_or(DbErr::RecordNotFound("目标用户不存在".to_string()))?;
         
         let mut active_user: app_user::ActiveModel = user.into();
         active_user.password_hash = Set(new_password_hash);
-        active_user.updated_at = Set(chrono::Utc::now());
+        active_user.updated_at = Set(chrono::Utc::now().naive_utc());
         
-        active_user.update(db).await
+        let user = active_user.update(&txn).await?;
+        app_user_session::Entity::delete_many()
+            .filter(app_user_session::Column::UserId.eq(id)).exec(&txn).await?;
+        txn.commit().await?;
+        Ok(user)
     }
     
     /// 更新最后登录时间
@@ -131,11 +147,12 @@ impl UserRepo {
         let user = app_user::Entity::find_by_id(id)
             .one(db)
             .await?
-            .ok_or(DbErr::RecordNotFound(format!("User {} not found", id)))?;
+            // 不将内部 DB id 暴露给上层；服务层可针对业务场景添加更具体的错误说明。
+            .ok_or(DbErr::RecordNotFound("目标用户不存在".to_string()))?;
         
         let mut active_user: app_user::ActiveModel = user.into();
-        active_user.last_login_at = Set(Some(chrono::Utc::now()));
-        active_user.updated_at = Set(chrono::Utc::now());
+        active_user.last_login_at = Set(Some(chrono::Utc::now().naive_utc()));
+        active_user.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active_user.update(db).await?;
         Ok(())
@@ -143,9 +160,17 @@ impl UserRepo {
     
     /// 删除用户
     pub async fn delete(db: &DatabaseConnection, id: i64) -> Result<(), DbErr> {
-        app_user::Entity::delete_by_id(id)
-            .exec(db)
-            .await?;
+        // 同一事务内先删凭据，避免外键失败和用户删除后残留可用会话。
+        let txn = db.begin().await?;
+        app_user_session::Entity::delete_many()
+            .filter(app_user_session::Column::UserId.eq(id)).exec(&txn).await?;
+        app_user_api_token::Entity::delete_many()
+            .filter(app_user_api_token::Column::UserId.eq(id)).exec(&txn).await?;
+        let result = app_user::Entity::delete_by_id(id).exec(&txn).await?;
+        if result.rows_affected == 0 {
+            return Err(DbErr::RecordNotFound("User not found".to_string()));
+        }
+        txn.commit().await?;
         Ok(())
     }
 }
@@ -161,7 +186,7 @@ impl SessionRepo {
     ) -> Result<Option<app_user_session::Model>, DbErr> {
         app_user_session::Entity::find()
             .filter(app_user_session::Column::Token.eq(token))
-            .filter(app_user_session::Column::ExpiresAt.gt(chrono::Utc::now()))
+            .filter(app_user_session::Column::ExpiresAt.gt(chrono::Utc::now().naive_utc()))
             .one(db)
             .await
     }
@@ -180,14 +205,41 @@ impl SessionRepo {
             token: Set(token),
             ip_address: Set(ip_address),
             user_agent: Set(user_agent),
-            expires_at: Set(expires_at),
-            created_at: Set(chrono::Utc::now()),
+            expires_at: Set(expires_at.naive_utc()),
+            created_at: Set(chrono::Utc::now().naive_utc()),
             ..Default::default()
         };
         
         session.insert(db).await
     }
     
+    /// 原子轮换会话；旧令牌只能被消费一次，失败时保留原会话。
+    pub async fn rotate(
+        db: &DatabaseConnection,
+        user_id: i64,
+        old_token: &str,
+        new_token: String,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), DbErr> {
+        let txn = db.begin().await?;
+        let deleted = app_user_session::Entity::delete_many()
+            .filter(app_user_session::Column::Token.eq(old_token))
+            .filter(app_user_session::Column::UserId.eq(user_id))
+            .filter(app_user_session::Column::ExpiresAt.gt(chrono::Utc::now().naive_utc()))
+            .exec(&txn).await?;
+        if deleted.rows_affected != 1 {
+            return Err(DbErr::RecordNotFound("Session not found".to_string()));
+        }
+        app_user_session::ActiveModel {
+            user_id: Set(user_id), token: Set(new_token),
+            ip_address: Set(None), user_agent: Set(None),
+            expires_at: Set(expires_at.naive_utc()),
+            created_at: Set(chrono::Utc::now().naive_utc()),
+            ..Default::default()
+        }.insert(&txn).await?;
+        txn.commit().await
+    }
+
     /// 删除会话（登出）
     pub async fn delete_by_token(
         db: &DatabaseConnection,
@@ -215,7 +267,7 @@ impl SessionRepo {
     /// 清理过期会话
     pub async fn cleanup_expired(db: &DatabaseConnection) -> Result<u64, DbErr> {
         let result = app_user_session::Entity::delete_many()
-            .filter(app_user_session::Column::ExpiresAt.lt(chrono::Utc::now()))
+            .filter(app_user_session::Column::ExpiresAt.lt(chrono::Utc::now().naive_utc()))
             .exec(db)
             .await?;
         Ok(result.rows_affected)
@@ -259,7 +311,7 @@ impl ApiTokenRepo {
         scopes: Option<String>,
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<app_user_api_token::Model, DbErr> {
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         
         let api_token = app_user_api_token::ActiveModel {
             user_id: Set(user_id),
@@ -267,7 +319,7 @@ impl ApiTokenRepo {
             token: Set(token),
             scopes: Set(scopes),
             last_used_at: Set(None),
-            expires_at: Set(expires_at),
+            expires_at: Set(expires_at.map(|e| e.naive_utc())),
             is_active: Set(true),
             created_at: Set(now),
             updated_at: Set(now),
@@ -285,11 +337,11 @@ impl ApiTokenRepo {
         let token = app_user_api_token::Entity::find_by_id(id)
             .one(db)
             .await?
-            .ok_or(DbErr::RecordNotFound(format!("API Token {} not found", id)))?;
+            .ok_or(DbErr::RecordNotFound("目标 API Token 不存在".to_string()))?;
         
         let mut active_token: app_user_api_token::ActiveModel = token.into();
-        active_token.last_used_at = Set(Some(chrono::Utc::now()));
-        active_token.updated_at = Set(chrono::Utc::now());
+        active_token.last_used_at = Set(Some(chrono::Utc::now().naive_utc()));
+        active_token.updated_at = Set(chrono::Utc::now().naive_utc());
         
         active_token.update(db).await?;
         Ok(())

@@ -35,7 +35,7 @@
 
 <script>
 import { ref, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+import { getEventList } from '../api/worker.js'
 import Pager from '../components/Pager.vue'
 
 export default {
@@ -53,12 +53,11 @@ export default {
     const load = async () => {
       msg.value = ''
       try {
-        const q = new URLSearchParams({ page: page.value, page_size: pageSize.value })
-        if (level.value) q.set('level', level.value)
-        if (category.value) q.set('category', category.value)
-        const res = await apiV2(`/runtime-events?${q.toString()}`)
-        items.value = res.items || []
-        total.value = res.total || 0
+        // Rust admin 事件接口使用 snake_case 分页，响应无 data 包裹。
+        const res = await getEventList({ page: page.value, page_size: pageSize.value,
+          level: level.value, category: category.value })
+        items.value = res.items
+        total.value = res.total
       } catch (e) { msg.value = e.message }
     }
 
@@ -74,21 +73,21 @@ export default {
 
 <style scoped>
 .page { padding: 24px; }
-.page-title { font-size: 22px; margin-bottom: 20px; color: #333; }
+.page-title { font-size: 22px; margin-bottom: 20px; color: var(--color-text); }
 .toolbar { display: flex; gap: 12px; margin-bottom: 16px; }
-.input { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; min-width: 160px; }
-.btn { padding: 8px 16px; border: 1px solid #d9d9d9; background: #fff; border-radius: 6px; cursor: pointer; }
-.btn-primary { background: #1677ff; color: #fff; border-color: #1677ff; }
-.tip { background: #fff1f0; border: 1px solid #ffccc7; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: #cf1322; }
-.panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.input { padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 6px; min-width: 160px; background: var(--color-bg); color: var(--color-text); }
+.btn { padding: 8px 16px; border: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-text); border-radius: 6px; cursor: pointer; }
+.btn-primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+.tip { background: color-mix(in srgb, var(--color-danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--color-danger) 25%, transparent); padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: var(--color-danger); }
+.panel { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); border: 1px solid var(--color-border-light); }
 .data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
-.data-table th { color: #888; font-weight: 500; }
+.data-table th, .data-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--color-border-lighter); font-size: 13px; }
+.data-table th { color: var(--color-text-secondary); font-weight: 500; }
 .lv { padding: 2px 8px; border-radius: 4px; font-size: 12px; }
-.lv-info { background: #e6f4ff; color: #0958d9; }
-.lv-warn { background: #fffbe6; color: #d48806; }
-.lv-error { background: #fff1f0; color: #cf1322; }
+.lv-info { background: color-mix(in srgb, var(--color-primary) 10%, transparent); color: var(--color-primary); }
+.lv-warn { background: color-mix(in srgb, var(--color-warning) 10%, transparent); color: var(--color-warning); }
+.lv-error { background: color-mix(in srgb, var(--color-danger) 10%, transparent); color: var(--color-danger); }
 .msg { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
-.empty { text-align: center; color: #999; padding: 20px; }
-.pager { display: flex; align-items: center; gap: 12px; justify-content: center; margin-top: 16px; color: #888; font-size: 13px; }
+.empty { text-align: center; color: var(--color-text-disabled); padding: 20px; }
+.pager { display: flex; align-items: center; gap: 12px; justify-content: center; margin-top: 16px; color: var(--color-text-secondary); font-size: 13px; }
 </style>

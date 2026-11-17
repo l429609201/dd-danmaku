@@ -22,7 +22,7 @@ RUN npm run build
 # ============================================================
 # 阶段 2: Rust 构建
 # ============================================================
-FROM rust:1.83-alpine AS rust-builder
+FROM rust:alpine AS rust-builder
 
 WORKDIR /app
 
@@ -54,14 +54,24 @@ COPY rust/crates/worker-bridge/Cargo.toml ./crates/worker-bridge/
 COPY rust/crates/dandanplay/Cargo.toml ./crates/dandanplay/
 
 # 预构建依赖（缓存层）
-RUN cargo build --release --locked && \
-    rm -rf crates/*/src target/release/deps/api* target/release/deps/db* target/release/deps/server* target/release/deps/worker_bridge* target/release/deps/dandanplay*
+RUN cargo build --release && \
+    rm -rf crates/*/src
 
 # 复制真实源码
 COPY rust/crates ./crates
 
 # 构建应用（使用缓存的依赖）
-RUN cargo build --release --locked --bin server && \
+# 清除工作区 crate 的占位产物：rlib 文件名带 lib 前缀（libdb-*.rlib），
+# 且 COPY 保留的源码 mtime 早于占位构建，不清理会让 cargo 误用空占位库。
+RUN rm -rf target/release/.fingerprint/api-* target/release/.fingerprint/db-* \
+           target/release/.fingerprint/server-* target/release/.fingerprint/worker-bridge-* \
+           target/release/.fingerprint/dandanplay-* \
+           target/release/deps/libapi-* target/release/deps/libdb-* target/release/deps/libserver-* \
+           target/release/deps/libworker_bridge-* target/release/deps/libdandanplay-* \
+           target/release/deps/api-* target/release/deps/db-* target/release/deps/server-* \
+           target/release/deps/worker_bridge-* target/release/deps/dandanplay-* && \
+    find crates -name '*.rs' -exec touch {} + && \
+    cargo build --release --bin server && \
     strip target/release/server
 
 # ============================================================
@@ -76,12 +86,13 @@ RUN apk add --no-cache \
     ca-certificates \
     libgcc \
     su-exec \
+    shadow \
     tzdata \
     && rm -rf /var/cache/apk/*
 
 # 创建用户和组
-RUN addgroup -g 1000 appgroup && \
-    adduser -u 1000 -G appgroup -s /bin/sh -D appuser
+RUN addgroup -g 1000 danmuku-rust && \
+    adduser -u 1000 -G danmuku-rust -s /bin/sh -D danmuku-rust
 
 # 从构建阶段复制二进制文件
 COPY --from=rust-builder /app/target/release/server /app/server
@@ -91,7 +102,7 @@ COPY --from=frontend-builder /app/web/dist /app/web/dist
 
 # 创建必要的目录
 RUN mkdir -p /app/config /app/config/logs /app/config/danmaku && \
-    chown -R appuser:appgroup /app
+    chown -R danmuku-rust:danmuku-rust /app
 
 # 设置环境变量
 ENV RUST_LOG=info

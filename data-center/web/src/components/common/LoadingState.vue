@@ -35,7 +35,7 @@
 <script setup>
 import { Loading } from '@element-plus/icons-vue'
 
-const props = defineProps({
+defineProps({
   // 加载类型
   type: {
     type: String,

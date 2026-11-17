@@ -60,7 +60,7 @@ export function deleteUser(id) {
  * @returns {Promise<void>}
  */
 export function resetUserPassword(id, newPassword) {
-  return post(`/users/${id}/reset-password`, { newPassword })
+  return post(`/users/${id}/reset-password`, { new_password: newPassword })
 }
 
 /**

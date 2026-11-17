@@ -15,8 +15,8 @@
                 style="width: 200px" @keyup.enter="reload" @clear="reload" />
       <el-button size="small" :icon="Search" @click="reload">查询</el-button>
       <el-button size="small" :icon="Refresh" @click="reload">刷新</el-button>
-      <el-button size="small" type="primary" @click="openLink">手动挂词</el-button>
-      <el-dropdown size="small" @command="runTask">
+      <el-button size="small" type="primary" disabled title="Rust 尚未实现缓存搜索词提取" @click="openLink">手动挂词（待实现）</el-button>
+      <el-dropdown size="small" disabled @command="runTask">
         <el-button size="small">
           批量任务<el-icon><ArrowDown /></el-icon>
         </el-button>
@@ -259,7 +259,7 @@ export default {
       try {
         // id 为 null 表示是「手动挂词」流程里选的缓存词，走新增接口
         if (row.id == null) {
-          await apiV2(`/media/meta/${targetId}/alias`, {
+          await apiV2(`/media/meta/${encodeURIComponent(targetId)}/alias`, {
             method: 'PUT',
             body: JSON.stringify({ alias: row.alias, title_type: 'search_keyword' }),
           })
@@ -281,21 +281,13 @@ export default {
     const onlyUnlinked = ref(true)
     const terms = ref([])
 
+    // 规范化存储尚无缓存词与候选生成契约，保留入口但禁止调用旧 Python API。
     const openLink = () => {
-      terms.value = []
-      linkVisible.value = true
-      searchTerms()
+      ElMessage.warning('当前 Rust 后端尚未实现缓存搜索词提取，无法手动挂词')
     }
 
     const searchTerms = async () => {
-      try {
-        const qs = new URLSearchParams({
-          only_unlinked: String(onlyUnlinked.value), limit: '30',
-        })
-        if (termKw.value) qs.set('keyword', termKw.value)
-        const res = await apiV2(`/media/alias/cached-terms?${qs}`)
-        terms.value = res || []
-      } catch (e) { ElMessage.error(e.message) }
+      ElMessage.warning('当前 Rust 后端尚未实现缓存搜索词提取')
     }
 
     // 选中缓存词后复用改挂弹窗选番剧：id 为 null 走新增分支
@@ -310,20 +302,8 @@ export default {
     }
 
     // ---------- 批量任务 ----------
-    const runTask = async (cmd) => {
-      const MAP = {
-        generate: ['/media/alias/generate', '已生成候选'],
-        ai: ['/media/alias/ai-score', '已打分'],
-        external: ['/media/alias/external', '已补充'],
-      }
-      const [url, okMsg] = MAP[cmd] || []
-      if (!url) return
-      const done = ElMessage.info({ message: '任务执行中…', duration: 0 })
-      try {
-        const res = await apiV2(url, { method: 'POST' })
-        ElMessage.success(res.message || okMsg)
-        await load()
-      } catch (e) { ElMessage.error(e.message) } finally { done.close() }
+    const runTask = async () => {
+      ElMessage.warning('当前 Rust 后端尚未实现候选生成、AI 打分与外部别名补充')
     }
 
     onMounted(load)

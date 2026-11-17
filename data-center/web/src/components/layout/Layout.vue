@@ -60,6 +60,8 @@ onUnmounted(() => {
 }
 
 .layout-main {
+  /* 允许内容区在窄屏收缩，宽表格交由卡片内部滚动。 */
+  min-width: 0;
   display: flex;
   flex-direction: column;
   height: 100vh;

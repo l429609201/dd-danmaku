@@ -72,7 +72,7 @@
             :name="column.slot"
             :row="scope.row"
             :column="column"
-            :$index="scope.$index"
+            :index="scope.$index"
           ></slot>
           
           <!-- 默认渲染 -->
@@ -89,7 +89,7 @@
         align="center"
       >
         <template #default="scope">
-          <slot name="actions" :row="scope.row" :$index="scope.$index"></slot>
+          <slot name="actions" :row="scope.row" :index="scope.$index"></slot>
         </template>
       </el-table-column>
     </el-table>

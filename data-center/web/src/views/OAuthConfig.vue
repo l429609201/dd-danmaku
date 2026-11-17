@@ -1,4 +1,8 @@
 <template>
+  <section>
+    <RustSecurityCrud kind="oauth" />
+    <p role="alert" class="contract-warning">Rust 当前仅实现单 provider 客户端配置，尚未实现本页的 JWT 密钥/有效期、允许用户、多 provider、导入导出与 Worker 下发。 原功能保留，等待后端补齐；当前不发送旧接口请求。</p>
+    <fieldset disabled style="border: 0; padding: 0; margin: 0; min-width: 0; opacity: .65">
   <div class="page">
     <div class="panel">
       <div class="panel-head">
@@ -138,16 +142,21 @@
       </div>
     </div>
   </div>
+    </fieldset>
+  </section>
 </template>
 
 <script>
+import RustSecurityCrud from './RustSecurityCrud.vue'
 import { computed, reactive, ref, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+// 旧业务语义尚未在 Rust 实现：保留页面但阻止旧接口及误写请求。
+const apiV2 = async () => { throw new Error('当前 Rust 后端尚未实现此页面的业务契约') }
 
 // 后端返回的脱敏占位：提交时原样回传表示「保留原值不修改」
 const REDACTED = '***REDACTED***'
 
 export default {
+  components: { RustSecurityCrud },
   name: 'OAuthConfig',
   setup() {
     const items = ref([])
@@ -334,56 +343,56 @@ export default {
 
 <style scoped>
 .page { padding: 4px; }
-.panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 24px; }
+.panel { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); margin-bottom: 24px; border: 1px solid var(--color-border-light); }
 .panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.panel-title { font-size: 16px; color: #333; }
+.panel-title { font-size: 16px; color: var(--color-text); }
 .head-actions { display: flex; gap: 10px; }
-.hint { color: #666; font-size: 12px; margin-bottom: 10px; line-height: 1.7; }
-.hint code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
-.tip { background: #e6f4ff; border: 1px solid #91caff; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: #0958d9; font-size: 13px; }
-.muted { color: #999; }
+.hint { color: var(--color-text-secondary); font-size: 12px; margin-bottom: 10px; line-height: 1.7; }
+.hint code { background: var(--color-bg-page); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+.tip { background: color-mix(in srgb, var(--color-primary) 8%, transparent); border: 1px solid color-mix(in srgb, var(--color-primary) 25%, transparent); padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: var(--color-primary); font-size: 13px; }
+.muted { color: var(--color-text-disabled); }
 .data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
-.data-table th { color: #888; font-weight: 500; }
+.data-table th, .data-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--color-border-lighter); font-size: 13px; }
+.data-table th { color: var(--color-text-secondary); font-weight: 500; }
 .key { font-family: monospace; font-size: 12px; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.link { background: none; border: none; color: #1677ff; cursor: pointer; font-size: 13px; padding: 0; }
-.link.danger { color: #cf1322; }
-.empty { text-align: center; color: #999; padding: 20px; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #f0f0f0; color: #888; }
-.badge.on { background: #f6ffed; color: #389e0d; }
-.btn { padding: 8px 16px; border: 1px solid #d9d9d9; background: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.link { background: none; border: none; color: var(--color-primary); cursor: pointer; font-size: 13px; padding: 0; }
+.link.danger { color: var(--color-danger); }
+.empty { text-align: center; color: var(--color-text-disabled); padding: 20px; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: var(--color-bg-page); color: var(--color-text-secondary); }
+.badge.on { background: color-mix(in srgb, var(--color-success) 10%, transparent); color: var(--color-success); }
+.badge.ok { background: color-mix(in srgb, var(--color-success) 10%, transparent); color: var(--color-success); }
+.badge.warn { background: color-mix(in srgb, var(--color-warning) 10%, transparent); color: var(--color-warning); }
+.badge.off { background: var(--color-bg-page); color: var(--color-text-disabled); }
+.btn { padding: 8px 16px; border: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-text); border-radius: 6px; cursor: pointer; font-size: 13px; }
 .btn:disabled { opacity: .6; cursor: not-allowed; }
-.btn-primary { background: #1677ff; color: #fff; border-color: #1677ff; }
+.btn-primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
-.input { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 13px; }
+.input { padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 6px; font-size: 13px; background: var(--color-bg); color: var(--color-text); }
 .input.full { width: 100%; box-sizing: border-box; }
 .input.sm { width: 120px; }
-.chk { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #555; margin-bottom: 14px; }
+.chk { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--color-text-secondary); margin-bottom: 14px; }
 .token-row { display: flex; gap: 8px; align-items: center; }
 .token-row .input.full { flex: 1; }
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.modal { width: 620px; max-width: 94vw; max-height: 88vh; overflow-y: auto; background: #fff; border-radius: 12px; padding: 20px; }
+.modal { width: 620px; max-width: 94vw; max-height: 88vh; overflow-y: auto; background: var(--color-bg-elevated); border-radius: 12px; padding: 20px; border: 1px solid var(--color-border); }
 .modal.wide { width: 680px; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.modal-close { border: none; background: none; font-size: 22px; color: #999; cursor: pointer; }
+.modal-close { border: none; background: none; font-size: 22px; color: var(--color-text-secondary); cursor: pointer; }
 .form-item { margin-bottom: 14px; }
-.form-item label { display: block; margin-bottom: 6px; color: #555; font-size: 13px; }
+.form-item label { display: block; margin-bottom: 6px; color: var(--color-text-secondary); font-size: 13px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
-.section-head { display: flex; justify-content: space-between; align-items: center; margin: 18px 0 10px; padding-top: 14px; border-top: 1px solid #f0f0f0; }
-.section-head h3 { font-size: 14px; color: #333; }
-.provider-card { border: 1px solid #e8e8e8; border-radius: 8px; padding: 14px; margin-bottom: 12px; background: #fafafa; }
+.section-head { display: flex; justify-content: space-between; align-items: center; margin: 18px 0 10px; padding-top: 14px; border-top: 1px solid var(--color-border-lighter); }
+.section-head h3 { font-size: 14px; color: var(--color-text); }
+.provider-card { border: 1px solid var(--color-border-light); border-radius: 8px; padding: 14px; margin-bottom: 12px; background: var(--color-bg-page); }
 .provider-head { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
 .provider-head .input { flex: 1; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.json-area { width: 100%; min-height: 160px; font-family: monospace; font-size: 12px; padding: 10px; border: 1px solid #d9d9d9; border-radius: 6px; box-sizing: border-box; resize: vertical; }
-.err { color: #cf1322; font-size: 13px; margin-top: 8px; }
+.json-area { width: 100%; min-height: 160px; font-family: monospace; font-size: 12px; padding: 10px; border: 1px solid var(--color-border); border-radius: 6px; box-sizing: border-box; resize: vertical; background: var(--color-bg); color: var(--color-text); }
+.err { color: var(--color-danger); font-size: 13px; margin-top: 8px; }
 .mt6 { margin-top: 6px; }
 .flex1 { flex: 1; }
 .w160 { width: 160px; flex-shrink: 0; }
 .form-row { display: flex; gap: 10px; align-items: flex-start; }
 .sub-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.badge.ok { background: #f6ffed; color: #389e0d; }
-.badge.warn { background: #fff7e6; color: #d46b08; }
-.badge.off { background: #f5f5f5; color: #999; }
 </style>

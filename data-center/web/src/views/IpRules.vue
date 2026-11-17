@@ -1,16 +1,17 @@
 <template>
   <div class="app-page">
     <h1 class="app-page__title">IP 黑白名单</h1>
+    <p role="status">Rust 支持 IP/CIDR 规则 CRUD；类型/关键词筛选、过期时间、创建人及 Worker 下发尚未实现。</p>
 
     <div class="app-toolbar">
-      <el-select v-model="ruleType" placeholder="全部类型" clearable style="width: 130px" @change="reload">
+      <el-select disabled v-model="ruleType" placeholder="全部类型" clearable style="width: 130px" @change="reload">
         <el-option label="黑名单" value="black" />
         <el-option label="白名单" value="white" />
       </el-select>
-      <el-input v-model="keyword" placeholder="搜索 IP/CIDR" clearable style="width: 200px" @keyup.enter="reload" />
+      <el-input disabled v-model="keyword" placeholder="搜索 IP/CIDR" clearable style="width: 200px" @keyup.enter="reload" />
       <el-button type="primary" :icon="Search" @click="reload">查询</el-button>
       <el-button :icon="Plus" @click="openCreate">新增规则</el-button>
-      <el-button :icon="Refresh" @click="resync">重新下发</el-button>
+      <el-button disabled :icon="Refresh" @click="resync">重新下发</el-button>
     </div>
 
     <el-card shadow="never">
@@ -34,7 +35,7 @@
           </template>
         </el-table-column>
         <el-table-column label="过期" width="170">
-          <template #default="{ row }">{{ row.expires_at ? fmt(row.expires_at) : '长期' }}</template>
+          <template #default>未支持</template>
         </el-table-column>
         <el-table-column prop="created_by" label="创建人" width="120">
           <template #default="{ row }">{{ row.created_by || '—' }}</template>
@@ -98,10 +99,10 @@ export default {
       loading.value = true
       try {
         const q = new URLSearchParams({ page: page.value, page_size: pageSize.value })
-        if (ruleType.value) q.set('rule_type', ruleType.value)
-        if (keyword.value) q.set('keyword', keyword.value)
-        const res = await apiV2(`/ip-rules?${q.toString()}`)
-        items.value = res.items || []
+        const res = await apiV2(`/rules/ip-rules?${q.toString()}`)
+        // 仅映射语义等价的 IP 黑白名单字段，不伪造未实现的元数据。
+        items.value = res.rules.map(r => ({ ...r, ip_or_cidr: r.ip_pattern,
+          rule_type: r.rule_type === 'allow' ? 'white' : 'black', reason: r.description, enabled: r.is_active }))
         total.value = res.total || 0
       } catch (e) { ElMessage.error(e.message) } finally { loading.value = false }
     }
@@ -113,22 +114,22 @@ export default {
       if (!form.ip_or_cidr) { ElMessage.warning('请填写 IP/CIDR'); return }
       creating.value = true
       try {
-        const res = await apiV2('/ip-rules', { method: 'POST', body: { ...form } })
+        const res = await apiV2('/rules/ip-rules', { method: 'POST', body: { ip_pattern: form.ip_or_cidr.trim(), rule_type: form.rule_type === 'white' ? 'allow' : 'deny', description: form.reason || null } })
         ElMessage.success(res.message || '创建成功'); showCreate.value = false; load()
       } catch (e) { ElMessage.error(e.message) } finally { creating.value = false }
     }
     const toggle = async (r) => {
-      try { await apiV2(`/ip-rules/${r.id}`, { method: 'PUT', body: { enabled: !r.enabled } }); load() }
+      try { await apiV2(`/rules/ip-rules/${r.id}`, { method: 'PUT', body: { is_active: !r.enabled } }); load() }
       catch (e) { ElMessage.error(e.message) }
     }
     const del = async (id) => {
       try {
         await ElMessageBox.confirm('确认删除该规则？', '提示', { type: 'warning' })
-        await apiV2(`/ip-rules/${id}`, { method: 'DELETE' }); ElMessage.success('已删除'); load()
+        await apiV2(`/rules/ip-rules/${id}`, { method: 'DELETE' }); ElMessage.success('已删除'); load()
       } catch (e) { if (e !== 'cancel') ElMessage.error(e.message || '操作失败') }
     }
     const resync = async () => {
-      try { const res = await apiV2('/ip-rules/resync', { method: 'POST' }); ElMessage.success(res.message) }
+      try { throw new Error('Rust 尚未实现规则下发') }
       catch (e) { ElMessage.error(e.message) }
     }
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')

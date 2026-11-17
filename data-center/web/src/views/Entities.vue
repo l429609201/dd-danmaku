@@ -1,7 +1,7 @@
 <template>
   <div class="app-page">
     <h1 class="app-page__title">实体索引</h1>
-    <p class="page-desc">从上游 dandanplay 响应中解析出的 anime / bangumi / episode 去重索引，可溯源原始数据并跳转到对应缓存。</p>
+    <p class="page-desc">浏览规范化 anime / bangumi_version / episode 字段记录；仅存在真实缓存来源时提供缓存跳转，不将规范字段伪装为上游原始 JSON。</p>
 
     <!-- 类型统计 -->
     <el-row :gutter="12" class="stat-row" v-if="stats">
@@ -22,7 +22,7 @@
     <div class="app-toolbar">
       <el-select v-model="type" placeholder="全部类型" clearable style="width: 150px" @change="reload">
         <el-option label="anime" value="anime" />
-        <el-option label="bangumi" value="bangumi" />
+        <el-option label="bangumi_version" value="bangumi_version" />
         <el-option label="episode" value="episode" />
       </el-select>
       <el-input v-model="keyword" placeholder="标题关键词" clearable style="width: 220px" @keyup.enter="reload" />
@@ -48,7 +48,7 @@
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="viewDetail(row.id)">详情</el-button>
-            <el-button link type="primary" size="small" @click="gotoCache(row.cache_key)">查缓存</el-button>
+            <el-button link type="primary" size="small" :disabled="!row.cache_key" @click="gotoCache(row.cache_key)">查缓存</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -58,7 +58,7 @@
       </div>
     </el-card>
 
-    <!-- 实体详情抽屉（含 raw_json 溯源） -->
+    <!-- 实体详情只展示规范化字段，不声称保留完整上游原始响应。 -->
     <el-drawer v-model="drawerVisible" title="实体详情" size="50%">
       <template v-if="detail">
         <el-descriptions :column="1" border size="small">
@@ -72,8 +72,8 @@
           <el-descriptions-item label="首次 / 最近">{{ fmt(detail.first_seen_at) }} / {{ fmt(detail.last_seen_at) }}</el-descriptions-item>
         </el-descriptions>
         <div class="raw-head">
-          <span>上游原始 JSON</span>
-          <el-button link type="primary" size="small" @click="gotoCache(detail.cache_key)">跳转对应缓存</el-button>
+          <span>规范化字段（非上游原始 JSON）</span>
+          <el-button link type="primary" size="small" :disabled="!detail.cache_key" @click="gotoCache(detail.cache_key)">跳转对应缓存</el-button>
         </div>
         <pre class="json-body">{{ prettyRaw }}</pre>
       </template>
@@ -122,11 +122,11 @@ export default {
     const onPage = (p) => { page.value = p; load() }
 
     const viewDetail = async (id) => {
-      try { const res = await apiV2(`/entities/${id}`); detail.value = res.data; drawerVisible.value = true }
+      try { const res = await apiV2(`/entities/${encodeURIComponent(id)}`); detail.value = res.data; drawerVisible.value = true }
       catch (e) { ElMessage.error(e.message) }
     }
     // 携带 cache_key 跳转响应缓存页并自动过滤
-    const gotoCache = (key) => { router.push({ path: '/cache', query: { cache_key: key } }) }
+    const gotoCache = (key) => { if (key) router.push({ path: '/cache', query: { cache_key: key } }) }
 
     const fmt = (s) => (s ? new Date(s).toLocaleString() : '—')
     // 安全 URL 解码：cache_key 含被 encodeURIComponent 编码的中文，仅展示时解码
@@ -135,9 +135,9 @@ export default {
       try { return decodeURIComponent(String(s)) } catch (_) { return String(s) }
     }
     const prettyRaw = computed(() => {
-      if (!detail.value || !detail.value.raw_json) return '（无）'
-      try { return JSON.stringify(detail.value.raw_json, null, 2) }
-      catch { return String(detail.value.raw_json) }
+      if (!detail.value || !detail.value.fields) return '（无）'
+      try { return JSON.stringify(detail.value.fields, null, 2) }
+      catch { return String(detail.value.fields) }
     })
 
     onMounted(() => { load(); loadStats() })
@@ -148,13 +148,13 @@ export default {
 </script>
 
 <style scoped>
-.page-desc { color: #909399; font-size: 13px; margin-bottom: 16px; }
+.page-desc { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
 .stat-row { margin-bottom: 16px; }
 .stat-card { border-radius: 10px; }
-.stat-card.is-accent { background: #ecf5ff; }
-.stat-label { font-size: 13px; color: #909399; }
-.stat-value { font-size: 26px; font-weight: 600; color: #303133; margin-top: 4px; }
-.raw-head { display: flex; justify-content: space-between; align-items: center; margin: 16px 0 8px; font-size: 13px; color: #606266; }
+.stat-card.is-accent { background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
+.stat-label { font-size: 13px; color: var(--color-text-secondary); }
+.stat-value { font-size: 26px; font-weight: 600; color: var(--color-text); margin-top: 4px; }
+.raw-head { display: flex; justify-content: space-between; align-items: center; margin: 16px 0 8px; font-size: 13px; color: var(--color-text-secondary); }
 .json-body { background: #1e1e1e; color: #d4d4d4; padding: 14px;
   border-radius: 8px; font-size: 12px; max-height: 50vh; overflow: auto; white-space: pre-wrap; }
 </style>

@@ -9,3 +9,10 @@ pub mod rules;
 pub mod keys;
 pub mod geoip_api;
 pub mod alias_ai_api;
+// UI 管理模块仅由受管理员会话保护的路由挂载。
+pub mod cache_admin;
+pub mod comment_admin;
+pub mod episode_links_admin;
+pub mod db_stats;
+pub mod media_admin;
+pub mod entities_admin;

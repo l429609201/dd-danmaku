@@ -115,7 +115,9 @@ public sealed partial class DanmakuApiService
         if (!c.DanmakuProxyEnabled) throw new ApiAccessException(409, "PROXY_DISABLED", "管理员尚未启用自定义弹幕代理");
         if (!Uri.TryCreate(c.DanmakuProxyBaseUrl.TrimEnd('/') + path, UriKind.Absolute, out var target))
             throw new ApiAccessException(409, "PROXY_NOT_CONFIGURED", "自定义弹幕代理地址未配置");
-        var headers = new Dictionary<string, string>();
+        // 仅自定义 API 标识后端客户端；官方请求的 UA 与签名协议保持原样。
+        var version = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+        var headers = new Dictionary<string, string> { ["User-Agent"] = $"DD-Danmaku-DLL/{version} (https://github.com/l429609201/dd-danmaku)" };
         if (!string.IsNullOrEmpty(c.DanmakuProxyAppId) && !string.IsNullOrEmpty(c.DanmakuProxyAppSecret))
         {
             var ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);

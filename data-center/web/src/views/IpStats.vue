@@ -1,4 +1,14 @@
 <template>
+  <section>
+    <h2>Rust IP 请求明细（非聚合统计）</h2>
+    <p role="status">{{ nativeError }}</p>
+    <input v-model="nativeIp" placeholder="精确 IP 筛选" /><button @click="nativePage = 1; loadNative()">查询明细</button>
+    <table><thead><tr><th>IP</th><th>路径</th><th>方法</th><th>状态</th><th>时间</th><th>耗时</th></tr></thead>
+      <tbody><tr v-for="r in nativeRows" :key="r.id"><td>{{ r.ip_address }}</td><td>{{ r.path }}</td><td>{{ r.method }}</td><td>{{ r.status_code }}</td><td>{{ fmt(r.request_time) }}</td><td>{{ r.response_time_ms ?? '—' }}</td></tr></tbody>
+    </table>
+    <button :disabled="nativePage <= 1" @click="nativePage--; loadNative()">上一页</button>{{ nativePage }} / {{ Math.max(1, Math.ceil(nativeTotal / 50)) }}<button :disabled="nativePage * 50 >= nativeTotal" @click="nativePage++; loadNative()">下一页</button>
+    <p role="alert" class="contract-warning">Rust 当前仅实现逐请求 IP 日志与 Top 10 计数，尚未实现本页按 Worker 聚合、违规数、路径统计、排序与时间筛选。 原功能保留，等待后端补齐；当前不发送旧接口请求。</p>
+    <fieldset disabled style="border: 0; padding: 0; margin: 0; min-width: 0; opacity: .65">
   <div class="page">
     <h1 class="page-title">IP 请求统计</h1>
     <div class="toolbar">
@@ -53,17 +63,33 @@
       </div>
     </div>
   </div>
+    </fieldset>
+  </section>
 </template>
 
 <script>
 import { ref, computed, onMounted } from 'vue'
-import { apiV2 } from '../utils/api.js'
+import { apiV2 as nativeApi } from '../utils/api.js'
+// 旧聚合业务语义尚未在 Rust 实现：保留页面但阻止旧接口及误写请求。
+const apiV2 = async () => { throw new Error('当前 Rust 后端尚未实现此页面的业务契约') }
 import Pager from '../components/Pager.vue'
 
 export default {
   name: 'IpStats',
   components: { Pager },
   setup() {
+    const nativeRows = ref([]), nativeTotal = ref(0), nativePage = ref(1), nativeIp = ref(''), nativeError = ref('')
+    const loadNative = async () => {
+      try {
+        // Rust 返回逐请求 stats；不能用它伪造违规计数或 Worker 聚合。
+        const q = new URLSearchParams({ page: nativePage.value, page_size: 50 })
+        if (nativeIp.value.trim()) q.set('ip', nativeIp.value.trim())
+        const res = await nativeApi(`/logs/ip-stats?${q}`)
+        if (!Array.isArray(res?.stats)) throw new Error('Rust IP 明细响应不符合契约')
+        nativeRows.value = res.stats; nativeTotal.value = res.total; nativeError.value = ''
+      } catch (e) { nativeError.value = e.message }
+    }
+    onMounted(loadNative)
     const items = ref([])
     const total = ref(0)
     const totalEstimated = ref(false)  // 后端截断 COUNT 时为 true
@@ -141,7 +167,7 @@ export default {
     }
 
     onMounted(load)
-    return { items, total, totalEstimated, page, pageSize, keyword, orderBy, msg,
+    return { nativeRows, nativeTotal, nativePage, nativeIp, nativeError, loadNative, items, total, totalEstimated, page, pageSize, keyword, orderBy, msg,
       range, startAt, endAt, rangeHint, load, reload, onRange, goPage, fmt, topPaths }
   }
 }
@@ -149,23 +175,23 @@ export default {
 
 <style scoped>
 .page { padding: 24px; }
-.page-title { font-size: 22px; margin-bottom: 20px; color: #333; }
+.page-title { font-size: 22px; margin-bottom: 20px; color: var(--color-text); }
 .toolbar { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
-.range-sep { color: #888; font-size: 13px; }
-.range-hint { color: #888; font-size: 12px; margin-bottom: 12px; }
-.est-tip { color: #888; font-size: 12px; margin-top: 8px; text-align: right; }
-.input { padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; }
-.btn { padding: 8px 16px; border: 1px solid #d9d9d9; background: #fff; border-radius: 6px; cursor: pointer; }
+.range-sep { color: var(--color-text-secondary); font-size: 13px; }
+.range-hint { color: var(--color-text-secondary); font-size: 12px; margin-bottom: 12px; }
+.est-tip { color: var(--color-text-secondary); font-size: 12px; margin-top: 8px; text-align: right; }
+.input { padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg); color: var(--color-text); }
+.btn { padding: 8px 16px; border: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-text); border-radius: 6px; cursor: pointer; }
 .btn:disabled { opacity: .6; cursor: not-allowed; }
-.btn-primary { background: #1677ff; color: #fff; border-color: #1677ff; }
-.tip { background: #e6f4ff; border: 1px solid #91caff; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: #0958d9; }
-.panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.btn-primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
+.tip { background: color-mix(in srgb, var(--color-primary) 8%, transparent); border: 1px solid color-mix(in srgb, var(--color-primary) 25%, transparent); padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: var(--color-primary); }
+.panel { background: var(--color-bg); border-radius: 10px; padding: 18px; box-shadow: var(--shadow-sm); border: 1px solid var(--color-border-light); }
 .data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
-.data-table th { color: #888; font-weight: 500; }
+.data-table th, .data-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--color-border-lighter); font-size: 13px; }
+.data-table th { color: var(--color-text-secondary); font-weight: 500; }
 .key { font-family: monospace; font-size: 12px; }
-.warn { color: #cf1322; font-weight: 600; }
-.paths { color: #666; font-size: 12px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
-.empty { text-align: center; color: #999; padding: 20px; }
+.warn { color: var(--color-danger); font-weight: 600; }
+.paths { color: var(--color-text-secondary); font-size: 12px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+.empty { text-align: center; color: var(--color-text-disabled); padding: 20px; }
 .pager { display: flex; gap: 12px; align-items: center; margin-top: 14px; justify-content: flex-end; }
 </style>

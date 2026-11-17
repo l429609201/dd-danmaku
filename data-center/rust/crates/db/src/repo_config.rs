@@ -17,7 +17,7 @@ impl ConfigRepo {
             .one(db)
             .await?;
         
-        Ok(result.map(|c| c.config_value))
+        Ok(result.and_then(|c| c.value_text))
     }
     
     /// 设置配置值
@@ -28,7 +28,7 @@ impl ConfigRepo {
         value: &str,
         description: Option<String>,
     ) -> Result<config::Model, DbErr> {
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         
         // 查找是否已存在
         let existing = config::Entity::find()
@@ -40,7 +40,7 @@ impl ConfigRepo {
         if let Some(existing_config) = existing {
             // 更新
             let mut active: config::ActiveModel = existing_config.into();
-            active.config_value = Set(value.to_string());
+            active.value_text = Set(Some(value.to_string()));
             if let Some(desc) = description {
                 active.description = Set(Some(desc));
             }
@@ -52,7 +52,9 @@ impl ConfigRepo {
             let new_config = config::ActiveModel {
                 namespace: Set(namespace.to_string()),
                 config_key: Set(key.to_string()),
-                config_value: Set(value.to_string()),
+                value_type: Set("string".to_string()),
+                value_text: Set(Some(value.to_string())),
+                is_secret: Set(false),
                 description: Set(description),
                 created_at: Set(now),
                 updated_at: Set(now),
@@ -115,7 +117,7 @@ impl ConfigSecretRepo {
             .one(db)
             .await?;
         
-        Ok(result.map(|c| c.secret_value))
+        Ok(result.map(|c| c.value_hash))
     }
     
     /// 设置敏感配置
@@ -125,7 +127,7 @@ impl ConfigSecretRepo {
         key: &str,
         value: &str,
     ) -> Result<config_secret::Model, DbErr> {
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         
         // 查找是否已存在
         let existing = config_secret::Entity::find()
@@ -137,7 +139,7 @@ impl ConfigSecretRepo {
         if let Some(existing_secret) = existing {
             // 更新
             let mut active: config_secret::ActiveModel = existing_secret.into();
-            active.secret_value = Set(value.to_string());
+            active.value_hash = Set(hash_secret(value));
             active.updated_at = Set(now);
             
             active.update(db).await
@@ -146,7 +148,7 @@ impl ConfigSecretRepo {
             let new_secret = config_secret::ActiveModel {
                 namespace: Set(namespace.to_string()),
                 config_key: Set(key.to_string()),
-                secret_value: Set(value.to_string()),
+                value_hash: Set(hash_secret(value)),
                 created_at: Set(now),
                 updated_at: Set(now),
                 ..Default::default()
@@ -165,4 +167,11 @@ mod tests {
     fn test_config_repo() {
         // 需要数据库连接，标记为 #[ignore]
     }
+}
+
+/// config_secrets 只保存 SHA-256 摘要，不保存明文。
+fn hash_secret(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(value.as_bytes());
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
 }

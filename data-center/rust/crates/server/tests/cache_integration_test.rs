@@ -14,7 +14,8 @@ async fn test_match_video_with_cache() {
     db::test_helper::create_test_schema(&db).await.expect("Failed to create schema");
     
     // 创建应用状态
-    let state = server::AppState::new_for_test(db);
+    let mut state = server::AppState::new_for_test(db);
+    state.run_mode = server::RunMode::Api;
     let app = server::create_router(state);
     
     // 第一次请求（缓存未命中）
@@ -77,7 +78,8 @@ async fn test_match_video_different_requests() {
     let db = db::init_db(&config).await.expect("Failed to init db");
     db::test_helper::create_test_schema(&db).await.expect("Failed to create schema");
     
-    let state = server::AppState::new_for_test(db);
+    let mut state = server::AppState::new_for_test(db);
+    state.run_mode = server::RunMode::Api;
     let app = server::create_router(state);
     
     // 两个不同的请求

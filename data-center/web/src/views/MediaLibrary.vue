@@ -7,7 +7,7 @@
       <el-input v-model="keyword" placeholder="搜索番剧名" clearable style="width: 240px" @keyup.enter="reload" />
       <el-checkbox v-model="onlyMissing" label="仅看有缺失" border @change="reload" />
       <el-button type="primary" :icon="Search" @click="reload">查询</el-button>
-      <el-button :icon="Refresh" :loading="rebuilding" @click="rebuild">从缓存回填</el-button>
+      <el-button :icon="Refresh" disabled title="Rust 规范化媒体已是主读源，尚未实现缓存回填任务" @click="rebuild">从缓存回填（待实现）</el-button>
     </div>
 
     <div v-loading="loading">
@@ -196,14 +196,14 @@ export default {
     // 拉取外部 ID 与别名；失败不阻塞抽屉展示（属增值信息）
     const loadMeta = async (animeId) => {
       try {
-        const res = await apiV2(`/media/meta/${animeId}`)
+        const res = await apiV2(`/media/meta/${encodeURIComponent(animeId)}`)
         meta.value = res.data || { external_ids: [], aliases: [] }
       } catch (e) { meta.value = { external_ids: [], aliases: [] } }
     }
 
     const openDetail = async (animeId) => {
       try {
-        const res = await apiV2(`/media/${animeId}`)
+        const res = await apiV2(`/media/${encodeURIComponent(animeId)}`)
         detail.value = res.data
         drawerVisible.value = true
         // 重置新增表单，避免上一个番剧的残留输入
@@ -222,7 +222,7 @@ export default {
     const saveExternalId = async () => {
       if (!extForm.value.provider) { ElMessage.warning('请填写平台标识'); return }
       try {
-        await apiV2(`/media/meta/${detail.value.anime_id}/external-id`,
+        await apiV2(`/media/meta/${encodeURIComponent(detail.value.anime_id)}/external-id`,
           { method: 'PUT', body: JSON.stringify(extForm.value) })
         ElMessage.success('已保存')
         extForm.value = { provider: '', external_id: '', external_url: '' }
@@ -238,7 +238,7 @@ export default {
     const saveAlias = async () => {
       if (!aliasForm.value.alias) { ElMessage.warning('请填写别名'); return }
       try {
-        await apiV2(`/media/meta/${detail.value.anime_id}/alias`,
+        await apiV2(`/media/meta/${encodeURIComponent(detail.value.anime_id)}/alias`,
           { method: 'PUT', body: JSON.stringify(aliasForm.value) })
         ElMessage.success('已保存')
         aliasForm.value = { alias: '', lang: 'zh-Hans' }
@@ -265,16 +265,8 @@ export default {
     // 海报图加载失败：隐藏 img，露出底层占位（避免浏览器破图标）
     const onImgError = (e) => { if (e && e.target) e.target.style.display = 'none' }
 
-    // 从已存储的响应缓存批量回填媒体库
-    const rebuild = async () => {
-      rebuilding.value = true
-      try {
-        const res = await apiV2('/media/rebuild', { method: 'POST' })
-        ElMessage.success(res.message || '回填完成')
-        page.value = 1
-        await load()
-      } catch (e) { ElMessage.error(e.message) } finally { rebuilding.value = false }
-    }
+    // Rust 的规范化媒体为主读源，尚无缓存回填任务，不能以成功提示冒充执行。
+    const rebuild = async () => { ElMessage.warning('当前 Rust 后端尚未实现缓存回填任务，未发送请求') }
 
     onMounted(load)
     return { items, total, page, pageSize, keyword, onlyMissing, loading, rebuilding,
@@ -287,7 +279,7 @@ export default {
 </script>
 
 <style scoped>
-.page-desc { color: #909399; font-size: 13px; margin-bottom: 16px; }
+.page-desc { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
 
 /* 竖式海报网格：自适应列数，窄屏少列、宽屏多列 */
 .poster-grid {
@@ -296,15 +288,16 @@ export default {
   gap: 18px;
 }
 .poster-card {
-  background: #fff; border-radius: 12px; overflow: hidden; cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, .06); transition: transform .15s, box-shadow .15s;
+  background: var(--color-bg); border-radius: 12px; overflow: hidden; cursor: pointer;
+  box-shadow: var(--shadow-sm); transition: transform .15s, box-shadow .15s;
+  border: 1px solid var(--color-border-light);
 }
-.poster-card:hover { transform: translateY(-4px); box-shadow: 0 8px 20px rgba(0, 0, 0, .12); }
+.poster-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); }
 
 /* 海报图区：2:3 竖图比例 */
 .poster-img {
   position: relative; width: 100%; aspect-ratio: 2 / 3;
-  background: linear-gradient(135deg, #c6d4e8, #93a8c9); overflow: hidden;
+  background: linear-gradient(135deg, var(--color-border), color-mix(in srgb, var(--color-border) 60%, var(--color-primary))); overflow: hidden;
 }
 .poster-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .poster-ph {
@@ -328,10 +321,10 @@ export default {
 
 .poster-meta { padding: 10px 12px 12px; }
 .poster-title {
-  font-size: 14px; font-weight: 600; color: #303133; line-height: 1.4;
+  font-size: 14px; font-weight: 600; color: var(--color-text); line-height: 1.4;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.poster-sub { font-size: 12px; color: #909399; margin: 4px 0 8px; }
+.poster-sub { font-size: 12px; color: var(--color-text-secondary); margin: 4px 0 8px; }
 
 /* 详情抽屉 */
 .detail-head { display: flex; gap: 16px; }
@@ -339,9 +332,9 @@ export default {
   flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .cover-ph { color: #fff; font-size: 28px; font-weight: 700; opacity: .85; }
 .detail-meta { flex: 1; font-size: 13px; }
-.meta-row { margin-bottom: 8px; color: #606266; }
-.meta-row b { color: #909399; margin-right: 8px; font-weight: 500; }
-.summary { margin-top: 10px; color: #909399; line-height: 1.6; max-height: 96px; overflow: auto; }
+.meta-row { margin-bottom: 8px; color: var(--color-text-secondary); }
+.meta-row b { color: var(--color-text-secondary); margin-right: 8px; font-weight: 500; }
+.summary { margin-top: 10px; color: var(--color-text-secondary); line-height: 1.6; max-height: 96px; overflow: auto; }
 
 /* 外部 ID / 别名的行内新增表单 */
 .add-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }

@@ -70,8 +70,8 @@ mod tests {
             last_used_at: None,
             expires_at: None,
             is_active: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: chrono::Utc::now().naive_utc(),
+            updated_at: chrono::Utc::now().naive_utc(),
         };
         
         assert_eq!(token.name, "API Key 1");

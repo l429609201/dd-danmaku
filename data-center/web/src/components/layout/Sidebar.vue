@@ -46,7 +46,7 @@
 
       <!-- 缓存 -->
       <el-menu-item-group title="缓存">
-        <el-menu-item index="/api-cache">
+        <el-menu-item index="/cache">
           <el-icon><Box /></el-icon>
           <span>API 缓存</span>
         </el-menu-item>
@@ -66,7 +66,7 @@
           <el-icon><VideoPlay /></el-icon>
           <span>剧集列表</span>
         </el-menu-item>
-        <el-menu-item index="/media-library">
+        <el-menu-item index="/media">
           <el-icon><FolderOpened /></el-icon>
           <span>媒体库</span>
         </el-menu-item>

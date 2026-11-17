@@ -40,7 +40,7 @@
 <script setup>
 import { Box } from '@element-plus/icons-vue'
 
-const props = defineProps({
+defineProps({
   // 图标
   icon: {
     type: Object,
