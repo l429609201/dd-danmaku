@@ -74,6 +74,10 @@ pub struct MigrationTablesResponse {
 pub struct StartMigrationRequest {
     /// 源数据库 URL（必须是 mysql:// 协议）
     pub source_db_url: String,
+    /// 目标数据库 URL（可选）。
+    /// 若提供，优先使用此值；必须是 mysql:// 或 postgres:// 协议。
+    /// 若省略，则回落到服务器的 DATABASE_URL / MYSQL_* 环境变量。
+    pub target_db_url: Option<String>,
     /// 迁移模式：dry_run（默认，只预检不写入）或 apply（实际迁移）
     #[serde(default = "default_mode")]
     pub mode: String,
@@ -162,24 +166,30 @@ pub async fn start_migration(
         }
     };
 
-    // 构建目标 DB URL（即当前 Rust 实例的数据库）
-    let target_url = std::env::var("DATABASE_URL")
-        .or_else(|_| {
-            // 尝试从 MYSQL_* 环境变量拼装
-            if let Ok(host) = std::env::var("MYSQL_HOST") {
-                let port = std::env::var("MYSQL_PORT").unwrap_or_else(|_| "3306".to_string());
-                let db_name = std::env::var("MYSQL_DATABASE").unwrap_or_else(|_| "data_center".to_string());
-                let user = std::env::var("MYSQL_USER").unwrap_or_else(|_| "root".to_string());
-                let pass = std::env::var("MYSQL_PASSWORD").unwrap_or_default();
-                Ok(format!("mysql://{}:{}@{}:{}/{}", user, pass, host, port, db_name))
-            } else {
-                Err(std::env::VarError::NotPresent)
-            }
-        })
-        .map_err(|_| {
-            tracing::error!("未找到目标数据库配置：缺少 DATABASE_URL 或 MYSQL_* 环境变量");
-            (StatusCode::INTERNAL_SERVER_ERROR, "未找到目标数据库配置".to_string())
-        })?;
+    // 构建目标 DB URL
+    // 优先使用请求体中用户显式提供的 target_db_url，
+    // 否则回落到服务器自身的环境变量（DATABASE_URL 或 MYSQL_*）。
+    let target_url = if let Some(url) = req.target_db_url.as_ref().filter(|u| !u.trim().is_empty()) {
+        url.trim().to_string()
+    } else {
+        std::env::var("DATABASE_URL")
+            .or_else(|_| {
+                // 尝试从 MYSQL_* 环境变量拼装
+                if let Ok(host) = std::env::var("MYSQL_HOST") {
+                    let port = std::env::var("MYSQL_PORT").unwrap_or_else(|_| "3306".to_string());
+                    let db_name = std::env::var("MYSQL_DATABASE").unwrap_or_else(|_| "data_center".to_string());
+                    let user = std::env::var("MYSQL_USER").unwrap_or_else(|_| "root".to_string());
+                    let pass = std::env::var("MYSQL_PASSWORD").unwrap_or_default();
+                    Ok(format!("mysql://{}:{}@{}:{}/{}", user, pass, host, port, db_name))
+                } else {
+                    Err(std::env::VarError::NotPresent)
+                }
+            })
+            .map_err(|_| {
+                tracing::error!("未找到目标数据库配置：请在请求体提供 target_db_url，或服务器设置 DATABASE_URL / MYSQL_* 环境变量");
+                (StatusCode::INTERNAL_SERVER_ERROR, "未找到目标数据库配置：请在请求中提供目标数据库 URL，或在服务器配置 DATABASE_URL 环境变量".to_string())
+            })?
+    };
 
     // 构建迁移选项
     let allowed_tables = if req.tables.is_empty() {

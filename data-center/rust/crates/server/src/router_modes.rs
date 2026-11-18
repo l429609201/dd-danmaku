@@ -88,7 +88,6 @@ pub fn create_management_routes(state: &AppState) -> Router<AppState> {
         // 服务器日志文件（只读，读取 CONFIG_PATH/logs/*.log）
         .route("/server-files", get(api::server_logs::list_server_log_files))
         .route("/server-logs", get(api::server_logs::get_server_logs))
-        .route("/server-logs/stream", get(api::server_logs::stream_server_logs))
         .route_layer(middleware::from_fn(auth::admin_middleware))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
 
@@ -146,6 +145,9 @@ pub fn create_management_routes(state: &AppState) -> Router<AppState> {
         .nest("/api/v2/cleanup", cleanup_routes)
         .nest("/api/v2/media/aliases", alias_ai_routes)
         .nest("/api/v2/migration", migration_routes)
+        // SSE 实时日志流：EventSource 不支持自定义请求头，
+        // 因此该路由不加入受 auth 中间件保护的组，而是在处理函数内部通过 ?token= 验证鉴权。
+        .route("/api/v2/logs/server-logs/stream", get(api::server_logs::stream_server_logs).with_state(state.clone()))
 }
 
 /// 仅 API 模式开放的公共弹幕接口，与管理后台路由分离。

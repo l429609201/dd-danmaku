@@ -219,6 +219,9 @@ function connectServerLogStream() {
   if (serverFilter.value.file) params.set('file', serverFilter.value.file)
   if (serverFilter.value.level) params.set('level', serverFilter.value.level)
   if (serverFilter.value.keyword) params.set('keyword', serverFilter.value.keyword)
+  // EventSource 不支持自定义请求头，通过 query 参数传递 JWT token 完成鉴权
+  const token = localStorage.getItem('access_token')
+  if (token) params.set('token', token)
   
   const url = `/api/v2/logs/server-logs/stream?${params}`
   const eventSource = new EventSource(url)

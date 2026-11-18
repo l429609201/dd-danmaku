@@ -148,6 +148,46 @@
           <el-input v-model="form.database" placeholder="例：worker" style="max-width:240px" />
         </el-form-item>
 
+        <el-divider content-position="left">
+          <span style="font-size:13px;color:var(--el-text-color-secondary)">目标数据库（可选）</span>
+        </el-divider>
+        <div class="form-hint" style="margin:-8px 0 12px 140px">
+          留空则使用服务器自身的数据库环境变量。<strong>仅支持 MySQL 或 PostgreSQL。</strong>
+        </div>
+
+        <el-form-item label="目标协议">
+          <el-radio-group v-model="form.targetType">
+            <el-radio value="mysql">MySQL</el-radio>
+            <el-radio value="postgres">PostgreSQL</el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <el-form-item label="目标主机地址">
+          <el-input v-model="form.targetHost" placeholder="留空使用服务器默认" style="max-width:300px" />
+        </el-form-item>
+
+        <el-form-item label="目标端口">
+          <el-input-number v-model="form.targetPort" :min="1" :max="65535" style="width:140px" />
+        </el-form-item>
+
+        <el-form-item label="目标用户名">
+          <el-input v-model="form.targetUsername" placeholder="留空使用服务器默认" style="max-width:240px" />
+        </el-form-item>
+
+        <el-form-item label="目标密码">
+          <el-input
+            v-model="form.targetPassword"
+            type="password"
+            show-password
+            placeholder="留空使用服务器默认"
+            style="max-width:300px"
+          />
+        </el-form-item>
+
+        <el-form-item label="目标数据库名">
+          <el-input v-model="form.targetDatabase" placeholder="留空使用服务器默认" style="max-width:240px" />
+        </el-form-item>
+
         <el-form-item label="迁移模式">
           <el-radio-group v-model="form.mode">
             <el-radio value="dry_run">预演（dry_run）— 仅检查，不写入数据</el-radio>
@@ -233,11 +273,21 @@ const cancelLoading = ref(false)
 const startLoading = ref(false)
 const startResult = ref(null)
 const form = ref({
+  // ===== 源数据库 =====
   host: '',
   port: 3306,
   username: '',
   password: '',
   database: '',
+  // ===== 目标数据库（可选）=====
+  // 若留空，服务器将使用自身的 DATABASE_URL 环境变量（需 MySQL 或 PostgreSQL）
+  targetType: 'mysql',    // 目标协议：mysql | postgres
+  targetHost: '',
+  targetPort: 3306,
+  targetUsername: '',
+  targetPassword: '',
+  targetDatabase: '',
+  // ===== 迁移选项 =====
   mode: 'dry_run',
   batch_size: 500,
   tables_input: '',
@@ -245,7 +295,12 @@ const form = ref({
 })
 
 const canStart = computed(() => {
-  return !hasActive.value && form.value.host && form.value.username && form.value.database
+  if (hasActive.value) return false
+  if (!form.value.host || !form.value.username || !form.value.database) return false
+  // 如果目标库填写了任意字段，则要求主机、用户名、数据库名都填写
+  const hasAnyTarget = form.value.targetHost || form.value.targetUsername || form.value.targetDatabase || form.value.targetPassword
+  if (hasAnyTarget && (!form.value.targetHost || !form.value.targetUsername || !form.value.targetDatabase)) return false
+  return true
 })
 
 // ===== 配置预设 =====
@@ -276,11 +331,20 @@ function savePreset() {
   }
   const preset = {
     name: presetName.value.trim(),
+    // 源数据库
     host: form.value.host,
     port: form.value.port,
     username: form.value.username,
     password: btoa(form.value.password), // 简单 Base64 编码（非加密，仅混淆）
     database: form.value.database,
+    // 目标数据库（可选）
+    targetType: form.value.targetType,
+    targetHost: form.value.targetHost,
+    targetPort: form.value.targetPort,
+    targetUsername: form.value.targetUsername,
+    targetPassword: btoa(form.value.targetPassword),
+    targetDatabase: form.value.targetDatabase,
+    // 迁移选项
     batch_size: form.value.batch_size,
   }
   const existing = presets.value.findIndex(p => p.name === preset.name)
@@ -299,12 +363,21 @@ function loadPreset(name) {
   if (!name) return
   const preset = presets.value.find(p => p.name === name)
   if (!preset) return
-  form.value.host = preset.host
-  form.value.port = preset.port
-  form.value.username = preset.username
-  form.value.password = atob(preset.password)
-  form.value.database = preset.database
-  form.value.batch_size = preset.batch_size
+  // 源数据库
+  form.value.host = preset.host || ''
+  form.value.port = preset.port || 3306
+  form.value.username = preset.username || ''
+  form.value.password = preset.password ? atob(preset.password) : ''
+  form.value.database = preset.database || ''
+  // 目标数据库（向后兼容：老版本配置可能没有这些字段）
+  form.value.targetType = preset.targetType || 'mysql'
+  form.value.targetHost = preset.targetHost || ''
+  form.value.targetPort = preset.targetPort || 3306
+  form.value.targetUsername = preset.targetUsername || ''
+  form.value.targetPassword = preset.targetPassword ? atob(preset.targetPassword) : ''
+  form.value.targetDatabase = preset.targetDatabase || ''
+  // 迁移选项
+  form.value.batch_size = preset.batch_size || 500
 }
 
 function deletePreset() {
@@ -376,6 +449,12 @@ async function startMigration() {
   // 拼接数据库 URL
   const source_db_url = `mysql://${form.value.username}:${form.value.password}@${form.value.host}:${form.value.port}/${form.value.database}`
 
+  // 目标库 URL（若用户填写了目标主机则拼接，否则由服务器读取自身环境变量）
+  let target_db_url = undefined
+  if (form.value.targetHost && form.value.targetUsername && form.value.targetDatabase) {
+    target_db_url = `${form.value.targetType}://${form.value.targetUsername}:${form.value.targetPassword}@${form.value.targetHost}:${form.value.targetPort}/${form.value.targetDatabase}`
+  }
+
   startLoading.value = true
   startResult.value = null
   try {
@@ -389,6 +468,8 @@ async function startMigration() {
       batch_size: form.value.batch_size,
       tables,
     }
+    // 若用户填写了目标数据库，将 target_db_url 一并发送
+    if (target_db_url) body.target_db_url = target_db_url
     if (form.value.run_id) body.run_id = form.value.run_id
 
     const res = await apiV2('/migration/start', {
