@@ -88,6 +88,7 @@ pub fn create_management_routes(state: &AppState) -> Router<AppState> {
         // 服务器日志文件（只读，读取 CONFIG_PATH/logs/*.log）
         .route("/server-files", get(api::server_logs::list_server_log_files))
         .route("/server-logs", get(api::server_logs::get_server_logs))
+        .route("/server-logs/stream", get(api::server_logs::stream_server_logs))
         .route_layer(middleware::from_fn(auth::admin_middleware))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
 

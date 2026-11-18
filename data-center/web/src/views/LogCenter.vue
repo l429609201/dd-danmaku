@@ -44,30 +44,55 @@
       <!-- Tab 2: 服务器文件日志 -->
       <el-tab-pane label="服务器日志" name="server">
         <div class="toolbar">
-          <el-select v-model="serverFilter.file" placeholder="选择日志文件" style="width:260px" @change="loadServerLogs">
+          <el-switch v-model="serverStreamMode" active-text="实时" inactive-text="历史" @change="toggleStreamMode" style="margin-right:12px" />
+          <el-select v-model="serverFilter.file" placeholder="选择日志文件" style="width:260px" @change="serverStreamMode ? connectServerLogStream() : loadServerLogs()">
             <el-option v-for="f in serverFiles" :key="f.name" :label="`${f.name} (${fmtBytes(f.size_bytes)})`" :value="f.name" />
           </el-select>
-          <el-select v-model="serverFilter.level" placeholder="级别" clearable style="width:100px" @change="loadServerLogs">
+          <el-select v-model="serverFilter.level" placeholder="级别" clearable style="width:100px" @change="serverStreamMode ? connectServerLogStream() : loadServerLogs()">
             <el-option label="全部" value="" />
             <el-option label="ERROR" value="ERROR" />
             <el-option label="WARN" value="WARN" />
             <el-option label="INFO" value="INFO" />
             <el-option label="DEBUG" value="DEBUG" />
           </el-select>
-          <el-input v-model="serverFilter.keyword" placeholder="关键词搜索" clearable style="width:180px" @clear="loadServerLogs" @keyup.enter="loadServerLogs" />
-          <el-button size="small" @click="serverFilter.page = 1; loadServerLogs()">查询</el-button>
-          <span class="pager-info">第 {{ serverFilter.page }} 页 · 共 {{ serverTotalLines }} 行</span>
-          <el-button size="small" :disabled="serverHasMore" @click="serverFilter.page++; loadServerLogs()">下一页</el-button>
+          <el-input v-model="serverFilter.keyword" placeholder="关键词搜索" clearable style="width:180px" 
+            @clear="serverStreamMode ? connectServerLogStream() : loadServerLogs()" 
+            @keyup.enter="serverStreamMode ? connectServerLogStream() : loadServerLogs()" />
+          <el-button v-if="!serverStreamMode" size="small" @click="serverFilter.page = 1; loadServerLogs()">查询</el-button>
+          <el-tag v-if="serverStreamMode" :type="serverStreamStatus === 'connected' ? 'success' : serverStreamStatus === 'connecting' ? 'info' : 'danger'" size="small">
+            {{ serverStreamStatus === 'connected' ? '已连接' : serverStreamStatus === 'connecting' ? '连接中' : '连接失败' }}
+          </el-tag>
+          <template v-if="!serverStreamMode">
+            <span class="pager-info">第 {{ serverFilter.page }} 页 · 共 {{ serverTotalLines }} 行</span>
+            <el-button size="small" :disabled="!serverHasMore" @click="serverFilter.page++; loadServerLogs()">下一页</el-button>
+          </template>
           <el-button size="small" @click="loadServerLogFiles">刷新文件列表</el-button>
         </div>
-        <div v-if="serverLoading" class="loading">加载中…</div>
-        <div v-else-if="serverEntries.length === 0" class="empty">暂无日志</div>
-        <div v-else class="log-list">
-          <div v-for="(entry, idx) in serverEntries" :key="idx" class="log-row" :class="`log-row--${(entry.level || 'info').toLowerCase()}`">
-            <span class="log-time">{{ entry.timestamp || '—' }}</span>
-            <el-tag :type="levelTagType(entry.level)" size="small" class="log-level">{{ entry.level || '?' }}</el-tag>
-            <span class="log-target" v-if="entry.target">{{ entry.target }}</span>
-            <span class="log-message">{{ entry.message || entry.raw }}</span>
+        
+        <!-- 实时模式 -->
+        <div v-if="serverStreamMode" class="server-log-stream">
+          <div v-if="serverStreamEntries.length === 0" class="empty">等待新日志...</div>
+          <div v-else class="log-list">
+            <div v-for="(entry, idx) in serverStreamEntries" :key="idx" class="log-row" :class="`log-row--${(entry.level || 'info').toLowerCase()}`">
+              <span class="log-time">{{ entry.timestamp || '—' }}</span>
+              <el-tag :type="levelTagType(entry.level)" size="small" class="log-level">{{ entry.level || '?' }}</el-tag>
+              <span class="log-target" v-if="entry.target">{{ entry.target }}</span>
+              <span class="log-message">{{ entry.message }}</span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- 历史模式 -->
+        <div v-else>
+          <div v-if="serverLoading" class="loading">加载中…</div>
+          <div v-else-if="serverEntries.length === 0" class="empty">暂无日志</div>
+          <div v-else class="log-list">
+            <div v-for="(entry, idx) in serverEntries" :key="idx" class="log-row" :class="`log-row--${(entry.level || 'info').toLowerCase()}`">
+              <span class="log-time">{{ entry.timestamp || '—' }}</span>
+              <el-tag :type="levelTagType(entry.level)" size="small" class="log-level">{{ entry.level || '?' }}</el-tag>
+              <span class="log-target" v-if="entry.target">{{ entry.target }}</span>
+              <span class="log-message">{{ entry.message || entry.raw }}</span>
+            </div>
           </div>
         </div>
       </el-tab-pane>
@@ -97,7 +122,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, nextTick } from 'vue'
 import { apiV2 } from '@/utils/api'
 
 const activeTab = ref('worker')
@@ -135,6 +160,11 @@ const serverEntries = ref([])
 const serverLoading = ref(false)
 const serverTotalLines = ref(0)
 const serverFilter = ref({ file: '', level: '', keyword: '', page: 1, page_size: 100 })
+// SSE 实时模式
+const serverStreamMode = ref(true)
+const serverStreamEntries = ref([])
+const serverStreamConnection = ref(null)
+const serverStreamStatus = ref('disconnected')
 
 const serverHasMore = computed(() => serverFilter.value.page * serverFilter.value.page_size < serverTotalLines.value)
 
@@ -176,6 +206,80 @@ async function loadServerLogs() {
     serverEntries.value = []
   } finally {
     serverLoading.value = false
+  }
+}
+
+function connectServerLogStream() {
+  if (serverStreamConnection.value) {
+    serverStreamConnection.value.close()
+  }
+  
+  serverStreamStatus.value = 'connecting'
+  const params = new URLSearchParams()
+  if (serverFilter.value.file) params.set('file', serverFilter.value.file)
+  if (serverFilter.value.level) params.set('level', serverFilter.value.level)
+  if (serverFilter.value.keyword) params.set('keyword', serverFilter.value.keyword)
+  
+  const url = `/api/v2/logs/server-logs/stream?${params}`
+  const eventSource = new EventSource(url)
+  
+  eventSource.onopen = () => {
+    serverStreamStatus.value = 'connected'
+  }
+  
+  eventSource.onmessage = (event) => {
+    if (event.data === 'keepalive') return
+    try {
+      const entry = JSON.parse(event.data)
+      serverStreamEntries.value.push(entry)
+      if (serverStreamEntries.value.length > 500) {
+        serverStreamEntries.value.shift()
+      }
+      nextTick(() => {
+        const container = document.querySelector('.server-log-stream')
+        if (container) {
+          container.scrollTop = container.scrollHeight
+        }
+      })
+    } catch (e) {
+      console.error('解析日志失败', e)
+    }
+  }
+  
+  eventSource.addEventListener('file_rotated', (event) => {
+    console.log('日志文件轮转:', event.data)
+  })
+  
+  eventSource.onerror = () => {
+    serverStreamStatus.value = 'error'
+    setTimeout(() => {
+      if (serverStreamMode.value && activeTab.value === 'server') {
+        serverStreamStatus.value = 'reconnecting'
+        connectServerLogStream()
+      }
+    }, 3000)
+  }
+  
+  serverStreamConnection.value = eventSource
+}
+
+function disconnectServerLogStream() {
+  if (serverStreamConnection.value) {
+    serverStreamConnection.value.close()
+    serverStreamConnection.value = null
+  }
+  serverStreamStatus.value = 'disconnected'
+  serverStreamEntries.value = []
+}
+
+function toggleStreamMode() {
+  if (serverStreamMode.value) {
+    disconnectServerLogStream()
+    serverStreamEntries.value = []
+    connectServerLogStream()
+  } else {
+    disconnectServerLogStream()
+    loadServerLogs()
   }
 }
 
@@ -234,12 +338,27 @@ function severityTagType(severity) {
 
 function onTabChange(tab) {
   if (tab === 'worker' && workerLogs.value.length === 0) loadWorkerLogs()
-  if (tab === 'server' && serverFiles.value.length === 0) loadServerLogFiles()
+  if (tab === 'server') {
+    if (serverFiles.value.length === 0) {
+      loadServerLogFiles().then(() => {
+        if (serverStreamMode.value) connectServerLogStream()
+      })
+    } else if (serverStreamMode.value && serverStreamStatus.value === 'disconnected') {
+      connectServerLogStream()
+    }
+  } else {
+    // 离开服务器日志选项卡时断开 SSE
+    disconnectServerLogStream()
+  }
   if (tab === 'events' && events.value.length === 0) loadEvents()
 }
 
 onMounted(() => {
   loadWorkerLogs()
+})
+
+onBeforeUnmount(() => {
+  disconnectServerLogStream()
 })
 </script>
 
@@ -291,6 +410,16 @@ onMounted(() => {
 }
 
 /* 服务器日志行 */
+.server-log-stream {
+  background: var(--color-bg-overlay);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  max-height: 600px;
+  overflow-y: auto;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+}
+
 .log-list {
   background: var(--color-bg-overlay);
   border: 1px solid var(--color-border);

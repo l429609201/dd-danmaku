@@ -265,12 +265,13 @@ export default {
     // 海报图加载失败：隐藏 img，露出底层占位（避免浏览器破图标）
     const onImgError = (e) => { if (e && e.target) e.target.style.display = 'none' }
 
-    // Rust 的规范化媒体为主读源，尚无缓存回填任务，不能以成功提示冒充执行。
+    // 缓存回填：等待 Rust 后端实现，当前仅展示提示
     const rebuild = async () => { ElMessage.warning('当前 Rust 后端尚未实现缓存回填任务，未发送请求') }
 
     onMounted(load)
     return { items, total, page, pageSize, keyword, onlyMissing, loading, rebuilding,
-      drawerVisible, detail, Search, Refresh, reload, onPage, onSizeChange, openDetail, coverStyle, onImgError, rebuild,
+      drawerVisible, detail, Search, Refresh, reload, onPage, onSizeChange, openDetail, coverStyle, onImgError,
+      rebuild,
       meta, extForm, aliasForm, providerSuggest, langOptions,
       aliasStatusText, aliasTagType,
       saveExternalId, delExternalId, saveAlias, reviewAlias, delAlias }

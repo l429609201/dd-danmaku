@@ -100,7 +100,10 @@ pub async fn get_migration_status(
         .order_by_desc(migration_run::Column::StartedAt)
         .one(&state.db)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("查询迁移记录失败: {}", e)))?;
+        .map_err(|e| {
+            tracing::error!("查询迁移记录失败: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("查询迁移记录失败: {}", e))
+        })?;
 
     let run_info = if let Some(run) = latest {
         // 查询该运行下的所有表进度
@@ -146,11 +149,17 @@ pub async fn start_migration(
     State(state): State<AppState>,
     Json(req): Json<StartMigrationRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    tracing::info!("收到迁移启动请求：mode={}, batch_size={}, tables_count={}", 
+        req.mode, req.batch_size, req.tables.len());
+    
     // 验证迁移模式
     let migration_mode = match req.mode.to_lowercase().as_str() {
         "dry_run" | "dryrun" | "dry-run" => MigrationMode::DryRun,
         "apply" => MigrationMode::Apply,
-        other => return Err((StatusCode::BAD_REQUEST, format!("不支持的迁移模式: {}", other))),
+        other => {
+            tracing::warn!("不支持的迁移模式: {}", other);
+            return Err((StatusCode::BAD_REQUEST, format!("不支持的迁移模式: {}", other)))
+        }
     };
 
     // 构建目标 DB URL（即当前 Rust 实例的数据库）
@@ -167,7 +176,10 @@ pub async fn start_migration(
                 Err(std::env::VarError::NotPresent)
             }
         })
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "未找到目标数据库配置".to_string()))?;
+        .map_err(|_| {
+            tracing::error!("未找到目标数据库配置：缺少 DATABASE_URL 或 MYSQL_* 环境变量");
+            (StatusCode::INTERNAL_SERVER_ERROR, "未找到目标数据库配置".to_string())
+        })?;
 
     // 构建迁移选项
     let allowed_tables = if req.tables.is_empty() {
@@ -191,11 +203,25 @@ pub async fn start_migration(
 
     // 参数校验
     opts.validate()
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("迁移参数校验失败: {}", e)))?;
+        .map_err(|e| {
+            tracing::warn!("迁移参数校验失败: {}", e);
+            (StatusCode::BAD_REQUEST, format!("迁移参数校验失败: {}", e))
+        })?;
+
+    tracing::info!("迁移参数校验通过，开始预检");
 
     // 先执行 preflight 检查（只读，检测连通性和表结构）
     let report = preflight(&opts).await
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("迁移预检失败: {}", e)))?;
+        .map_err(|e| {
+            tracing::error!("迁移预检失败: {}", e);
+            (StatusCode::BAD_REQUEST, format!("迁移预检失败: {}", e))
+        })?;
+
+    tracing::info!(
+        "迁移预检完成：源库 {} 张表，选择迁移 {} 张表",
+        report.source_table_count,
+        report.selected_tables.len()
+    );
 
     // 准备响应的 run_id（优先使用 opts 中的，其次生成一个基于时间戳的 ID）
     let run_id_for_response = opts.run_id.clone()
@@ -236,19 +262,29 @@ pub async fn cancel_migration(
         .order_by_desc(migration_run::Column::StartedAt)
         .one(&state.db)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("查询迁移记录失败: {}", e)))?;
+        .map_err(|e| {
+            tracing::error!("查询迁移记录失败: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("查询迁移记录失败: {}", e))
+        })?;
 
     let run = latest
-        .ok_or((StatusCode::NOT_FOUND, "当前没有迁移记录".to_string()))?;
+        .ok_or_else(|| {
+            tracing::warn!("取消迁移失败：当前没有迁移记录");
+            (StatusCode::NOT_FOUND, "当前没有迁移记录".to_string())
+        })?;
 
     if !matches!(run.status.as_str(), "started" | "in_progress") {
+        tracing::warn!("取消迁移失败：当前迁移状态为 {}", run.status);
         return Err((StatusCode::BAD_REQUEST,
             format!("当前迁移状态为 {}，无法取消", run.status)));
     }
 
     // 标记为已取消
     update_migration_status(&state.db, &run.run_id, MigrationRunStatus::Cancelled).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("取消迁移失败: {}", e)))?;
+        .map_err(|e| {
+            tracing::error!("更新迁移状态失败: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("取消迁移失败: {}", e))
+        })?;
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -267,7 +303,10 @@ pub async fn get_migration_tables(
         .order_by_asc(migration_table::Column::Id)
         .all(&state.db)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("查询表进度失败: {}", e)))?;
+        .map_err(|e| {
+            tracing::error!("查询表进度失败: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("查询表进度失败: {}", e))
+        })?;
 
     let table_infos = tables.into_iter().map(|t| MigrationTableInfo {
         id: t.id,
@@ -294,7 +333,10 @@ pub async fn list_migration_runs(
         .order_by_desc(migration_run::Column::StartedAt)
         .all(&state.db)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("查询迁移记录失败: {}", e)))?;
+        .map_err(|e| {
+            tracing::error!("查询迁移记录列表失败: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("查询迁移记录失败: {}", e))
+        })?;
 
     let items: Vec<serde_json::Value> = runs.into_iter().map(|r| {
         serde_json::json!({

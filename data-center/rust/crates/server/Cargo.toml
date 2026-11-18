@@ -27,6 +27,7 @@ bytes = "1.12"
 # 异步工具
 tokio = { workspace = true }
 futures-util = "0.3"
+async-stream = "0.3"
 
 # 序列化
 serde = { workspace = true }

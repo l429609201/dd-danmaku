@@ -2,10 +2,13 @@
 use axum::{
     extract::{Query, State},
     http::StatusCode,
+    response::sse::{Event, KeepAlive, Sse},
     Json,
 };
+use futures_util::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::io::AsyncBufReadExt;
 
 use crate::AppState;
@@ -282,4 +285,151 @@ async fn find_latest_log_file(log_dir: &PathBuf) -> Option<String> {
         }
     }
     best.map(|(name, _)| name)
+}
+
+/// SSE 实时日志流：持续推送新增的日志行
+pub async fn stream_server_logs(
+    Query(query): Query<ServerLogsQuery>,
+) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let log_dir = log_dir();
+    let level_filter = query.level.clone();
+    let keyword_filter = query.keyword.clone();
+    
+    // 确定要监控的文件
+    let file_name = if let Some(name) = query.file {
+        Some(name)
+    } else {
+        // 默认选择今天的文件
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let today_file = format!("data-center-{}.log", today);
+        if log_dir.join(&today_file).exists() {
+            Some(today_file)
+        } else {
+            // 今天的文件不存在，回退到最新文件
+            find_latest_log_file(&log_dir).await
+        }
+    };
+    
+    let stream = async_stream::stream! {
+        use tokio::fs::File;
+        use tokio::io::{AsyncSeekExt, BufReader};
+        
+        // 检查是否有可用文件
+        let file_name = match file_name {
+            Some(name) => name,
+            None => {
+                yield Ok(Event::default().data("没有可用的日志文件"));
+                return;
+            }
+        };
+        
+        let file_path = log_dir.join(&file_name);
+        
+        // 打开文件并定位到末尾
+        let mut file = match File::open(&file_path).await {
+            Ok(f) => f,
+            Err(e) => {
+                yield Ok(Event::default().data(format!("无法打开日志文件: {}", e)));
+                return;
+            }
+        };
+        
+        // 移动到文件末尾（只推送新内容）
+        if let Err(e) = file.seek(std::io::SeekFrom::End(0)).await {
+            yield Ok(Event::default().data(format!("定位文件末尾失败: {}", e)));
+            return;
+        }
+        
+        let mut reader = BufReader::new(file);
+        let mut line_buffer = String::new();
+        let mut current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        
+        loop {
+            line_buffer.clear();
+            match reader.read_line(&mut line_buffer).await {
+                Ok(0) => {
+                    // EOF，等待 500ms 后重试
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    
+                    // 检查是否跨日期（日志轮转）
+                    let now_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+                    if now_date != current_date {
+                        current_date = now_date.clone();
+                        let new_file = format!("data-center-{}.log", now_date);
+                        let new_path = log_dir.join(&new_file);
+                        
+                        // 尝试切换到新文件
+                        if new_path.exists() {
+                            match File::open(&new_path).await {
+                                Ok(f) => {
+                                    reader = BufReader::new(f);
+                                    yield Ok(Event::default()
+                                        .event("file_rotated")
+                                        .data(format!("日志文件已轮转至: {}", new_file)));
+                                }
+                                Err(_) => {
+                                    // 切换失败，继续读旧文件
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                Ok(_) => {
+                    // 读到新行
+                    let raw = line_buffer.trim_end().to_string();
+                    if raw.is_empty() {
+                        continue;
+                    }
+                    
+                    // 解析日志行
+                    let entry = parse_log_line(&raw);
+                    
+                    // 应用过滤条件
+                    if let Some(ref level) = level_filter {
+                        let entry_level = entry.level.as_deref().unwrap_or("").to_lowercase();
+                        let filter = level.to_lowercase();
+                        
+                        // 级别过滤：ERROR > WARN > INFO > DEBUG
+                        let skip = match filter.as_str() {
+                            "error" => !matches!(entry_level.as_str(), "error"),
+                            "warn" | "warning" => !matches!(entry_level.as_str(), "error" | "warn" | "warning"),
+                            "info" => entry_level == "debug",
+                            _ => false,
+                        };
+                        
+                        if skip {
+                            continue;
+                        }
+                    }
+                    
+                    if let Some(ref keyword) = keyword_filter {
+                        if !keyword.is_empty() && !raw.to_lowercase().contains(&keyword.to_lowercase()) {
+                            continue;
+                        }
+                    }
+                    
+                    // 推送日志行
+                    let json = serde_json::json!({
+                        "timestamp": entry.timestamp,
+                        "level": entry.level,
+                        "target": entry.target,
+                        "message": entry.message,
+                    });
+                    
+                    yield Ok(Event::default().data(json.to_string()));
+                }
+                Err(e) => {
+                    yield Ok(Event::default().data(format!("读取日志失败: {}", e)));
+                    return;
+                }
+            }
+        }
+    };
+    
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keepalive")
+    )
 }
