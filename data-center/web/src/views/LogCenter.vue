@@ -253,14 +253,11 @@ function connectServerLogStream() {
     console.log('日志文件轮转:', event.data)
   })
   
+  // EventSource 断开时会自动以指数退避重连（浏览器原生行为），
+  // 不再手动调用 connectServerLogStream()，避免与原生重连叠加导致双重连接
   eventSource.onerror = () => {
     serverStreamStatus.value = 'error'
-    setTimeout(() => {
-      if (serverStreamMode.value && activeTab.value === 'server') {
-        serverStreamStatus.value = 'reconnecting'
-        connectServerLogStream()
-      }
-    }, 3000)
+    // 状态由 onopen 在重连成功后自动恢复为 'connected'
   }
   
   serverStreamConnection.value = eventSource

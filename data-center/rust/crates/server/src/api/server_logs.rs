@@ -367,7 +367,55 @@ pub async fn stream_server_logs(
             }
         };
 
-        // 移动到文件末尾（只推送新内容）
+        // 先读最后 50 行作为历史初始推送，再从 EOF 开始 tail
+        {
+            use tokio::io::AsyncReadExt;
+            let mut content = String::new();
+            if file.read_to_string(&mut content).await.is_ok() {
+                let all_lines: Vec<&str> = content.lines().collect();
+                let tail_start = if all_lines.len() > 50 { all_lines.len() - 50 } else { 0 };
+                for raw in &all_lines[tail_start..] {
+                    let raw = raw.trim();
+                    if raw.is_empty() { continue; }
+                    let entry = parse_log_line(raw);
+                    // 应用过滤条件（与 tail 阶段相同逻辑）
+                    if let Some(ref level) = level_filter {
+                        let entry_level = entry.level.as_deref().unwrap_or("").to_lowercase();
+                        let filter = level.to_lowercase();
+                        let skip = match filter.as_str() {
+                            "error" => !matches!(entry_level.as_str(), "error"),
+                            "warn" | "warning" => !matches!(entry_level.as_str(), "error" | "warn" | "warning"),
+                            "info" => entry_level == "debug",
+                            _ => false,
+                        };
+                        if skip { continue; }
+                    }
+                    if let Some(ref keyword) = keyword_filter {
+                        if !keyword.is_empty() && !raw.to_lowercase().contains(&keyword.to_lowercase()) {
+                            continue;
+                        }
+                    }
+                    let json = serde_json::json!({
+                        "timestamp": entry.timestamp,
+                        "level": entry.level,
+                        "target": entry.target,
+                        "message": entry.message,
+                        "initial": true,
+                    });
+                    yield Ok(Event::default().data(json.to_string()));
+                }
+            }
+            // 重新打开文件并移动到末尾，准备 tail
+            file = match tokio::fs::File::open(&file_path).await {
+                Ok(f) => f,
+                Err(e) => {
+                    yield Ok(Event::default().data(format!("重新打开日志文件失败: {}", e)));
+                    return;
+                }
+            };
+        }
+
+        // 移动到文件末尾，只推送新写入内容
         if let Err(e) = file.seek(std::io::SeekFrom::End(0)).await {
             yield Ok(Event::default().data(format!("定位文件末尾失败: {}", e)));
             return;
