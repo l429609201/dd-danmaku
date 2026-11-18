@@ -35,7 +35,8 @@ pub struct MigrationOptions {
     pub target_url: String,
     pub mode: MigrationMode,
     pub batch_size: u32,
-    pub allowed_tables: BTreeSet<String>,
+    /// 允许迁移的表名集合。None 表示迁移所有表；Some(set) 表示只迁移这些表。
+    pub allowed_tables: Option<BTreeSet<String>>,
     pub run_id: Option<String>,
 }
 
@@ -46,7 +47,7 @@ impl Default for MigrationOptions {
             target_url: String::new(),
             mode: MigrationMode::DryRun,
             batch_size: 500,
-            allowed_tables: BTreeSet::new(),
+            allowed_tables: None,
             run_id: None,
         }
     }
@@ -80,16 +81,19 @@ impl MigrationOptions {
         if self.batch_size == 0 {
             return Err(MigrationOptionsError::InvalidBatchSize);
         }
-        if self.allowed_tables.is_empty()
-            || self.allowed_tables.iter().any(|table| {
-                table.is_empty()
-                    || table.len() > 64
-                    || !table
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-            })
-        {
-            return Err(MigrationOptionsError::InvalidTableAllowlist);
+        // 如果指定了 allowed_tables，检查集合非空且每个表名有效
+        if let Some(tables) = &self.allowed_tables {
+            if tables.is_empty()
+                || tables.iter().any(|table| {
+                    table.is_empty()
+                        || table.len() > 64
+                        || !table
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                })
+            {
+                return Err(MigrationOptionsError::InvalidTableAllowlist);
+            }
         }
         let source = parse_url(&self.source_url)?;
         let target = parse_url(&self.target_url)?;

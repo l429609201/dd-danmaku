@@ -23,12 +23,11 @@
             <tr><td>运行 ID</td><td><code>{{ latestRun.run_id }}</code></td></tr>
             <tr><td>状态</td><td><el-tag :type="statusTagType(latestRun.status)" size="small">{{ latestRun.status }}</el-tag></td></tr>
             <tr><td>模式</td><td>{{ latestRun.mode }}</td></tr>
-            <tr><td>来源库</td><td><code>{{ latestRun.source_db }}</code></td></tr>
-            <tr><td>目标库</td><td><code>{{ latestRun.target_db }}</code></td></tr>
+            <tr><td>来源库</td><td><code>{{ latestRun.source_identity_hash }}</code></td></tr>
+            <tr><td>目标库</td><td><code>{{ latestRun.target_identity_hash }}</code></td></tr>
             <tr><td>开始时间</td><td>{{ fmtTime(latestRun.started_at) }}</td></tr>
-            <tr v-if="latestRun.completed_at"><td>结束时间</td><td>{{ fmtTime(latestRun.completed_at) }}</td></tr>
+            <tr v-if="latestRun.finished_at"><td>结束时间</td><td>{{ fmtTime(latestRun.finished_at) }}</td></tr>
             <tr><td>表进度</td><td>{{ latestRun.tables_done }} / {{ latestRun.tables_total }}（失败 {{ latestRun.tables_failed }}）</td></tr>
-            <tr v-if="latestRun.error_message"><td>错误信息</td><td class="error-cell">{{ latestRun.error_message }}</td></tr>
           </tbody>
         </table>
 
@@ -75,7 +74,6 @@
             <el-tag :type="statusTagType(row.status)" size="small">{{ row.status }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="mode" label="模式" width="80" />
         <el-table-column label="开始时间" width="160">
           <template #default="{ row }">{{ fmtTime(row.started_at) }}</template>
         </el-table-column>
@@ -96,16 +94,58 @@
       <el-alert v-if="hasActive" type="warning" :closable="false" style="margin-bottom:12px">
         当前有活跃的迁移任务，请等待完成或取消后再启动新迁移。
       </el-alert>
-      <el-form :model="form" label-width="140px" :disabled="hasActive || startLoading">
-        <el-form-item label="旧版数据库 URL">
+
+      <!-- 配置预设管理 -->
+      <div class="preset-bar">
+        <el-select
+          v-model="selectedPreset"
+          placeholder="选择已保存的配置"
+          clearable
+          style="width:240px"
+          @change="loadPreset"
+        >
+          <el-option
+            v-for="p in presets"
+            :key="p.name"
+            :label="p.name"
+            :value="p.name"
+          />
+        </el-select>
+        <el-button size="small" @click="showSavePresetDialog">保存当前配置</el-button>
+        <el-button
+          v-if="selectedPreset"
+          size="small"
+          type="danger"
+          @click="deletePreset"
+        >删除选中配置</el-button>
+      </div>
+
+      <el-form :model="form" label-width="140px" :disabled="hasActive || startLoading" style="margin-top:16px">
+        <el-form-item label="主机地址">
+          <el-input v-model="form.host" placeholder="例：192.168.10.220" style="max-width:300px" />
+        </el-form-item>
+
+        <el-form-item label="端口">
+          <el-input-number v-model="form.port" :min="1" :max="65535" style="width:140px" />
+        </el-form-item>
+
+        <el-form-item label="用户名">
+          <el-input v-model="form.username" placeholder="例：root" style="max-width:240px" />
+        </el-form-item>
+
+        <el-form-item label="密码">
           <el-input
-            v-model="form.source_db_url"
-            placeholder="mysql://user:pass@host:3306/dbname"
+            v-model="form.password"
             type="password"
             show-password
-            style="max-width:500px"
+            placeholder="数据库密码"
+            style="max-width:300px"
           />
-          <div class="form-hint">仅支持 MySQL（mysql://）作为来源库。密码不会被记录到日志。</div>
+          <div class="form-hint">密码不会被记录到日志。</div>
+        </el-form-item>
+
+        <el-form-item label="数据库名">
+          <el-input v-model="form.database" placeholder="例：worker" style="max-width:240px" />
         </el-form-item>
 
         <el-form-item label="迁移模式">
@@ -124,10 +164,10 @@
         <el-form-item label="迁移表（逗号分隔）">
           <el-input
             v-model="form.tables_input"
-            placeholder="例：animes,episodes,anime_aliases（留空则迁移全部）"
+            placeholder="例：animes,episodes,anime_aliases"
             style="max-width:500px"
           />
-          <div class="form-hint">留空默认迁移全部旧版表。每个表名只能含字母、数字和下划线。</div>
+          <div class="form-hint"><strong>留空则迁移全部源表。</strong>每个表名只能含字母、数字和下划线。</div>
         </el-form-item>
 
         <el-form-item label="运行 ID（可选）">
@@ -139,7 +179,7 @@
           <el-button
             type="primary"
             :loading="startLoading"
-            :disabled="!form.source_db_url || hasActive"
+            :disabled="!canStart"
             @click="startMigration"
           >
             {{ form.mode === 'dry_run' ? '开始预演' : '开始迁移' }}
@@ -157,12 +197,25 @@
         </el-alert>
       </div>
     </div>
+
+    <!-- 保存配置对话框 -->
+    <el-dialog v-model="savePresetVisible" title="保存迁移配置" width="400px">
+      <el-form label-width="80px">
+        <el-form-item label="配置名称">
+          <el-input v-model="presetName" placeholder="例：旧版生产库" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="savePresetVisible = false">取消</el-button>
+        <el-button type="primary" @click="savePreset">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiV2 } from '@/utils/api'
 
 // ===== 状态 =====
@@ -180,12 +233,91 @@ const cancelLoading = ref(false)
 const startLoading = ref(false)
 const startResult = ref(null)
 const form = ref({
-  source_db_url: '',
+  host: '',
+  port: 3306,
+  username: '',
+  password: '',
+  database: '',
   mode: 'dry_run',
   batch_size: 500,
   tables_input: '',
   run_id: '',
 })
+
+const canStart = computed(() => {
+  return !hasActive.value && form.value.host && form.value.username && form.value.database
+})
+
+// ===== 配置预设 =====
+const PRESETS_KEY = 'dd_migration_presets'
+const presets = ref([])
+const selectedPreset = ref('')
+const savePresetVisible = ref(false)
+const presetName = ref('')
+
+function loadPresets() {
+  try {
+    const stored = localStorage.getItem(PRESETS_KEY)
+    presets.value = stored ? JSON.parse(stored) : []
+  } catch {
+    presets.value = []
+  }
+}
+
+function showSavePresetDialog() {
+  presetName.value = ''
+  savePresetVisible.value = true
+}
+
+function savePreset() {
+  if (!presetName.value.trim()) {
+    ElMessage.warning('请输入配置名称')
+    return
+  }
+  const preset = {
+    name: presetName.value.trim(),
+    host: form.value.host,
+    port: form.value.port,
+    username: form.value.username,
+    password: btoa(form.value.password), // 简单 Base64 编码（非加密，仅混淆）
+    database: form.value.database,
+    batch_size: form.value.batch_size,
+  }
+  const existing = presets.value.findIndex(p => p.name === preset.name)
+  if (existing >= 0) {
+    presets.value[existing] = preset
+  } else {
+    presets.value.push(preset)
+  }
+  localStorage.setItem(PRESETS_KEY, JSON.stringify(presets.value))
+  ElMessage.success(`配置"${preset.name}"已保存`)
+  savePresetVisible.value = false
+  selectedPreset.value = preset.name
+}
+
+function loadPreset(name) {
+  if (!name) return
+  const preset = presets.value.find(p => p.name === name)
+  if (!preset) return
+  form.value.host = preset.host
+  form.value.port = preset.port
+  form.value.username = preset.username
+  form.value.password = atob(preset.password)
+  form.value.database = preset.database
+  form.value.batch_size = preset.batch_size
+}
+
+function deletePreset() {
+  if (!selectedPreset.value) return
+  ElMessageBox.confirm(`确认删除配置"${selectedPreset.value}"？`, '删除确认', {
+    type: 'warning',
+  }).then(() => {
+    presets.value = presets.value.filter(p => p.name !== selectedPreset.value)
+    localStorage.setItem(PRESETS_KEY, JSON.stringify(presets.value))
+    ElMessage.success('已删除')
+    selectedPreset.value = ''
+  }).catch(() => {})
+}
 
 // ===== 加载状态 =====
 async function loadStatus() {
@@ -236,10 +368,13 @@ async function cancelMigration() {
 
 // ===== 启动迁移 =====
 async function startMigration() {
-  if (!form.value.source_db_url) {
-    ElMessage.warning('请填写旧版数据库 URL')
+  if (!form.value.host || !form.value.username || !form.value.database) {
+    ElMessage.warning('请填写完整的数据库连接信息')
     return
   }
+
+  // 拼接数据库 URL
+  const source_db_url = `mysql://${form.value.username}:${form.value.password}@${form.value.host}:${form.value.port}/${form.value.database}`
 
   startLoading.value = true
   startResult.value = null
@@ -249,7 +384,7 @@ async function startMigration() {
       : []
 
     const body = {
-      source_db_url: form.value.source_db_url,
+      source_db_url,
       mode: form.value.mode,
       batch_size: form.value.batch_size,
       tables,
@@ -258,15 +393,14 @@ async function startMigration() {
 
     const res = await apiV2('/migration/start', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body,
     })
 
     startResult.value = {
       success: true,
       message: form.value.mode === 'dry_run'
-        ? `预演已启动：发现 ${res.table_count ?? 0} 张可迁移表`
-        : `迁移已在后台启动，共 ${res.table_count ?? 0} 张表`,
+        ? `预演已启动：发现 ${res.source_tables_found ?? 0} 张源表`
+        : `迁移已在后台启动，共 ${res.source_tables_found ?? 0} 张源表`,
       detail: res.selected_tables ? `将迁移：${res.selected_tables.join(', ')}` : null,
     }
     // 刷新状态
@@ -303,6 +437,7 @@ function statusTagType(status) {
 }
 
 onMounted(() => {
+  loadPresets()
   loadStatus()
 })
 </script>
@@ -366,14 +501,20 @@ onMounted(() => {
   border-bottom: none;
 }
 
-.error-cell {
-  color: var(--color-danger);
-  font-size: 12px;
-}
-
 .action-row {
   display: flex;
   gap: 8px;
+}
+
+.preset-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
 }
 
 .form-hint {

@@ -235,22 +235,29 @@ pub async fn preflight(options: &MigrationOptions) -> Result<PreflightReport, Mi
         .filter(|(_, _, kind)| is_base_table(kind))
         .count();
     let target_other_objects = target_objects.len() - target_tables;
-    let requested = options
-        .allowed_tables
-        .iter()
-        .map(|table| table.trim().to_owned())
-        .collect::<BTreeSet<_>>();
-    if requested.is_empty() {
-        return Err(MigrationError::Options(MigrationOptionsError::InvalidTableAllowlist));
-    }
-    if !requested.iter().all(|table| is_safe_table_identifier(table)) {
-        return Err(MigrationError::Options(MigrationOptionsError::InvalidTableAllowlist));
-    }
-    let selected_tables = {
-        if !requested.is_subset(&source_tables) {
-            return Err(MigrationError::UnknownSourceTable);
+    let source_table_count = source_tables.len();
+    let selected_tables = match &options.allowed_tables {
+        None => {
+            // None 表示迁移所有源表
+            source_tables.into_iter().collect::<Vec<_>>()
         }
-        requested.into_iter().collect::<Vec<_>>()
+        Some(requested_set) => {
+            // Some 表示只迁移指定的表
+            let requested = requested_set
+                .iter()
+                .map(|table| table.trim().to_owned())
+                .collect::<BTreeSet<_>>();
+            if requested.is_empty() {
+                return Err(MigrationError::Options(MigrationOptionsError::InvalidTableAllowlist));
+            }
+            if !requested.iter().all(|table| is_safe_table_identifier(table)) {
+                return Err(MigrationError::Options(MigrationOptionsError::InvalidTableAllowlist));
+            }
+            if !requested.is_subset(&source_tables) {
+                return Err(MigrationError::UnknownSourceTable);
+            }
+            requested.into_iter().collect::<Vec<_>>()
+        }
     };
 
     Ok(PreflightReport {
@@ -263,7 +270,7 @@ pub async fn preflight(options: &MigrationOptions) -> Result<PreflightReport, Mi
         .to_owned(),
         source_identity,
         target_identity,
-        source_table_count: source_tables.len(),
+        source_table_count,
         target_table_count: target_tables,
         target_other_object_count: target_other_objects,
         target_has_no_base_tables: target_tables == 0,
@@ -318,7 +325,7 @@ mod tests {
             target_url: "mysql://bad:secret@127.0.0.1:1/newdb".into(),
             mode: MigrationMode::Apply,
             batch_size: 500,
-            allowed_tables: ["episodes".to_owned()].into_iter().collect(),
+            allowed_tables: Some(["episodes".to_owned()].into_iter().collect()),
             run_id: Some("run-1".into()),
         };
         let error = execute(&options).await.unwrap_err();
@@ -326,7 +333,7 @@ mod tests {
         assert!(!error.to_string().contains("secret"));
 
         options.mode = MigrationMode::DryRun;
-        options.allowed_tables.clear();
+        options.allowed_tables = Some(BTreeSet::new());
         assert_eq!(
             execute(&options).await.unwrap_err().to_string(),
             "来源表白名单为空或包含不安全的表名"

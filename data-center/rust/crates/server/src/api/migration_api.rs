@@ -170,10 +170,15 @@ pub async fn start_migration(
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "未找到目标数据库配置".to_string()))?;
 
     // 构建迁移选项
-    let mut allowed_tables = BTreeSet::new();
-    for t in &req.tables {
-        allowed_tables.insert(t.clone());
-    }
+    let allowed_tables = if req.tables.is_empty() {
+        None // 空列表 = 迁移全部表
+    } else {
+        let mut set = BTreeSet::new();
+        for t in &req.tables {
+            set.insert(t.clone());
+        }
+        Some(set)
+    };
 
     let opts = MigrationOptions {
         source_url: req.source_db_url.clone(),
